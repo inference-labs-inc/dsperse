@@ -1,73 +1,71 @@
+# main_cli.py
 import argparse
-import os
-import torch  # Assuming the AI model is in PyTorch format, you can adjust as needed
+import time
 
-
-def verify_file_exists(filepath):
-    """Check if the provided file exists and is accessible."""
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"The file at path '{filepath}' does not exist.")
-    if not os.path.isfile(filepath):
-        raise ValueError(f"The path '{filepath}' is not a file.")
-    return filepath
-
-
-def load_model(filepath):
-    """Load the AI model for further processing."""
-    try:
-        print(f"Loading model from: {filepath}")
-        model = torch.load(filepath, map_location=torch.device('cpu'))
-        print("Model loaded successfully.")
-        return model
-    except Exception as e:
-        raise RuntimeError(f"Failed to load the model. Error: {e}")
-
-
-def extract_layers(model):
-    """Break down the model into layers."""
-    print("Extracting layers from the model...")
-    try:
-        layers = []
-        for name, layer in model.named_modules():
-            layers.append((name, layer))
-            print(f"Found layer: {name} -> {layer}")
-        print(f"Total layers extracted: {len(layers)}")
-        return layers
-    except AttributeError as e:
-        raise RuntimeError(f"Model does not support introspection for layers. Error: {e}")
-
-
-def perform_zk_proofs(layers):
-    """Perform zero-knowledge proofs (conceptual stub)."""
-    print("Performing zero-knowledge proofs on each layer...")
-    for name, layer in layers:
-        # Stub for zk proofs (replace with actual implementation)
-        print(f"Generating zk proof for layer: {name}...")
-        # Example placeholder logic
-        # zk_proof = zk_library.prove(layer)  # Hypothetical function
-        print(f"Proof for layer: {name} generated successfully!")
-    print("Zero-knowledge proofs completed for all layers.")
+from src.create_nanogpt import create_nanogpt, train_nanogpt
+from src.singular_workflow_proofs import convert_to_onnx, run_ezkl_proof
+from src.composite_workflow_proofs import split_torch_model, convert_layer_to_onnx, run_ezkl_proof_for_layer, \
+    compose_layer_proofs
 
 
 def main():
-    # Command-line argument parsing
-    parser = argparse.ArgumentParser(description="AI Model Analyzer and zk Proof Generator CLI")
-    parser.add_argument(
-        '-p', '--path',
-        type=str,
-        required=True,
-        help="Path to the AI model file you want to process."
-    )
+    """
+    CLI interface to run either the singular proof workflow (end-to-end proof) or
+    the composite proof workflow (layer-wise proof composition).
 
+    Usage:
+        --workflow singular    -> Runs the singular (end-to-end) proof workflow.
+        --workflow composite   -> Runs the composite (layer-wise) proof composition workflow.
+    """
+    parser = argparse.ArgumentParser(description="Zero-Knowledge Proofs for NanoGPT Models using ezkl")
+    parser.add_argument("--workflow", choices=["singular", "composite"], required=True,
+                        help="Select the workflow: 'singular' for end-to-end proof, 'composite' for layer-wise proof composition.")
     args = parser.parse_args()
 
-    try:
-        model_path = verify_file_exists(args.path)
-        model = load_model(model_path)
-        layers = extract_layers(model)
-        perform_zk_proofs(layers)
-    except Exception as e:
-        print(f"Error: {e}")
+    # Common parameters for NanoGPT model
+    model_params = {
+        "vocab_size": 50257,  # Example vocab size
+        "n_embd": 64,  # Embedding dimension
+        "n_layer": 2,  # Number of transformer layers
+        "n_head": 4  # Number of attention heads
+    }
+    input_shape = (1, 10)  # Adjust as needed for your model input
+
+    # Create and train a NanoGPT model instance
+    torch_model = create_nanogpt(model_params)
+    train_nanogpt(torch_model)
+
+    if args.workflow == "singular":
+        print("Running singular (end-to-end) workflow...")
+        start_time = time.time()
+        onnx_model_path = "full_model.onnx"
+        proof_output_path = "full_model.proof"
+        convert_to_onnx(torch_model, input_shape, onnx_model_path)
+        proof = run_ezkl_proof(onnx_model_path, proof_output_path)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print("Final Proof:", proof)
+        print(f"Singular workflow execution time: {elapsed_time:.2f} seconds")
+
+    elif args.workflow == "composite":
+        print("Running composite (layer-wise) workflow...")
+        start_time = time.time()
+        # Split the model into individual torch layers
+        layer_models = split_torch_model(torch_model)
+        layer_proofs = []
+
+        for layer_name, layer_model in layer_models:
+            layer_onnx_path = f"{layer_name}.onnx"
+            layer_proof_path = f"{layer_name}.proof"
+            convert_layer_to_onnx(layer_model, input_shape, layer_onnx_path)
+            layer_proof = run_ezkl_proof_for_layer(layer_onnx_path, layer_proof_path)
+            layer_proofs.append(layer_proof)
+
+        aggregated_proof = compose_layer_proofs(layer_proofs)
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print("Aggregated Proof:", aggregated_proof)
+        print(f"Composite workflow execution time: {elapsed_time:.2f} seconds")
 
 
 if __name__ == "__main__":

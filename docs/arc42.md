@@ -102,7 +102,7 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Allows miners to set their preferred circuit size and compute allocation.
 
 
-  ![Vertical Layers Circuitization](images/vertical_layers.png)  
+  ![Vertical Layers Circuitization](images/vertical_layers.jpg)  
   *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
   independently for distributed proof computation.*
 ---

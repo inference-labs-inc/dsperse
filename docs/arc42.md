@@ -101,6 +101,10 @@ This document outlines the high-level architecture for the "kubz" project—a ne
   - **CLI Parameter Interface:**  
     Allows miners to set their preferred circuit size and compute allocation.
 
+
+  ![Vertical Layers Circuitization](images/vertical_layers.png)  
+  *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
+  independently for distributed proof computation.*
 ---
 
 ## 6. Runtime View
@@ -112,6 +116,12 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Validators send circuit segments (vertical layers) to miners based on their available resources. Miners compute proofs for these segments individually.
   - **Proof Assembly:**  
     Validators collect all partial proofs, and if any segment fails or is too slow, the system retries or assigns to another miner.
+
+
+  ![Circuit Design Overview](images/circuit_design_overview.jpg)
+  *The neural network’s input witness is processed, and as the inference flows through each vertical layer, a circuit and
+  corresponding proof are generated. Each circuitized vertical layer will have its own input witness, allowing
+  computations to be performed independently on separate machines with smaller lookup tables. credit: @HudsonGraeme for image*
 
 ---
 
@@ -166,14 +176,15 @@ This document outlines the high-level architecture for the "kubz" project—a ne
 
 ## 10. Quality Requirements
 
-- **Non-Functional Requirements:**  
+- **Non-Functional Requirements:**
   - **Scalability:** Ability to distribute proof computation across multiple nodes.
   - **Performance:** Minimize proof time by optimizing circuit size and resource allocation.
   - **Resource Efficiency:** Optimize RAM usage by leveraging caching and configurable circuit sizes.
   - **Security:** Maintain proof soundness through adjustable zk iteration counts and statistical parameters.
 
 - **Metrics and Targets:**  
-  *[Placeholder: To be defined after testing]*
+  - We will use our incentive mechanism to reward the fastest miners, and the miners will need to optimize for speed of
+  proof generation and inference.
 
 ---
 

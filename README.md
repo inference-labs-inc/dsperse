@@ -16,8 +16,24 @@ kubz is a project designed to harness distributed zero-knowledge machine learnin
 
 ## Architecture Overview
 
+For more detailed information about the architecture and approach, please refer to the [architecture overview](docs/overview.md) file.
 
 ### Miners and Validators
+
+Miners and validators are two key roles in kubz's DzkML architecture, acting in tandem to maintain the integrity and
+efficiency of the system.
+
+Miners are responsible for processing the machine learning model's inference process to generate zk-proofs. They utilize
+the input data provided by validators, run the necessary computations, and return both the witness (model output) and
+its corresponding proof. These tasks are essential to ensuring a distributed, scalable, and decentralized inference
+system.
+
+Validators, on the other hand, play a crucial role in overseeing the miners' work. They validate the zk-proofs submitted
+by miners, verifying their accuracy and cryptographic soundness. Additionally, they are tasked with distributing input
+data, balancing workloads across miners, and scoring their performance based on specific metrics, such as computation
+efficiency and proof size.
+
+For an in-depth look into these roles and their workflows, refer to the [architecture](docs/arc42) file.
 
 #### Incentive and Reward System
 

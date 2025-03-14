@@ -5,6 +5,8 @@ import json
 import torch
 import enum
 
+from src.utils.model_utils import ModelUtils
+
 
 class ModelSlicer:
     """
@@ -22,7 +24,7 @@ class ModelSlicer:
     :type model_utils: Optional
     """
 
-    def __init__(self, model_utils=None):
+    def __init__(self, model_utils:ModelUtils=None):
         """
         Initialize ModelSlicer
 
@@ -48,16 +50,14 @@ class ModelSlicer:
             if successful.
         :rtype: Optional[Dict]
         """
-        from src.utils.model_utils import ModelUtils
-
-        # Create ModelUtils instance if not provided
         if self.model_utils is None:
             self.model_utils = ModelUtils(model_path)
             if not self.model_utils.load_model():
                 return {'success': False, 'error': f"Failed to load model from {model_path}"}
         return None
 
-    def _prepare_output_directory(self, model_path: str, output_dir: Optional[str] = None) -> str:
+    @staticmethod
+    def _prepare_output_directory(model_path: str, output_dir: Optional[str] = None) -> str:
         """
         Prepares and returns the output directory where files will be stored. If the output directory
         is not specified, it creates a directory within the path of the model file with a suffix
@@ -174,7 +174,8 @@ class ModelSlicer:
 
         return segment_info
 
-    def _add_feature_information(self, segment_info: Dict, segment: Dict):
+    @staticmethod
+    def _add_feature_information(segment_info: Dict, segment: Dict):
         """
         Adds feature information to the given ``segment_info`` dictionary based on the provided ``segment`` details.
         The function processes the type and layer information of the segment and updates ``segment_info`` with
@@ -218,7 +219,8 @@ class ModelSlicer:
             if 'activation' in last_layer:
                 segment_info['activation'] = last_layer['activation']
 
-    def _create_and_save_metadata(self, model_path: str, output_dir: str, analysis: Dict,
+    @staticmethod
+    def _create_and_save_metadata(model_path: str, output_dir: str, analysis: Dict,
                                   strategy: str, saved_segments: List[Dict], slice_points: List[int]) -> str:
         """
         Generates metadata for a trained model, including its attributes, segmentation
@@ -335,9 +337,10 @@ class ModelSlicer:
             'metadata_path': metadata_path
         }
 
-    def _determine_segment_type(self, layers: List[Dict]) -> str:
+    @staticmethod
+    def _determine_segment_type(layers: List[Dict]) -> str:
         """
-        Determines the segment type of a given list of layers based on their frequencies
+        Determines the segment type of given list of layers based on their frequencies
         and maps them to standardized output names.
 
         The function calculates the frequency of each layer type, removes the 'unknown' type if at
@@ -378,7 +381,8 @@ class ModelSlicer:
         most_common_type = max(type_counts.items(), key=lambda x: x[1])[0]
         return type_mapping.get(most_common_type, most_common_type)
 
-    def _extract_segment_state_dict(self, full_state_dict: Dict, layers: List[Dict]) -> Dict:
+    @staticmethod
+    def _extract_segment_state_dict(full_state_dict: Dict, layers: List[Dict]) -> Dict:
         """
         Extracts a subset of a state dictionary based on specified layers. This function iterates through
         the given ``full_state_dict`` and filters out keys associated with the layers provided in the
@@ -476,11 +480,12 @@ class ModelSlicer:
 
         return activations
 
-    def _extract_activation_functions(self, model) -> Dict[str, str]:
+    @staticmethod
+    def _extract_activation_functions(model) -> Dict[str, str]:
         """
         Extracts and identifies activation functions present within a given PyTorch model.
 
-        The function iterates through all the named sub-modules of the model and checks each module
+        The function iterates through all the named submodules of the model and checks each module
         against a set of known activation function classes provided by PyTorch's `torch.nn` module.
         It collects and records these activation functions along with their corresponding hierarchical
         names within the model.
@@ -544,7 +549,8 @@ class ModelSlicer:
 
         return activations
 
-    def _infer_activations_from_layers(self, layers: List[Dict]) -> Dict[str, str]:
+    @staticmethod
+    def _infer_activations_from_layers(layers: List[Dict]) -> Dict[str, str]:
         """
         Infers and maps activation functions based on the naming patterns and types of layers
         provided. The function identifies common activation functions by checking specific

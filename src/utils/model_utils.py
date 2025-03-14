@@ -46,10 +46,6 @@ class ModelUtils:
 
         :ivar model_path: The path to the model file or directory provided during
             initialization.
-        :ivar state_dict: Stores the state dictionary of the model. Typically
-            used to save or load model checkpoints. Initialized as None.
-        :ivar model_type: Denotes the type of the model, such as a specific
-            architecture or framework. Initialized as None.
         """
         self.model_path = model_path
         self.state_dict = None

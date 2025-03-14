@@ -1,0 +1,65 @@
+{
+  "model_type": "test",
+  "layers": {
+    "input": {
+      "size": 5,
+      "type": "input"
+    },
+    "layer1": {
+      "size": 10,
+      "activation": "ReLU"
+    },
+    "layer2": {
+      "size": 20,
+      "activation": "Tanh"
+    },
+    "layer3": {
+      "size": 15,
+      "activation": "Sigmoid"
+    },
+    "layer4": {
+      "size": 25,
+      "activation": "LeakyReLU"
+    },
+    "layer5": {
+      "size": 30,
+      "activation": "ELU"
+    },
+    "layer6": {
+      "size": 18,
+      "activation": "PReLU"
+    },
+    "layer7": {
+      "size": 12,
+      "activation": "ReLU"
+    },
+    "layer8": {
+      "size": 22,
+      "activation": "Tanh"
+    },
+    "layer9": {
+      "size": 16,
+      "activation": "Softplus"
+    },
+    "layer10": {
+      "size": 14,
+      "activation": "Softsign"
+    },
+    "layer11": {
+      "size": 28,
+      "activation": "ReLU"
+    },
+    "layer12": {
+      "size": 32,
+      "activation": "Tanh"
+    },
+    "layer13": {
+      "size": 19,
+      "activation": "ReLU"
+    },
+    "layer14": {
+      "size": 2,
+      "activation": "Softmax"
+    }
+  }
+}

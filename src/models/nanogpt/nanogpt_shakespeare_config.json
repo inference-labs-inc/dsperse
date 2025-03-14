@@ -1,0 +1,1 @@
+{"n_tokens": 65, "ctx_len": 512, "n_blocks": 8, "n_heads": 10, "head_sz": 64, "emb_dim": 512, "ff_dim": 4}

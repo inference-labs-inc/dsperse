@@ -102,7 +102,7 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Allows miners to set their preferred circuit size and compute allocation.
 
 
-  ![Vertical Layers Circuitization](images/vertical_layers.jpg)  
+  ![Vertical Layers Circuitization](images/vertical_layers.png)  
   *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
   independently for distributed proof computation.*
 ---
@@ -176,15 +176,8 @@ This document outlines the high-level architecture for the "kubz" project—a ne
 
 ## 10. Quality Requirements
 
-- **Non-Functional Requirements:**
-  - **Scalability:** Ability to distribute proof computation across multiple nodes.
-  - **Performance:** Minimize proof time by optimizing circuit size and resource allocation.
-  - **Resource Efficiency:** Optimize RAM usage by leveraging caching and configurable circuit sizes.
-  - **Security:** Maintain proof soundness through adjustable zk iteration counts and statistical parameters.
-
 - **Metrics and Targets:**  
-  - We will use our incentive mechanism to reward the fastest miners, and the miners will need to optimize for speed of
-  proof generation and inference.
+  We will use our incentive mechanism to reward the fastest miners, and the miners will need to optimize for speed of proof generation and inference.
 
 ---
 

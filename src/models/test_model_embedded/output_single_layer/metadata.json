@@ -1,0 +1,443 @@
+{
+  "original_model": "models/test_model_embedded/test_model_embedded.pth",
+  "model_type": "ModelType.FCNN",
+  "total_parameters": 5205,
+  "slicing_strategy": "single_layer",
+  "segments": [
+    {
+      "index": 0,
+      "type": "fc",
+      "filename": "fc_0.pt",
+      "path": "models/test_model_embedded/output/fc_0.pt",
+      "layer_count": 1,
+      "parameters": 50,
+      "layers": [
+        {
+          "name": "layer1",
+          "parameters": {
+            "weight": {
+              "shape": [
+                10,
+                5
+              ],
+              "size": 50
+            }
+          },
+          "shape": [
+            10,
+            5
+          ],
+          "type": "linear",
+          "size": 50,
+          "in_features": 5,
+          "out_features": 10
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "type": "fc",
+      "filename": "fc_1.pt",
+      "path": "models/test_model_embedded/output/fc_1.pt",
+      "layer_count": 1,
+      "parameters": 200,
+      "layers": [
+        {
+          "name": "layer2",
+          "parameters": {
+            "weight": {
+              "shape": [
+                20,
+                10
+              ],
+              "size": 200
+            }
+          },
+          "shape": [
+            20,
+            10
+          ],
+          "type": "linear",
+          "size": 200,
+          "in_features": 10,
+          "out_features": 20
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "type": "fc",
+      "filename": "fc_2.pt",
+      "path": "models/test_model_embedded/output/fc_2.pt",
+      "layer_count": 1,
+      "parameters": 300,
+      "layers": [
+        {
+          "name": "layer3",
+          "parameters": {
+            "weight": {
+              "shape": [
+                15,
+                20
+              ],
+              "size": 300
+            }
+          },
+          "shape": [
+            15,
+            20
+          ],
+          "type": "linear",
+          "size": 300,
+          "in_features": 20,
+          "out_features": 15
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "type": "fc",
+      "filename": "fc_3.pt",
+      "path": "models/test_model_embedded/output/fc_3.pt",
+      "layer_count": 1,
+      "parameters": 375,
+      "layers": [
+        {
+          "name": "layer4",
+          "parameters": {
+            "weight": {
+              "shape": [
+                25,
+                15
+              ],
+              "size": 375
+            }
+          },
+          "shape": [
+            25,
+            15
+          ],
+          "type": "linear",
+          "size": 375,
+          "in_features": 15,
+          "out_features": 25
+        }
+      ]
+    },
+    {
+      "index": 4,
+      "type": "fc",
+      "filename": "fc_4.pt",
+      "path": "models/test_model_embedded/output/fc_4.pt",
+      "layer_count": 1,
+      "parameters": 750,
+      "layers": [
+        {
+          "name": "layer5",
+          "parameters": {
+            "weight": {
+              "shape": [
+                30,
+                25
+              ],
+              "size": 750
+            }
+          },
+          "shape": [
+            30,
+            25
+          ],
+          "type": "linear",
+          "size": 750,
+          "in_features": 25,
+          "out_features": 30
+        }
+      ]
+    },
+    {
+      "index": 5,
+      "type": "fc",
+      "filename": "fc_5.pt",
+      "path": "models/test_model_embedded/output/fc_5.pt",
+      "layer_count": 1,
+      "parameters": 540,
+      "layers": [
+        {
+          "name": "layer6",
+          "parameters": {
+            "weight": {
+              "shape": [
+                18,
+                30
+              ],
+              "size": 540
+            }
+          },
+          "shape": [
+            18,
+            30
+          ],
+          "type": "linear",
+          "size": 540,
+          "in_features": 30,
+          "out_features": 18
+        }
+      ]
+    },
+    {
+      "index": 6,
+      "type": "fc",
+      "filename": "fc_6.pt",
+      "path": "models/test_model_embedded/output/fc_6.pt",
+      "layer_count": 1,
+      "parameters": 216,
+      "layers": [
+        {
+          "name": "layer7",
+          "parameters": {
+            "weight": {
+              "shape": [
+                12,
+                18
+              ],
+              "size": 216
+            }
+          },
+          "shape": [
+            12,
+            18
+          ],
+          "type": "linear",
+          "size": 216,
+          "in_features": 18,
+          "out_features": 12
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "type": "fc",
+      "filename": "fc_7.pt",
+      "path": "models/test_model_embedded/output/fc_7.pt",
+      "layer_count": 1,
+      "parameters": 264,
+      "layers": [
+        {
+          "name": "layer8",
+          "parameters": {
+            "weight": {
+              "shape": [
+                22,
+                12
+              ],
+              "size": 264
+            }
+          },
+          "shape": [
+            22,
+            12
+          ],
+          "type": "linear",
+          "size": 264,
+          "in_features": 12,
+          "out_features": 22
+        }
+      ]
+    },
+    {
+      "index": 8,
+      "type": "fc",
+      "filename": "fc_8.pt",
+      "path": "models/test_model_embedded/output/fc_8.pt",
+      "layer_count": 1,
+      "parameters": 352,
+      "layers": [
+        {
+          "name": "layer9",
+          "parameters": {
+            "weight": {
+              "shape": [
+                16,
+                22
+              ],
+              "size": 352
+            }
+          },
+          "shape": [
+            16,
+            22
+          ],
+          "type": "linear",
+          "size": 352,
+          "in_features": 22,
+          "out_features": 16
+        }
+      ]
+    },
+    {
+      "index": 9,
+      "type": "fc",
+      "filename": "fc_9.pt",
+      "path": "models/test_model_embedded/output/fc_9.pt",
+      "layer_count": 1,
+      "parameters": 224,
+      "layers": [
+        {
+          "name": "layer10",
+          "parameters": {
+            "weight": {
+              "shape": [
+                14,
+                16
+              ],
+              "size": 224
+            }
+          },
+          "shape": [
+            14,
+            16
+          ],
+          "type": "linear",
+          "size": 224,
+          "in_features": 16,
+          "out_features": 14
+        }
+      ]
+    },
+    {
+      "index": 10,
+      "type": "fc",
+      "filename": "fc_10.pt",
+      "path": "models/test_model_embedded/output/fc_10.pt",
+      "layer_count": 1,
+      "parameters": 392,
+      "layers": [
+        {
+          "name": "layer11",
+          "parameters": {
+            "weight": {
+              "shape": [
+                28,
+                14
+              ],
+              "size": 392
+            }
+          },
+          "shape": [
+            28,
+            14
+          ],
+          "type": "linear",
+          "size": 392,
+          "in_features": 14,
+          "out_features": 28
+        }
+      ]
+    },
+    {
+      "index": 11,
+      "type": "fc",
+      "filename": "fc_11.pt",
+      "path": "models/test_model_embedded/output/fc_11.pt",
+      "layer_count": 1,
+      "parameters": 896,
+      "layers": [
+        {
+          "name": "layer12",
+          "parameters": {
+            "weight": {
+              "shape": [
+                32,
+                28
+              ],
+              "size": 896
+            }
+          },
+          "shape": [
+            32,
+            28
+          ],
+          "type": "linear",
+          "size": 896,
+          "in_features": 28,
+          "out_features": 32
+        }
+      ]
+    },
+    {
+      "index": 12,
+      "type": "fc",
+      "filename": "fc_12.pt",
+      "path": "models/test_model_embedded/output/fc_12.pt",
+      "layer_count": 1,
+      "parameters": 608,
+      "layers": [
+        {
+          "name": "layer13",
+          "parameters": {
+            "weight": {
+              "shape": [
+                19,
+                32
+              ],
+              "size": 608
+            }
+          },
+          "shape": [
+            19,
+            32
+          ],
+          "type": "linear",
+          "size": 608,
+          "in_features": 32,
+          "out_features": 19
+        }
+      ]
+    },
+    {
+      "index": 13,
+      "type": "fc",
+      "filename": "fc_13.pt",
+      "path": "models/test_model_embedded/output/fc_13.pt",
+      "layer_count": 1,
+      "parameters": 38,
+      "layers": [
+        {
+          "name": "layer14",
+          "parameters": {
+            "weight": {
+              "shape": [
+                2,
+                19
+              ],
+              "size": 38
+            }
+          },
+          "shape": [
+            2,
+            19
+          ],
+          "type": "linear",
+          "size": 38,
+          "in_features": 19,
+          "out_features": 2
+        }
+      ]
+    }
+  ],
+  "slice_points": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12
+  ]
+}

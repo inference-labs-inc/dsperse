@@ -1,0 +1,361 @@
+{
+  "original_model": "models/test_cnn_model_with_biases/test_cnn_model.pth",
+  "model_type": "ModelType.HYBRID",
+  "total_parameters": 1312042,
+  "slicing_strategy": "layer_type",
+  "segments": [
+    {
+      "index": 0,
+      "type": "conv",
+      "filename": "conv_0.pt",
+      "path": "models/test_cnn_model_with_biases/output/conv_0.pt",
+      "layer_count": 1,
+      "parameters": 448,
+      "layers": [
+        {
+          "name": "conv1",
+          "parameters": {
+            "weight": {
+              "shape": [
+                16,
+                3,
+                3,
+                3
+              ],
+              "size": 432
+            },
+            "bias": {
+              "shape": [
+                16
+              ],
+              "size": 16
+            }
+          },
+          "shape": [
+            16,
+            3,
+            3,
+            3
+          ],
+          "type": "conv",
+          "size": 448,
+          "in_channels": 3,
+          "out_channels": 16,
+          "kernel_size": [
+            3,
+            3
+          ],
+          "activation": "ReLU"
+        }
+      ],
+      "in_features": 3,
+      "out_features": 16,
+      "activation": "ReLU"
+    },
+    {
+      "index": 1,
+      "type": "conv",
+      "filename": "conv_1.pt",
+      "path": "models/test_cnn_model_with_biases/output/conv_1.pt",
+      "layer_count": 1,
+      "parameters": 4640,
+      "layers": [
+        {
+          "name": "conv3",
+          "parameters": {
+            "weight": {
+              "shape": [
+                32,
+                16,
+                3,
+                3
+              ],
+              "size": 4608
+            },
+            "bias": {
+              "shape": [
+                32
+              ],
+              "size": 32
+            }
+          },
+          "shape": [
+            32,
+            16,
+            3,
+            3
+          ],
+          "type": "conv",
+          "size": 4640,
+          "in_channels": 16,
+          "out_channels": 32,
+          "kernel_size": [
+            3,
+            3
+          ],
+          "activation": "ReLU"
+        }
+      ],
+      "in_features": 16,
+      "out_features": 32,
+      "activation": "ReLU"
+    },
+    {
+      "index": 2,
+      "type": "conv",
+      "filename": "conv_2.pt",
+      "path": "models/test_cnn_model_with_biases/output/conv_2.pt",
+      "layer_count": 1,
+      "parameters": 18496,
+      "layers": [
+        {
+          "name": "conv5",
+          "parameters": {
+            "weight": {
+              "shape": [
+                64,
+                32,
+                3,
+                3
+              ],
+              "size": 18432
+            },
+            "bias": {
+              "shape": [
+                64
+              ],
+              "size": 64
+            }
+          },
+          "shape": [
+            64,
+            32,
+            3,
+            3
+          ],
+          "type": "conv",
+          "size": 18496,
+          "in_channels": 32,
+          "out_channels": 64,
+          "kernel_size": [
+            3,
+            3
+          ],
+          "activation": "ReLU"
+        }
+      ],
+      "in_features": 32,
+      "out_features": 64,
+      "activation": "ReLU"
+    },
+    {
+      "index": 3,
+      "type": "conv",
+      "filename": "conv_3.pt",
+      "path": "models/test_cnn_model_with_biases/output/conv_3.pt",
+      "layer_count": 1,
+      "parameters": 73856,
+      "layers": [
+        {
+          "name": "conv7",
+          "parameters": {
+            "weight": {
+              "shape": [
+                128,
+                64,
+                3,
+                3
+              ],
+              "size": 73728
+            },
+            "bias": {
+              "shape": [
+                128
+              ],
+              "size": 128
+            }
+          },
+          "shape": [
+            128,
+            64,
+            3,
+            3
+          ],
+          "type": "conv",
+          "size": 73856,
+          "in_channels": 64,
+          "out_channels": 128,
+          "kernel_size": [
+            3,
+            3
+          ],
+          "activation": "ReLU"
+        }
+      ],
+      "in_features": 64,
+      "out_features": 128,
+      "activation": "ReLU"
+    },
+    {
+      "index": 4,
+      "type": "fc",
+      "filename": "fc_4.pt",
+      "path": "models/test_cnn_model_with_biases/output/fc_4.pt",
+      "layer_count": 1,
+      "parameters": 1049088,
+      "layers": [
+        {
+          "name": "fc8",
+          "parameters": {
+            "weight": {
+              "shape": [
+                512,
+                2048
+              ],
+              "size": 1048576
+            },
+            "bias": {
+              "shape": [
+                512
+              ],
+              "size": 512
+            }
+          },
+          "shape": [
+            512,
+            2048
+          ],
+          "type": "linear",
+          "size": 1049088,
+          "in_features": 2048,
+          "out_features": 512,
+          "activation": "ReLU"
+        }
+      ],
+      "activation": "ReLU"
+    },
+    {
+      "index": 5,
+      "type": "fc",
+      "filename": "fc_5.pt",
+      "path": "models/test_cnn_model_with_biases/output/fc_5.pt",
+      "layer_count": 1,
+      "parameters": 131328,
+      "layers": [
+        {
+          "name": "fc9",
+          "parameters": {
+            "weight": {
+              "shape": [
+                256,
+                512
+              ],
+              "size": 131072
+            },
+            "bias": {
+              "shape": [
+                256
+              ],
+              "size": 256
+            }
+          },
+          "shape": [
+            256,
+            512
+          ],
+          "type": "linear",
+          "size": 131328,
+          "in_features": 512,
+          "out_features": 256,
+          "activation": "ReLU"
+        }
+      ],
+      "activation": "ReLU"
+    },
+    {
+      "index": 6,
+      "type": "fc",
+      "filename": "fc_6.pt",
+      "path": "models/test_cnn_model_with_biases/output/fc_6.pt",
+      "layer_count": 1,
+      "parameters": 32896,
+      "layers": [
+        {
+          "name": "fc10",
+          "parameters": {
+            "weight": {
+              "shape": [
+                128,
+                256
+              ],
+              "size": 32768
+            },
+            "bias": {
+              "shape": [
+                128
+              ],
+              "size": 128
+            }
+          },
+          "shape": [
+            128,
+            256
+          ],
+          "type": "linear",
+          "size": 32896,
+          "in_features": 256,
+          "out_features": 128,
+          "activation": "ReLU"
+        }
+      ],
+      "activation": "ReLU"
+    },
+    {
+      "index": 7,
+      "type": "fc",
+      "filename": "fc_7.pt",
+      "path": "models/test_cnn_model_with_biases/output/fc_7.pt",
+      "layer_count": 1,
+      "parameters": 1290,
+      "layers": [
+        {
+          "name": "fc11",
+          "parameters": {
+            "weight": {
+              "shape": [
+                10,
+                128
+              ],
+              "size": 1280
+            },
+            "bias": {
+              "shape": [
+                10
+              ],
+              "size": 10
+            }
+          },
+          "shape": [
+            10,
+            128
+          ],
+          "type": "linear",
+          "size": 1290,
+          "in_features": 128,
+          "out_features": 10,
+          "activation": "Softmax"
+        }
+      ],
+      "activation": "Softmax"
+    }
+  ],
+  "slice_points": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "model_type": "test",
+  "layers": {
+    "input": {
+      "size": 5,
+      "type": "input"
+    },
+    "layer1": {
+      "size": 10,
+      "activation": "ReLU",
+      "in_features": 5,
+      "out_features": 10
+    },
+    "layer2": {
+      "size": 20,
+      "activation": "Tanh",
+      "in_features": 10,
+      "out_features": 20
+    },
+    "layer3": {
+      "size": 15,
+      "activation": "Sigmoid",
+      "in_features": 20,
+      "out_features": 15
+    },
+    "layer4": {
+      "size": 25,
+      "activation": "LeakyReLU",
+      "in_features": 15,
+      "out_features": 25
+    },
+    "layer5": {
+      "size": 30,
+      "activation": "ELU",
+      "in_features": 25,
+      "out_features": 30
+    },
+    "layer6": {
+      "size": 18,
+      "activation": "PReLU",
+      "in_features": 30,
+      "out_features": 18
+    },
+    "layer7": {
+      "size": 12,
+      "activation": "ReLU",
+      "in_features": 18,
+      "out_features": 12
+    },
+    "layer8": {
+      "size": 22,
+      "activation": "Tanh",
+      "in_features": 12,
+      "out_features": 22
+    },
+    "layer9": {
+      "size": 16,
+      "activation": "Softplus",
+      "in_features": 22,
+      "out_features": 16
+    },
+    "layer10": {
+      "size": 14,
+      "activation": "Softsign",
+      "in_features": 16,
+      "out_features": 14
+    },
+    "layer11": {
+      "size": 28,
+      "activation": "ReLU",
+      "in_features": 14,
+      "out_features": 28
+    },
+    "layer12": {
+      "size": 32,
+      "activation": "Tanh",
+      "in_features": 28,
+      "out_features": 32
+    },
+    "layer13": {
+      "size": 19,
+      "activation": "ReLU",
+      "in_features": 32,
+      "out_features": 19
+    },
+    "layer14": {
+      "size": 2,
+      "activation": "Softmax",
+      "in_features": 19,
+      "out_features": 2
+    }
+  }
+}

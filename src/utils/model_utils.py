@@ -1,11 +1,9 @@
 import enum
-
-import numpy as np
 import os
 import re
+from typing import Dict, List
+
 import torch
-from enum import Enum
-from typing import Dict, List, Optional, Tuple, Any, Union
 
 
 class ModelType(enum.Enum):
@@ -19,14 +17,39 @@ class ModelType(enum.Enum):
 
 
 class ModelUtils:
-    """Utility class for model analysis and inspection"""
+    """
+    ModelUtils class is a utility for managing and analyzing neural network model files.
+
+    The class provides functionalities for loading model state dictionaries, analyzing
+    their architecture, and identifying key characteristics such as the type of network,
+    layer structures, and parameter details. It primarily operates on PyTorch model files.
+
+    :ivar model_path: Path to the model file (e.g., .pth or .pt).
+    :type model_path: Optional[str]
+    :ivar state_dict: Loaded state dictionary from the model file.
+    :type state_dict: Optional[dict]
+    :ivar model_type: Detected type of the model (e.g., CNN, Transformer).
+    :type model_type: Optional[ModelType]
+    """
 
     def __init__(self, model_path=None):
         """
-        Initialize ModelUtils with a path to a model file
+        Class representing a model with support for managing its path, state, and type.
 
-        Args:
-            model_path: Path to the model file (.pth, .pt, etc.)
+        The class allows defining an optional model path during initialization. It
+        maintains additional attributes to store the state dictionary and type of
+        the model.
+
+        :param model_path: Path to the model file or directory. Can be None if a
+            path is not provided or needed.
+        :type model_path: str or None
+
+        :ivar model_path: The path to the model file or directory provided during
+            initialization.
+        :ivar state_dict: Stores the state dictionary of the model. Typically
+            used to save or load model checkpoints. Initialized as None.
+        :ivar model_type: Denotes the type of the model, such as a specific
+            architecture or framework. Initialized as None.
         """
         self.model_path = model_path
         self.state_dict = None
@@ -34,10 +57,18 @@ class ModelUtils:
 
     def load_model(self) -> bool:
         """
-        Load the model state dictionary from the provided path
+        Loads a machine learning model from the specified file path using PyTorch,
+        validates its existence, and manages different expected formats of state
+        dictionaries. This method is essential for initializing and preparing the
+        model for inference or further training.
 
-        Returns:
-            bool: True if successful, False otherwise
+        :raises ValueError: If the specified model path is invalid or does not exist.
+        :raises RuntimeError: If the model cannot be loaded due to other
+            unexpected issues during the loading process.
+
+        :return: True if the model is successfully loaded and processed,
+            otherwise False.
+        :rtype: bool
         """
         if not self.model_path or not os.path.exists(self.model_path):
             print(f"Error: Invalid model path {self.model_path}")
@@ -73,14 +104,25 @@ class ModelUtils:
 
     def analyze_model(self, verbose=True, output_file=None) -> Dict:
         """
-        Analyze model architecture and extract key information for slicing
+        Analyzes the state and structure of a loaded model. This method performs
+        several critical tasks including detection of the model type, extraction
+        of layer structure, and identification of significant model
+        characteristics such as the total number of parameters and groupings
+        of layers. Additionally, the results of the analysis can be optionally
+        printed to the console or written to an output file.
 
-        Args:
-            verbose: Whether to print analysis results
-            output_file: Optional file path to write verbose output
-
-        Returns:
-            Dict containing model analysis results
+        :param verbose: Whether detailed analysis results should be printed
+            to the console. Defaults to True.
+        :type verbose: bool
+        :param output_file: Optional path to a file where the analysis results
+            should be saved. If None, the results are not written to a file.
+        :type output_file: str or None
+        :return: A dictionary containing the results of the model analysis,
+            including information on the model's type, its layer structure,
+            key characteristics such as total parameters, and identified
+            layer groups. If the model fails to load, an error message is
+            returned instead.
+        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -109,10 +151,29 @@ class ModelUtils:
 
     def _detect_model_type(self) -> ModelType:
         """
-        Detect the type of neural network architecture
+        Determines the model type based on the structure and keys of the `state_dict`.
 
-        Returns:
-            ModelType enum value
+        This method inspects the `state_dict` attribute of the containing object
+        and identifies the type of model based on the presence of specific patterns in the keys.
+        The function assumes the model to be one among `TRANSFORMER`, `CNN`, `FCNN`,
+        `HYBRID`, `SEQUENTIAL`, or `UNKNOWN`. Detection prioritizes transformers,
+        followed by hybrids, CNNs, FCNNs, or sequential models.
+
+        Model type definitions:
+          - `TRANSFORMER`: Indicates the presence of keys suggesting transformer-like architecture.
+          - `CNN`: Indicates convolutional neural network patterns in the structure.
+          - `FCNN`: Suggests a fully connected network (linear).
+          - `HYBRID`: Combination of transformers or CNN with other structures.
+          - `SEQUENTIAL`: Models with a clearly sequential pattern in their layers.
+          - `UNKNOWN`: Could not classify the model reliably into any of the above categories.
+
+        Warning messages are printed if `state_dict` is neither a dictionary nor `None`.
+
+        :raises TypeError: If `state_dict` is neither None nor a dictionary.
+        :raises AttributeError: If `state_dict` is not defined in the object context.
+
+        :return: A value from the ModelType enumeration indicating the architecture type.
+        :rtype: ModelType
         """
         if self.state_dict is None:
             return ModelType.UNKNOWN
@@ -169,13 +230,18 @@ class ModelUtils:
 
     def _has_cnn_layers(self, keys) -> bool:
         """
-        Check if the model has convolutional layers
+        Determines whether a set of keys belongs to convolutional neural network (CNN)
+        layers. The method identifies CNN layers based on key naming patterns or by
+        detecting specific properties of their weight tensors. It uses common CNN
+        naming conventions and checks for 4D weight tensor shapes, a typical
+        characteristic of convolutional layers.
 
-        Args:
-            keys: List of state dict keys
-
-        Returns:
-            bool: True if CNN layers are detected
+        :param keys: A list of keys representing the layer names or identifiers to
+            be checked.
+        :type keys: list[str]
+        :return: A boolean value indicating whether any of the provided keys belongs
+            to a CNN layer.
+        :rtype: bool
         """
         # Check for common CNN naming patterns
         if any(pattern in key for key in keys
@@ -193,10 +259,20 @@ class ModelUtils:
 
     def _extract_layers(self) -> List[Dict]:
         """
-        Extract layer information from state dict
+        Extracts and organizes layer information from the state dictionary of a model. This
+        method processes a model's state dictionary to identify and group parameters by their
+        corresponding layers. Each layer is characterized by its name, type (e.g., convolutional,
+        fully connected, normalization, etc.), shape, and associated parameters, such as weights
+        and biases. Additionally, for convolutional and fully connected layers, detailed
+        metadata such as kernel size, in/out channels, and features are extracted.
 
-        Returns:
-            List of dicts with layer details
+        The extracted layer information is returned as a sorted list of dictionaries, where
+        each dictionary represents a layer with its details. Sorting aims to maintain a logical
+        order in the layer sequence, which is useful for model inspection and debugging.
+
+        :return: A list of dictionaries, where each dictionary contains organized information
+                 about a model's layer, including its name, type, parameters, and sizes.
+        :rtype: List[Dict]
         """
         if self.state_dict is None or not isinstance(self.state_dict, dict):
             print("Warning: Cannot extract layers - state dict is None or not a dictionary")
@@ -274,13 +350,15 @@ class ModelUtils:
 
     def _sort_layers(self, layers: List[Dict]) -> List[Dict]:
         """
-        Sort layers in a likely execution order
+        Sorts a list of layer dictionaries based on numerical prefixes extracted from their names. Layer names are grouped
+        by common prefixes, sorted by number, followed by suffix within each group. Groups are then flattened in the order
+        of their prefixes.
 
-        Args:
-            layers: List of layer dictionaries
-
-        Returns:
-            Sorted list of layer dictionaries
+        :param layers: A list of dictionaries where each dictionary represents a layer. Each layer dictionary must contain
+                       a 'name' key, which is a string used to determine its sorting order.
+        :type layers: List[Dict]
+        :return: A list of dictionaries representing the layers sorted first by numerical prefix, then by any suffix.
+        :rtype: List[Dict]
         """
 
         # First try grouping by numerical prefixes
@@ -309,10 +387,16 @@ class ModelUtils:
 
     def _count_parameters(self) -> int:
         """
-        Count total number of parameters in the model
+        Counts the total number of parameters in the state dictionary.
 
-        Returns:
-            Total parameter count
+        The method computes the sum of elements for tensors stored in the
+        state dictionary. If the state dictionary is not set or if it is not a
+        valid dictionary, the method returns 0.
+
+        :param self: The object instance containing the state dictionary.
+        :return: The total count of parameters in the state dictionary, or 0
+            if the state dictionary is None or invalid.
+        :rtype: int
         """
         if self.state_dict is None or not isinstance(self.state_dict, dict):
             return 0
@@ -322,13 +406,23 @@ class ModelUtils:
 
     def _identify_layer_groups(self, layers: List[Dict]) -> Dict:
         """
-        Group layers by type and identify potential slicing points
+        Groups and classifies layers into predefined categories based on their type, and identifies
+        potential transition points (or slicing points) between different layer types. This helps in
+        structuring neural network models for better organization and analysis.
 
-        Args:
-            layers: List of layer dictionaries
-
-        Returns:
-            Dictionary of layer groups and potential slicing points
+        :param layers: A list of dictionaries where each dictionary represents a layer in the network.
+            Each dictionary is expected to have at least the following keys:
+                - 'type': A string indicating the type of the layer.
+                - 'name': A string representing the name of the layer.
+        :return: A dictionary with the following structure:
+            - 'groups': A dictionary categorizing layer names by their types. The supported types are:
+                'conv', 'linear', 'norm', 'embedding', and 'other'. Layers not matching predefined
+                types default to the 'other' category.
+            - 'potential_slicing_points': A list of dictionaries that mark transition points between
+                layers of different types. Each dictionary contains:
+                    - 'after': The type of the preceding layer.
+                    - 'before': The type of the succeeding layer.
+                    - 'layer_name': The name of the layer where the transition occurs.
         """
         groups = {
             'conv': [],
@@ -368,11 +462,18 @@ class ModelUtils:
 
     def _print_analysis(self, analysis: Dict, output_file=None):
         """
-        Print analysis results to console or file
+        Prints a detailed analysis of a model's architecture, including parameter counts, layer type
+        distribution, and individual layer details. The analysis can be either printed to the console
+        or written to a specified output file.
 
-        Args:
-            analysis: Model analysis dictionary
-            output_file: Optional file path for output
+        :param analysis: A dictionary containing details about the model analysis. The dictionary must
+            include keys like 'model_type', 'total_parameters', 'layers', and 'layer_groups', among others.
+            The 'model_type' key should contain an enum value representing the type of model, and
+            'layer_groups' must contain layer type distribution along with potential slicing points.
+        :param output_file: The path to an optional file where the analysis will be written. If not
+            provided, the analysis will be printed to the console.
+
+        :return: None.
         """
         output = []  # Collect output lines
 
@@ -444,13 +545,21 @@ class ModelUtils:
 
     def get_layer_at_index(self, index: int) -> Dict:
         """
-        Get information about a specific layer by index
+        Retrieves a specific layer from the list of extracted layers using its index.
 
-        Args:
-            index: Index of the layer to retrieve
+        Detailed Description:
+        This method accesses the model's layers by extracting them if they are available
+        within the state dictionary. It checks if the provided index is within the valid
+        range of the available layers. If the index is valid, it returns the corresponding
+        layer as a dictionary. If the index is invalid or the model fails to load, it
+        returns an empty dictionary.
 
-        Returns:
-            Dictionary with layer information or empty dict if index is invalid
+        :param index: The position in the layers' list to retrieve.
+        :type index: int
+        :return: A dictionary representing the layer at the specified index, or an
+                 empty dictionary if the index is out of range or the model cannot be
+                 loaded.
+        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -463,13 +572,18 @@ class ModelUtils:
 
     def get_layer_by_name(self, name: str) -> Dict:
         """
-        Get information about a specific layer by name
+        Retrieve a specific layer by name from the model's layers.
 
-        Args:
-            name: Name of the layer to retrieve
+        The method searches for a layer with the specified name within the extracted
+        layers of the model. If the state dictionary is not already loaded, it attempts
+        to load the model first. If loading fails or no layer matches the given name, an
+        empty dictionary is returned.
 
-        Returns:
-            Dictionary with layer information or empty dict if name is not found
+        :param name: Name of the layer to search for in the model's layers.
+        :type name: str
+        :return: A dictionary representation of the layer with the specified name, or an
+            empty dictionary if not found.
+        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -483,13 +597,34 @@ class ModelUtils:
 
     def verify_slice_integrity(self, slice_points: List[int]) -> Dict:
         """
-        Verify the integrity of proposed model slices
+        Verifies the integrity of the provided slice points against the model
+        layers and calculates the resulting slices, their statistics, and
+        validity.
 
-        Args:
-            slice_points: List of indices where the model should be sliced
+        The slice points are validated as indices that properly divide the
+        model's layers into logical segments. For each segment, the
+        number of layers, total parameter count, and the count of
+        different layer types are computed.
 
-        Returns:
-            Dictionary with verification results
+        :param slice_points: A list of integers indicating the indices to divide
+            the layers into segments.
+        :return: A dictionary containing verification and segmentation results:
+            - 'valid': A boolean indicating if all slice points are valid.
+            - 'total_layers': Total number of layers in the model.
+            - 'valid_slice_points': List of valid slice points.
+            - 'invalid_slice_points': List of invalid slice points.
+            - 'segment_count': Number of resulting segments based on slice
+              points.
+            - 'segment_stats': List of dictionaries containing detailed
+              statistics for each segment, including:
+                - The segment number (1-indexed).
+                - The start and end layer indices for the segment.
+                - The number of layers in the segment.
+                - The total count of parameters in the segment from all
+                  included layers.
+                - A dictionary describing the count of each layer type in
+                  the segment.
+
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -545,13 +680,20 @@ class ModelUtils:
 
     def estimate_slice_sizes(self, slice_points: List[int]) -> Dict:
         """
-        Estimate the size of each model slice based on proposed slice points
+        Estimates the memory footprint sizes of slices defined by the given slice points.
 
-        Args:
-            slice_points: List of indices where the model should be sliced
+        This method analyzes the points where a large model is split for distributed
+        processing or storage, calculates the memory footprint for each segment in megabytes,
+        and returns detailed statistics along with total segment count. The slices are verified
+        before estimation to ensure integrity of the specified segment points.
 
-        Returns:
-            Dictionary with size estimates for each slice
+        :param slice_points: A list of integers representing the points at which the model
+            is sliced.
+        :type slice_points: List[int]
+        :return: A dictionary containing the total number of segments, memory footprint
+            estimates for each segment in MB, and error details if either the model
+            fails to load or the segments are found to be invalid during verification.
+        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -575,14 +717,32 @@ class ModelUtils:
 
     def get_slice_points(self, strategy: str = "layer_type", max_segments: int = None) -> List[int]:
         """
-        Get recommended model slicing points based on specified strategy
+        Determines slice points for dividing a set of neural network layers into segments
+        based on the specified slicing strategy. This can be used to partition the layers
+        within a model for various purposes such as distributed training, optimization,
+        or analysis. Different strategies offer flexibility in how layers are grouped,
+        including single-layer segmentation, type-based transitions, balanced groups,
+        or hybrid approaches.
 
-        Args:
-            strategy: Slicing strategy ("layer_type", "balanced", or "transitions")
-            max_segments: Optional maximum number of segments to create (caps the number of slice points)
+        :param strategy: The slicing strategy to use for determining slice points.
+            Supported strategies are:
 
-        Returns:
-            List of recommended slice point indices
+            - `"single_layer"`: Slices occur after every individual layer except the last one.
+            - `"layer_type"`: Slices occur after fully connected ('linear') and convolutional ('conv') layers.
+            - `"balanced"`: Divides layers into evenly-sized segments based on `max_segments`.
+            - `"transitions"`: Places slices at transitions between different layer types.
+            - Default (hybrid strategy): Balances slices across fully connected/convolutional
+              layers or evenly distributes slices if `max_segments` applies.
+
+        :param max_segments: The maximum number of segments to partition the layers into.
+            When specified, ensures the slice points do not exceed the allowed number of
+            segments. If omitted, strategies determine the slicing freely.
+
+        :return: A list of sorted and unique integer indices representing the slice points
+            in the set of layers. Each index corresponds to the position after which
+            a slice occurs. Returns an empty list if no valid slicing points are found
+            or the layer set is empty.
+        :rtype: List[int]
         """
         if self.state_dict is None:
             if not self.load_model():

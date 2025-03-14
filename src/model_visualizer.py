@@ -1,16 +1,35 @@
-import os
-import io
 import base64
-from datetime import datetime
-from jinja2 import Environment, FileSystemLoader
+import io
 import json
+from datetime import datetime
+
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+from jinja2 import Environment, FileSystemLoader
 
 
 class ModelVisualizer:
     """
-    A class to visualize neural network models from metadata.json files.
+    Provides functionality to visualize a neural network model based on its architecture and the metadata provided.
+
+    The ModelVisualizer class enables visualization of different types of neural networks,
+    such as convolutional neural networks (CNNs), fully connected neural networks (FCNNs),
+    and hybrid models combining CNN layers and FCNN layers. The visualization is generated
+    using matplotlib and includes support for selective rendering of specific layers or segments
+    of the network. Metadata describing the model's structure is loaded from a JSON file, and the
+    visualization can optionally be saved to a file or returned as a matplotlib.figure object.
+
+    :ivar metadata: The parsed metadata from the given metadata.json file.
+    :type metadata: dict
+    :ivar model_type: The type of the model (e.g., 'CNN', 'FCNN', 'HYBRID').
+    :type model_type: str
+    :ivar segments: List of segments of the model loaded from the metadata file.
+    :type segments: list
+    :ivar fig: The matplotlib figure object for the current visualization.
+    :type fig: matplotlib.figure.Figure or None
+    :ivar ax: The matplotlib axes object for the current visualization.
+    :type ax: matplotlib.axes._axes.Axes or None
     """
 
     def __init__(self, metadata_path):
@@ -110,8 +129,24 @@ class ModelVisualizer:
 
         return output_path if output_path else self.fig
 
-    def _visualize_hybrid_layers(self, selected_layers=None):
-        """Visualize hybrid model architecture with CNN layers and FCNN layers"""
+    def _visualize_hybrid_layers(self, selected_layers: list[dict] | None = None):
+        """
+        Visualizes the hybrid layer structure combining CNN and FCNN components.
+
+        This method produces a detailed 2D visual representation of the layers in a
+        neural network, including both CNN and FCNN components. CNN layers are
+        visualized using fixed dimensions while FCNN layers follow a dynamic strategy
+        based on the number of neurons. Connections between layers and transitions
+        (e.g., Flatten layer, CNN to FCNN transition) are also visualized. Options
+        are provided to customize the visualization based on specific layers or
+        sections to highlight.
+
+        :param selected_layers: A list of dictionaries containing specific layers
+            to visualize or None to visualize the entire network.
+        :type selected_layers: list[dict] | None
+        :return: A matplotlib figure representing the hybrid layer visualization.
+        :rtype: matplotlib.figure.Figure
+        """
         fig, ax = plt.subplots(figsize=(20, 12))
 
         # Visual settings
@@ -382,16 +417,30 @@ class ModelVisualizer:
         self._format_plot_2d(ax, x_pos)
         return fig
 
-    def _visualize_cnn_layers(self, layers):
-        """
-        Visualizes convolutional neural network layers
+    def _visualize_cnn_layers(self, layers: list[dict]) -> matplotlib.figure.Figure:
 
-        Args:
-            layers: List of layers to visualize
-
-        Returns:
-            matplotlib figure object
         """
+            Visualizes the structure of convolutional neural network layers, including
+            convolution, pooling, and flatten layers. The function dynamically arranges
+            and annotates components based on the provided layer configuration for
+            visual clarity.
+
+            The visualization will adapt to the structure, spacing, and styles based on
+            the layers provided in the `layers` parameter. The output is a matplotlib
+            figure detailing the sequence and connectivity of the layers.
+
+            This function is intended for debug and presentation purposes.
+
+            :param layers: A list of dictionaries where each dictionary contains
+                information about a specific layer in the CNN. The dictionary should
+                specify at least the `type` of the layer. Additional details such as
+                `segment_idx` or `segment_activation` can be provided for labeling and
+                additional annotations.
+            :type layers: List[Dict[str, Any]]
+
+            :return: A matplotlib figure object representing the visualized CNN layers.
+            :rtype: matplotlib.figure.Figure
+            """
         # Debug check
         if not layers:
             print("Warning: No layers provided to visualize")
@@ -570,14 +619,34 @@ class ModelVisualizer:
 
     def _visualize_fcnn_layers(self, layers):
         """
-        Visualizes fully connected neural network layers with 0-based indexing,
-        using color-coded weight connections (blue→white→red)
+        Visualizes the Fully Connected Neural Network (FCNN) layer structure, including neuron
+        nodes and inter-layer connections. This visualization provides an overview of the
+        network architecture, connection relationships, and possibly the weight distribution
+        (if weights are provided).
 
-        Args:
-            layers: List of layers to visualize
+        The function is capable of handling layers with missing specifications (e.g.,
+        `in_features` or `out_features`) by adopting default settings or fallbacks. For
+        layers with large numbers of neurons, scaling and ellipsis are applied to keep the
+        visualization interpretable. Additionally, random or default weights can be used if
+        none are provided for inter-layer connections.
 
-        Returns:
-            matplotlib figure object
+        This visualization makes use of matplotlib for drawing the network diagram, including
+        customized settings for layer spacing, node size, and connection intensity based on
+        weights. The connections between layers are color-encoded to depict strength (weak
+        connections in blue and strong connections in red) when weight information is available.
+
+        :param layers: List of FCNN layers to visualize. Each layer can be specified as a
+            dictionary or object containing attributes like `in_features`,
+            `out_features`, and optional `parameters` with `weight` details.
+        :type layers: list
+
+        :raises TypeError: If `layers` is not a list or contains invalid layer data.
+        :raises ValueError: If random weight generation fails or unexpected issues
+            arise during plotting.
+
+        :return: Matplotlib figure object containing the FCNN visualization. An empty
+            figure with a warning message is returned if no layers are provided.
+        :rtype: matplotlib.figure.Figure
         """
         # Debug check
         if not layers:
@@ -842,10 +911,17 @@ class ModelVisualizer:
 
     def _extract_all_layers(self):
         """
-        Extracts all layers from the model metadata with segment information
+        Extracts all layers from the metadata, augmenting each layer with
+        additional information such as the type and activation of its containing
+        segment, as well as its index within that segment.
 
-        Returns:
-            List of layers with segment information added
+        The method iterates through the metadata's 'segments' entry, if it exists,
+        and processes the contained 'layers' entries. Each layer is enriched with
+        metadata about its parent segment and added to the returned collection.
+
+        :return: A list of dictionaries, each representing a layer enriched with
+                 additional information about its segment and position.
+        :rtype: list[dict]
         """
         all_layers = []
 
@@ -868,7 +944,37 @@ class ModelVisualizer:
 
     def _draw_conv_layer_2d(self, ax, layer, x_pos, seg_idx, total_segments, color_map,
                             center_y=0.5, standard_height=0.8):
-        """Draws a single convolutional layer as stacked matrices in 2D with specified center position"""
+        """
+        Draws a visual representation of a 2D convolutional layer segment on the specified
+        matplotlib axis. This method is designed to render both the visual dimensions
+        of the convolutional layer and its descriptive annotations, such as in/out channels
+        and kernel size. Elements of the visualization include stacked layers, grid lines,
+        text details, and color gradients to represent depth.
+
+        :param ax: Matplotlib axis used to draw the layer visualization.
+        :type ax: matplotlib.axes.Axes
+        :param layer: Dictionary containing layer attributes such as `in_channels`,
+                      `out_channels`, and possibly `shape` (kernel height and width).
+                      Optional activation and name attributes may also be present.
+        :type layer: dict
+        :param x_pos: X-coordinate for the position of the current layer.
+        :type x_pos: float
+        :param seg_idx: Segment index used for varying layer visual properties (e.g., color).
+        :type seg_idx: int
+        :param total_segments: Total number of segments available for visualization.
+        :type total_segments: int
+        :param color_map: Color map used for gradient rendering of the layer.
+        :type color_map: matplotlib.colors.Colormap
+        :param center_y: Central y-coordinate around which the layer is visually centered.
+        :type center_y: float, optional
+        :param standard_height: Standardized height for rendering the visual layer.
+                                The width is scaled proportionally to
+                                maintain the aspect ratio.
+        :type standard_height: float, optional
+        :return: A tuple containing the updated X-coordinate for the next layer and
+                 a dictionary with positional data for the current layer.
+        :rtype: tuple[float, dict] or tuple[float, None]
+        """
         from matplotlib import patheffects
 
         # Skip if missing required info
@@ -957,7 +1063,29 @@ class ModelVisualizer:
         return x_pos + 0.5 + visual_width, layer_info
 
     def _draw_pooling_layer_2d(self, ax, x_pos, color_map, center_y=0.5, standard_height=0.8):
-        """Draws a pooling layer as smaller matrices in 2D with specified center position"""
+        """
+        Draws a 2D pooling layer representation on a matplotlib axis.
+
+        This function visualizes a 2D pooling layer typically used in
+        convolutional neural networks by drawing stacked rectangles
+        (horizontally offset) to represent the pooling operation.
+        It adds annotations ("MaxPool") to label the pooling layer
+        and returns the updated x position after the layer and its related
+        information.
+
+        :param ax: The matplotlib axis on which the pooling layer will be drawn.
+            This axis serves as the canvas for drawing the pooling layer.
+        :param x_pos: The x-coordinate on the axis where the pooling layer starts.
+        :param color_map: A colormap function used to determine the color of the pooling
+            layers for visualization consistency.
+        :param center_y: The y-coordinate of the center position of the layer. Defaults
+            to 0.5.
+        :param standard_height: The standard visualization height for the layer from
+            which the pooling layer's height is derived. Defaults to 0.8.
+        :return: A tuple where the first element is the updated x position after
+            the pooling layer, and the second element is a dictionary containing
+            information about the drawn layer's position properties.
+        """
         from matplotlib import patheffects
 
         # Use a smaller height for pooling layers but maintain the center position
@@ -1017,7 +1145,27 @@ class ModelVisualizer:
         return x_pos + 0.5 + pool_width, layer_info
 
     def _draw_flatten_transition_2d(self, ax, x_pos, color_map, center_y=0.5, standard_height=0.8):
-        """Draws the flatten transition with stacked effect in 2D with specified center position"""
+        """
+        Draws a visual representation of a 2D flatten transition for neural network diagrams.
+
+        The method draws stacked progressively narrower rectangles to depict the flattening
+        layer transition in a neural network. It adds the representation of the flattened layer
+        to the provided axis, and updates the layer's positional information for further diagram
+        connections. The color and style of the transition are defined by the provided color
+        map, and users can adjust the layer's height and center position.
+
+        :param ax: Matplotlib axis object where the flatten layer transition will be drawn.
+        :param x_pos: Position along the x-axis where the flatten transition starts.
+        :param color_map: An instance of a matplotlib color map used to fill the layer's
+            rectangles.
+        :param center_y: Vertical center position of the flatten layer transition. Default is 0.5.
+        :param standard_height: Standard height value used to scale the flatten layer
+            transition for consistent sizing. Default is 0.8.
+        :return: Tuple containing the updated x-axis position after the flatten transition and
+            a dictionary with metadata about the layer's position and dimensions for further
+            use.
+
+        """
         from matplotlib import patheffects
 
         # Use standard dimensions but maintain center position
@@ -1092,7 +1240,21 @@ class ModelVisualizer:
         return x_pos + 0.5 + flatten_width, layer_info
 
     def _draw_arrow_between_layers(self, ax, prev_layer, curr_layer):
-        """Draws a straight horizontal arrow connecting two consecutive layers"""
+        """
+        Draws a straight horizontal arrow between two layers on a given axis using matplotlib's FancyArrowPatch tool. The
+        arrow starts from the center of the previous layer's right side and ends at the center of the current layer's left side.
+
+        :param ax: The axis where the arrow will be drawn.
+        :type ax: matplotlib.axes.Axes
+        :param prev_layer: Dictionary containing the positional and dimensional attributes of the previous layer. Must include
+            keys 'end_x' (float) and 'center_y' (float) for arrow start point computation.
+        :type prev_layer: dict
+        :param curr_layer: Dictionary containing the positional and dimensional attributes of the current layer. Must include
+            key 'start_x' (float) for arrow end point computation.
+        :type curr_layer: dict
+        :return: None
+        :rtype: None
+        """
         from matplotlib.patches import FancyArrowPatch
 
         # Calculate arrow start and end points
@@ -1118,7 +1280,23 @@ class ModelVisualizer:
         ax.add_patch(arrow)
 
     def _add_grid_lines_2d(self, ax, x, y, width, height, num_lines=4):
-        """Adds grid lines to a matrix in 2D"""
+        """
+        Add grid lines to a 2D space within the given rectangular area on the `ax` plot.
+
+        This function generates evenly spaced horizontal and vertical grid lines based on
+        the specified number of divisions (`num_lines`) within the provided rectangle defined
+        by its top-left corner (`x`, `y`) and dimensions (`width`, `height`). The grid lines
+        are styled using black color, semi-transparency, and a thin line width.
+
+        :param ax: The axes object (matplotlib Axes) on which the grid lines will be drawn.
+        :param x: The x-coordinate of the top-left corner of the rectangular area.
+        :param y: The y-coordinate of the top-left corner of the rectangular area.
+        :param width: The width of the rectangular area where grid lines will be drawn.
+        :param height: The height of the rectangular area where grid lines will be drawn.
+        :param num_lines: The number of grid lines to draw for each direction (horizontal
+            and vertical) within the rectangular area. The default is 4.
+        :return: None
+        """
         # Horizontal grid lines
         for j in range(1, num_lines):
             y_line = y + height * j / num_lines
@@ -1143,13 +1321,18 @@ class ModelVisualizer:
 
     def _format_plot_2d(self, ax, max_x, is_cnn=False, label_y=None):
         """
-        Format the plot with appropriate margins and labels.
+        Formats a 2D plot with specific layout settings. This method adjusts axis limits to include margins, hides axis ticks
+        and spines, and sets the title based on the type of network.
 
-        Args:
-            ax: Matplotlib axis
-            max_x: Maximum x position used in the plot
-            is_cnn: Whether this is a CNN visualization
-            label_y: Y-position of labels (if provided)
+        :param ax: Axis object for the plot to be formatted.
+        :type ax: matplotlib.axes.Axes
+        :param max_x: The maximum value for the x-axis.
+        :type max_x: float
+        :param is_cnn: Flag indicating if the plot refers to a Convolutional Neural Network. Defaults to False.
+        :type is_cnn: bool, optional
+        :param label_y: Optional reference value for the y-axis to ensure sufficient margin below. Defaults to None.
+        :type label_y: float, optional
+        :return: None. Modifies the plot axis in place.
         """
         # Set the limits with some margins
         margin = 0.5
@@ -1179,10 +1362,19 @@ class ModelVisualizer:
 
     def get_model_summary(self):
         """
-        Get a summary of the model structure.
+        Generates a comprehensive summary of the model, including its type, total parameters,
+        input size dimensions, segment count, and a breakdown of segment types. This method
+        extracts information based on the model structure and metadata defined in the class.
 
-        Returns:
-            dict: Summary information
+        :return: A dictionary containing the following keys:
+            - model_type (str): The type of the model.
+            - total_parameters (int): The total number of parameters in the model.
+            - input_size (Union[List[int], int, None]): Dimensions of the input, which can be
+              either a list for convolutional models or an integer for fully connected models.
+              None is returned if input dimensions cannot be determined.
+            - segment_count (int): The total number of segments in the model.
+            - segment_types (Dict[str, int]): A mapping of segment types to their occurrence counts.
+        :rtype: Dict[str, Union[str, int, List[int], Dict[str, int], None]]
         """
         segment_types = {}
         for segment in self.segments:
@@ -1217,13 +1409,16 @@ class ModelVisualizer:
 
     def create_html_report(self, output_path=None):
         """
-        Create an HTML report with the visualizations and model summary
+        Generates an HTML report summarizing the structure, layers, and parameters of the
+        neural network model. This report includes detailed layer-level statistics,
+        visualizations, and model metadata presented in a structured format.
 
-        Args:
-            output_path (str): Path to save the HTML report
+        :param output_path: The path to save the generated HTML report. If not provided, the
+            default value `model_report.html` is used.
+        :type output_path: str | None
 
-        Returns:
-            str: Path to the saved HTML report
+        :return: The file path to the saved HTML report.
+        :rtype: str | None
         """
         if self.fig is None:
             print("No visualization available. Run visualize() first.")
@@ -1339,19 +1534,14 @@ class ModelVisualizer:
                 params_count = segment["parameters"]
 
             # Create layer info matching your template structure
-            layer_info = {
-                "name": layer_name,
-                "type": seg_type.upper(),
-                "in_features": segment.get("in_features", segment.get("in_channels", "-")),
-                "out_features": segment.get("out_features", segment.get("out_channels", "-")),
-                "activation": activation.upper() if activation else "None",
-                "weights_count": f"{weights_count:,}",
-                "biases_count": f"{biases_count:,}",
-                "params_count": f"{params_count:,}"
-            }
+            layer_info = {"name": layer_name, "type": seg_type.upper(),
+                          "in_features": segment.get("in_features", segment.get("in_channels", "-")),
+                          "out_features": segment.get("out_features", segment.get("out_channels", "-")),
+                          "activation": activation.upper() if activation else "None",
+                          "weights_count": f"{weights_count:,}", "biases_count": f"{biases_count:,}",
+                          "params_count": f"{params_count:,}", "details": {}}
 
             # Add all additional details from your original code
-            layer_info["details"] = {}
 
             # Add layer-specific details based on type
             if seg_type == "conv":

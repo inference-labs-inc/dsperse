@@ -1,8 +1,21 @@
+import json
 import os
 import torch
 
 def create_test_model(model_dir="models/test_model", ):
-    """Creates a test model with activation function information"""
+    """
+    Creates a test model with predefined state dictionaries and configuration settings, storing
+    them in the specified directory. The function generates random weights for each layer and
+    creates a JSON configuration file detailing the architecture of the model. It ensures the
+    specified directory structure exists and writes both the model and configuration to disk.
+
+    :param model_dir: Directory path where the test model and its configuration are saved.
+                      Default is "models/test_model".
+                      If the directory does not exist, it is created.
+    :type model_dir: str
+    :return: A tuple containing the file paths of the saved model and its configuration.
+    :rtype: tuple
+    """
 
     os.makedirs(os.path.join(os.getcwd(), model_dir), exist_ok=True)
 
@@ -59,8 +72,18 @@ def create_test_model(model_dir="models/test_model", ):
 
 def create_test_model_with_embedded_activations(model_dir="models/test_model_embedded"):
     """
-    Creates a test model with activation function information embedded inside the .pth file itself.
-    Returns the path to the saved model.
+    Creates a test model with predefined weights and activations embedded in its configuration.
+
+    This function generates a model file containing:
+    1. A state dictionary with random weights for the model layers.
+    2. A configuration dictionary that defines the model type, layer structure, and corresponding
+       activation functions for each layer.
+
+    The generated file is saved at the specified directory path with the filename `test_model_embedded.pth`.
+    The directory path is created if it does not exist.
+
+    :param model_dir: Directory path to save the test model file (string). Defaults to "models/test_model_embedded".
+    :return: Full file path to the saved test model file (string).
     """
 
     os.makedirs(os.path.join(os.getcwd(), model_dir), exist_ok=True)
@@ -121,7 +144,19 @@ def create_test_model_with_embedded_activations(model_dir="models/test_model_emb
     return model_path
 
 def create_test_model_with_biases(model_dir="models/test_model_with_biases"):
-    """Creates a test model with activation function information and biases"""
+    """
+    Creates a test model with specified layer weights, biases, and configuration file. This function is designed
+    to generate a dummy model structure saved in `pth` format and a corresponding configuration saved in JSON
+    format. The model and configuration files are stored under the specified directory. If the directory does
+    not exist, it will be created.
+
+    :param model_dir: Path to the directory where the test model and its configuration will be saved.
+                      Default is "models/test_model_with_biases".
+    :type model_dir: str
+    :return: A tuple containing the paths to the saved model file ("test_model.pth") and configuration file
+             ("test_config.json").
+    :rtype: Tuple[str, str]
+    """
 
     os.makedirs(os.path.join(os.getcwd(), model_dir), exist_ok=True)
 
@@ -187,7 +222,19 @@ def create_test_model_with_biases(model_dir="models/test_model_with_biases"):
     return model_path, config_path
 
 def create_test_cnn_model_with_biases(model_dir="models/test_cnn_model_with_biases"):
-    """Creates a test CNN model with activation function information and biases"""
+    """
+    Creates a test Convolutional Neural Network (CNN) model along with its weights and
+    configuration file. This function generates a synthetic CNN model with predefined
+    architecture, saving the model's state dictionary and configuration to the specified
+    directory. The CNN consists of convolutional, max-pooling, and fully connected layers.
+
+    :param model_dir: Directory where the CNN model and its configuration will be saved.
+                      Defaults to 'models/test_cnn_model_with_biases'.
+    :type model_dir: str
+
+    :return: A tuple containing the paths to the saved model file and configuration file.
+    :rtype: tuple
+    """
 
     import os
     import json

@@ -1,8 +1,10 @@
 import enum
+import json
 import os
 import re
 from typing import Dict, List
 
+import numpy as np
 import torch
 
 
@@ -23,13 +25,6 @@ class ModelUtils:
     The class provides functionalities for loading model state dictionaries, analyzing
     their architecture, and identifying key characteristics such as the type of network,
     layer structures, and parameter details. It primarily operates on PyTorch model files.
-
-    :ivar model_path: Path to the model file (e.g., .pth or .pt).
-    :type model_path: Optional[str]
-    :ivar state_dict: Loaded state dictionary from the model file.
-    :type state_dict: Optional[dict]
-    :ivar model_type: Detected type of the model (e.g., CNN, Transformer).
-    :type model_type: Optional[ModelType]
     """
 
     def __init__(self, model_path=None):
@@ -40,12 +35,6 @@ class ModelUtils:
         maintains additional attributes to store the state dictionary and type of
         the model.
 
-        :param model_path: Path to the model file or directory. Can be None if a
-            path is not provided or needed.
-        :type model_path: str or None
-
-        :ivar model_path: The path to the model file or directory provided during
-            initialization.
         """
         self.model_path = model_path
         self.state_dict = None
@@ -164,12 +153,6 @@ class ModelUtils:
           - `UNKNOWN`: Could not classify the model reliably into any of the above categories.
 
         Warning messages are printed if `state_dict` is neither a dictionary nor `None`.
-
-        :raises TypeError: If `state_dict` is neither None nor a dictionary.
-        :raises AttributeError: If `state_dict` is not defined in the object context.
-
-        :return: A value from the ModelType enumeration indicating the architecture type.
-        :rtype: ModelType
         """
         if self.state_dict is None:
             return ModelType.UNKNOWN
@@ -324,6 +307,8 @@ class ModelUtils:
                     layer_params[layer_name]['in_channels'] = shape[1]
                     layer_params[layer_name]['out_channels'] = shape[0]
                     layer_params[layer_name]['kernel_size'] = (shape[2], shape[3])
+                    layer_params[layer_name]['stride'] = (1, 1)
+                    layer_params[layer_name]['padding'] = (0, 0)
                 elif len(shape) == 2:  # FC layer
                     layer_params[layer_name]['type'] = 'linear'
                     layer_params[layer_name]['shape'] = shape
@@ -344,7 +329,8 @@ class ModelUtils:
         # Try to sort layers in logical order
         return self._sort_layers(layers)
 
-    def _sort_layers(self, layers: List[Dict]) -> List[Dict]:
+    @staticmethod
+    def _sort_layers(layers: List[Dict]) -> List[Dict]:
         """
         Sorts a list of layer dictionaries based on numerical prefixes extracted from their names. Layer names are grouped
         by common prefixes, sorted by number, followed by suffix within each group. Groups are then flattened in the order
@@ -400,7 +386,8 @@ class ModelUtils:
         return sum(tensor.numel() for tensor in self.state_dict.values()
                    if torch.is_tensor(tensor))
 
-    def _identify_layer_groups(self, layers: List[Dict]) -> Dict:
+    @staticmethod
+    def _identify_layer_groups(layers: List[Dict]) -> Dict:
         """
         Groups and classifies layers into predefined categories based on their type, and identifies
         potential transition points (or slicing points) between different layer types. This helps in
@@ -825,14 +812,185 @@ class ModelUtils:
         # Ensure slice points are unique and sorted
         return sorted(list(set(slice_points)))
 
+    @staticmethod
+    def check_model_structure(model):
+        """
+        Check the structure of a loaded model to determine how it should be used for inference.
+
+        Parameters:
+            model: The loaded model object
+
+        Returns:
+            dict: A dictionary containing information about the model structure:
+                - 'type': 'callable', 'state_dict', 'dict_with_model', or 'unknown'
+                - 'callable_model': The callable model if found, otherwise None
+                - 'component_name': Name of the callable component if found in a dictionary
+        """
+        result = {
+            'type': 'unknown',
+            'callable_model': None,
+            'component_name': None
+        }
+
+        # Check if it's already a callable model
+        if hasattr(model, 'forward') and callable(getattr(model, 'forward')):
+            result['type'] = 'callable'
+            result['callable_model'] = model
+            return result
+
+        # Check if it's a state dict (dictionary of tensors)
+        if isinstance(model, dict):
+            # Check if it's a state dict with parameters
+            if all(isinstance(v, torch.Tensor) for v in model.values()):
+                result['type'] = 'state_dict'
+                return result
+
+            # Check if it's a dictionary containing a model or state_dict
+            if 'model' in model and hasattr(model['model'], 'forward'):
+                result['type'] = 'dict_with_model'
+                result['callable_model'] = model['model']
+                result['component_name'] = 'model'
+                return result
+
+            if 'state_dict' in model:
+                result['type'] = 'state_dict'
+                return result
+
+            # Look for any callable model in the dictionary
+            for key, value in model.items():
+                if hasattr(value, 'forward') and callable(getattr(value, 'forward')):
+                    result['type'] = 'dict_with_model'
+                    result['callable_model'] = value
+                    result['component_name'] = key
+                    return result
+
+        return result
+
+    def to_onnx(self, example_input, onnx_file_path=None, input_names=None, output_names=None, opset_version=11):
+        """Exports the model to an ONNX formatted file."""
+
+        model = self.load_model()
+        if model is None:
+            raise ValueError("Failed to load model—ONNX export aborted.")
+
+        model.eval()
+
+        input_names = input_names or ["input"]
+        output_names = output_names or ["output"]
+
+        if onnx_file_path is None:
+            base_path = os.path.dirname(self.model_path) if self.model_path else "."
+            onnx_file_path = os.path.join(base_path, "onnx", "model.onnx")
+            os.makedirs(os.path.dirname(onnx_file_path), exist_ok=True)
+
+        torch.onnx.export(
+            model,
+            example_input,
+            onnx_file_path,
+            export_params=True,
+            opset_version=opset_version,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+        )
+
+        print(f"Model successfully exported to ONNX at '{onnx_file_path}'")
+
+    @staticmethod
+    def get_input_shape(input_file_path: str) -> tuple:
+        """
+        Returns the input shape based on a provided input data file (JSON or other formats).
+
+        Args:
+            input_file_path (str): Path to the file containing input data.
+                                   Currently supports JSON files.
+
+        Returns:
+            tuple: The explicit shape of the input data, excluding batch size.
+
+        Raises:
+            FileNotFoundError: If the provided input file path doesn't exist.
+            ValueError: if file content is invalid or unsupported.
+        """
+        if not os.path.exists(input_file_path):
+            raise FileNotFoundError(f"The specified input file does not exist: {input_file_path}")
+
+        file_extension = os.path.splitext(input_file_path)[1].lower()
+
+        if file_extension == '.json':
+            with open(input_file_path, 'r') as file:
+                data = json.load(file)
+
+            if 'input_data' not in data:
+                raise ValueError("JSON file must contain an 'input_data' key.")
+
+            input_data = np.array(data['input_data'])
+
+            # check if input has batch dimension explicitly (common practice)
+            if input_data.ndim == 1:
+                input_shape = input_data.shape
+            else:
+                input_shape = input_data.shape[1:]
+        else:
+            raise ValueError(f"Unsupported file format: {file_extension}. Currently, only JSON is supported.")
+
+        print(f"Explicitly determined input shape from file: {input_shape}")
+        return input_shape
+
+    @staticmethod
+    def preprocess_input(input_path):
+        """
+        Preprocess input data from JSON.
+
+        Parameters:
+            input_path (str): Path to input JSON file
+
+        Returns:
+            torch.Tensor: Preprocessed input tensor
+        """
+        try:
+
+            # Load JSON data
+            with open(input_path, 'r') as f:
+                input_data = json.load(f)
+
+            print(f"Loaded input data: {type(input_data)}")
+
+            # Extract input data
+            if isinstance(input_data, dict):
+                if 'input_data' in input_data:
+                    print("Found 'input_data' key in input JSON")
+                    input_data = input_data['input_data']
+                elif 'input' in input_data:
+                    print("Found 'input' key in input JSON")
+                    input_data = input_data['input']
+
+            # Convert to tensor
+            if isinstance(input_data, list):
+                if isinstance(input_data[0], list):
+                    # 2D input
+                    input_tensor = torch.tensor(input_data, dtype=torch.float32)
+                else:
+                    # 1D input
+                    input_tensor = torch.tensor([input_data], dtype=torch.float32)
+            else:
+                raise ValueError("Expected input data to be a list or nested list")
+
+            print(f"Input tensor shape: {input_tensor.shape}")
+            return input_tensor
+
+        except Exception as e:
+            print(f"Error preprocessing input: {e}")
+            return None
+
 
 # Example usage:
 if __name__ == "__main__":
     # model_dir = "models/test_model_embedded"
     # model_path = os.path.join(model_dir, "test_model_embedded.pth")
 
-    model_dir = "../models/doom"
-    model_path = os.path.join(model_dir, "doom.pth")
+    model_dir = "../models/test_cnn_model_with_biases"
+    model_path = os.path.join(model_dir, "test_cnn_model.pth")
 
     print(f"Analyzing model: {model_path}")
     model_utils = ModelUtils(model_path)

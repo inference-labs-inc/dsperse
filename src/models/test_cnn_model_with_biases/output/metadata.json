@@ -2,15 +2,16 @@
   "original_model": "models/test_cnn_model_with_biases/test_cnn_model.pth",
   "model_type": "ModelType.HYBRID",
   "total_parameters": 1312042,
-  "slicing_strategy": "layer_type",
+  "slicing_strategy": "transitions",
   "segments": [
     {
       "index": 0,
       "type": "conv",
+      "segment_name": "conv_0",
       "filename": "conv_0.pt",
       "path": "models/test_cnn_model_with_biases/output/conv_0.pt",
-      "layer_count": 1,
-      "parameters": 448,
+      "layer_count": 4,
+      "parameters": 97440,
       "layers": [
         {
           "name": "conv1",
@@ -46,20 +47,7 @@
             3
           ],
           "activation": "ReLU"
-        }
-      ],
-      "in_features": 3,
-      "out_features": 16,
-      "activation": "ReLU"
-    },
-    {
-      "index": 1,
-      "type": "conv",
-      "filename": "conv_1.pt",
-      "path": "models/test_cnn_model_with_biases/output/conv_1.pt",
-      "layer_count": 1,
-      "parameters": 4640,
-      "layers": [
+        },
         {
           "name": "conv3",
           "parameters": {
@@ -94,20 +82,7 @@
             3
           ],
           "activation": "ReLU"
-        }
-      ],
-      "in_features": 16,
-      "out_features": 32,
-      "activation": "ReLU"
-    },
-    {
-      "index": 2,
-      "type": "conv",
-      "filename": "conv_2.pt",
-      "path": "models/test_cnn_model_with_biases/output/conv_2.pt",
-      "layer_count": 1,
-      "parameters": 18496,
-      "layers": [
+        },
         {
           "name": "conv5",
           "parameters": {
@@ -142,20 +117,7 @@
             3
           ],
           "activation": "ReLU"
-        }
-      ],
-      "in_features": 32,
-      "out_features": 64,
-      "activation": "ReLU"
-    },
-    {
-      "index": 3,
-      "type": "conv",
-      "filename": "conv_3.pt",
-      "path": "models/test_cnn_model_with_biases/output/conv_3.pt",
-      "layer_count": 1,
-      "parameters": 73856,
-      "layers": [
+        },
         {
           "name": "conv7",
           "parameters": {
@@ -192,17 +154,20 @@
           "activation": "ReLU"
         }
       ],
-      "in_features": 64,
+      "in_features": 3,
       "out_features": 128,
-      "activation": "ReLU"
+      "activation": "ReLU",
+      "class_file": "conv_0_segment.py",
+      "class_name": "Conv_0Segment"
     },
     {
-      "index": 4,
+      "index": 1,
       "type": "fc",
-      "filename": "fc_4.pt",
-      "path": "models/test_cnn_model_with_biases/output/fc_4.pt",
-      "layer_count": 1,
-      "parameters": 1049088,
+      "segment_name": "fc_1",
+      "filename": "fc_1.pt",
+      "path": "models/test_cnn_model_with_biases/output/fc_1.pt",
+      "layer_count": 4,
+      "parameters": 1214602,
       "layers": [
         {
           "name": "fc8",
@@ -230,18 +195,7 @@
           "in_features": 2048,
           "out_features": 512,
           "activation": "ReLU"
-        }
-      ],
-      "activation": "ReLU"
-    },
-    {
-      "index": 5,
-      "type": "fc",
-      "filename": "fc_5.pt",
-      "path": "models/test_cnn_model_with_biases/output/fc_5.pt",
-      "layer_count": 1,
-      "parameters": 131328,
-      "layers": [
+        },
         {
           "name": "fc9",
           "parameters": {
@@ -268,18 +222,7 @@
           "in_features": 512,
           "out_features": 256,
           "activation": "ReLU"
-        }
-      ],
-      "activation": "ReLU"
-    },
-    {
-      "index": 6,
-      "type": "fc",
-      "filename": "fc_6.pt",
-      "path": "models/test_cnn_model_with_biases/output/fc_6.pt",
-      "layer_count": 1,
-      "parameters": 32896,
-      "layers": [
+        },
         {
           "name": "fc10",
           "parameters": {
@@ -306,18 +249,7 @@
           "in_features": 256,
           "out_features": 128,
           "activation": "ReLU"
-        }
-      ],
-      "activation": "ReLU"
-    },
-    {
-      "index": 7,
-      "type": "fc",
-      "filename": "fc_7.pt",
-      "path": "models/test_cnn_model_with_biases/output/fc_7.pt",
-      "layer_count": 1,
-      "parameters": 1290,
-      "layers": [
+        },
         {
           "name": "fc11",
           "parameters": {
@@ -346,16 +278,25 @@
           "activation": "Softmax"
         }
       ],
-      "activation": "Softmax"
+      "activation": "Softmax",
+      "input_reshape": {
+        "type": "flatten",
+        "from_shape": [
+          null,
+          128,
+          4,
+          4
+        ],
+        "to_shape": [
+          null,
+          2048
+        ]
+      },
+      "class_file": "fc_1_segment.py",
+      "class_name": "Fc_1Segment"
     }
   ],
   "slice_points": [
-    0,
-    1,
-    2,
-    3,
-    4,
-    5,
-    6
+    3
   ]
 }

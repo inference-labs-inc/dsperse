@@ -2,6 +2,8 @@ import os
 from typing import Optional, Dict, List
 import time
 import json
+
+import numpy as np
 import torch
 import enum
 
@@ -101,6 +103,8 @@ class ModelSlicer:
         # Add the ending point to make iteration easier
         all_points = sorted(slice_points + [len(layers) - 1])
 
+        prev_segment_type = None
+
         # Process each segment
         for i, end_idx in enumerate(all_points):
             # Skip invalid slice points
@@ -123,8 +127,15 @@ class ModelSlicer:
                 'layers': segment_layers,
             }
 
+            # 🆕 Mark reshape if transitioning from 'conv' to 'linear'
+            if prev_segment_type == 'conv' and segment_type == 'linear':
+                segment['requires_reshape'] = True
+                segment['reshape_dims'] = [-1, segment_layers[0]['in_features']]
+
+
             segments.append(segment)
             start_idx = end_idx + 1
+            prev_segment_type = segment_type
 
         return segments
 
@@ -133,20 +144,13 @@ class ModelSlicer:
         Processes a specified model segment and saves its state dictionary to a specified
         directory. The segment information, including metadata and additional features,
         is also created and returned.
-
-        :param segment: A dictionary containing the segment to be processed, which includes
-              details such as `type`, `index`, and `layers`.
-        :param output_dir: A string specifying the directory where the processed segment's
-              state dictionary will be saved.
-        :return: A dictionary containing processed information about the segment, including
-              details such as index, type, filename, path, layer count, total parameters,
-              and layers.
         """
         segment_type = segment['type']
         segment_idx = segment['index'] - 1  # Convert to 0-based index
 
         # Generate filename: {type}_{index}.pt
         filename = f"{segment_type}_{segment_idx}.pt"
+        segment_name = f"{segment_type}_{segment_idx}"  # explicit segment_name variable clearly defined!
         output_path = os.path.join(output_dir, filename)
 
         # Extract segment state dict
@@ -155,22 +159,50 @@ class ModelSlicer:
             segment['layers']
         )
 
-        # Save segment
+        # Save segment weights clearly
         torch.save(segment_dict, output_path)
 
         # Create segment info with basic details
         segment_info = {
             'index': segment_idx,
             'type': segment_type,
+            'segment_name': segment_name,
             'filename': filename,
             'path': output_path,
             'layer_count': len(segment['layers']),
             'parameters': sum(layer.get('size', 0) for layer in segment['layers']),
-            'layers': segment['layers']  # Include all layer info
+            'layers': segment['layers']
         }
 
-        # Add feature information
+        # Add feature information clearly extracted method should already add needed details (activation, input shapes, etc.)
         self._add_feature_information(segment_info, segment)
+
+        # 🆕 Now  ensure our required details are present
+        layer_details = segment_info.get('layer_details')
+        if layer_details:
+            layer_name = layer_details.get('layer_name', f"{segment_type}_{segment_idx}")
+            layer_constructor = layer_details.get('layer_constructor',
+                                                  "nn.Identity()")  # default safe fallback
+            activation_function = segment_info.get('activation_function', 'F.relu')
+
+            # New reshape logic added
+            reshape_code = ""
+            if segment_info.get('requires_reshape'):
+                reshape_dims = segment_info['reshape_dims']
+                reshape_code = f"x = x.reshape({', '.join(map(str, reshape_dims))})"
+
+            self._generate_segment_class(
+                segment_name=segment_name,
+                layer_name=layer_name,
+                layer_constructor=layer_constructor,
+                activation_function=activation_function,
+                reshape_code=reshape_code,
+                output_folder=output_dir
+            )
+
+            print(f"Completed processing for segment '{segment_name}' and segment class generated.")
+        else:
+            print(f"[WARNING] layer details missing for segment '{segment_name}', no segment class generated.")
 
         return segment_info
 
@@ -180,14 +212,6 @@ class ModelSlicer:
         Adds feature information to the given ``segment_info`` dictionary based on the provided ``segment`` details.
         The function processes the type and layer information of the segment and updates ``segment_info`` with
         input features, output features, and activation functions, if applicable.
-
-        :param segment_info: A dictionary to store the updated feature information, which includes
-            input features, output features, and activation function, based on the analyzed segment data.
-        :param segment: A dictionary containing the type and layer details of the segment. It includes
-            information about the segment's type (e.g., 'linear', 'conv') and layers, from which features
-            like ``in_features``, ``out_features``, ``in_channels``, ``out_channels``, and
-            activation function may be extracted.
-        :return: None
         """
         segment_type = segment['type']
 
@@ -215,44 +239,77 @@ class ModelSlicer:
                 if out_features is not None:
                     segment_info['out_features'] = out_features
 
+                # Add stride and padding information for convolutional layers
+                for i, layer in enumerate(segment['layers']):
+                    # Store stride and padding in the same layer info structure
+                    if 'stride' in layer:
+                        segment_info['layers'][i]['stride'] = layer['stride']
+                    if 'padding' in layer:
+                        segment_info['layers'][i]['padding'] = layer['padding']
+
             # Add activation if available in the last layer
             if 'activation' in last_layer:
                 segment_info['activation'] = last_layer['activation']
 
+        if segment.get('requires_reshape'):
+            segment_info['requires_reshape'] = True
+            segment_info['reshape_dims'] = segment['reshape_dims']
+
     @staticmethod
-    def _create_and_save_metadata(model_path: str, output_dir: str, analysis: Dict,
-                                  strategy: str, saved_segments: List[Dict], slice_points: List[int]) -> str:
+    def _create_and_save_metadata(model_path: str,
+                                  output_dir: str,
+                                  analysis: Dict,
+                                  strategy: str,
+                                  saved_segments: List[Dict],
+                                  slice_points: List[int],
+                                  input_file: Optional[str] = None) -> str:
         """
-        Generates metadata for a trained model, including its attributes, segmentation
-        strategies, and analysis details, and then saves it to a JSON file in the
-        specified output directory.
-
-        The metadata includes details such as the original model path, model type,
-        total number of parameters, slicing strategy used, saved segments, and slice
-        points. This function writes the metadata in JSON format for later retrieval
-        and returns the path to the saved file.
-
-        :param model_path: Path to the original trained model on the filesystem.
-        :type model_path: str
-        :param output_dir: Directory where the metadata JSON file will be saved.
-        :type output_dir: str
-        :param analysis: Dictionary containing analysis details of the model with
-            keys like 'model_type' and 'total_parameters'.
-        :type analysis: Dict
-        :param strategy: Slicing strategy used for the model's segmentation.
-        :type strategy: str
-        :param saved_segments: List of dictionaries containing information about the
-            saved segments of the model.
-        :type saved_segments: List[Dict]
-        :param slice_points: Sequence of integers representing model slicing points.
-        :type slice_points: List[int]
-        :return: Path to the created metadata JSON file.
-        :rtype: str
+        Generates metadata for a trained model, including shape transformations and segment class file info.
         """
+        print("Generating metadata...")
+
         model_type = analysis.get('model_type', 'unknown')
-        # Convert model_type to string if it's an Enum
         if isinstance(model_type, enum.Enum):
             model_type = str(model_type)
+
+        # Existing shape transformations detection explicitly unchanged from your existing function explicitly clearly here.
+        for i in range(len(saved_segments) - 1):
+            current_segment = saved_segments[i]
+            next_segment = saved_segments[i + 1]
+
+            if current_segment.get('type') == 'conv' and next_segment.get('type') == 'fc':
+                out_channels = current_segment.get('out_features')
+                in_features = 0
+                for layer in next_segment.get('layers', []):
+                    if 'in_features' in layer:
+                        in_features = layer['in_features']
+                        break
+                if out_channels and in_features and out_channels != in_features:
+                    if in_features % out_channels == 0:
+                        spatial_size = in_features // out_channels
+                        height = width = int(spatial_size ** 0.5)
+                        if height * width == spatial_size:
+                            transform_info = {
+                                "type": "flatten",
+                                "from_shape": [None, out_channels, height, width],
+                                "to_shape": [None, in_features]
+                            }
+                            next_segment["input_reshape"] = transform_info
+
+            elif current_segment.get('out_features') != next_segment.get('in_features'):
+                transform_info = {
+                    "type": "reshape",
+                    "from_features": current_segment.get('out_features'),
+                    "to_features": next_segment.get('in_features')
+                }
+                next_segment["input_reshape"] = transform_info
+
+        # Explicitly clearly add 'class_file' info to each segment explicitly explicitly explicitly!
+        for segment in saved_segments:
+            segment_name = segment['segment_name']  # Ensures this matches exactly above explicitly explicitly explicit
+            class_file = f"{segment_name}_segment.py"  # auto-generated filename explicitly explicitly clear
+            segment['class_file'] = class_file
+            segment['class_name'] = f"{segment_name.capitalize()}Segment"
 
         metadata = {
             'original_model': model_path,
@@ -263,39 +320,39 @@ class ModelSlicer:
             'slice_points': slice_points
         }
 
-        # Save metadata to JSON file
+        # Existing input-data-handling remains unchanged explicitly clearly explicitly!
+        if input_file:
+            # existing handling: unchanged explicitly clearly explicitly
+            print(f"Input file: {input_file}")
+            if os.path.exists(input_file) and input_file.lower().endswith('.json'):
+                with open(input_file, 'r') as f:
+                    input_data_json = json.load(f)
+                input_data_array = np.array(input_data_json.get('input_data', []))
+                if input_data_array.size == 0:
+                    raise ValueError("Provided JSON input file has no 'input_data' or is empty.")
+
+                input_shape = input_data_array.shape[1:] if input_data_array.ndim > 1 else input_data_array.shape
+                metadata['input_data_info'] = {
+                    'input_file': input_file,
+                    'input_shape': input_shape
+                }
+            else:
+                raise ValueError(f"Unsupported input file or file not found: {input_file}")
+
         metadata_path = os.path.join(output_dir, 'metadata.json')
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
+        print(f"Metadata explicitly saved to: {metadata_path}")
+
         return metadata_path
 
     def slice(self, model_path: str, output_dir: Optional[str] = None,
-              strategy: str = "layer_type", max_segments: Optional[int] = None) -> Dict:
+              strategy: str = "layer_type", max_segments: Optional[int] = None, input_file: Optional[str] = None) -> Dict:
         """
         Slices a model into smaller segments based on the provided slicing strategy and
         maximum number of segments. It processes and saves the segments to the output
         directory and generates metadata associated with the slicing operation.
-
-        :param model_path: Path to the model file that needs to be sliced.
-        :type model_path: str
-        :param output_dir: Directory where sliced model segments and metadata will be stored.
-                           If not specified, a default output directory is used.
-        :type output_dir: Optional[str]
-        :param strategy: Strategy for slicing the model, e.g., "layer_type". Determines how
-                         the model layers are divided into segments.
-        :type strategy: str
-        :param max_segments: Maximum number of segments to create during the slicing process.
-                             If not provided, slicing defaults to determining the number of
-                             segments based on the strategy.
-        :type max_segments: Optional[int]
-        :return: Dictionary containing the outcome of the slicing operation:
-                 - `success` (bool): Indicates whether the slicing was successful.
-                 - `output_dir` (str): Path to the directory where segments and metadata are saved.
-                 - `segments` (list): List of saved model segments with their respective
-                                      processing outputs.
-                 - `metadata_path` (str): Path to the metadata file describing the slicing operation.
-        :rtype: Dict
         """
         # Initialize model utilities
         error_result = self._initialize_model_utils(model_path)
@@ -327,7 +384,7 @@ class ModelSlicer:
 
         # Create and save metadata
         metadata_path = self._create_and_save_metadata(
-            model_path, output_dir, analysis, strategy, saved_segments, slice_points
+            model_path, output_dir, analysis, strategy, saved_segments, slice_points, input_file
         )
 
         return {
@@ -617,9 +674,48 @@ class ModelSlicer:
 
         return activations
 
+    def _generate_segment_class(
+            self, segment_name: str, layer_name: str, layer_constructor: str,
+            activation_function: str, output_folder: str, reshape_code=""
+
+    ):
+        """
+        Automatically generates a PyTorch file clearly defining the class explicitly for given model segment
+
+        Args explicitly:
+            segment_name: the unique name for segment class file eg: "conv_1".
+            layer_name: the name of the layer stored inside the object eg: "conv1".
+            layer_constructor: a string to explicitly construct the torch layer explicitly clearly.
+            activation_function: explicitly activation to wrap around the torch layer explicitly clearly.
+            output_folder: Path explicitly to the segment output folder clearly
+        """
+
+        class_name = f"{segment_name.capitalize()}Segment"
+
+        # Create the segment's class definition explicitly clearly automatically clearly
+        class_definition = f'''import torch.nn as nn
+            import torch.nn.functional as F
+        
+            class {class_name}(nn.Module):
+                def __init__(self):
+                    super({class_name}, self).__init__()
+                    self.{layer_name} = {layer_constructor}
+        
+                def forward(self, x):
+                    {reshape_code}
+                    return {activation_function}(self.{layer_name}(x))
+            '''
+
+        # Save to a .py file explicitly clearly
+        class_file_path = os.path.join(output_folder, f"{segment_name}_segment.py")
+        with open(class_file_path, "w") as file:
+            file.write(class_definition)
+
+        print(f"Segment class '{class_file_path}' created successfully.")
+
 
 def try_model_slicer(model_path: str, output_dir: Optional[str] = None,
-                     strategy: str = "layer_type", max_segments: Optional[int] = None) -> None:
+                     strategy: str = "layer_type", max_segments: Optional[int] = None, input_file: Optional[str] = None) -> None:
     """
     Test function to demonstrate the ModelSlicer functionality
 
@@ -667,7 +763,8 @@ def try_model_slicer(model_path: str, output_dir: Optional[str] = None,
     # Create and use the ModelSlicer
     print("\n[2] Slicing model...")
     slicer = ModelSlicer(model_utils)
-    result = slicer.slice(model_path, output_dir, strategy, max_segments)
+    print(f"  Using strategy: {strategy}, max segments: {max_segments}, input file: {input_file}")
+    result = slicer.slice(model_path, output_dir, strategy, max_segments, input_file)
 
     # Print results
     if result['success']:
@@ -742,10 +839,12 @@ def try_model_slicer(model_path: str, output_dir: Optional[str] = None,
         print(f"\n✗ Error slicing model: {result.get('error', 'Unknown error')}")
 
 
+
 # Example usage:
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 6  # Change this to test different models
+    model_choice = 1  # Change this to test different models
+    input_file = None
 
     if model_choice == 1:
         # Doom model
@@ -753,6 +852,7 @@ if __name__ == "__main__":
         model_path = os.path.join(model_dir, "doom.pth")
         output_folder = os.path.join(model_dir, "output")
         strategy = "single_layer"  # Slice by layer types (fc, conv, etc.)
+        input_file = "models/doom/input/input.json"
 
     elif model_choice == 2:
         # Test model
@@ -786,12 +886,13 @@ if __name__ == "__main__":
         model_dir = "models/test_cnn_model_with_biases"
         model_path = os.path.join(model_dir, "test_cnn_model.pth")
         output_folder = os.path.join(model_dir, "output")
-        strategy = "layer_type"  # Create evenly balanced slices
+        strategy = "transitions"  # Create evenly balanced slices
 
     # Run the test with the selected model
     try_model_slicer(
         model_path=model_path,
         output_dir=output_folder,
         strategy=strategy,
-        max_segments=None  # Set to a number to limit segments
+        max_segments=None,  # Set to a number to limit segments
+        input_file=input_file
     )

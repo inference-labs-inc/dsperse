@@ -7,82 +7,20 @@ import numpy as np
 import torch
 import enum
 
+from src.utils.model_analyzer import ModelAnalyzer
 from src.utils.model_utils import ModelUtils
 
 
 class ModelSlicer:
     """
     A utility class for slicing and processing machine learning models into distinct
-    segments based on layer information.
-
-    This class provides methods to manage machine learning model slicing by
-    segmenting layers and saving processed model parts. It integrates the
-    functionalities of the `ModelUtils` class to load and interact with
-    models, handle directory preparation for saving outputs, extract model segments,
-    and save corresponding metadata.
-
-    :ivar model_utils: An instance of the `ModelUtils` class used for model-related
-          operations, such as loading and accessing layer information.
-    :type model_utils: Optional
+    segments based on layer information. Think of a slicer in a 3D modeling/printing,
+    except we are doing this to a neural network model.
     """
 
-    def __init__(self, model_utils:ModelUtils=None):
-        """
-        Initialize ModelSlicer
-
-        Args:
-            model_utils: Optional ModelUtils instance to use
-        """
-        self.model_utils = model_utils
-
-    def _initialize_model_utils(self, model_path: str) -> Optional[Dict]:
-        """
-        Initializes the ModelUtils instance for managing the machine learning model.
-
-        The method checks if the given 'model_utils' property of the object is set.
-        If it is not set, it will create a new instance of the `ModelUtils` class
-        using the provided 'model_path' argument. It will then attempt to load the
-        model using the `load_model()` method of `ModelUtils`. If the loading of the
-        model fails, the method returns a dictionary containing error details. If the
-        loading succeeds, it returns `None`.
-
-        :param model_path: The path to the model file.
-        :type model_path: str
-        :return: A dictionary with error details if the model loading fails, or None
-            if successful.
-        :rtype: Optional[Dict]
-        """
-        if self.model_utils is None:
-            self.model_utils = ModelUtils(model_path)
-            if not self.model_utils.load_model():
-                return {'success': False, 'error': f"Failed to load model from {model_path}"}
-        return None
-
-    @staticmethod
-    def _prepare_output_directory(model_path: str, output_dir: Optional[str] = None) -> str:
-        """
-        Prepares and returns the output directory where files will be stored. If the output directory
-        is not specified, it creates a directory within the path of the model file with a suffix
-        "_sliced". Ensures the directory exists before returning its path.
-
-        :param model_path: Path to the model file that determines the default output directory
-                           if output_dir is not provided.
-        :type model_path: str
-        :param output_dir: Path to the output directory where files should be stored. If None,
-                           a default directory will be created in the same location as the
-                           model file.
-        :type output_dir: Optional[str]
-        :return: Path to the prepared output directory.
-        :rtype: str
-        """
-        if output_dir is None:
-            model_dir = os.path.dirname(model_path)
-            model_name = os.path.splitext(os.path.basename(model_path))[0]
-            output_dir = os.path.join(model_dir, f"{model_name}_sliced")
-
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        return output_dir
+    def __init__(self, model_directory: str):
+        self.model_dir = model_directory
+        self.model_utils = ModelUtils(os.path.join(model_directory, "model.pth"))
 
     def _get_model_segments(self, layers: List[Dict], slice_points: List[int]) -> List[Dict]:
         """
@@ -90,12 +28,6 @@ class ModelSlicer:
         segment represents a contiguous portion of the layers marked by the slice points.
         The function ensures the segments are non-overlapping and skips invalid slice
         points. Each segment is categorized by its type using a helper method.
-
-        :param layers: List of layer dictionaries representing the model layers.
-        :param slice_points: List of integers indicating the slice points where segments
-            should start or end.
-        :return: A list of dictionaries, each containing details about a segment, such
-            as its index, start index, end index, type, and layers included.
         """
         segments = []
         start_idx = 0
@@ -120,7 +52,7 @@ class ModelSlicer:
 
             # Create segment info
             segment = {
-                'index': i + 1,
+                'index': i,
                 'start_idx': start_idx,
                 'end_idx': end_idx,
                 'type': segment_type,
@@ -146,11 +78,11 @@ class ModelSlicer:
         is also created and returned.
         """
         segment_type = segment['type']
-        segment_idx = segment['index'] - 1  # Convert to 0-based index
+        segment_idx = segment['index']  # Convert to 0-based index
 
         # Generate filename: {type}_{index}.pt
         filename = f"{segment_type}_{segment_idx}.pt"
-        segment_name = f"{segment_type}_{segment_idx}"  # explicit segment_name variable clearly defined!
+        segment_name = f"{segment_type}_{segment_idx}"
         output_path = os.path.join(output_dir, filename)
 
         # Extract segment state dict
@@ -159,7 +91,7 @@ class ModelSlicer:
             segment['layers']
         )
 
-        # Save segment weights clearly
+        # Save segment weights
         torch.save(segment_dict, output_path)
 
         # Create segment info with basic details
@@ -213,6 +145,7 @@ class ModelSlicer:
         The function processes the type and layer information of the segment and updates ``segment_info`` with
         input features, output features, and activation functions, if applicable.
         """
+        #TODO: Extract to model analyser to model utils
         segment_type = segment['type']
 
         if segment['layers']:
@@ -256,23 +189,25 @@ class ModelSlicer:
             segment_info['reshape_dims'] = segment['reshape_dims']
 
     @staticmethod
-    def _create_and_save_metadata(model_path: str,
-                                  output_dir: str,
-                                  analysis: Dict,
-                                  strategy: str,
-                                  saved_segments: List[Dict],
-                                  slice_points: List[int],
-                                  input_file: Optional[str] = None) -> str:
+    def _create_and_save_metadata(
+            model_path: str,
+            output_dir: str,
+            analysis: Dict,
+            strategy: str,
+            saved_segments: List[Dict],
+            slice_points: List[int],
+            input_file: Optional[str] = None) -> str:
         """
         Generates metadata for a trained model, including shape transformations and segment class file info.
         """
+        # TODO: Does this belong in this class?
+        # TODO: include input shape and output shape for each segment/layer
         print("Generating metadata...")
 
         model_type = analysis.get('model_type', 'unknown')
         if isinstance(model_type, enum.Enum):
             model_type = str(model_type)
 
-        # Existing shape transformations detection explicitly unchanged from your existing function explicitly clearly here.
         for i in range(len(saved_segments) - 1):
             current_segment = saved_segments[i]
             next_segment = saved_segments[i + 1]
@@ -304,10 +239,9 @@ class ModelSlicer:
                 }
                 next_segment["input_reshape"] = transform_info
 
-        # Explicitly clearly add 'class_file' info to each segment explicitly explicitly explicitly!
         for segment in saved_segments:
-            segment_name = segment['segment_name']  # Ensures this matches exactly above explicitly explicitly explicit
-            class_file = f"{segment_name}_segment.py"  # auto-generated filename explicitly explicitly clear
+            segment_name = segment['segment_name']
+            class_file = f"{segment_name}_segment.py"
             segment['class_file'] = class_file
             segment['class_name'] = f"{segment_name.capitalize()}Segment"
 
@@ -320,9 +254,7 @@ class ModelSlicer:
             'slice_points': slice_points
         }
 
-        # Existing input-data-handling remains unchanged explicitly clearly explicitly!
         if input_file:
-            # existing handling: unchanged explicitly clearly explicitly
             print(f"Input file: {input_file}")
             if os.path.exists(input_file) and input_file.lower().endswith('.json'):
                 with open(input_file, 'r') as f:
@@ -343,24 +275,18 @@ class ModelSlicer:
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
 
-        print(f"Metadata explicitly saved to: {metadata_path}")
+        print(f"Metadata saved to: {metadata_path}")
 
         return metadata_path
 
-    def slice(self, model_path: str, output_dir: Optional[str] = None,
-              strategy: str = "layer_type", max_segments: Optional[int] = None, input_file: Optional[str] = None) -> Dict:
+    def _slice(self, model_path: str, output_dir: Optional[str] = None,
+               strategy: str = "single_layer", input_file: Optional[str] = None) -> Dict:
         """
-        Slices a model into smaller segments based on the provided slicing strategy and
-        maximum number of segments. It processes and saves the segments to the output
+        Slices a model into smaller segments based on the provided slicing strategy.
+        It processes and saves the segments to the output
         directory and generates metadata associated with the slicing operation.
         """
-        # Initialize model utilities
-        error_result = self._initialize_model_utils(model_path)
-        if error_result:
-            return error_result
 
-        # Set up output directory
-        output_dir = self._prepare_output_directory(model_path, output_dir)
 
         # Get model analysis
         analysis = self.model_utils.analyze_model(verbose=False)
@@ -369,11 +295,11 @@ class ModelSlicer:
         if not layers:
             return {'success': False, 'error': 'No layers found in model'}
 
-        # Add activation information to layers
+        # Add activation information to layers TODO: Take out of this class
         self._gather_activation_information(model_path, layers)
 
-        # Get slice points based on strategy
-        slice_points = self.model_utils.get_slice_points(strategy, max_segments)
+        # Get slice points based on strategy TODO: put in this class
+        slice_points = self.model_utils.get_slice_points(strategy)
 
         # Get model segments
         segments = self._get_model_segments(layers, slice_points)
@@ -399,20 +325,8 @@ class ModelSlicer:
         """
         Determines the segment type of given list of layers based on their frequencies
         and maps them to standardized output names.
-
-        The function calculates the frequency of each layer type, removes the 'unknown' type if at
-        least one known type is present, and determines the most common type. It then maps the internal
-        type names to corresponding standardized segment types such as 'fc', 'conv', 'norm', or others.
-        If no valid type is found, it defaults to 'misc'.
-
-        :param layers: A list of dictionaries where each dictionary represents a layer with its
-            attributes and an optional "type" key indicating the type of the layer.
-        :type layers: List[Dict]
-        :return: A string representing the most common segment type mapped to a standardized name.
-            If no recognized type is determined, 'misc' is returned.
-        :rtype: str
         """
-        # Count layer types
+        # TODO: remove from this class.
         type_counts = {}
         for layer in layers:
             layer_type = layer.get('type', 'unknown')
@@ -465,6 +379,7 @@ class ModelSlicer:
                     segment_dict[key] = value
                     break
 
+        print(f"{segment_dict} parameters from state dict")
         return segment_dict
 
     def _gather_activation_information(self, model_path: str, layers: List[Dict]) -> Dict[str, str]:
@@ -482,6 +397,7 @@ class ModelSlicer:
                  information could be determined, it will return an empty dictionary.
         :rtype: Dict[str, str]
         """
+        # TODO: remove from this class
         activations = {}
 
         # Strategy 1: Check if we have a model object for direct extraction
@@ -535,6 +451,7 @@ class ModelSlicer:
         if activation_count > 0:
             print(f"Added activation information to {activation_count} layers")
 
+        print(f"Detected activations: {activations}")
         return activations
 
     @staticmethod
@@ -552,12 +469,11 @@ class ModelSlicer:
         within composite structures like `torch.nn.Sequential`. If the input model is `None`, the function
         returns an empty dictionary.
 
-        :param model: The PyTorch model, potentially containing activation functions, as an instance of `torch.nn.Module`.
         :return: A dictionary where keys represent the hierarchical names of the modules containing
                  activation functions, and values represent the corresponding activation type as a
                  string.
-        :rtype: Dict[str, str]
         """
+        # TODO: Remove from this class
         activations = {}
 
         # Handle case when model is None
@@ -602,7 +518,6 @@ class ModelSlicer:
                         activations[sub_name] = "ReLU"
                     elif isinstance(submodule, torch.nn.LeakyReLU):
                         activations[sub_name] = "LeakyReLU"
-                    # ... and so on for other activation types
 
         return activations
 
@@ -629,6 +544,7 @@ class ModelSlicer:
             function names such as "ReLU", "Sigmoid", or "Softmax".
         :rtype: Dict[str, str]
         """
+        # TODO: Remove from this class
         activations = {}
 
         # Common patterns in layer naming
@@ -674,25 +590,26 @@ class ModelSlicer:
 
         return activations
 
+    @staticmethod
     def _generate_segment_class(
-            self, segment_name: str, layer_name: str, layer_constructor: str,
+            segment_name: str, layer_name: str, layer_constructor: str,
             activation_function: str, output_folder: str, reshape_code=""
 
     ):
         """
-        Automatically generates a PyTorch file clearly defining the class explicitly for given model segment
+        Automatically generates a PyTorch file clearly defining the class for given model segment
 
-        Args explicitly:
+        Args:
             segment_name: the unique name for segment class file eg: "conv_1".
             layer_name: the name of the layer stored inside the object eg: "conv1".
-            layer_constructor: a string to explicitly construct the torch layer explicitly clearly.
-            activation_function: explicitly activation to wrap around the torch layer explicitly clearly.
-            output_folder: Path explicitly to the segment output folder clearly
+            layer_constructor: a string to construct the torch layer
+            activation_function: activation to wrap around the torch layer
+            output_folder: Path to the segment output folder clearly
         """
 
         class_name = f"{segment_name.capitalize()}Segment"
 
-        # Create the segment's class definition explicitly clearly automatically clearly
+        # Create the segment's class definition
         class_definition = f'''import torch.nn as nn
             import torch.nn.functional as F
         
@@ -706,7 +623,7 @@ class ModelSlicer:
                     return {activation_function}(self.{layer_name}(x))
             '''
 
-        # Save to a .py file explicitly clearly
+        # Save to a .py file
         class_file_path = os.path.join(output_folder, f"{segment_name}_segment.py")
         with open(class_file_path, "w") as file:
             file.write(class_definition)
@@ -714,185 +631,63 @@ class ModelSlicer:
         print(f"Segment class '{class_file_path}' created successfully.")
 
 
-def try_model_slicer(model_path: str, output_dir: Optional[str] = None,
-                     strategy: str = "layer_type", max_segments: Optional[int] = None, input_file: Optional[str] = None) -> None:
-    """
-    Test function to demonstrate the ModelSlicer functionality
+    def slice_model(self, output_dir: Optional[str] = None, strategy: str = "single_layer", input_file: Optional[str] = None) -> None:
+        """
+        Slice a given model, saving the sliced segments to the specified output directory.
+    
+        Args:
+            output_dir: Directory to save sliced model files (defaults to model_dir/slices)
+            strategy: Slicing strategy to use
+            input_file: Optional input file for additional configuration
+        """
 
-    Args:
-        model_path: Path to the model file (.pth or .pt)
-        output_dir: Directory to save sliced model files (defaults to model directory)
-        strategy: Slicing strategy to use
-        max_segments: Maximum number of segments to create
-    """
-    from src.utils.model_utils import ModelUtils
-
-    print(f"\n{'=' * 60}")
-    print(f"Testing ModelSlicer on: {os.path.basename(model_path)}")
-    print(f"{'=' * 60}")
-
-    # Create output directory if it doesn't exist
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"Ensuring output directory exists: {output_dir}")
-
-    # Time the operation
-    start_time = time.time()
-
-    # Create ModelUtils instance for analysis
-    model_utils = ModelUtils(model_path)
-
-    # Print model summary before slicing
-    print("\n[1] Analyzing model structure...")
-    analysis = model_utils.analyze_model(verbose=False)
-
-    print(f"  Model type: {analysis.get('model_type', 'Unknown')}")
-    print(f"  Parameter count: {analysis.get('total_parameters', 0):,}")
-    print(f"  Layer count: {len(analysis.get('layers', []))}")
-
-    # Get layer types summary
-    layer_types = {}
-    for layer in analysis.get('layers', []):
-        layer_type = layer.get('type', 'unknown')
-        layer_types[layer_type] = layer_types.get(layer_type, 0) + 1
-
-    print("  Layer type distribution:")
-    for layer_type, count in layer_types.items():
-        print(f"    - {layer_type}: {count}")
-
-    # Create and use the ModelSlicer
-    print("\n[2] Slicing model...")
-    slicer = ModelSlicer(model_utils)
-    print(f"  Using strategy: {strategy}, max segments: {max_segments}, input file: {input_file}")
-    result = slicer.slice(model_path, output_dir, strategy, max_segments, input_file)
-
-    # Print results
-    if result['success']:
-        elapsed_time = time.time() - start_time
-        print(f"\n✓ Model successfully sliced in {elapsed_time:.2f} seconds")
-        print(f"  Output directory: {result['output_dir']}")
-
-        # Print segment details
-        print("\n[3] Slice results:")
-        print(f"  Total segments: {len(result['segments'])}")
-
-        for i, segment in enumerate(result['segments']):
-            print(f"\n  Segment {i}: {segment['filename']}")
-            print(f"    Type: {segment['type']}")
-
-            # Get layer details
-            layer_info = None
-            for layer in analysis.get('layers', []):
-                if layer['name'] in [l['name'] for l in segment.get('layers', [])]:
-                    layer_info = layer
-                    break
-
-            if layer_info:
-                # Determine input/output sizes based on layer type
-                if layer_info.get('type') == 'linear':
-                    in_size = layer_info.get('in_features', 'N/A')
-                    out_size = layer_info.get('out_features', 'N/A')
-                elif layer_info.get('type') == 'conv':
-                    in_size = layer_info.get('in_channels', 'N/A')
-                    out_size = layer_info.get('out_channels', 'N/A')
-                else:
-                    in_size = 'N/A'
-                    out_size = 'N/A'
-
-                print(f"    Input size: {in_size}")
-                print(f"    Output size: {out_size}")
-
-                # Calculate parameters based on layer type
-                if layer_info.get('type') == 'linear' and isinstance(in_size, int) and isinstance(out_size, int):
-                    weights_params = in_size * out_size
-                    has_bias = 'bias' in layer_info.get('parameters', {})
-                    bias_params = out_size if has_bias else 0
-
-                    print(f"    Weight parameters: {weights_params:,}")
-                    print(f"    Bias parameters: {bias_params:,}")
-
-                elif layer_info.get('type') == 'conv' and isinstance(in_size, int) and isinstance(out_size, int):
-                    kernel_h, kernel_w = layer_info.get('kernel_size', (1, 1))
-                    weights_params = in_size * out_size * kernel_h * kernel_w
-                    has_bias = 'bias' in layer_info.get('parameters', {})
-                    bias_params = out_size if has_bias else 0
-
-                    print(f"    Weight parameters: {weights_params:,}")
-                    print(f"    Bias parameters: {bias_params:,}")
-                    print(f"    Kernel size: {kernel_h}x{kernel_w}")
-
-                print(f"    Total parameters: {segment['parameters']:,}")
-            else:
-                print(f"    Layers: {segment['layer_count']}")
-                print(f"    Parameters: {segment['parameters']:,}")
-
-        # Calculate total parameters in segments for verification
-        total_params = sum(segment['parameters'] for segment in result['segments'])
-        if total_params == analysis.get('total_parameters', 0):
-            print(f"\n✓ Parameter count verification: All parameters accounted for ({total_params:,})")
+        # Create output directory if it doesn't exist
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         else:
-            print(f"\n⚠ Parameter count mismatch: Original={analysis.get('total_parameters', 0):,}, "
-                  f"Sliced={total_params:,}")
+            output_dir = os.path.join(model_dir, "slices")
+            os.makedirs(output_dir, exist_ok=True)
+        if not input_file:
+            input_file = os.path.join(model_dir, "input.json")
+        if not os.path.exists(input_file):
+            raise FileNotFoundError(f"Input file not found: {input_file}")
 
-        print(f"\nMetadata saved to: {result['metadata_path']}")
-    else:
-        print(f"\n✗ Error slicing model: {result.get('error', 'Unknown error')}")
+        model_path = os.path.join(model_dir, "model.pth")
+        result = self._slice(model_path, output_dir, strategy, input_file)
+
+        # Print results
+        if result['success']:
+            print(f"Output directory: {result['output_dir']}")
+        else:
+            print(f"\n✗ Error slicing model: {result.get('error', 'Unknown error')}")
 
 
 
 # Example usage:
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
-    input_file = None
+    model_choice = 2  # Change this to test different models
+
+    base_paths = {
+        1: "models/doom",
+        2: "models/net"
+    }
+
+    model_dir = base_paths[model_choice]
+    model_slicer = ModelSlicer(model_directory=model_dir)
 
     if model_choice == 1:
-        # Doom model
-        model_dir = "models/doom"
-        model_path = os.path.join(model_dir, "doom.pth")
-        output_folder = os.path.join(model_dir, "output")
-        strategy = "single_layer"  # Slice by layer types (fc, conv, etc.)
-        input_file = "models/doom/input/input.json"
+        model_slicer.slice_model()
 
     elif model_choice == 2:
-        # Test model
-        model_dir = "models/test_model"
-        model_path = os.path.join(model_dir, "test_model.pth")
-        output_folder = os.path.join(model_dir, "output")
-        strategy = "single_layer"  # Create evenly balanced slices
+        model_slicer.slice_model()
 
     elif model_choice == 3:
-        # Embedded test model
-        model_dir = "models/test_model_embedded"
-        model_path = os.path.join(model_dir, "test_model_embedded.pth")
-        output_folder = os.path.join(model_dir, "output")
-        strategy = "single_layer"  # Slice at layer type transitions
+        model_slicer.slice_model(strategy="single_layer")
 
     elif model_choice == 4:
-        # Transformer model
-        model_path = "/path/to/transformer/model.pth"
-        output_folder = "/path/to/transformer/model_slices"
-        strategy = "layer_type"
+        model_slicer.slice_model(strategy="balanced")
 
     elif model_choice == 5:
-        # Test model
-        model_dir = "models/test_model_with_biases"
-        model_path = os.path.join(model_dir, "test_model.pth")
-        output_folder = os.path.join(model_dir, "output")
-        strategy = "layer_type"  # Create evenly balanced slices
+        model_slicer.slice_model(strategy="transitions")
 
-    elif model_choice == 6:
-        # Test model
-        model_dir = "models/test_cnn_model_with_biases"
-        model_path = os.path.join(model_dir, "test_cnn_model.pth")
-        output_folder = os.path.join(model_dir, "output")
-        strategy = "transitions"  # Create evenly balanced slices
-
-    # Run the test with the selected model
-    try_model_slicer(
-        model_path=model_path,
-        output_dir=output_folder,
-        strategy=strategy,
-        max_segments=None,  # Set to a number to limit segments
-        input_file=input_file
-    )

@@ -1,11 +1,9 @@
-import math
 import subprocess
 import time
-import tracemalloc
-
 import torch
 import torch.nn.functional as F
-from models.doom.model import DoomAgent  # Import your model class
+from models.doom.model import DoomAgent, Conv1Segment as doomConv1, Conv2Segment as doomConv2, Conv3Segment as doomConv3, FC1Segment as doomFC1, FC2Segment as doomFC2
+from models.net.model import Net, Conv1Segment as netConv1, Conv2Segment as netConv2, FC1Segment as netFC1, FC2Segment as netFC2, FC3Segment as netFC3
 import os
 import json
 from pathlib import Path
@@ -13,108 +11,52 @@ from utils.model_utils import ModelUtils
 
 env = os.environ
 
+
 class ModelRunner:
-    def __init__(self):
+    def __init__(self, model_directory: str, model_path: str = None):
         # Always use CPU
         self.device = torch.device("cpu")
 
         # Initialize attributes
-        self.model = None
-        self.model_path = None
-        self.is_sliced_model = False
+        self.model_directory = model_directory
+        self.model_path = model_path
 
-    def load_model(self, model_path):
-        """
-        Load a PyTorch model from a file.
 
-        Parameters:
-            model_path (str): Path to the model file (.pth)
-        """
-        try:
-            self.model_path = model_path
-
-            # Check if model_path is a directory (sliced model) or a file (single model)
-            if os.path.isdir(model_path):
-                print(f"Loading sliced model from directory: {model_path}")
-                self.is_sliced_model = True
-                self.model = None  # We'll load segments on demand during layered inference
-            else:
-                # For single file, load the checkpoint
-                print(f"Loading single model from file: {model_path}")
-                self.is_sliced_model = False
-                checkpoint = torch.load(model_path, map_location=self.device)
-                print(f"Loaded model type: {type(checkpoint)}")
-
-                if isinstance(checkpoint, dict):
-                    print(f"Dictionary keys: {checkpoint.keys()}")
-
-                self.model = checkpoint
-                print(f"Successfully loaded model from {model_path}")
-
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            self.model = None
-
-    def run_inference(self, input_tensor):
+    def run_inference(self, input_tensor, model_directory: str = None, model_path: str = None):
         """
         Run inference with the model and apply softmax to get probability distribution.
-
-        Parameters:
-            input_tensor (torch.Tensor): Input tensor for the model
-
-        Returns:
-            dict: Dictionary containing raw logits, softmax probabilities, and predicted action
         """
         try:
-            print(f"Input tensor shape: {input_tensor.shape}")
+            # load the model
+            self.model_directory = model_directory if model_directory else self.model_directory
+            self.model_path = model_path if model_path else os.path.join(self.model_directory, "model.pth")
+            
+            checkpoint = torch.load(self.model_path, map_location=self.device)
+            input_tensor = self._process_initial_input_tensor(input_tensor)
 
-            if not self.is_sliced_model:
-                # Handle regular model case
-                # If the input is flattened (2D) with 3136 elements, reshape it for CNN
-                if input_tensor.dim() == 2 and input_tensor.size(1) == 3136:
-                    input_tensor = input_tensor.reshape(1, 4, 28, 28)
-                    print(f"Reshaped input to: {input_tensor.shape}")
-
-                # Create and initialize model from state dict
-                checkpoint = self.model
-
-                # Create a proper model instance
+            # Create a proper model instance
+            if "doom" in self.model_directory.lower():
                 model = DoomAgent(n_actions=7)  # Adjust parameters as needed
-
-                # Load state dict
-                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                    model.load_state_dict(checkpoint['model_state_dict'])
-                else:
-                    model.load_state_dict(checkpoint)
-
-                # Move to device and evaluate
-                model = model.to(self.device)
-                model.eval()
-
-                # Run inference
-                with torch.no_grad():
-                    raw_output = model(input_tensor)
+            elif "net" in self.model_directory.lower():
+                model = Net()  # Adjust initialization as needed
             else:
-                raise ValueError("Sliced models require the run_layered_inference method.")
+                raise ValueError("Unsupported model.")
 
-        # Apply softmax to the raw output to get probabilities
+            # Load state dict
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+
+            # Move to device and evaluate
+            model = model.to(self.device)
+            model.eval()
+
+            # Run inference
+            with torch.no_grad():
+                raw_output = model(input_tensor)
 
             result = self._process_final_output(raw_output)
-            # probabilities = F.softmax(raw_output, dim=1)
-            #
-            # # Get the predicted action
-            # predicted_action = torch.argmax(probabilities, dim=1).item()
-            #
-            # # Create the result dictionary
-            # result = {
-            #     "logits": raw_output,
-            #     "probabilities": probabilities,
-            #     "predicted_action": predicted_action
-            # }
-
-            # Print the results in a more readable format
-            # self._print_inference_results(result)
-
             return result
 
         except Exception as e:
@@ -123,42 +65,64 @@ class ModelRunner:
             traceback.print_exc()
             return None
 
-    def run_layered_inference(self, input_tensor, folder_path: str):
-        print(f"Running layered inference with input shape: {input_tensor.shape}")
+    def _process_initial_input_tensor(self, input_tensor):
+        if input_tensor.dim() == 2 and input_tensor.size(1) == 3136 and 'doom' in self.model_directory.lower():
+            input_tensor = input_tensor.reshape(1, 4, 28, 28)
+        elif input_tensor.dim() == 2 and input_tensor.size(1) == 3072:
+            if input_tensor.size(0) == 1:
+                # Single sample case
+                input_tensor = input_tensor.reshape(1, 3, 32, 32)
+            else:
+                # Multiple samples case (e.g., batch size 100)
+                print(f"Processing only the first sample out of {input_tensor.size(0)}")
+                input_tensor = input_tensor[0:1].reshape(1, 3, 32, 32)
+        else:
+            raise ValueError(f"Input tensor has unsupported dimensions: {input_tensor.shape}")
+        return input_tensor
 
+    def run_layered_inference(self, input_tensor, slices_directory: str = None):
         try:
-            metadata = self._load_metadata(folder_path)
-            if metadata is None:
+            slices_directory = slices_directory or os.path.join(self.model_directory, "slices")
+            # get the segments this model was split into
+            segments = self._get_segments(slices_directory)
+            if segments is None:
                 return None
 
-            model_details = self._get_model_details(metadata)
-            if model_details is None:
-                return None
-
-            model_type, total_params, slicing_strategy, input_shape = model_details
-
-            segments = metadata.get('segments', [])
-            if not segments:
-                print("No segments found in metadata.json")
-                return None
+            input_tensor = self._process_initial_input_tensor(input_tensor)
 
             num_segments = len(segments)
-            print(f"Found {num_segments} segments in metadata.json")
-
-            # # reshape the initial input using metadata input_shape
-            x = input_tensor.to(self.device)
-            x = self._prepare_initial_input(x, segments, input_shape)
-
             # Continue processing segments
-            for i, segment in enumerate(segments):
-                print(f"\nProcessing segment {i + 1}/{num_segments}")
-                x = self._process_segment(segment, x, i, folder_path, num_segments)
-                if x is None:
-                    return None
+            for idx, segment in enumerate(segments):
+                print(f"\nProcessing segment {idx + 1}/{num_segments}")
+                segment_path = segment["path"]
 
-                print(f"Output tensor shape after segment {i + 1}: {x.shape}")
+                if "doom" in segment_path:
+                    SegmentClass = self._get_doom_segment_class(idx)
+                    segment_model = SegmentClass()
+                elif 'net' in segment_path:
+                    SegmentClass = self._get_net_segment_class(idx)
+                    segment_model = SegmentClass()
+                else:
+                    raise Exception("Invalid type of segment")
 
-            return self._process_final_output(x, num_segments)
+                checkpoint = torch.load(segment_path, map_location=self.device)
+                # load state dict
+                if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                    segment_model.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    segment_model.load_state_dict(checkpoint)
+
+                segment_model.to(self.device)
+                segment_model.eval()
+
+                # Run inference
+                with torch.no_grad():
+                    raw_output = segment_model(input_tensor)
+                    #chain together
+                    input_tensor = raw_output
+
+
+            return self._process_final_output(raw_output)
 
         except Exception as e:
             print(f"Error occurred in layered inference: {e}")
@@ -166,7 +130,50 @@ class ModelRunner:
             traceback.print_exc()
             return None
 
-    def _load_metadata(self, folder_path):
+    @staticmethod
+    def _get_net_segment_class(idx):
+        mapping = {
+            0: netConv1,
+            1: netConv2,
+            2: netFC1,
+            3: netFC2,
+            4: netFC3
+        }
+        segment_class = mapping.get(idx)
+        if segment_class is None:
+            raise ValueError(f"No corresponding class found for segment index {idx}")
+        return segment_class
+
+    def _get_segments(self, slices_directory):
+        metadata = self._load_metadata(slices_directory)
+        if metadata is None:
+            return None
+
+        segments = metadata.get('segments', [])
+        if not segments:
+            print("No segments found in metadata.json")
+            return None
+
+        num_segments = len(segments)
+        print(f"Found {num_segments} segments in metadata.json")
+        return segments
+
+    @staticmethod
+    def _get_doom_segment_class(idx):
+        mapping = {
+            0: doomConv1,
+            1: doomConv2,
+            2: doomConv3,
+            3: doomFC1,
+            4: doomFC2
+        }
+        segment_class = mapping.get(idx)
+        if segment_class is None:
+            raise ValueError(f"No corresponding class found for segment index {idx}")
+        return segment_class
+
+    @staticmethod
+    def _load_metadata(folder_path):
         """Load the model metadata from the metadata.json file."""
         metadata_path = Path(folder_path) / "metadata.json"
         if not metadata_path.exists():
@@ -178,7 +185,8 @@ class ModelRunner:
 
         return metadata
 
-    def _get_model_details(self, metadata):
+    @staticmethod
+    def _get_model_details(metadata):
         """Extract basic model details from metadata."""
         model_type = metadata.get('model_type', 'Unknown')
         total_params = metadata.get('total_parameters', 'Unknown')
@@ -192,19 +200,28 @@ class ModelRunner:
 
         return model_type, total_params, slicing_strategy, input_shape
 
-    def _prepare_initial_input(self, x, segments, input_shape):
-        """Temporary fix explicitly for original input_shape=[3136] flattened (4,28,28)."""
-        #TODO: hard coded for now, but will work on not hardcoded version
-        if len(input_shape) == 1 and input_shape[0] == 3136:
-            # Explicit temporary reshape clearly known from your original model definition
-            channels, height, width = 4, 28, 28  # explicitly correct based on model architecture
+    def _prepare_initial_input(self, x, input_shape):
+        """Temporary fix for original input_shape=[3136] flattened (4,28,28)."""
+        #TODO: hard coded --> make dynamic
+        if len(input_shape) == 1 and input_shape[0] == 3136 and 'doom' in self.model_directory.lower():
+            channels, height, width = 4, 28, 28  #
             x = x.reshape(-1, channels, height, width).to(self.device)
-            print(f"Explicit temporary correct reshape successful: {x.shape}")
+        elif len(input_shape) == 1 and input_shape[0] == 3072:
+            channels, height, width = 3, 32, 32  #
+            # Check if we have multiple samples (more than one row)
+            if x.dim() > 1 and x.size(0) > 1:
+                # Select only the first sample
+                x = x[0:1]
+                print(f"Multiple samples detected. Using only the first sample.")
+
+            x = x.reshape(-1, channels, height, width).to(self.device)
+
         else:
-            raise ValueError(f"Explicitly provided input_shape metadata seems incorrect or incomplete: {input_shape}")
+            raise ValueError(f"Provided input_shape metadata seems incorrect or incomplete: {input_shape}")
         return x
 
-    def _get_segment_path(self, segment, folder_path):
+    @staticmethod
+    def _get_segment_path(segment, folder_path):
         """Get the file path for a segment."""
         if 'path' in segment:
             segment_path = segment['path']
@@ -218,7 +235,7 @@ class ModelRunner:
 
         return segment_path
 
-    def _process_segment(self, segment, x, segment_idx, folder_path, num_segments):
+    def _process_segment(self, segment, x, segment_idx, folder_path):
         """Process a single model segment."""
         segment_type = segment.get('type')
         segment_name = segment.get('name', f"segment_{segment_idx}")
@@ -254,7 +271,8 @@ class ModelRunner:
 
         return x
 
-    def _apply_segment_reshaping(self, x, segment):
+    @staticmethod
+    def _apply_segment_reshaping(x, segment):
         """Apply any reshaping specified in the segment."""
         if 'input_reshape' in segment:
             reshape_info = segment['input_reshape']
@@ -345,11 +363,11 @@ class ModelRunner:
                 return None
 
             # Match input dimensions to weight matrix
-            x = self._match_input_dimensions(x, weight, layer_info)
+            # x = self._match_input_dimensions(x, weight, layer_info)
 
             # Apply linear transformation
             print(f"  Layer {layer_name}: input={x.shape}, weights={weight.shape}")
-            x = F.linear(x, weight, bias)
+            # x = F.linear(x, weight, bias)
 
             # Apply activation function if specified
             x = self._apply_activation(x, layer_info.get('activation'))
@@ -417,96 +435,50 @@ class ModelRunner:
 
         return x
 
-    def _process_final_output(self, x, num_segments=None):
+    @staticmethod
+    def _process_final_output(torch_tensor):
         """Process the final output of the model."""
-
-        # print(f"\nProcessed all {num_segments} segments")
-
         # Verify and print the final output
-        raw_output = x
-        print(f"Final output shape: {raw_output.shape}")
+        print(f"Final output shape: {torch_tensor.shape}")
 
         # Apply softmax to get probabilities if not already applied
-        if len(raw_output.shape) == 2:  # [batch_size, num_classes]
-            probabilities = F.softmax(raw_output, dim=1)
-            predicted_action = torch.argmax(probabilities, dim=1).item()
-            print(f"Predicted action: {predicted_action}")
+        if len(torch_tensor.shape) != 2:  # Ensure raw output is 2D [batch_size, num_classes]
+            print(f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1].")
+            torch_tensor = torch_tensor.reshape(1, -1)
 
-            result = {
-                "logits": raw_output,
-                "probabilities": probabilities,
-                "predicted_action": predicted_action
-            }
+        probabilities = F.softmax(torch_tensor, dim=1)
+        predicted_action = torch.argmax(probabilities, dim=1).item()
+        print(f"Predicted action: {predicted_action}")
 
-            # Print the results in a more readable format
-            # self._print_inference_results(result)
+        result = {
+            "logits": torch_tensor,
+            "probabilities": probabilities,
+            "predicted_action": predicted_action
+        }
 
-            return result
+        return result
 
-        else:
-            print(
-                f"Raw output shape {raw_output.shape} is not as expected for classification ([batch_size, num_classes])")
-            return {
-                "output": raw_output
-            }
+    def predict(self, mode:str = None, input_path: str = None) -> dict:
+        
+        input_path = input_path if input_path else os.path.join(self.model_directory, "input.json") 
+        input_tensor = ModelUtils.preprocess_input(input_path)
 
-    def _print_inference_results(self, result):
-        """
-        Print inference results in a readable format.
-
-        Parameters:
-            result (dict): The inference results dictionary
-        """
-        import numpy as np
-
-        logits = result["logits"].cpu().numpy()[0]
-        probs = result["probabilities"].cpu().numpy()[0]
-        action = result["predicted_action"]
-
-        print("\n----- Inference Results -----")
-        print(f"Predicted Action: {action}")
-        print("\nProbabilities:")
-
-        # Define action labels if known (customize as needed)
-        action_labels = ["Move Left", "Move Right", "Attack", "Move Forward",
-                         "Move Backward", "Turn Left", "Turn Right"]
-
-        # Print probabilities as percentages
-        print(f"{'Action':<15} {'Probability':<15} {'Logit':<15}")
-        print("-" * 45)
-
-        for i, (prob, logit) in enumerate(zip(probs, logits)):
-            label = action_labels[i] if i < len(action_labels) else f"Action {i}"
-            prob_percent = f"{prob * 100:.4f}%"
-
-            # Highlight the highest probability
-            if i == action:
-                print(f"{label:<15} {prob_percent:<15} {logit:<15.4f} <- SELECTED")
-            else:
-                print(f"{label:<15} {prob_percent:<15} {logit:<15.4f}")
-
-        print("-----------------------------\n")
-
-    def predict(self, input_path: str = None, model_path: str = None, input_tensor=None) -> dict:
-        self.load_model(model_path)
-
-        if input_tensor is None:
-            input_tensor = ModelUtils.preprocess_input(input_path)
-
-        if os.path.isdir(model_path): # if self.is_sliced_model
-            result = self.run_layered_inference(input_tensor, model_path)
+        if mode == "sliced":
+            result = self.run_layered_inference(input_tensor)
         else:
             result = self.run_inference(input_tensor)
 
         return result
 
-    def generate_witness(self, circuit_path: str = None, input_file: str = None, model_path: str = None) -> dict:
-        circuit_path = circuit_path or "models/doom/circuit/"
-        input_file = input_file or os.path.join(circuit_path, "calibration.json")
-        model_path = model_path or os.path.join(circuit_path, "model.compiled")
-        witness_path = os.path.join(circuit_path, "witness.json")
-        vk_path = os.path.join(circuit_path, "vk.key")
+    def generate_witness(self, base_path: str = None, input_file: str = None, model_path: str = None) -> dict:
+        base_path = base_path or os.path.join(self.model_directory, "ezkl", "model")
+        input_file = input_file or os.path.join(self.model_directory, "input.json")
+        model_path = model_path or os.path.join(base_path, "model.compiled")
+        witness_path = os.path.join(base_path, "witness.json")
+        vk_path = os.path.join(base_path, "vk.key")
 
+        proof_time_start = time.time()
+        
         subprocess.run(
             [
                 "ezkl",
@@ -520,6 +492,10 @@ class ModelRunner:
             check=True
         )
 
+        proof_time_end = time.time()
+
+        print(f"Witness time: {proof_time_end - proof_time_start:.2f} seconds")
+
         with open(witness_path, "r") as f:
             witness_data = json.load(f)
             # outputs = witness_data["pretty_elements"]["rescaled_outputs"][0]
@@ -530,14 +506,7 @@ class ModelRunner:
     def process_witness_output(self, witness_data):
         """
         Process the witness.json data to get prediction results.
-
-        Parameters:
-            witness_data (dict): The complete witness.json data
-
-        Returns:
-            dict: Prediction results with logits, probabilities, and predicted_action
         """
-        # Extract the rescaled outputs from the witness data
         try:
             rescaled_outputs = witness_data["pretty_elements"]["rescaled_outputs"][0]
         except KeyError:
@@ -553,20 +522,17 @@ class ModelRunner:
         # Process the tensor through _process_final_output (simulating one segment)
         result = self._process_final_output(tensor_output, 1)
 
-        # Print detailed results
-        # self._print_inference_results(result)
-
         return result
 
-    def generate_proof(self):
-        circuit_path = "models/doom/circuit/"
-        witness_path = os.path.join(circuit_path, "witness.json")
-        model_path = os.path.join(circuit_path, "model.compiled")
-        pk_path = os.path.join(circuit_path, "pk.key")
-        proof_path = os.path.join(circuit_path, "proof.json")
+    def generate_proof(self, base_path: str = None, model_directory: str = None):
+        self.model_directory = model_directory or self.model_directory
+        base_path = base_path or os.path.join(self.model_directory, "ezkl", "model")
+        witness_path = os.path.join(base_path, "witness.json")
+        model_path = os.path.join(base_path, "model.compiled")
+        pk_path = os.path.join(base_path, "pk.key")
+        proof_path = os.path.join(base_path, "proof.json")
 
         proof_time_start = time.time()
-        tracemalloc.start()
 
         subprocess.run(
             [
@@ -583,9 +549,6 @@ class ModelRunner:
         )
 
         proof_time_end = time.time()
-        current, peak_memory = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
-
         print(f"Proving time: {proof_time_end - proof_time_start:.2f} seconds")
 
         with open(proof_path, "r") as f:
@@ -597,69 +560,27 @@ class ModelRunner:
 
         return outputs, {"proof_time": proof_time}
 
-    def generate_proof_sliced(self):
-        print("Starting generate_proofs_sliced...")
+    def generate_proof_sliced(self, slices_directory: str = None, model_directory: str = None, metadata_directory: str = None):
+        self.model_directory = model_directory or self.model_directory
+        slices_directory = slices_directory or os.path.join(self.model_directory, "ezkl", "slices")
+        metadata_directory = metadata_directory or os.path.join(self.model_directory, "slices")
 
-        # Get output path for the model
-        output_path = "models/doom/output/"
-        circuitized_slices_path = os.path.join(output_path, "circuitized_slices/")
-
-        print(f"Output path: {output_path}")
-        print(f"Circuitized slices path: {circuitized_slices_path}")
-
-        # Ensure metadata is loaded
-        try:
-            metadata = self._load_metadata(output_path)
-
-            # Get number of segments from the 'segments' array length if it exists
-            if 'segments' in metadata and isinstance(metadata['segments'], list):
-                num_segments = len(metadata['segments'])
-                print(f"Found {num_segments} segments in metadata['segments']")
-            else:
-                # Fallback: look for files with segment pattern
-                if os.path.exists(circuitized_slices_path):
-                    segment_files = [f for f in os.listdir(circuitized_slices_path)
-                                     if f.startswith('segment_') and f.endswith('_witness.json')]
-                    num_segments = len(set(int(f.split('_')[1]) for f in segment_files if f.split('_')[1].isdigit()))
-                    print(f"Determined {num_segments} segments by counting witness files in directory")
-                else:
-                    num_segments = 0
-                    print("WARNING: Could not determine number of segments")
-
-            print(f"Number of segments to process: {num_segments}")
-
-            if num_segments == 0:
-                print("No segments found to process!")
-                return {"error": "No segments found"}
-
-        except Exception as e:
-            print(f"Error loading metadata: {e}")
-            return {"error": str(e)}
+        segments = self._get_segments(metadata_directory)
+        num_segments = len(segments)
 
         # Start timing
         start_time = time.time()
-        tracemalloc.start()
-
         segment_times = {}
         proof_paths = {}
 
-        print(f"Starting to process proofs for {num_segments} segments...")
-
         for segment_idx in range(num_segments):
-            print(f"\n--- PROCESSING PROOF FOR SEGMENT {segment_idx} ---")
             segment_start_time = time.time()
 
-            # Get segment file paths
             segment_name = f"segment_{segment_idx}"
-            segment_model_path = os.path.join(circuitized_slices_path, f"{segment_name}_model.compiled")
-            segment_witness_path = os.path.join(circuitized_slices_path, f"{segment_name}_witness.json")
-            segment_proof_path = os.path.join(circuitized_slices_path, f"{segment_name}_proof.json")
-            segment_pk_path = os.path.join(circuitized_slices_path, f"{segment_name}_pk.key")
-
-            # Check if all required files exist
-            print(f"Checking required files for segment {segment_idx}:")
-            print(f"  Model exists: {os.path.exists(segment_model_path)}")
-            print(f"  Witness exists: {os.path.exists(segment_witness_path)}")
+            segment_model_path = os.path.join(slices_directory, segment_name, f"{segment_name}_model.compiled")
+            segment_witness_path = os.path.join(slices_directory, segment_name, f"{segment_name}_witness.json")
+            segment_proof_path = os.path.join(slices_directory, segment_name, f"{segment_name}_proof.json")
+            segment_pk_path = os.path.join(slices_directory, segment_name, f"{segment_name}_pk.key")
 
             if not os.path.exists(segment_model_path):
                 print(f"ERROR: Model file not found at {segment_model_path}")
@@ -677,7 +598,7 @@ class ModelRunner:
                 "--compiled-circuit", segment_model_path,
                 "--witness", segment_witness_path,
                 "--proof-path", segment_proof_path,
-                "--pk-path", segment_pk_path
+                "--pk-path", segment_pk_path,
             ]
 
             print(f"Running command: {' '.join(cmd)}")
@@ -718,17 +639,13 @@ class ModelRunner:
 
         # Calculate total time
         total_time = time.time() - start_time
-        current, peak_memory = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
 
         # Return the results
         results = {
             "total_time": total_time,
             "segment_times": segment_times,
             "proof_paths": proof_paths,
-            "num_segments_processed": len(segment_times),
-            # "memory_usage_bytes": peak_memory
-
+            "num_segments_processed": len(segment_times)
         }
 
         print(f"✓ All segment proofs processed. Total proof generation time: {total_time:.2f}s")
@@ -745,44 +662,19 @@ class ModelRunner:
 
         return results
 
-    def generate_witness_sliced(self, input_path: str = None, model_path: str = None) -> dict:
+    def generate_witness_sliced(self, input_path: str = None) -> dict:
 
         print("Starting generate_witness_sliced...")
 
-        input_path = input_path or "models/doom/input/input.json"
-        # Get output path for the model
-        output_path = "models/doom/output/"
-        circuitized_slices_path = os.path.join(output_path, "circuitized_slices/")
+        input_path = input_path or os.path.join(self.model_directory, "input.json")
+        metadata_dir = os.path.join(self.model_directory, "slices")
 
-        print(f"Output path: {output_path}")
-        print(f"Circuitized slices path: {circuitized_slices_path}")
-        print(f"Checking if directory exists: {os.path.exists(circuitized_slices_path)}")
-
-        # Debug directory contents
-        if os.path.exists(circuitized_slices_path):
-            print(f"Directory contents: {os.listdir(circuitized_slices_path)}")
+        slices_dir = os.path.join(self.model_directory, "ezkl", "slices")
 
         # Ensure metadata is loaded
         try:
-            metadata = self._load_metadata(output_path)
-            print(f"Loaded metadata: {metadata}")
-
-            # Get number of segments from the 'segments' array length if it exists
-            if 'segments' in metadata and isinstance(metadata['segments'], list):
-                num_segments = len(metadata['segments'])
-                print(f"Found {num_segments} segments in metadata['segments']")
-            else:
-                # Fallback: look for files with segment pattern
-                if os.path.exists(circuitized_slices_path):
-                    segment_files = [f for f in os.listdir(circuitized_slices_path)
-                                     if f.startswith('segment_') and f.endswith('_model.compiled')]
-                    num_segments = len(set(int(f.split('_')[1]) for f in segment_files if f.split('_')[1].isdigit()))
-                    print(f"Determined {num_segments} segments by counting files in directory")
-                else:
-                    num_segments = 0
-                    print("WARNING: Could not determine number of segments")
-
-            print(f"Number of segments to process: {num_segments}")
+            metadata = self._load_metadata(metadata_dir)
+            num_segments = len(metadata['segments'])
 
             if num_segments == 0:
                 print("No segments found to process!")
@@ -794,15 +686,12 @@ class ModelRunner:
 
         # Start timing
         start_time = time.time()
-        tracemalloc.start()
         segment_times = {}
 
         # Load initial input
         try:
-            print(f"Loading input from: {input_path}")
             with open(input_path, 'r') as f:
                 current_input = json.load(f)
-            print(f"Loaded input: {current_input}")
         except Exception as e:
             print(f"Error loading input: {e}")
             return {"error": str(e)}
@@ -810,23 +699,16 @@ class ModelRunner:
         # Process each segment
         witness_paths = {}
 
-        print(f"Starting to process {num_segments} segments...")
-
         for segment_idx in range(num_segments):
-            print(f"\n--- PROCESSING SEGMENT {segment_idx} ---")
             segment_start_time = time.time()
 
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
             segment_model_name = f"{segment_name}_model.compiled"
-            segment_model_path = os.path.join(circuitized_slices_path, segment_model_name)
-
-            print(f"Segment model path: {segment_model_path}")
-            print(f"Checking if model exists: {os.path.exists(segment_model_path)}")
+            segment_model_path = os.path.join(slices_dir, segment_name, segment_model_name)
 
             # Create segment-specific input file
-            segment_input_path = os.path.join(circuitized_slices_path, f"{segment_name}_input.json")
-            print(f"Creating input file at: {segment_input_path}")
+            segment_input_path = os.path.join(slices_dir, segment_name, f"{segment_name}_input.json")
             try:
                 with open(segment_input_path, 'w') as f:
                     json.dump(current_input, f)
@@ -843,13 +725,10 @@ class ModelRunner:
                 continue
 
             # Create segment-specific witness output path
-            segment_witness_path = os.path.join(circuitized_slices_path, f"{segment_name}_witness.json")
-            print(f"Witness output path: {segment_witness_path}")
+            segment_witness_path = os.path.join(slices_dir, segment_name, f"{segment_name}_witness.json")
 
             # Get settings file for this segment
-            settings_path = os.path.join(os.path.dirname(circuitized_slices_path), f"{segment_name}_settings.json")
-            print(f"Settings path: {settings_path}")
-            print(f"Settings file exists: {os.path.exists(settings_path)}")
+            settings_path = os.path.join(os.path.dirname(slices_dir), segment_name, f"{segment_name}_settings.json")
 
             # Run EZKL witness generation command
             cmd = [
@@ -858,14 +737,12 @@ class ModelRunner:
                 "--compiled-circuit", segment_model_path,
                 "--data", segment_input_path,
                 "--output", segment_witness_path,
-                # "--settings", settings_path
             ]
 
             print(f"Running command: {' '.join(cmd)}")
 
             try:
                 process = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                print(f"Command output: {process.stdout}")
 
                 # If successful, prepare for next segment
                 if segment_idx < num_segments - 1:
@@ -882,10 +759,13 @@ class ModelRunner:
                     # Extract the output data to use as input for next segment
                     if 'outputs' in witness_data:
                         # Format the outputs as input for the next segment
-                        current_input = {"input_data": witness_data['outputs']}
+                        output_data = [[float(val) for val in
+                                       witness_data['pretty_elements']['rescaled_outputs'][0]]]
+                        
+                        current_input = {"input_data": output_data}
 
                         # Print summary information about the outputs
-                        outputs = witness_data['outputs']
+                        outputs = output_data
                         if isinstance(outputs, list):
                             print(f"Prepared input for next segment: list with {len(outputs)} elements")
                             if outputs and isinstance(outputs[0], list):
@@ -912,19 +792,16 @@ class ModelRunner:
                 print(f"Error: {e}")
                 print(f"STDOUT: {e.stdout}")
                 print(f"STDERR: {e.stderr}")
-                continue
+                break
 
         # Calculate total time
         total_time = time.time() - start_time
-        current, peak_memory = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
 
         # Return the results
         results = {
             "total_time": total_time,
             "segment_times": segment_times,
-            "witness_paths": witness_paths,
-            "memory_usage_bytes": peak_memory
+            "witness_paths": witness_paths
         }
 
         print(f"✓ All segments processed. Total witness generation time: {total_time:.2f}s")
@@ -935,30 +812,16 @@ class ModelRunner:
     def process_sliced_witness_output(self, sliced_witness_result):
         """
         Process the output from generate_witness_sliced to get prediction results.
-
-        This function takes the result from generate_witness_sliced, loads the final
-        segment's witness file, and processes it to get the prediction.
-
-        Parameters:
-            sliced_witness_result (dict): The result from generate_witness_sliced
-
-        Returns:
-            dict: Prediction results with logits, probabilities, and predicted_action
         """
-        # Get the witness paths from the result
         witness_paths = sliced_witness_result.get('witness_paths', {})
 
         if not witness_paths:
             print("Error: No witness paths found in the sliced witness result")
             return None
 
-        # Get the last segment number and its witness path
         last_segment = max(witness_paths.keys())
         final_witness_path = witness_paths[last_segment]
 
-        print(f"Processing final segment {last_segment}, witness file: {final_witness_path}")
-
-        # Load the witness file
         try:
             with open(final_witness_path, "r") as f:
                 witness_data = json.load(f)
@@ -966,30 +829,36 @@ class ModelRunner:
             print(f"Error loading witness file: {e}")
             return None
 
-        # Use the existing function to process the witness data
         return self.process_witness_output(witness_data)
 
 
 # Example usage
 if __name__ == "__main__":
-    model_path_full = "models/doom/doom.pth"
-    model_path_sliced = "models/doom/output/"
-    input_path = "models/doom/input/input.json"
-    model_runner = ModelRunner()
 
-    # run regular inference Sliced and Whole
-    # output_full = model_runner.predict(input_path, model_path_full)
-    # output_sliced = model_runner.predict(input_path, model_path_sliced)
-    # print(f"sliced output: {output_sliced}")
-    # print(f"output_full: {output_full}")
+    # Choose which model to test
+    model_choice = 2  # Change this to test different models
 
-    # # run ezkl inference Sliced and Whole
-    # witness = model_runner.generate_witness()
-    sliced_witness = model_runner.generate_witness_sliced()
-    # print(f"circuitized model: {model_runner.process_witness_output(witness)}")
-    print(f"sliced circuitized model: {model_runner.process_sliced_witness_output(sliced_witness)}")
-    #
-    # # # run proof Sliced and Whole
-    # print(model_runner.generate_proof())
-    # print(model_runner.generate_proof_sliced())
+    base_paths = {
+        1: "models/doom",
+        2: "models/net"
+    }
+
+    model_dir = base_paths[model_choice]
+    model_runner = ModelRunner(model_directory=model_dir)
+
+    if model_choice == 1:
+        # model_runner.predict()
+        # model_runner.predict(mode="sliced")
+        model_runner.generate_witness()
+        model_runner.generate_witness_sliced()
+        # model_runner.generate_proof()
+        # model_runner.generate_proof_sliced()
+
+    elif model_choice == 2:
+        # model_runner.predict()
+        # model_runner.predict(mode="sliced")
+        # model_runner.generate_witness()
+        # model_runner.generate_witness_sliced()
+        # model_runner.generate_proof()
+        model_runner.generate_proof_sliced()
 

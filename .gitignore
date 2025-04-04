@@ -1,2 +1,4 @@
 .idea/
 src/models/nanogpt/
+
+.DS_*

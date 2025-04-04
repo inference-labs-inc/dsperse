@@ -27,7 +27,7 @@ class ModelUtils:
     layer structures, and parameter details. It primarily operates on PyTorch model files.
     """
 
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, verbose=False, state_dict=None, model_type=None):
         """
         Class representing a model with support for managing its path, state, and type.
 
@@ -185,18 +185,7 @@ class ModelUtils:
             return ModelType.TRANSFORMER
 
         if has_cnn:
-            if has_linear:
-                # Check if this is actually a hybrid model (CNN + FCNN)
-                # This is common in models like DOOM where conv layers feed into FC layers
-                conv_keys = [k for k in keys if any(c in k.lower() for c in ['conv', 'bn', 'pool'])]
-                linear_keys = [k for k in keys if 'linear' in k.lower() or 'fc' in k.lower()]
-
-                # If we have significant presence of both types, it's likely a hybrid
-                if len(conv_keys) > 1 and len(linear_keys) > 1:
-                    return ModelType.HYBRID
-
-                # Otherwise, still primarily a CNN (with classification head)
-                return ModelType.CNN
+            # Relax the hybrid condition for CNN+Linear, since many CNNs have linear layers
             return ModelType.CNN
 
         if has_linear:
@@ -669,14 +658,6 @@ class ModelUtils:
         processing or storage, calculates the memory footprint for each segment in megabytes,
         and returns detailed statistics along with total segment count. The slices are verified
         before estimation to ensure integrity of the specified segment points.
-
-        :param slice_points: A list of integers representing the points at which the model
-            is sliced.
-        :type slice_points: List[int]
-        :return: A dictionary containing the total number of segments, memory footprint
-            estimates for each segment in MB, and error details if either the model
-            fails to load or the segments are found to be invalid during verification.
-        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -706,26 +687,6 @@ class ModelUtils:
         or analysis. Different strategies offer flexibility in how layers are grouped,
         including single-layer segmentation, type-based transitions, balanced groups,
         or hybrid approaches.
-
-        :param strategy: The slicing strategy to use for determining slice points.
-            Supported strategies are:
-
-            - `"single_layer"`: Slices occur after every individual layer except the last one.
-            - `"layer_type"`: Slices occur after fully connected ('linear') and convolutional ('conv') layers.
-            - `"balanced"`: Divides layers into evenly-sized segments based on `max_segments`.
-            - `"transitions"`: Places slices at transitions between different layer types.
-            - Default (hybrid strategy): Balances slices across fully connected/convolutional
-              layers or evenly distributes slices if `max_segments` applies.
-
-        :param max_segments: The maximum number of segments to partition the layers into.
-            When specified, ensures the slice points do not exceed the allowed number of
-            segments. If omitted, strategies determine the slicing freely.
-
-        :return: A list of sorted and unique integer indices representing the slice points
-            in the set of layers. Each index corresponds to the position after which
-            a slice occurs. Returns an empty list if no valid slicing points are found
-            or the layer set is empty.
-        :rtype: List[int]
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -989,8 +950,8 @@ if __name__ == "__main__":
     # model_dir = "models/test_model_embedded"
     # model_path = os.path.join(model_dir, "test_model_embedded.pth")
 
-    model_dir = "../models/test_cnn_model_with_biases"
-    model_path = os.path.join(model_dir, "test_cnn_model.pth")
+    model_dir = "../models/net"
+    model_path = os.path.join(model_dir, "model.pth")
 
     print(f"Analyzing model: {model_path}")
     model_utils = ModelUtils(model_path)

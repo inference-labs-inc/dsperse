@@ -29,6 +29,7 @@ class ModelTester:
         # get original input from path, find out its shape so we can generate more inputs
         input_file = input_file_path
         save_path = os.path.join(os.path.dirname(input_file_path), "generated")
+        os.makedirs(save_path, exist_ok=True)
         input_tensor = ModelUtils.preprocess_input(input_file)
 
         # for num_runs
@@ -42,15 +43,10 @@ class ModelTester:
             sliced_output = self.model_runner.predict(model_path=sliced_model_path, input_tensor=input_tensor)
             sliced_output = sliced_output['logits']
 
-            # run generate_witness on whole model (accuracy) --> get the output from witness.json
-            witness_output = self.model_runner.generate_witness(input_file=input_file, circuit_path="models/doom/circuit/accuracy/")
-            circuitized_accuracy_output = self.model_runner.process_witness_output(witness_output)
-            circuitized_accuracy_output = circuitized_accuracy_output['logits']
-
-            # run generate_witness on whole model (resources) --> get the output from witness.json
-            witness_output = self.model_runner.generate_witness(input_file=input_file, circuit_path="models/doom/circuit/resources/")
-            circuitized_resource_output = self.model_runner.process_witness_output(witness_output)
-            circuitized_resource_output = circuitized_resource_output['logits']
+            # run generate_witness on whole model --> get the output from witness.json
+            witness_output = self.model_runner.generate_witness(input_file=input_file, base_path="models/doom/circuit/")
+            circuitized_output = self.model_runner.process_witness_output(witness_output)
+            circuitized_output = circuitized_output['logits']
 
             # run generate_witness_sliced --> get the output from last witness.json
                 # use helper method to fetch final result and run through a softmax
@@ -62,8 +58,7 @@ class ModelTester:
             results[i] = {
                 "original_output": original_output,
                 "sliced_output": sliced_output,
-                "circuitized_output": circuitized_accuracy_output,
-                "circuitized_resouces_output": circuitized_resource_output,
+                "circuitized_output": circuitized_output,
                 "sliced_circuitized_output": sliced_circuitized_output,
             }
 
@@ -77,23 +72,14 @@ class ModelTester:
             "original_vs_circuitized": [],
             "original_vs_sliced_circuitized": [],
             "circuitized_vs_sliced_circuitized": [],
-            "resources_vs_accuracy": []
         }
 
         for i, result in results.items():
-            original_output = np.array(result["original_output"])
-            sliced_output = np.array(result["sliced_output"])
-            circuitized_output = np.array(result["circuitized_output"])
-            sliced_circuitized_output = np.array(result["sliced_circuitized_output"])
-            circuitized_resource_output = np.array(result["circuitized_resouces_output"])
+            original_output = np.array(result["original_output"], dtype=float)
+            sliced_output = np.array(result["sliced_output"], dtype=float)
+            circuitized_output = np.array(result["circuitized_output"], dtype=float)
+            sliced_circuitized_output = np.array(result["sliced_circuitized_output"], dtype=float)
 
-            # Calculate similarity - using a normalized similarity metric
-            # We first calculate the difference (error) and then transform it to a similarity measure
-            # For perfect match, mean absolute error is 0, which gives similarity of 1 (or 100%)
-            # As error increases, similarity approaches 0
-
-            # Get the maximum possible error for normalization (difference between min and max possible values)
-            # Assuming values are in range [0, 1], max possible error is 1
             max_error = 1.0
 
             # Calculate accuracy as (1 - normalized_error) and convert to percentage
@@ -108,9 +94,6 @@ class ModelTester:
             )
             accuracies["circuitized_vs_sliced_circuitized"].append(
                 float(100 * (1 - np.mean(np.abs(circuitized_output - sliced_circuitized_output)) / max_error))
-            )
-            accuracies["resources_vs_accuracy"].append(
-                float(100 * (1 - np.mean(np.abs(circuitized_output - circuitized_resource_output)) / max_error))
             )
 
         # Calculate the average accuracies over all runs
@@ -149,19 +132,55 @@ class ModelTester:
             json.dump(input_json, f)
         
         return output_path
-
         
 
-    def test_model_performance(self, model_path_full, model_path_sliced, input_path):
+    def test_ezkl_performance(self, model_path=None, sliced_model_path=None, circuitized_model_path=None,
+                            sliced_circuitized_model_path=None, input_file_path=None):
         """run a test on sliced, whole, and circuitized models to see how long it takes to run and the memory required"""
+        # Check if input file path exists
+        if not input_file_path or not os.path.exists(input_file_path):
+            raise FileNotFoundError(f"Input file path '{input_file_path}' does not exist. Please provide a valid path.")
+
+        # create output results, nested dict
+        #  dict of results, {model: {inference time, inference memory, inference result, prove time, prove memory}, sliced_model: {...}}
+        results = {}
+
+        # get original input from path, find out its shape so we can generate more inputs
+        input_file = input_file_path
+        input_tensor = ModelUtils.preprocess_input(input_file)
+
+        # start timer for whole model
+        # start memory tracker
+        
+
+        # run inference on whole model
+
+        # stop timer
+        # stop memory tracker
+
+        # repeat for sliced
+
+        # repeat for circuitized model
+
+        # repeat for sliced circuitized model
+
+        # print table showing results on time and memory that each one took
         pass
 
+    def test_expander_performance(self):
+        # use gravy to run expander compiler collection
+
+        # this outputs to a folder gravy.helper_f.compile_circuit(params, path param)
+
+        # helper.generatewitness(params, path param)
+
+        pass
 
 
 # Example usage
 if __name__ == "__main__":
     # original model
-    model_path_full = "models/doom/doom.pth"
+    model_path_full = "models/doom/model.pth"
     model_path_sliced = "models/doom/output/"
     #
     # #circuitized model
@@ -169,8 +188,8 @@ if __name__ == "__main__":
     circuitized_model_path_sliced = "models/doom/output/circuitized_slices/"
     #
     # # input for inference
-    input_path = "models/doom/input/input.json"
+    input_path = "models/doom/input.json"
     model_tester = ModelTester()
 
-    print(model_tester.test_model_accuracy(input_file_path=input_path, num_runs=1000, model_path=model_path_full, sliced_model_path=model_path_sliced, circuitized_model_path=circuitized_model_path_full, sliced_circuitized_model_path=circuitized_model_path_sliced))
+    print(model_tester.test_model_accuracy(input_file_path=input_path, num_runs=10, model_path=model_path_full, sliced_model_path=model_path_sliced, circuitized_model_path=circuitized_model_path_full, sliced_circuitized_model_path=circuitized_model_path_sliced))
 

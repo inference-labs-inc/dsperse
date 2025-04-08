@@ -1,4 +1,26 @@
-.idea/
-src/models/nanogpt/
-
+# macOS system files
+.DS_Store
 .DS_*
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+
+# IDE/editor folders
+.vscode/
+.idea/
+
+# Log files
+*.log
+
+# Byte-compiled
+*.pyo
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/

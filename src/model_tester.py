@@ -6,51 +6,42 @@ from src.utils.model_utils import ModelUtils
 
 
 class ModelTester:
-    def __init__(self, model_path=None, sliced_model_path=None, circuitized_model_path=None,
-                 sliced_circuitized_model_path=None):
-        self.model_runner = ModelRunner()
-        self.model_path = model_path
-        self.sliced_model_path = sliced_model_path
-        self.circuitized_model_path = circuitized_model_path
-        self.sliced_circuitized_model_path = sliced_circuitized_model_path
+    def __init__(self, model_directory):
+        self.model_directory = model_directory
+        self.model_runner = ModelRunner(model_directory)
 
-    def test_model_accuracy(self, num_runs=10, model_path=None, sliced_model_path=None, circuitized_model_path=None,
-                            sliced_circuitized_model_path=None, input_file_path=None
-    ):
+
+    def test_model_accuracy(self, num_runs=10, input_path: str=None):
         """Run normal/ezkl inference on the sliced and whole and compare output from both."""
         # Check if input file path exists
-        if not input_file_path or not os.path.exists(input_file_path):
-            raise FileNotFoundError(f"Input file path '{input_file_path}' does not exist. Please provide a valid path.")
+        input_path = input_path if input_path else os.path.join(self.model_directory, "input.json")
 
-        # create output results
         #  dict of {int run, final output from [original whole model (0-7), original sliced model(0-7), circuitized_whole_model(0-7), circuitized_sliced model(0-7)]}
         results = {}
 
         # get original input from path, find out its shape so we can generate more inputs
-        input_file = input_file_path
-        save_path = os.path.join(os.path.dirname(input_file_path), "generated")
-        os.makedirs(save_path, exist_ok=True)
-        input_tensor = ModelUtils.preprocess_input(input_file)
+        generated_inputs_directory = os.path.join(self.model_directory, "generated_inputs")
+        os.makedirs(generated_inputs_directory, exist_ok=True)
 
         # for num_runs
         for i in range(num_runs):
         
             # run inference on original whole model --> get output (softmax)
-            original_output = self.model_runner.predict(model_path=model_path, input_tensor=input_tensor)
+            original_output = self.model_runner.predict(input_path=input_path)
             original_output = original_output['logits']
 
             # run inference on original sliced model --> get output (softmax)
-            sliced_output = self.model_runner.predict(model_path=sliced_model_path, input_tensor=input_tensor)
+            sliced_output = self.model_runner.predict(input_path=input_path, mode="sliced")
             sliced_output = sliced_output['logits']
 
             # run generate_witness on whole model --> get the output from witness.json
-            witness_output = self.model_runner.generate_witness(input_file=input_file, base_path="models/doom/circuit/")
+            witness_output = self.model_runner.generate_witness(input_file=input_path)
             circuitized_output = self.model_runner.process_witness_output(witness_output)
             circuitized_output = circuitized_output['logits']
 
             # run generate_witness_sliced --> get the output from last witness.json
                 # use helper method to fetch final result and run through a softmax
-            sliced_witness_output = self.model_runner.generate_witness_sliced(input_path=input_file)
+            sliced_witness_output = self.model_runner.generate_witness_sliced(input_path=input_path)
             sliced_witness_output = self.model_runner.process_sliced_witness_output(sliced_witness_output)
             sliced_circuitized_output = sliced_witness_output['logits']
 
@@ -63,8 +54,7 @@ class ModelTester:
             }
 
             # mutate, or random generate new input for next round
-            input_file = self._generate_random_input_file(input_file, save_path)
-            input_tensor = ModelUtils.preprocess_input(input_file)
+            input_path = self._generate_random_input_file(input_path, generated_inputs_directory)
 
         # For the results
         accuracies = {
@@ -75,10 +65,10 @@ class ModelTester:
         }
 
         for i, result in results.items():
-            original_output = np.array(result["original_output"], dtype=float)
-            sliced_output = np.array(result["sliced_output"], dtype=float)
-            circuitized_output = np.array(result["circuitized_output"], dtype=float)
-            sliced_circuitized_output = np.array(result["sliced_circuitized_output"], dtype=float)
+            original_output = result["original_output"].detach().cpu().numpy()
+            sliced_output = result["sliced_output"].detach().cpu().numpy()
+            circuitized_output = result["circuitized_output"].detach().cpu().numpy()
+            sliced_circuitized_output = result["sliced_circuitized_output"].detach().cpu().numpy()
 
             max_error = 1.0
 
@@ -105,16 +95,20 @@ class ModelTester:
             "accuracies": average_accuracies
         }
 
-    @staticmethod
-    def _generate_random_input_file(input_file, save_path):
-        """Helper method to generate random values in the input file
-    
-        Args:
-            input_file: Path where the input file should be saved
-        """
 
+    def _generate_random_input_file(self, input_file, save_path):
+        """Helper method to generate random values in the input file"""
+
+        print("Save Path ", save_path)
+        print("Input File ", input_file)
         # Generate random data with the specified shape
-        dummy_input_shape = (1, 4, 28, 28)
+        if "doom" in self.model_directory.lower():
+            dummy_input_shape = (1, 4, 28, 28)
+        elif "net" in self.model_directory.lower():
+            dummy_input_shape = (1, 3, 32, 32)
+        else:
+            raise ValueError("Unknown input file shape. Please specify the shape manually in the code. ")
+
         random_data = np.random.rand(*dummy_input_shape)
 
         # Normalize to the range [0, 1] (similar to the example data)
@@ -134,20 +128,14 @@ class ModelTester:
         return output_path
         
 
-    def test_ezkl_performance(self, model_path=None, sliced_model_path=None, circuitized_model_path=None,
-                            sliced_circuitized_model_path=None, input_file_path=None):
+    def test_ezkl_performance(self, input_file_path=None):
         """run a test on sliced, whole, and circuitized models to see how long it takes to run and the memory required"""
         # Check if input file path exists
-        if not input_file_path or not os.path.exists(input_file_path):
-            raise FileNotFoundError(f"Input file path '{input_file_path}' does not exist. Please provide a valid path.")
 
         # create output results, nested dict
         #  dict of results, {model: {inference time, inference memory, inference result, prove time, prove memory}, sliced_model: {...}}
-        results = {}
 
         # get original input from path, find out its shape so we can generate more inputs
-        input_file = input_file_path
-        input_tensor = ModelUtils.preprocess_input(input_file)
 
         # start timer for whole model
         # start memory tracker
@@ -176,20 +164,39 @@ class ModelTester:
 
         pass
 
+    def test_deep_prove_performance(self):
+        # use gravy to run expander compiler collection
+
+        # this outputs to a folder gravy.helper_f.compile_circuit(params, path param)
+
+        # helper.generatewitness(params, path param)
+
+        pass
+
 
 # Example usage
 if __name__ == "__main__":
-    # original model
-    model_path_full = "models/doom/model.pth"
-    model_path_sliced = "models/doom/output/"
-    #
-    # #circuitized model
-    circuitized_model_path_full = "models/doom/circuit/"
-    circuitized_model_path_sliced = "models/doom/output/circuitized_slices/"
-    #
-    # # input for inference
-    input_path = "models/doom/input.json"
-    model_tester = ModelTester()
+    # Choose which model to test
+    model_choice = 2  # Change this to test different models
 
-    print(model_tester.test_model_accuracy(input_file_path=input_path, num_runs=10, model_path=model_path_full, sliced_model_path=model_path_sliced, circuitized_model_path=circuitized_model_path_full, sliced_circuitized_model_path=circuitized_model_path_sliced))
+    base_paths = {
+        1: "models/doom",
+        2: "models/net"
+    }
 
+    model_dir = base_paths[model_choice]
+    model_tester = ModelTester(model_dir)
+
+    if model_choice == 1:
+        accuracy = model_tester.test_model_accuracy(num_runs=1000)
+        print(f"Model accuracy: {accuracy}")
+        # model_tester.test_ezkl_performance()
+        # model_tester.test_expander_performance()
+        # model_tester.test_deep_prove_performance()
+
+    elif model_choice == 2:
+        accuracy = model_tester.test_model_accuracy(num_runs=10000)
+        print(f"Model accuracy: {accuracy}")
+        # model_tester.test_ezkl_performance()
+        # model_tester.test_expander_performance()
+        # model_tester.test_deep_prove_performance()

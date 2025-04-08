@@ -93,7 +93,7 @@ class ModelRunner:
             num_segments = len(segments)
             # Continue processing segments
             for idx, segment in enumerate(segments):
-                print(f"\nProcessing segment {idx + 1}/{num_segments}")
+                # print(f"\nProcessing segment {idx + 1}/{num_segments}")
                 segment_path = segment["path"]
 
                 if "doom" in segment_path:
@@ -120,7 +120,6 @@ class ModelRunner:
                     raw_output = segment_model(input_tensor)
                     #chain together
                     input_tensor = raw_output
-
 
             return self._process_final_output(raw_output)
 
@@ -155,7 +154,6 @@ class ModelRunner:
             return None
 
         num_segments = len(segments)
-        print(f"Found {num_segments} segments in metadata.json")
         return segments
 
     @staticmethod
@@ -184,256 +182,6 @@ class ModelRunner:
             metadata = json.load(f)
 
         return metadata
-
-    @staticmethod
-    def _get_model_details(metadata):
-        """Extract basic model details from metadata."""
-        model_type = metadata.get('model_type', 'Unknown')
-        total_params = metadata.get('total_parameters', 'Unknown')
-        slicing_strategy = metadata.get('slicing_strategy', 'Unknown')
-        input_shape = metadata.get('input_data_info', {}).get('input_shape', 'Unknown')
-
-        print(f"Model type: {model_type}")
-        print(f"Total parameters: {total_params}")
-        print(f"Slicing strategy: {slicing_strategy}")
-        print(f"Model input shape from metadata: {input_shape}")
-
-        return model_type, total_params, slicing_strategy, input_shape
-
-    def _prepare_initial_input(self, x, input_shape):
-        """Temporary fix for original input_shape=[3136] flattened (4,28,28)."""
-        #TODO: hard coded --> make dynamic
-        if len(input_shape) == 1 and input_shape[0] == 3136 and 'doom' in self.model_directory.lower():
-            channels, height, width = 4, 28, 28  #
-            x = x.reshape(-1, channels, height, width).to(self.device)
-        elif len(input_shape) == 1 and input_shape[0] == 3072:
-            channels, height, width = 3, 32, 32  #
-            # Check if we have multiple samples (more than one row)
-            if x.dim() > 1 and x.size(0) > 1:
-                # Select only the first sample
-                x = x[0:1]
-                print(f"Multiple samples detected. Using only the first sample.")
-
-            x = x.reshape(-1, channels, height, width).to(self.device)
-
-        else:
-            raise ValueError(f"Provided input_shape metadata seems incorrect or incomplete: {input_shape}")
-        return x
-
-    @staticmethod
-    def _get_segment_path(segment, folder_path):
-        """Get the file path for a segment."""
-        if 'path' in segment:
-            segment_path = segment['path']
-            if not os.path.exists(segment_path):
-                # Try using relative path
-                segment_path = os.path.join(folder_path, os.path.basename(segment_path))
-        elif 'filename' in segment:
-            segment_path = os.path.join(folder_path, segment['filename'])
-        else:
-            return None
-
-        return segment_path
-
-    def _process_segment(self, segment, x, segment_idx, folder_path):
-        """Process a single model segment."""
-        segment_type = segment.get('type')
-        segment_name = segment.get('name', f"segment_{segment_idx}")
-
-        # Get the segment file path
-        segment_path = self._get_segment_path(segment, folder_path)
-        if not segment_path or not os.path.exists(segment_path):
-            print(f"Segment file not found: {segment_path}")
-            return None
-
-        print(f"Loading segment from: {segment_path}")
-        segment_data = torch.load(segment_path, map_location=self.device)
-
-        # Load/get input for this segment
-        print(f"Input tensor shape before processing: {x.shape}")
-
-        # Validate input shape for segment type
-        if segment_type == 'conv' and len(x.shape) != 4:
-            print(
-                f"Segment {segment_idx} is convolutional but input shape {x.shape} is not 4D [batch, channels, height, width]")
-            return None
-
-        # Apply any reshaping specified in the segment
-        x = self._apply_segment_reshaping(x, segment)
-
-        # Process based on segment type
-        if segment_type == 'conv':
-            x = self._process_conv_segment(segment, segment_data, x, segment_name)
-        elif segment_type == 'fc' or segment_type == 'linear':
-            x = self._process_fc_segment(segment, segment_data, x, segment_name)
-        else:
-            print(f"Unknown segment type '{segment_type}', skipping")
-
-        return x
-
-    @staticmethod
-    def _apply_segment_reshaping(x, segment):
-        """Apply any reshaping specified in the segment."""
-        if 'input_reshape' in segment:
-            reshape_info = segment['input_reshape']
-            if reshape_info.get('type') == 'flatten':
-                # Flatten to [batch_size, -1]
-                original_shape = x.shape
-                x = x.reshape(x.size(0), -1)
-                print(f"Applied specified flattening: {original_shape} → {x.shape}")
-
-            elif reshape_info.get('type') == 'reshape' and 'shape' in reshape_info:
-                target_shape = reshape_info['shape']
-                # Replace None/null with batch size
-                target_shape = [x.size(0) if dim is None else dim for dim in target_shape]
-                x = x.reshape(target_shape)
-                print(f"Applied specified reshaping: {x.shape}")
-
-        # Add a fallback for FC layers that don't have explicit reshape info
-        elif segment.get('type') == 'fc' and len(x.shape) > 2:
-            # This should only happen if no input_reshape was specified
-            original_shape = x.shape
-            x = x.reshape(x.size(0), -1)
-            print(f"Applied default FC flattening: {original_shape} → {x.shape}")
-
-        return x
-
-    def _process_conv_segment(self, segment, segment_data, x, segment_name):
-        """Process a convolutional segment."""
-        print(f"Processing convolutional segment: {segment_name}")
-
-        # # Hard-coded parameters for the DOOM model
-        if segment_name == "segment_0":  # First conv layer
-            stride, padding = 1, 1
-        elif segment_name in ["segment_1", "segment_2"]:  # Second and third conv layers
-            stride, padding = 2, 1
-        else:
-            stride, padding = 1, 0  # Default values
-
-        for layer_info in segment.get('layers', []):
-            layer_name = layer_info.get('name', 'unnamed_layer')
-
-            # Extract weights and biases
-            weight, bias = self._extract_weights_and_biases(segment_data, layer_name)
-
-            if weight is None:
-                print(f"Available keys in segment_data: {list(segment_data.keys())}")
-                print(f"Could not find weights for layer {layer_name}")
-                return None
-
-            # # Get convolution parameters from the layer metadata todo: dynamically get stride and padding
-            # stride = layer_info.get('stride', 1)
-            # padding = layer_info.get('padding', 0)
-            #
-            # # Ensure proper formatting for stride and padding
-            # if isinstance(stride, (list, tuple)):
-            #     stride = tuple(stride)
-            # elif isinstance(stride, int):
-            #     stride = (stride, stride)
-            #
-            # if isinstance(padding, (list, tuple)):
-            #     padding = tuple(padding)
-            # elif isinstance(padding, int):
-            #     padding = (padding, padding)
-
-            print(f"  Layer {layer_name}: input={x.shape}, weights={weight.shape}, stride={stride}, padding={padding}")
-
-            # Apply convolution
-            x = F.conv2d(x, weight, bias, stride=stride, padding=padding)
-
-            # Apply activation function if specified
-            x = self._apply_activation(x, layer_info.get('activation'))
-            print(f"  Output shape after layer {layer_name}: {x.shape}")
-
-        return x
-
-    def _process_fc_segment(self, segment, segment_data, x, segment_name):
-        """Process a fully connected segment."""
-        print(f"Processing fully connected segment: {segment_name}")
-
-        for layer_info in segment.get('layers', []):
-            layer_name = layer_info.get('name', 'unnamed_layer')
-
-            # Extract weights and biases
-            weight, bias = self._extract_weights_and_biases(segment_data, layer_name)
-
-            if weight is None:
-                print(f"Available keys in segment_data: {list(segment_data.keys())}")
-                print(f"Could not find weights for layer {layer_name}")
-                return None
-
-            # Match input dimensions to weight matrix
-            # x = self._match_input_dimensions(x, weight, layer_info)
-
-            # Apply linear transformation
-            print(f"  Layer {layer_name}: input={x.shape}, weights={weight.shape}")
-            # x = F.linear(x, weight, bias)
-
-            # Apply activation function if specified
-            x = self._apply_activation(x, layer_info.get('activation'))
-            print(f"  Output shape after layer {layer_name}: {x.shape}")
-
-        return x
-
-    def _extract_weights_and_biases(self, segment_data, layer_name):
-        """Extract weights and biases from segment data."""
-        weight = None
-        bias = None
-
-        # Try to find weights in segment_data
-        for key in [f"{layer_name}.weight", "weight", f"{layer_name}_weight"]:
-            if key in segment_data:
-                weight = segment_data[key]
-                break
-
-        # Try to find biases in segment_data
-        for key in [f"{layer_name}.bias", "bias", f"{layer_name}_bias"]:
-            if key in segment_data:
-                bias = segment_data[key]
-                break
-
-        return weight, bias
-
-    def _match_input_dimensions(self, x, weight, layer_info):
-        """Match the input dimensions to the weight matrix dimensions."""
-        input_features = x.shape[1]
-        expected_features = weight.shape[1]
-
-        if input_features != expected_features:
-            print(
-                f"Input feature mismatch! Got {input_features} features but weights expect {expected_features} features")
-
-            # Try to get expected feature count from layer info
-            if 'input_features' in layer_info:
-                input_features_target = layer_info['input_features']
-                if input_features_target == expected_features:
-                    print(f"Using input_features from layer info: {input_features_target}")
-
-            # Handle dimension mismatch by cropping or padding
-            if input_features > expected_features:
-                print(f"Cropping input tensor from {input_features} to {expected_features} features")
-                x = x[:, :expected_features]
-            else:
-                print(f"Padding input tensor from {input_features} to {expected_features} features with zeros")
-                padding = torch.zeros(x.size(0), expected_features - input_features, device=x.device)
-                x = torch.cat([x, padding], dim=1)
-
-        return x
-
-    def _apply_activation(self, x, activation):
-        """Apply activation function to tensor."""
-
-        if activation and activation.lower() != 'none':
-            if activation.upper() == 'RELU':
-                x = F.relu(x)
-            elif activation.upper() == 'SIGMOID':
-                x = torch.sigmoid(x)
-            elif activation.upper() == 'TANH':
-                x = torch.tanh(x)
-            # elif activation.upper() == 'SOFTMAX':
-            #     x = F.softmax(x, dim=1)
-
-        return x
 
     @staticmethod
     def _process_final_output(torch_tensor):
@@ -518,7 +266,7 @@ class ModelRunner:
         tensor_output = torch.tensor([float_values], dtype=torch.float32)
 
         # Process the tensor through _process_final_output (simulating one segment)
-        result = self._process_final_output(tensor_output, 1)
+        result = self._process_final_output(tensor_output)
 
         return result
 
@@ -703,13 +451,6 @@ class ModelRunner:
                 with open(segment_input_path, 'w') as f:
                     json.dump(current_input, f)
 
-                # Print info about the size/structure of the input instead of full content
-                if isinstance(current_input, dict):
-                    print(f"Input file created with {len(current_input)} keys: {list(current_input.keys())}")
-                elif isinstance(current_input, list):
-                    print(f"Input file created with {len(current_input)} items")
-                else:
-                    print(f"Input file created with data of type: {type(current_input)}")
             except Exception as e:
                 print(f"Error creating input file: {e}")
                 continue
@@ -757,7 +498,7 @@ class ModelRunner:
                 witness_paths[segment_idx] = segment_witness_path
                 segment_time = time.time() - segment_start_time
                 segment_times[segment_idx] = segment_time
-                print(f"✓ Segment {segment_idx} witness generated in {segment_time:.2f}s")
+                # print(f"✓ Segment {segment_idx} witness generated in {segment_time:.2f}s")
 
             except subprocess.CalledProcessError as e:
                 print(f"Error generating witness for segment {segment_idx}")

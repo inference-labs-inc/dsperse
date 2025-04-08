@@ -2,6 +2,9 @@
 .DS_Store
 .DS_*
 
+# macOS metadata
+._*
+
 # Python cache
 __pycache__/
 *.py[cod]

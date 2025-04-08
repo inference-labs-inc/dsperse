@@ -19,42 +19,12 @@ class ModelType(enum.Enum):
 
 
 class ModelUtils:
-    """
-    ModelUtils class is a utility for managing and analyzing neural network model files.
-
-    The class provides functionalities for loading model state dictionaries, analyzing
-    their architecture, and identifying key characteristics such as the type of network,
-    layer structures, and parameter details. It primarily operates on PyTorch model files.
-    """
-
     def __init__(self, model_path=None, verbose=False, state_dict=None, model_type=None):
-        """
-        Class representing a model with support for managing its path, state, and type.
-
-        The class allows defining an optional model path during initialization. It
-        maintains additional attributes to store the state dictionary and type of
-        the model.
-
-        """
         self.model_path = model_path
         self.state_dict = None
         self.model_type = None
 
     def load_model(self) -> bool:
-        """
-        Loads a machine learning model from the specified file path using PyTorch,
-        validates its existence, and manages different expected formats of state
-        dictionaries. This method is essential for initializing and preparing the
-        model for inference or further training.
-
-        :raises ValueError: If the specified model path is invalid or does not exist.
-        :raises RuntimeError: If the model cannot be loaded due to other
-            unexpected issues during the loading process.
-
-        :return: True if the model is successfully loaded and processed,
-            otherwise False.
-        :rtype: bool
-        """
         if not self.model_path or not os.path.exists(self.model_path):
             print(f"Error: Invalid model path {self.model_path}")
             return False
@@ -62,25 +32,21 @@ class ModelUtils:
         try:
             # Load with torch.load and appropriate map_location
             self.state_dict = torch.load(self.model_path, map_location=torch.device('cpu'))
-            print(f"Loaded model with type: {type(self.state_dict)}")
 
             # Handle different state dict formats
             if isinstance(self.state_dict, dict):
                 if 'state_dict' in self.state_dict:
                     self.state_dict = self.state_dict['state_dict']
-                    print("Using 'state_dict' key from loaded dictionary")
                 elif 'model_state_dict' in self.state_dict:
                     self.state_dict = self.state_dict['model_state_dict']
-                    print("Using 'model_state_dict' key from loaded dictionary")
                 elif 'net' in self.state_dict:
                     self.state_dict = self.state_dict['net']
-                    print("Using 'net' key from loaded dictionary")
 
                 # Debug - print the keys
-                if isinstance(self.state_dict, dict):
-                    print(f"State dict keys: {list(self.state_dict.keys())[:5]} (showing first 5)")
-                else:
-                    print(f"State dict is not a dictionary but {type(self.state_dict)}")
+                # if isinstance(self.state_dict, dict):
+                #     print(f"State dict keys: {list(self.state_dict.keys())[:5]} (showing first 5)")
+                # else:
+                #     print(f"State dict is not a dictionary but {type(self.state_dict)}")
 
             return True
         except Exception as e:
@@ -95,19 +61,6 @@ class ModelUtils:
         characteristics such as the total number of parameters and groupings
         of layers. Additionally, the results of the analysis can be optionally
         printed to the console or written to an output file.
-
-        :param verbose: Whether detailed analysis results should be printed
-            to the console. Defaults to True.
-        :type verbose: bool
-        :param output_file: Optional path to a file where the analysis results
-            should be saved. If None, the results are not written to a file.
-        :type output_file: str or None
-        :return: A dictionary containing the results of the model analysis,
-            including information on the model's type, its layer structure,
-            key characteristics such as total parameters, and identified
-            layer groups. If the model fails to load, an error message is
-            returned instead.
-        :rtype: Dict
         """
         if self.state_dict is None:
             if not self.load_model():
@@ -203,13 +156,6 @@ class ModelUtils:
         detecting specific properties of their weight tensors. It uses common CNN
         naming conventions and checks for 4D weight tensor shapes, a typical
         characteristic of convolutional layers.
-
-        :param keys: A list of keys representing the layer names or identifiers to
-            be checked.
-        :type keys: list[str]
-        :return: A boolean value indicating whether any of the provided keys belongs
-            to a CNN layer.
-        :rtype: bool
         """
         # Check for common CNN naming patterns
         if any(pattern in key for key in keys
@@ -233,14 +179,6 @@ class ModelUtils:
         fully connected, normalization, etc.), shape, and associated parameters, such as weights
         and biases. Additionally, for convolutional and fully connected layers, detailed
         metadata such as kernel size, in/out channels, and features are extracted.
-
-        The extracted layer information is returned as a sorted list of dictionaries, where
-        each dictionary represents a layer with its details. Sorting aims to maintain a logical
-        order in the layer sequence, which is useful for model inspection and debugging.
-
-        :return: A list of dictionaries, where each dictionary contains organized information
-                 about a model's layer, including its name, type, parameters, and sizes.
-        :rtype: List[Dict]
         """
         if self.state_dict is None or not isinstance(self.state_dict, dict):
             print("Warning: Cannot extract layers - state dict is None or not a dictionary")
@@ -324,12 +262,6 @@ class ModelUtils:
         Sorts a list of layer dictionaries based on numerical prefixes extracted from their names. Layer names are grouped
         by common prefixes, sorted by number, followed by suffix within each group. Groups are then flattened in the order
         of their prefixes.
-
-        :param layers: A list of dictionaries where each dictionary represents a layer. Each layer dictionary must contain
-                       a 'name' key, which is a string used to determine its sorting order.
-        :type layers: List[Dict]
-        :return: A list of dictionaries representing the layers sorted first by numerical prefix, then by any suffix.
-        :rtype: List[Dict]
         """
 
         # First try grouping by numerical prefixes
@@ -359,15 +291,6 @@ class ModelUtils:
     def _count_parameters(self) -> int:
         """
         Counts the total number of parameters in the state dictionary.
-
-        The method computes the sum of elements for tensors stored in the
-        state dictionary. If the state dictionary is not set or if it is not a
-        valid dictionary, the method returns 0.
-
-        :param self: The object instance containing the state dictionary.
-        :return: The total count of parameters in the state dictionary, or 0
-            if the state dictionary is None or invalid.
-        :rtype: int
         """
         if self.state_dict is None or not isinstance(self.state_dict, dict):
             return 0
@@ -381,20 +304,6 @@ class ModelUtils:
         Groups and classifies layers into predefined categories based on their type, and identifies
         potential transition points (or slicing points) between different layer types. This helps in
         structuring neural network models for better organization and analysis.
-
-        :param layers: A list of dictionaries where each dictionary represents a layer in the network.
-            Each dictionary is expected to have at least the following keys:
-                - 'type': A string indicating the type of the layer.
-                - 'name': A string representing the name of the layer.
-        :return: A dictionary with the following structure:
-            - 'groups': A dictionary categorizing layer names by their types. The supported types are:
-                'conv', 'linear', 'norm', 'embedding', and 'other'. Layers not matching predefined
-                types default to the 'other' category.
-            - 'potential_slicing_points': A list of dictionaries that mark transition points between
-                layers of different types. Each dictionary contains:
-                    - 'after': The type of the preceding layer.
-                    - 'before': The type of the succeeding layer.
-                    - 'layer_name': The name of the layer where the transition occurs.
         """
         groups = {
             'conv': [],
@@ -432,32 +341,16 @@ class ModelUtils:
             'potential_slicing_points': slicing_points
         }
 
-    def _print_analysis(self, analysis: Dict, output_file=None):
+    @staticmethod
+    def _print_analysis(analysis: Dict, output_file=None):
         """
         Prints a detailed analysis of a model's architecture, including parameter counts, layer type
         distribution, and individual layer details. The analysis can be either printed to the console
         or written to a specified output file.
-
-        :param analysis: A dictionary containing details about the model analysis. The dictionary must
-            include keys like 'model_type', 'total_parameters', 'layers', and 'layer_groups', among others.
-            The 'model_type' key should contain an enum value representing the type of model, and
-            'layer_groups' must contain layer type distribution along with potential slicing points.
-        :param output_file: The path to an optional file where the analysis will be written. If not
-            provided, the analysis will be printed to the console.
-
-        :return: None.
         """
-        output = []  # Collect output lines
+        output = ["=" * 60, "MODEL ARCHITECTURE ANALYSIS", "=" * 60,
+                  f"\nModel Type: {analysis['model_type'].value}"]  # Collect output lines
 
-        # Header
-        output.append("=" * 60)
-        output.append("MODEL ARCHITECTURE ANALYSIS")
-        output.append("=" * 60)
-
-        # Model type
-        output.append(f"\nModel Type: {analysis['model_type'].value}")
-
-        # Parameters
         total_params = analysis['total_parameters']
         if total_params > 1_000_000:
             params_str = f"{total_params / 1_000_000:.2f}M"
@@ -777,15 +670,6 @@ class ModelUtils:
     def check_model_structure(model):
         """
         Check the structure of a loaded model to determine how it should be used for inference.
-
-        Parameters:
-            model: The loaded model object
-
-        Returns:
-            dict: A dictionary containing information about the model structure:
-                - 'type': 'callable', 'state_dict', 'dict_with_model', or 'unknown'
-                - 'callable_model': The callable model if found, otherwise None
-                - 'component_name': Name of the callable component if found in a dictionary
         """
         result = {
             'type': 'unknown',
@@ -861,17 +745,6 @@ class ModelUtils:
     def get_input_shape(input_file_path: str) -> tuple:
         """
         Returns the input shape based on a provided input data file (JSON or other formats).
-
-        Args:
-            input_file_path (str): Path to the file containing input data.
-                                   Currently supports JSON files.
-
-        Returns:
-            tuple: The explicit shape of the input data, excluding batch size.
-
-        Raises:
-            FileNotFoundError: If the provided input file path doesn't exist.
-            ValueError: if file content is invalid or unsupported.
         """
         if not os.path.exists(input_file_path):
             raise FileNotFoundError(f"The specified input file does not exist: {input_file_path}")
@@ -895,19 +768,12 @@ class ModelUtils:
         else:
             raise ValueError(f"Unsupported file format: {file_extension}. Currently, only JSON is supported.")
 
-        print(f"Explicitly determined input shape from file: {input_shape}")
         return input_shape
 
     @staticmethod
     def preprocess_input(input_path):
         """
         Preprocess input data from JSON.
-
-        Parameters:
-            input_path (str): Path to input JSON file
-
-        Returns:
-            torch.Tensor: Preprocessed input tensor
         """
         try:
 
@@ -915,15 +781,11 @@ class ModelUtils:
             with open(input_path, 'r') as f:
                 input_data = json.load(f)
 
-            print(f"Loaded input data: {type(input_data)}")
-
             # Extract input data
             if isinstance(input_data, dict):
                 if 'input_data' in input_data:
-                    print("Found 'input_data' key in input JSON")
                     input_data = input_data['input_data']
                 elif 'input' in input_data:
-                    print("Found 'input' key in input JSON")
                     input_data = input_data['input']
 
             # Convert to tensor
@@ -937,7 +799,6 @@ class ModelUtils:
             else:
                 raise ValueError("Expected input data to be a list or nested list")
 
-            print(f"Input tensor shape: {input_tensor.shape}")
             return input_tensor
 
         except Exception as e:

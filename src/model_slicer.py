@@ -109,7 +109,7 @@ class ModelSlicer:
         # Add feature information clearly extracted method should already add needed details (activation, input shapes, etc.)
         self._add_feature_information(segment_info, segment)
 
-        # 🆕 Now  ensure our required details are present
+        # 🆕 Now  ensure our required details are present TODO: Do we need this? insert code to generate slice Class?
         layer_details = segment_info.get('layer_details')
         if layer_details:
             layer_name = layer_details.get('layer_name', f"{segment_type}_{segment_idx}")
@@ -379,7 +379,7 @@ class ModelSlicer:
                     segment_dict[key] = value
                     break
 
-        print(f"{segment_dict} parameters from state dict")
+        # print(f"{segment_dict} parameters from state dict")
         return segment_dict
 
     def _gather_activation_information(self, model_path: str, layers: List[Dict]) -> Dict[str, str]:

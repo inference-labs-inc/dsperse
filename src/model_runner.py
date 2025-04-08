@@ -439,7 +439,6 @@ class ModelRunner:
     def _process_final_output(torch_tensor):
         """Process the final output of the model."""
         # Verify and print the final output
-        print(f"Final output shape: {torch_tensor.shape}")
 
         # Apply softmax to get probabilities if not already applied
         if len(torch_tensor.shape) != 2:  # Ensure raw output is 2D [batch_size, num_classes]
@@ -448,7 +447,6 @@ class ModelRunner:
 
         probabilities = F.softmax(torch_tensor, dim=1)
         predicted_action = torch.argmax(probabilities, dim=1).item()
-        print(f"Predicted action: {predicted_action}")
 
         result = {
             "logits": torch_tensor,
@@ -601,17 +599,13 @@ class ModelRunner:
                 "--pk-path", segment_pk_path,
             ]
 
-            print(f"Running command: {' '.join(cmd)}")
-
             try:
                 process = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                print(f"Command succeeded")
 
                 # Check if proof file was created
                 if os.path.exists(segment_proof_path):
                     # Get proof file size
                     proof_size = os.path.getsize(segment_proof_path)
-                    print(f"Proof file created, size: {proof_size} bytes")
 
                     # Try to load proof to check if valid
                     try:
@@ -649,7 +643,6 @@ class ModelRunner:
         }
 
         print(f"✓ All segment proofs processed. Total proof generation time: {total_time:.2f}s")
-        print(f"Successfully generated proofs for {len(segment_times)} of {num_segments} segments")
 
         # Print timing summary
         if segment_times:
@@ -663,9 +656,6 @@ class ModelRunner:
         return results
 
     def generate_witness_sliced(self, input_path: str = None) -> dict:
-
-        print("Starting generate_witness_sliced...")
-
         input_path = input_path or os.path.join(self.model_directory, "input.json")
         metadata_dir = os.path.join(self.model_directory, "slices")
 
@@ -727,9 +717,6 @@ class ModelRunner:
             # Create segment-specific witness output path
             segment_witness_path = os.path.join(slices_dir, segment_name, f"{segment_name}_witness.json")
 
-            # Get settings file for this segment
-            settings_path = os.path.join(os.path.dirname(slices_dir), segment_name, f"{segment_name}_settings.json")
-
             # Run EZKL witness generation command
             cmd = [
                 "ezkl",
@@ -739,19 +726,14 @@ class ModelRunner:
                 "--output", segment_witness_path,
             ]
 
-            print(f"Running command: {' '.join(cmd)}")
-
             try:
                 process = subprocess.run(cmd, capture_output=True, text=True, check=True)
 
                 # If successful, prepare for next segment
                 if segment_idx < num_segments - 1:
-                    print(f"Processing output for next segment...")
-                    # Read the witness file to extract the output
                     try:
                         with open(segment_witness_path, 'r') as f:
                             witness_data = json.load(f)
-                        print(f"Loaded witness data with {len(witness_data)} keys: {list(witness_data.keys())}")
                     except Exception as e:
                         print(f"Error loading witness file: {e}")
                         continue
@@ -766,15 +748,6 @@ class ModelRunner:
 
                         # Print summary information about the outputs
                         outputs = output_data
-                        if isinstance(outputs, list):
-                            print(f"Prepared input for next segment: list with {len(outputs)} elements")
-                            if outputs and isinstance(outputs[0], list):
-                                print(f"  First element is a list with {len(outputs[0])} items")
-                        elif isinstance(outputs, dict):
-                            print(
-                                f"Prepared input for next segment: dict with {len(outputs)} keys: {list(outputs.keys())}")
-                        else:
-                            print(f"Prepared input for next segment: data of type {type(outputs)}")
                     else:
                         print(f"WARNING: Witness file does not contain 'outputs' key")
                         print(f"Available keys: {list(witness_data.keys())}")
@@ -847,18 +820,18 @@ if __name__ == "__main__":
     model_runner = ModelRunner(model_directory=model_dir)
 
     if model_choice == 1:
-        # model_runner.predict()
-        # model_runner.predict(mode="sliced")
+        model_runner.predict()
+        model_runner.predict(mode="sliced")
         model_runner.generate_witness()
         model_runner.generate_witness_sliced()
-        # model_runner.generate_proof()
-        # model_runner.generate_proof_sliced()
+        model_runner.generate_proof()
+        model_runner.generate_proof_sliced()
 
     elif model_choice == 2:
-        # model_runner.predict()
-        # model_runner.predict(mode="sliced")
-        # model_runner.generate_witness()
-        # model_runner.generate_witness_sliced()
-        # model_runner.generate_proof()
+        model_runner.predict()
+        model_runner.predict(mode="sliced")
+        model_runner.generate_witness()
+        model_runner.generate_witness_sliced()
+        model_runner.generate_proof()
         model_runner.generate_proof_sliced()
 

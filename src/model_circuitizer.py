@@ -350,7 +350,6 @@ class ModelCircuitizer:
                 check=True
             )
 
-            # Explicitly create dummy calibration, then explicitly run EZKL calibration
             calibration_json_filepath = os.path.join(slice_output_path, f"segment_{idx}_calibration.json")
             self._create_dummy_calibration(calibration_json_filepath, dummy_input)
 
@@ -368,15 +367,15 @@ class ModelCircuitizer:
             )
 
             # change settings
-            # json load setting file and change 'decomp_legs' to 3
-            settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-
-            settings["run_args"]['decomp_legs'] = 4
-
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=4)
+            # json load setting file and change 'decomp_legs' to 2
+            # settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
+            # with open(settings_path, 'r') as f:
+            #     settings = json.load(f)
+            #
+            # settings["run_args"]['decomp_legs'] = 2
+            #
+            # with open(settings_path, 'w') as f:
+            #     json.dump(settings, f, indent=4)
 
             # generate model.compiled
             subprocess.run(
@@ -498,14 +497,14 @@ class ModelCircuitizer:
 
             # change settings
             # json load setting file and change 'decomp_legs' to 3
-            settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
-            with open(settings_path, 'r') as f:
-                settings = json.load(f)
-
-            settings["run_args"]['decomp_legs'] = 4
-
-            with open(settings_path, 'w') as f:
-                json.dump(settings, f, indent=4)
+            # settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
+            # with open(settings_path, 'r') as f:
+            #     settings = json.load(f)
+            #
+            # settings["run_args"]['decomp_legs'] = 4
+            #
+            # with open(settings_path, 'w') as f:
+            #     json.dump(settings, f, indent=4)
 
             # generate model.compiled
             subprocess.run(
@@ -539,7 +538,7 @@ class ModelCircuitizer:
 # Example usage
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",

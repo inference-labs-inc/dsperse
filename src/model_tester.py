@@ -126,45 +126,122 @@ class ModelTester:
             json.dump(input_json, f)
         
         return output_path
-        
 
-    def test_ezkl_performance(self, input_file_path=None):
-        """run a test on sliced, whole, and circuitized models to see how long it takes to run and the memory required"""
-        # Check if input file path exists
+    def test_jst_prove(self, mode: str ="whole"):
+        """
+        Runs the doom_model circuit command and extracts performance metrics.
 
-        # create output results, nested dict
-        #  dict of results, {model: {inference time, inference memory, inference result, prove time, prove memory}, sliced_model: {...}}
+        Executes 'Python -m python_testing.circuit_models.doom_model' in the
+        '../GravyTesting-Internal' directory relative to the project root.
+        Parses the command output to find 'Peak Memory used Overall' and
+        'Time elapsed' values.
 
-        # get original input from path, find out its shape so we can generate more inputs
+        Returns:
+            dict: A dictionary containing 'peak_memory' and 'time_elapsed' as floats.
+                  Returns {'peak_memory': None, 'time_elapsed': None} if values
+                  cannot be found or an error occurs.
+        Raises:
+            FileNotFoundError: If the '../GravyTesting-Internal' directory doesn't exist.
+            subprocess.CalledProcessError: If the command execution fails.
+            RuntimeError: If parsing fails to find the required metrics.
+        """
+        # Get the directory of the current script (src/)
+        script_dir = Path(__file__).resolve().parent
+        # Get the project root directory (kubz/) by going one level up
+        project_root = script_dir.parent
+        # Construct the absolute path to the target directory
+        target_directory_path = project_root.parent / "GravyTesting-Internal" # Go one more level up for GravyTesting-Internal
 
-        # start timer for whole model
-        # start memory tracker
-        
 
-        # run inference on whole model
+        # Determine the command based on the mode
+        if mode == "whole":
+            module_name = "python_testing.circuit_models.doom_model"
+        elif mode == "sliced":
+            module_name = "python_testing.circuit_models.doom_slices"
+        else:
+            raise ValueError(f"Invalid mode '{mode}'. Choose 'whole' or 'sliced'.")
 
-        # stop timer
-        # stop memory tracker
+        command = ["Python", "-m", module_name]
+        results = {'peak_memory': None, 'time_elapsed': None}
 
-        # repeat for sliced
+        try:
+            # Ensure the target directory exists before trying to run the command
+            if not target_directory_path.is_dir():
+                raise FileNotFoundError(f"Calculated directory '{target_directory_path}' does not exist or is not a directory.")
 
-        # repeat for circuitized model
+            print(f"Running command: {' '.join(command)} in {target_directory_path} (mode: {mode})")
+            # Execute the command using the calculated absolute path
+            process = subprocess.run(
+                command,
+                cwd=target_directory_path, # Use the calculated absolute path
+                capture_output=True,
+                text=True,
+                check=True  # Raise an exception if the command fails
+            )
 
-        # repeat for sliced circuitized model
+            output = process.stdout
+            # print("Command output:")
+            # print(output) # Print output for debugging
 
-        # print table showing results on time and memory that each one took
-        pass
+            # Define regex patterns
+            memory_pattern = r"Peak Memory used Overall : (\d+(\.\d+)?)"
+            time_pattern = r"Time elapsed: (\d+(\.\d+)?) seconds"
 
-    def test_expander_performance(self):
-        # use gravy to run expander compiler collection
+            if mode == "whole":
+                # Parse single values for 'whole' mode
+                memory_match = re.search(memory_pattern, output)
+                time_match = re.search(time_pattern, output)
 
-        # this outputs to a folder gravy.helper_f.compile_circuit(params, path param)
+                if memory_match:
+                    results['peak_memory'] = float(memory_match.group(1))
+                else:
+                    print("Warning: Could not find 'Peak Memory used Overall' in output.")
 
-        # helper.generatewitness(params, path param)
+                if time_match:
+                    results['time_elapsed'] = float(time_match.group(1))
+                else:
+                    print("Warning: Could not find 'Time elapsed' in output.")
 
-        pass
+            elif mode == "sliced":
+                # Parse and aggregate multiple values for 'sliced' mode
+                memory_matches = re.findall(memory_pattern, output)
+                time_matches = re.findall(time_pattern, output)
 
-    def test_deep_prove_performance(self, deep_prove_path: Path, verbose=False, num_samples:int = 10, output_csv_path:str = None, onnx_model_path:str =None, input_path:str = None):
+                if memory_matches:
+                    # Find the maximum peak memory across all slices
+                    peak_memory_values = [float(match[0]) for match in memory_matches]
+                    results['peak_memory'] = max(peak_memory_values) if peak_memory_values else None
+                    print(f"Found {len(peak_memory_values)} memory values. Max: {results['peak_memory']}")
+                else:
+                    print("Warning: Could not find any 'Peak Memory used Overall' in output for sliced mode.")
+
+                if time_matches:
+                    # Store individual times and calculate the total time
+                    time_elapsed_values = [float(match[0]) for match in time_matches]
+                    results['slice_times'] = time_elapsed_values
+                    results['total_time_elapsed'] = sum(time_elapsed_values) if time_elapsed_values else None
+                    print(f"Found {len(time_elapsed_values)} time values. Individual: {results['slice_times']}. Total: {results['total_time_elapsed']}")
+                else:
+                    print("Warning: Could not find any 'Time elapsed' in output for sliced mode.")
+                    results['slice_times'] = []
+
+        except FileNotFoundError as e:
+            print(f"Error: Directory not found. {e}")
+            raise # Re-raise the exception
+        except subprocess.CalledProcessError as e:
+            print(f"Error running command: {e}")
+            print(f"Stderr: {e.stderr}")
+            print(f"Stdout: {e.stdout}")
+            raise # Re-raise the exception
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            raise # Re-raise the exception
+
+        print(f"Extracted results (mode: {mode}): {results}")
+        return results
+
+
+    def test_deep_prove(self, deep_prove_path: Path, verbose=False, num_samples:int = 10, output_csv_path:str = None, onnx_model_path:str =None, input_path:str = None):
         """
         Run DeepProve benchmark tool on an ONNX model.
 
@@ -239,7 +316,7 @@ class ModelTester:
 # Example usage
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
@@ -252,18 +329,17 @@ if __name__ == "__main__":
     # TODO: modify this to install path. Maybe env var?
     deep_prove_zkml_path = Path("/Volumes/SSD/projects/deep-prove/zkml")
 
+    # TODO: Add test for ezkl time and memory
     if model_choice == 1:
-        # accuracy = model_tester.test_model_accuracy(num_runs=1000)
-        # print(f"Model accuracy: {accuracy}")
-        # model_tester.test_ezkl_performance()
-        # model_tester.test_expander_performance()
-        result = model_tester.test_deep_prove_performance(deep_prove_path=deep_prove_zkml_path, verbose=True)
-        print(f"Model deep prove result: {result}")
+        accuracy = model_tester.test_model_accuracy(num_runs=10)
+        print(f"Model accuracy: {accuracy}")
+        # result = model_tester.test_jst_prove()
+        # result = model_tester.test_jst_prove(mode="sliced")
+        # result = model_tester.test_deep_prove(deep_prove_path=deep_prove_zkml_path, verbose=True)
+        # print(f"Model deep prove result: {result}")
 
     elif model_choice == 2:
-        # accuracy = model_tester.test_model_accuracy(num_runs=10000)
-        # print(f"Model accuracy: {accuracy}")
-        # model_tester.test_ezkl_performance()
-        # model_tester.test_expander_performance()
-        result = model_tester.test_deep_prove_performance(deep_prove_path=deep_prove_zkml_path, verbose=True, num_samples=1)
+        accuracy = model_tester.test_model_accuracy(num_runs=10000)
+        print(f"Model accuracy: {accuracy}")
+        result = model_tester.test_deep_prove(deep_prove_path=deep_prove_zkml_path, verbose=True, num_samples=1)
         print(f"Model deep prove result: {result}")

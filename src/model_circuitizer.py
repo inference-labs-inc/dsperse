@@ -1,13 +1,12 @@
 import json
-import math
 import os
 import subprocess
 
 import torch
-from torch import nn
 
 from models.doom.model import DoomAgent, Conv1Segment, Conv2Segment, Conv3Segment, FC1Segment, FC2Segment
-from models.net.model import Net, Conv1Segment as NetConv1, Conv2Segment as NetConv2, FC1Segment as NetFC1, FC2Segment as NetFC2, FC3Segment as NetFC3
+from models.net.model import Net, Conv1Segment as NetConv1, Conv2Segment as NetConv2, FC1Segment as NetFC1, \
+    FC2Segment as NetFC2, FC3Segment as NetFC3
 
 
 class ModelCircuitizer:
@@ -497,14 +496,14 @@ class ModelCircuitizer:
 
             # change settings
             # json load setting file and change 'decomp_legs' to 3
-            # settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
-            # with open(settings_path, 'r') as f:
-            #     settings = json.load(f)
-            #
-            # settings["run_args"]['decomp_legs'] = 4
-            #
-            # with open(settings_path, 'w') as f:
-            #     json.dump(settings, f, indent=4)
+            settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+
+            settings["run_args"]['decomp_legs'] = 4
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
 
             # generate model.compiled
             subprocess.run(

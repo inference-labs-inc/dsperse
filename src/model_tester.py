@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -331,12 +332,12 @@ if __name__ == "__main__":
 
     # TODO: Add test for ezkl time and memory
     if model_choice == 1:
-        accuracy = model_tester.test_model_accuracy(num_runs=10)
-        print(f"Model accuracy: {accuracy}")
+        # accuracy = model_tester.test_model_accuracy(num_runs=10)
+        # print(f"Model accuracy: {accuracy}")
         # result = model_tester.test_jst_prove()
-        # result = model_tester.test_jst_prove(mode="sliced")
+        result = model_tester.test_jst_prove(mode="sliced")
         # result = model_tester.test_deep_prove(deep_prove_path=deep_prove_zkml_path, verbose=True)
-        # print(f"Model deep prove result: {result}")
+        print(f"Model deep prove result: {result}")
 
     elif model_choice == 2:
         accuracy = model_tester.test_model_accuracy(num_runs=10000)

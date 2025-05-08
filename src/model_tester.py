@@ -253,8 +253,6 @@ class ModelTester:
         Returns:
             Path: Path to the output CSV file with benchmark results
         """
-
-
         csv_name = "deepprove_benchmark_results.csv"
         input_path = input_path if input_path else os.path.join(self.model_directory, "deepprove", "input.json")
         onnx_model_path = onnx_model_path if onnx_model_path else os.path.join(self.model_directory, "deepprove", "model.onnx")
@@ -427,17 +425,17 @@ class ModelTester:
         input_tensor = RunnerUtils.reshape(input_tensor, self.model_directory)
 
         torch_input_file = Path(testing_dir, "test_run.json")
-        torch_input_file = RunnerUtils.save_to_file_flattened(input_tensor=input_tensor, file_path=str(torch_input_file))
+        RunnerUtils.save_to_file_flattened(input_tensor=input_tensor, file_path=str(torch_input_file))
 
         results = {}
 
         # Run inference
         if mode == "sliced":
-            inference_result = self.ezkl_runner.generate_witness(mode="sliced", input_file=torch_input_file)
+            inference_result = self.ezkl_runner.generate_witness(mode="sliced", input_file=str(torch_input_file))
             proof_result = self.ezkl_runner.prove(mode="sliced")
             verification_result = self.ezkl_runner.verify(mode="sliced")
         else:
-            inference_result = self.ezkl_runner.generate_witness(input_file=torch_input_file)
+            inference_result = self.ezkl_runner.generate_witness(input_file=str(torch_input_file))
             proof_result = self.ezkl_runner.prove()
             verification_result = self.ezkl_runner.verify()
 
@@ -523,21 +521,25 @@ class ModelTester:
         Returns:
             dict: Dictionary containing 'data' (10000x3072 numpy array) and 'labels' (list of 10000 numbers)
         """
-        # Unpickle data file
-        with open(input_file, 'rb') as fo:
-            data_dict = pickle.load(fo, encoding='bytes')
+        try:
+            # Unpickle data file
+            with open(input_file, 'rb') as fo:
+                data_dict = pickle.load(fo, encoding='bytes')
+            return data_dict
+        except FileNotFoundError:
+            print(f"Error: Input file '{input_file}' not found. Please make sure you have the CIFAR dataset and are pointing to the correct file.")
+            return None
 
-        return data_dict
-
-    def test_all(self, num_runs=10):
+    def test_all(self, num_runs=10, cifar_data_file: str = None):
         """Run all test variations"""
 
         # data prep
-        cifar_data_file = os.path.join(self.model_directory, "testing", "cifar-10-batches-py", "data_batch_1")
+        cifar_data_file = cifar_data_file or  os.path.join(self.model_directory, "testing", "cifar-10-batches-py", "data_batch_1")
         cifar_data = self.get_cifar_data(cifar_data_file)
 
         # Ensure testing directory exists
         testing_dir = os.path.join(self.model_directory, "testing")
+        os.makedirs(testing_dir, exist_ok=True)
         results_file = os.path.join(testing_dir, "results.json")
 
         # Initialize results structure
@@ -546,16 +548,14 @@ class ModelTester:
         # for each num run
         for i in range(num_runs):
             # get random cifir image
-            random_index = random.randint(0, 9999)
-            print(f"Random index: {random_index}")
+            random_index = random.randint(0, len(cifar_data[b'data']) - 1)
             random_input = np.frombuffer(cifar_data[b'data'][random_index], dtype=np.uint8)
-            true_label = cifar_data[b'labels'][random_index]
-            normalized_input = (random_input.astype(np.float32) / 127.5) - 1.0
+            true_label = cifar_data[b'labels'][random_index] # get the correct answer for this image
+            normalized_input = (random_input.astype(np.float32) / 127.5) - 1.0 # make bytes into floats
 
             input_tensor = torch.from_numpy(normalized_input).float().unsqueeze(0)
 
-            input_file = RunnerUtils.save_to_file_flattened(input_tensor=input_tensor,
-                                                            file_path=os.path.join(testing_dir, "random_input.json"))
+            RunnerUtils.save_to_file_flattened(input_tensor=input_tensor, file_path=os.path.join(testing_dir, "random_input.json"))
 
             # run .pth
             pytorch_results = self.run_inference_test(input_tensor, mode="whole")

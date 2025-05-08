@@ -109,7 +109,7 @@ class ModelSlicer:
         # Add feature information clearly extracted method should already add needed details (activation, input shapes, etc.)
         self._add_feature_information(segment_info, segment)
 
-        # 🆕 Now  ensure our required details are present TODO: Do we need this? insert code to generate slice Class?
+        # TODO: Do we need this? insert code to generate slice Class? Does this even get used?
         layer_details = segment_info.get('layer_details')
         if layer_details:
             layer_name = layer_details.get('layer_name', f"{segment_type}_{segment_idx}")
@@ -353,19 +353,7 @@ class ModelSlicer:
         return type_mapping.get(most_common_type, most_common_type)
 
     @staticmethod
-    def _extract_segment_state_dict(full_state_dict: Dict, layers: List[Dict]) -> Dict:
-        """
-        Extracts a subset of a state dictionary based on specified layers. This function iterates through
-        the given ``full_state_dict`` and filters out keys associated with the layers provided in the
-        ``layers`` parameter. The resulting dictionary will include only the keys that correspond to
-        these layers.
-
-        :param full_state_dict: The full state dictionary containing keys and associated layer values.
-        :param layers: List of dictionaries where each dictionary contains information about a layer. Each
-            layer must have a ``name`` key, representing the layer's identifier.
-        :return: A new dictionary containing the keys and values from the ``full_state_dict`` that match
-            the specified layers.
-        """
+    def _extract_segment_state_dict(full_state_dict: Dict, layers: List[Dict]) -> dict:
         segment_dict = {}
 
         # Collect all layer names to extract
@@ -382,22 +370,8 @@ class ModelSlicer:
         # print(f"{segment_dict} parameters from state dict")
         return segment_dict
 
-    def _gather_activation_information(self, model_path: str, layers: List[Dict]) -> Dict[str, str]:
-        """
-        Gathers activation information for given layers of a model using multiple strategies including extraction
-        from an existing model object, searching configuration files, and inferring from layer structure.
-
-        :param model_path: Path to the model file, typically required for locating associated configuration files.
-        :type model_path: str
-        :param layers: A list of dictionaries representing the layers of the model. Each dictionary may contain
-                       keys such as 'name', and additional entries will be updated based on inferred activation
-                       functions.
-        :type layers: List[Dict]
-        :return: A dictionary mapping layer names to their respective activation functions. If no activation
-                 information could be determined, it will return an empty dictionary.
-        :rtype: Dict[str, str]
-        """
-        # TODO: remove from this class
+    def _gather_activation_information(self, model_path: str, layers: List[Dict]) -> dict:
+        # TODO: remove from this file, should go in model analyser
         activations = {}
 
         # Strategy 1: Check if we have a model object for direct extraction
@@ -455,25 +429,8 @@ class ModelSlicer:
         return activations
 
     @staticmethod
-    def _extract_activation_functions(model) -> Dict[str, str]:
-        """
-        Extracts and identifies activation functions present within a given PyTorch model.
-
-        The function iterates through all the named submodules of the model and checks each module
-        against a set of known activation function classes provided by PyTorch's `torch.nn` module.
-        It collects and records these activation functions along with their corresponding hierarchical
-        names within the model.
-
-        In the case of sequential modules, the function further explores its children and checks for
-        activation functions nested within them. This allows identification of activation layers used
-        within composite structures like `torch.nn.Sequential`. If the input model is `None`, the function
-        returns an empty dictionary.
-
-        :return: A dictionary where keys represent the hierarchical names of the modules containing
-                 activation functions, and values represent the corresponding activation type as a
-                 string.
-        """
-        # TODO: Remove from this class
+    def _extract_activation_functions(model) -> dict:
+        # TODO: Remove from this class, should go in model analyser
         activations = {}
 
         # Handle case when model is None
@@ -522,29 +479,8 @@ class ModelSlicer:
         return activations
 
     @staticmethod
-    def _infer_activations_from_layers(layers: List[Dict]) -> Dict[str, str]:
-        """
-        Infers and maps activation functions based on the naming patterns and types of layers
-        provided. The function identifies common activation functions by checking specific
-        keywords in the layer names or guessing them based on layer types and positions within
-        the network. Assumptions are made for commonly used defaults in certain types of layers.
-
-        :param layers: List of dictionaries representing layers in a model. Each dictionary
-            must include at least the 'name' field. Optionally, the 'type' and 'out_features'
-            fields can also be provided to improve accuracy of activation inference.
-            Example of a layer dictionary:
-                {
-                    "name": "layer1_relu",
-                    "type": "conv",
-                    "out_features": 128
-                }
-
-        :return: A dictionary mapping layer names to their inferred activation functions. The
-            keys of the dictionary are layer names, and the values are corresponding activation
-            function names such as "ReLU", "Sigmoid", or "Softmax".
-        :rtype: Dict[str, str]
-        """
-        # TODO: Remove from this class
+    def _infer_activations_from_layers(layers: List[Dict]) -> dict:
+        # TODO: Remove from this class, should go in model analyser
         activations = {}
 
         # Common patterns in layer naming
@@ -596,17 +532,7 @@ class ModelSlicer:
             activation_function: str, output_folder: str, reshape_code=""
 
     ):
-        """
-        Automatically generates a PyTorch file clearly defining the class for given model segment
-
-        Args:
-            segment_name: the unique name for segment class file eg: "conv_1".
-            layer_name: the name of the layer stored inside the object eg: "conv1".
-            layer_constructor: a string to construct the torch layer
-            activation_function: activation to wrap around the torch layer
-            output_folder: Path to the segment output folder clearly
-        """
-
+        # TODO, figure out where this should go, or if it should stay
         class_name = f"{segment_name.capitalize()}Segment"
 
         # Create the segment's class definition
@@ -632,14 +558,6 @@ class ModelSlicer:
 
 
     def slice_model(self, output_dir: Optional[str] = None, strategy: str = "single_layer", input_file: Optional[str] = None) -> None:
-        """
-        Slice a given model, saving the sliced segments to the specified output directory.
-    
-        Args:
-            output_dir: Directory to save sliced model files (defaults to model_dir/slices)
-            strategy: Slicing strategy to use
-            input_file: Optional input file for additional configuration
-        """
 
         # Create output directory if it doesn't exist
         if output_dir:
@@ -681,13 +599,4 @@ if __name__ == "__main__":
 
     elif model_choice == 2:
         model_slicer.slice_model()
-
-    elif model_choice == 3:
-        model_slicer.slice_model(strategy="single_layer")
-
-    elif model_choice == 4:
-        model_slicer.slice_model(strategy="balanced")
-
-    elif model_choice == 5:
-        model_slicer.slice_model(strategy="transitions")
 

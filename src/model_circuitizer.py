@@ -297,8 +297,6 @@ class ModelCircuitizer:
             slice_output_path = os.path.join(circuit_folder, f"segment_{idx}")
             os.makedirs(slice_output_path, exist_ok=True)
 
-            print(f"\n🚧 Circuitizing segment {idx + 1}/{len(segments)}: {segment_filename}")
-
             # instantiate the specific segment class
             SegmentClass = self._get_doom_segment_class(idx)
             segment_model = SegmentClass()
@@ -334,7 +332,6 @@ class ModelCircuitizer:
                 opset_version=12
             )
 
-            print(f"🚀 Segment {idx + 1} exported to ONNX: {onnx_filename}")
             # generate settings.json
             subprocess.run(
                 [
@@ -402,14 +399,12 @@ class ModelCircuitizer:
                 check=True
             )
 
-            print(f"🎉 EZKL setup complete for segment {idx + 1}\n")
-
     def circuitize_sliced_net_model(self, model_directory: str = None):
         """circuitize each slice found in the provided directory."""
         model_directory = model_directory if model_directory else self.model_dir
         metadata_path = os.path.join(model_directory, "slices/metadata.json")
         segments_path = os.path.join(model_directory, "slices")
-        # Explicitly load metadata details
+
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
@@ -417,7 +412,7 @@ class ModelCircuitizer:
         circuit_folder = os.path.join(model_directory, "ezkl/slices")
         os.makedirs(circuit_folder, exist_ok=True)
 
-        # Iterate distinctly through segments
+
         for idx, segment_meta in enumerate(segments):
             segment_type = segment_meta['type']
             segment_filename = segment_meta.get('filename')
@@ -425,7 +420,6 @@ class ModelCircuitizer:
             slice_output_path = os.path.join(circuit_folder, f"segment_{idx}")
             os.makedirs(slice_output_path, exist_ok=True)
 
-            print(f"\n🚧 Circuitizing segment {idx + 1}/{len(segments)}: {segment_filename}")
 
             # instantiate the specific segment class
             SegmentClass = self._get_net_segment_class(idx)
@@ -462,7 +456,6 @@ class ModelCircuitizer:
                 opset_version=12
             )
 
-            print(f"🚀 Segment {idx + 1} exported to ONNX: {onnx_filename}")
             # generate settings.json
             subprocess.run(
                 [
@@ -477,11 +470,9 @@ class ModelCircuitizer:
                 check=True
             )
 
-            # Explicitly create dummy calibration, then explicitly run EZKL calibration
             calibration_json_filepath = os.path.join(slice_output_path, f"segment_{idx}_calibration.json")
             self._create_dummy_calibration(calibration_json_filepath, dummy_input)
 
-            # generate calibration.json
             subprocess.run(
                 [
                     "ezkl",
@@ -495,7 +486,7 @@ class ModelCircuitizer:
             )
 
             # change settings
-            # json load setting file and change 'decomp_legs' to 3
+            # json load setting file and change 'decomp_legs' to 4
             settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
             with open(settings_path, 'r') as f:
                 settings = json.load(f)
@@ -505,7 +496,6 @@ class ModelCircuitizer:
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=4)
 
-            # generate model.compiled
             subprocess.run(
                 [
                     "ezkl",
@@ -518,7 +508,6 @@ class ModelCircuitizer:
                 check=True
             )
 
-            # generate pk and vk
             subprocess.run(
                 [
                     "ezkl",
@@ -530,8 +519,6 @@ class ModelCircuitizer:
                 env=self.env,
                 check=True
             )
-
-            print(f"🎉 EZKL setup complete for segment {idx + 1}\n")
 
 
 # Example usage

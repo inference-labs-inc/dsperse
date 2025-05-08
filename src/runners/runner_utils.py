@@ -307,8 +307,6 @@ class RunnerUtils:
         with open(file_path, 'w') as f:
             json.dump(data, f)
 
-        return file_path
-
     @staticmethod
     def save_to_file_flattened(input_tensor: torch.Tensor, file_path: str):
         # Flatten and convert tensor to list
@@ -321,10 +319,9 @@ class RunnerUtils:
         data = {
             "input_data": [tensor_data]
         }
+
         with open(file_path, 'w') as f:
             json.dump(data, f)
-
-        return file_path
 
 
 if __name__ == "__main__":

@@ -535,6 +535,7 @@ class ModelCircuitizer:
 
 
 # Example usage
+# TODO: Integrate into Ezkl runner
 if __name__ == "__main__":
     # Choose which model to test
     model_choice = 1  # Change this to test different models

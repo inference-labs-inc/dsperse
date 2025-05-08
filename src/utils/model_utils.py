@@ -2,6 +2,7 @@ import enum
 import json
 import os
 import re
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -12,8 +13,8 @@ class ModelType(enum.Enum):
     SEQUENTIAL = "sequential"
     TRANSFORMER = "transformer"
     CNN = "cnn"
-    FCNN = "fcnn"  # Add this new type for fully connected networks
-    HYBRID = "hybrid"  # Add this for mixed architecture models (e.g., CNN + FCNN)
+    FCNN = "fcnn"
+    HYBRID = "hybrid"
     UNKNOWN = "unknown"
 
 
@@ -408,169 +409,6 @@ class ModelUtils:
         else:
             print(full_output)
 
-    def get_layer_at_index(self, index: int) -> Dict:
-        """
-        Retrieves a specific layer from the list of extracted layers using its index.
-
-        Detailed Description:
-        This method accesses the model's layers by extracting them if they are available
-        within the state dictionary. It checks if the provided index is within the valid
-        range of the available layers. If the index is valid, it returns the corresponding
-        layer as a dictionary. If the index is invalid or the model fails to load, it
-        returns an empty dictionary.
-
-        :param index: The position in the layers' list to retrieve.
-        :type index: int
-        :return: A dictionary representing the layer at the specified index, or an
-                 empty dictionary if the index is out of range or the model cannot be
-                 loaded.
-        :rtype: Dict
-        """
-        if self.state_dict is None:
-            if not self.load_model():
-                return {}
-
-        layers = self._extract_layers()
-        if 0 <= index < len(layers):
-            return layers[index]
-        return {}
-
-    def get_layer_by_name(self, name: str) -> Dict:
-        """
-        Retrieve a specific layer by name from the model's layers.
-
-        The method searches for a layer with the specified name within the extracted
-        layers of the model. If the state dictionary is not already loaded, it attempts
-        to load the model first. If loading fails or no layer matches the given name, an
-        empty dictionary is returned.
-
-        :param name: Name of the layer to search for in the model's layers.
-        :type name: str
-        :return: A dictionary representation of the layer with the specified name, or an
-            empty dictionary if not found.
-        :rtype: Dict
-        """
-        if self.state_dict is None:
-            if not self.load_model():
-                return {}
-
-        layers = self._extract_layers()
-        for layer in layers:
-            if layer['name'] == name:
-                return layer
-        return {}
-
-    def verify_slice_integrity(self, slice_points: List[int]) -> Dict:
-        """
-        Verifies the integrity of the provided slice points against the model
-        layers and calculates the resulting slices, their statistics, and
-        validity.
-
-        The slice points are validated as indices that properly divide the
-        model's layers into logical segments. For each segment, the
-        number of layers, total parameter count, and the count of
-        different layer types are computed.
-
-        :param slice_points: A list of integers indicating the indices to divide
-            the layers into segments.
-        :return: A dictionary containing verification and segmentation results:
-            - 'valid': A boolean indicating if all slice points are valid.
-            - 'total_layers': Total number of layers in the model.
-            - 'valid_slice_points': List of valid slice points.
-            - 'invalid_slice_points': List of invalid slice points.
-            - 'segment_count': Number of resulting segments based on slice
-              points.
-            - 'segment_stats': List of dictionaries containing detailed
-              statistics for each segment, including:
-                - The segment number (1-indexed).
-                - The start and end layer indices for the segment.
-                - The number of layers in the segment.
-                - The total count of parameters in the segment from all
-                  included layers.
-                - A dictionary describing the count of each layer type in
-                  the segment.
-
-        """
-        if self.state_dict is None:
-            if not self.load_model():
-                return {'valid': False, 'error': 'Model not loaded'}
-
-        layers = self._extract_layers()
-        total_layers = len(layers)
-
-        # Verify all slice points are valid indices
-        valid_points = []
-        invalid_points = []
-        for point in slice_points:
-            if 0 <= point < total_layers:
-                valid_points.append(point)
-            else:
-                invalid_points.append(point)
-
-        # Calculate resulting segments
-        segments = []
-        prev_point = 0
-        for point in sorted(valid_points):
-            segments.append((prev_point, point))
-            prev_point = point + 1
-        segments.append((prev_point, total_layers))
-
-        # Calculate parameters and layer counts per segment
-        segment_stats = []
-        for i, (start, end) in enumerate(segments):
-            segment_layers = layers[start:end]
-            param_count = sum(layer['size'] for layer in segment_layers)
-            layer_types = {}
-            for layer in segment_layers:
-                layer_type = layer.get('type', 'unknown')
-                layer_types[layer_type] = layer_types.get(layer_type, 0) + 1
-
-            segment_stats.append({
-                'segment': i + 1,
-                'start_layer': start,
-                'end_layer': end - 1,
-                'layer_count': end - start,
-                'parameter_count': param_count,
-                'layer_types': layer_types
-            })
-
-        return {
-            'valid': len(invalid_points) == 0,
-            'total_layers': total_layers,
-            'valid_slice_points': valid_points,
-            'invalid_slice_points': invalid_points,
-            'segment_count': len(segments),
-            'segment_stats': segment_stats
-        }
-
-    def estimate_slice_sizes(self, slice_points: List[int]) -> Dict:
-        """
-        Estimates the memory footprint sizes of slices defined by the given slice points.
-
-        This method analyzes the points where a large model is split for distributed
-        processing or storage, calculates the memory footprint for each segment in megabytes,
-        and returns detailed statistics along with total segment count. The slices are verified
-        before estimation to ensure integrity of the specified segment points.
-        """
-        if self.state_dict is None:
-            if not self.load_model():
-                return {'error': 'Model not loaded'}
-
-        verification = self.verify_slice_integrity(slice_points)
-        if not verification['valid']:
-            return {'error': 'Invalid slice points', 'details': verification}
-
-        # Calculate memory footprint for each segment
-        for segment in verification['segment_stats']:
-            # Estimate size in MB (parameters * 4 bytes for float32)
-            size_bytes = segment['parameter_count'] * 4
-            size_mb = size_bytes / (1024 * 1024)
-            segment['estimated_size_mb'] = round(size_mb, 2)
-
-        return {
-            'total_segments': verification['segment_count'],
-            'segments': verification['segment_stats']
-        }
 
     def get_slice_points(self, strategy: str = "layer_type", max_segments: int = None) -> List[int]:
         """
@@ -667,143 +505,39 @@ class ModelUtils:
         return sorted(list(set(slice_points)))
 
     @staticmethod
-    def check_model_structure(model):
-        """
-        Check the structure of a loaded model to determine how it should be used for inference.
-        """
-        result = {
-            'type': 'unknown',
-            'callable_model': None,
-            'component_name': None
-        }
+    def save_tensor_to_json(tensor_data, filename="input_data_reshaped.json", model_directory: str = None):
+        """Saves the given tensor data to a JSON file in the model directory."""
+        output_path = os.path.join(model_directory, "generated_inputs", filename)
 
-        # Check if it's already a callable model
-        if hasattr(model, 'forward') and callable(getattr(model, 'forward')):
-            result['type'] = 'callable'
-            result['callable_model'] = model
-            return result
-
-        # Check if it's a state dict (dictionary of tensors)
-        if isinstance(model, dict):
-            # Check if it's a state dict with parameters
-            if all(isinstance(v, torch.Tensor) for v in model.values()):
-                result['type'] = 'state_dict'
-                return result
-
-            # Check if it's a dictionary containing a model or state_dict
-            if 'model' in model and hasattr(model['model'], 'forward'):
-                result['type'] = 'dict_with_model'
-                result['callable_model'] = model['model']
-                result['component_name'] = 'model'
-                return result
-
-            if 'state_dict' in model:
-                result['type'] = 'state_dict'
-                return result
-
-            # Look for any callable model in the dictionary
-            for key, value in model.items():
-                if hasattr(value, 'forward') and callable(getattr(value, 'forward')):
-                    result['type'] = 'dict_with_model'
-                    result['callable_model'] = value
-                    result['component_name'] = key
-                    return result
-
-        return result
-
-    def to_onnx(self, example_input, onnx_file_path=None, input_names=None, output_names=None, opset_version=11):
-        """Exports the model to an ONNX formatted file."""
-
-        model = self.load_model()
-        if model is None:
-            raise ValueError("Failed to load model—ONNX export aborted.")
-
-        model.eval()
-
-        input_names = input_names or ["input"]
-        output_names = output_names or ["output"]
-
-        if onnx_file_path is None:
-            base_path = os.path.dirname(self.model_path) if self.model_path else "."
-            onnx_file_path = os.path.join(base_path, "onnx", "model.onnx")
-            os.makedirs(os.path.dirname(onnx_file_path), exist_ok=True)
-
-        torch.onnx.export(
-            model,
-            example_input,
-            onnx_file_path,
-            export_params=True,
-            opset_version=opset_version,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
-        )
-
-        print(f"Model successfully exported to ONNX at '{onnx_file_path}'")
-
-    @staticmethod
-    def get_input_shape(input_file_path: str) -> tuple:
-        """
-        Returns the input shape based on a provided input data file (JSON or other formats).
-        """
-        if not os.path.exists(input_file_path):
-            raise FileNotFoundError(f"The specified input file does not exist: {input_file_path}")
-
-        file_extension = os.path.splitext(input_file_path)[1].lower()
-
-        if file_extension == '.json':
-            with open(input_file_path, 'r') as file:
-                data = json.load(file)
-
-            if 'input_data' not in data:
-                raise ValueError("JSON file must contain an 'input_data' key.")
-
-            input_data = np.array(data['input_data'])
-
-            # check if input has batch dimension explicitly (common practice)
-            if input_data.ndim == 1:
-                input_shape = input_data.shape
-            else:
-                input_shape = input_data.shape[1:]
-        else:
-            raise ValueError(f"Unsupported file format: {file_extension}. Currently, only JSON is supported.")
-
-        return input_shape
-
-    @staticmethod
-    def preprocess_input(input_path):
-        """
-        Preprocess input data from JSON.
-        """
         try:
-
-            # Load JSON data
-            with open(input_path, 'r') as f:
-                input_data = json.load(f)
-
-            # Extract input data
-            if isinstance(input_data, dict):
-                if 'input_data' in input_data:
-                    input_data = input_data['input_data']
-                elif 'input' in input_data:
-                    input_data = input_data['input']
-
-            # Convert to tensor
-            if isinstance(input_data, list):
-                if isinstance(input_data[0], list):
-                    # 2D input
-                    input_tensor = torch.tensor(input_data, dtype=torch.float32)
-                else:
-                    # 1D input
-                    input_tensor = torch.tensor([input_data], dtype=torch.float32)
+            if isinstance(tensor_data, torch.Tensor):
+                data_list = tensor_data.detach().cpu().tolist()
+            elif hasattr(tensor_data, "tolist"):
+                data_list = tensor_data.tolist()
             else:
-                raise ValueError("Expected input data to be a list or nested list")
+                data_list = list(tensor_data)
 
-            return input_tensor
+            json_output = {"input_data": data_list}
+
+            with open(output_path, 'w') as f:
+                json.dump(json_output, f, indent=4)
 
         except Exception as e:
-            print(f"Error preprocessing input: {e}")
+            print(f"Error: Could not write tensor data to {output_path}. Reason: {e}")
+
+
+    @staticmethod
+    def load_metadata(folder_path):
+        """Load the model metadata from the metadata.json file."""
+        metadata_path = Path(folder_path) / "metadata.json"
+        if not metadata_path.exists():
+            print(f"Required metadata.json file not found at: {metadata_path}")
             return None
+
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        return metadata
 
 
 # Example usage:

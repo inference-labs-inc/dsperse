@@ -1589,36 +1589,18 @@ if __name__ == "__main__":
     import os
 
     # Choose which model to visualize
-    model_choice = 4  # Change this to test different models
+    model_choice = 2 # Change this to test different models
 
     if model_choice == 1:
-        # FCNN model
-        model_dir = "models/test_model"
-        metadata_path = os.path.join(model_dir, "output/metadata.json")
+        model_dir = "models/net"
+        metadata_path = os.path.join(model_dir, "slices/metadata.json")
         output_dir = os.path.join(model_dir, "visualization")
 
     elif model_choice == 2:
-        # CNN model
-        model_dir = "models/test_cnn_model_with_biases"
-        metadata_path = os.path.join(model_dir, "output/metadata.json")
-        output_dir = os.path.join(model_dir, "visualization")
-
-    elif model_choice == 3:
-        # Transformer model
-        model_dir = "models/transformer_model"
-        metadata_path = os.path.join(model_dir, "metadata.json")
-        output_dir = os.path.join(model_dir, "visualization")
-
-    elif model_choice == 4:
         # Hybrid model (CNN + FCNN)
         model_dir = "models/doom"
-        metadata_path = os.path.join(model_dir, "output/metadata.json")
+        metadata_path = os.path.join(model_dir, "slices/metadata.json")
         output_dir = os.path.join(model_dir, "visualization")
-
-    elif model_choice == 5:
-        # Custom model path
-        metadata_path = "path/to/your/custom/model/metadata.json"
-        output_dir = "path/to/your/custom/model/visualization"
 
     # Run the visualizer with the selected model
     try_model_visualizer(

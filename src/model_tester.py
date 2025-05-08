@@ -1,18 +1,29 @@
 import os
+import random
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
-
+import pickle
 import numpy as np
 import json
-from src.model_runner import ModelRunner
-from src.utils.model_utils import ModelUtils
+import torch
+
+import psutil
+
+from src.runners.ezkl_runner import EzklRunner
+from src.runners.jstprove_runner import JSTProveRunner
+from src.runners.model_runner import ModelRunner
+from src.runners.runner_utils import RunnerUtils
 
 
 class ModelTester:
     def __init__(self, model_directory):
         self.model_directory = model_directory
         self.model_runner = ModelRunner(model_directory)
+        self.ezkl_runner = EzklRunner(model_directory)
+        self.jstprove_runner = JSTProveRunner(model_directory)
 
 
     def test_model_accuracy(self, num_runs=10, input_path: str=None):
@@ -30,15 +41,15 @@ class ModelTester:
         # for num_runs
         for i in range(num_runs):
         
-            # run inference on original whole model --> get output (softmax)
-            original_output = self.model_runner.predict(input_path=input_path)
+            # run inference on an original whole model
+            original_output = self.model_runner.infer(input_path=input_path)
             original_output = original_output['logits']
 
-            # run inference on original sliced model --> get output (softmax)
-            sliced_output = self.model_runner.predict(input_path=input_path, mode="sliced")
+            # run inference on an original sliced model
+            sliced_output = self.model_runner.infer(input_path=input_path, mode="sliced")
             sliced_output = sliced_output['logits']
 
-            # run generate_witness on whole model --> get the output from witness.json
+            # run generate_witness on a whole model
             witness_output = self.model_runner.generate_witness(input_file=input_path)
             circuitized_output = self.model_runner.process_witness_output(witness_output)
             circuitized_output = circuitized_output['logits']
@@ -57,7 +68,7 @@ class ModelTester:
                 "sliced_circuitized_output": sliced_circuitized_output,
             }
 
-            # mutate, or random generate new input for next round
+            # mutate, or randomly generate new input for the next round
             input_path = self._generate_random_input_file(input_path, generated_inputs_directory)
 
         # For the results
@@ -100,33 +111,7 @@ class ModelTester:
         }
 
 
-    def _generate_random_input_file(self, input_file, save_path):
-        """Helper method to generate random values in the input file"""
-        # Generate random data with the specified shape
-        if "doom" in self.model_directory.lower():
-            dummy_input_shape = (1, 4, 28, 28)
-        elif "net" in self.model_directory.lower():
-            dummy_input_shape = (1, 3, 32, 32)
-        else:
-            raise ValueError("Unknown input file shape. Please specify the shape manually in the code. ")
 
-        random_data = np.random.rand(*dummy_input_shape)
-
-        # Normalize to the range [0, 1] (similar to the example data)
-        random_data = random_data.astype(np.float32)
-
-        # Flatten the data to match the expected format
-        flattened_data = random_data.flatten().tolist()
-
-        # Create the JSON structure
-        input_json = {"input_data": [flattened_data]}
-
-        # Save to the specified path
-        output_path = os.path.join(save_path, os.path.basename(input_file))
-        with open(output_path, 'w') as f:
-            json.dump(input_json, f)
-        
-        return output_path
 
     def test_jst_prove(self, mode: str ="whole"):
         """
@@ -156,7 +141,18 @@ class ModelTester:
 
         # Determine the command based on the mode
         if mode == "whole":
-            module_name = "python_testing.circuit_models.doom_model"
+            # module_name = "python_testing.circuit_models.doom_model"
+            # Define the two commands for 'whole' mode
+            compile_command = [
+                "python", "cli.py", "--circuit", "doom_model", "--class", "Doom",
+                "--compile", "--circuit_path", "doom_circuit.txt"
+            ]
+            witness_command = [
+                "python", "cli.py", "--circuit", "doom_model", "--class", "Doom",
+                "--gen_witness", "--input", "inputs/doom_input.json",
+                "--output", "output/doom_output.json", "--circuit_path", "doom_circuit.txt"
+            ]
+
         elif mode == "sliced":
             module_name = "python_testing.circuit_models.doom_slices"
         else:
@@ -185,6 +181,7 @@ class ModelTester:
             # print(output) # Print output for debugging
 
             # Define regex patterns
+            # memory in MB
             memory_pattern = r"Peak Memory used Overall : (\d+(\.\d+)?)"
             time_pattern = r"Time elapsed: (\d+(\.\d+)?) seconds"
 
@@ -314,10 +311,288 @@ class ModelTester:
             raise RuntimeError("DeepProve benchmark failed") from e
 
 
-# Example usage
+    def _generate_random_input_file(self, input_file, save_path):
+        """Helper method to generate random values in the input file"""
+        # Generate random data with the specified shape
+        if "doom" in self.model_directory.lower():
+            dummy_input_shape = (1, 4, 28, 28)
+        elif "net" in self.model_directory.lower():
+            dummy_input_shape = (1, 3, 32, 32)
+        else:
+            raise ValueError("Unknown input file shape. Please specify the shape manually in the code. ")
+
+        random_data = np.random.rand(*dummy_input_shape)
+
+        # Normalize to the range [0, 1] (similar to the example data)
+        random_data = random_data.astype(np.float32)
+
+        # Flatten the data to match the expected format
+        flattened_data = random_data.flatten().tolist()
+
+        # Create the JSON structure
+        input_json = {"input_data": [flattened_data]}
+
+        # Save to the specified path
+        output_path = os.path.join(save_path, os.path.basename(input_file))
+        with open(output_path, 'w') as f:
+            json.dump(input_json, f)
+
+        return output_path
+
+    @staticmethod
+    def generate_multiple_random_inputs(model_directory, num_inputs, save_path, output_filename="input.json"):
+        """Generates multiple random inputs and saves them to a single JSON file."""
+
+        # Determine the input shape based on the model directory
+        if "doom" in model_directory.lower():
+            dummy_input_shape = (1, 4, 28, 28)
+        elif "net" in model_directory.lower():
+            dummy_input_shape = (1, 3, 32, 32)
+        else:
+            raise ValueError("Unknown input file shape. Please specify the shape manually or update the logic.")
+
+        all_inputs = []
+        for _ in range(num_inputs):
+            # Generate random data with the specified shape
+            random_data = np.random.rand(*dummy_input_shape)
+            # Normalize to the range [0, 1] and set type to float32
+            random_data = random_data.astype(np.float32)
+            # Flatten the data
+            flattened_data = random_data.flatten().tolist()
+            all_inputs.append(flattened_data)
+
+        # Create the final JSON structure
+        output_json = {"input_data": all_inputs}
+
+        # Save to the specified output file
+        # Ensure the output directory exists if output_filename includes a path
+        output_dir = os.path.join(model_dir, save_path)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        with open(Path(output_dir, output_filename), 'w') as f:
+            json.dump(output_json, f)
+
+        print(f"Successfully generated {num_inputs} inputs and saved to {output_filename}")
+        return output_filename
+
+    def run_inference_test(self, input_tensor,  mode: str = None):
+        """Run inferences and track performance metrics for each input"""
+
+        # Get current process
+        process = psutil.Process()
+
+        input_tensor = RunnerUtils.reshape(input_tensor, self.model_directory)
+
+        # Start memory tracker
+        start_mem = process.memory_info().rss / 1024 / 1024  # Memory in MB
+
+        # Start timer
+        start_time = time.time()
+
+        # Run inference
+        if mode == "sliced":
+            inference_result = self.model_runner.run_layered_inference(input_tensor=input_tensor)
+        else:
+            inference_result = self.model_runner.run_inference(input_tensor=input_tensor)
+
+        # Stop timer
+        end_time = time.time()
+
+        # Get peak memory
+        end_mem = process.memory_info().rss / 1024 / 1024
+        mem_used = end_mem - start_mem
+
+        print(f"Memory used: {mem_used} MB")
+        print(f"Time elapsed: {end_time - start_time} seconds")
+        print(f"Output: {inference_result}")
+
+        # Record results
+        result = {
+            'time_seconds': end_time - start_time,
+            'memory_mb': mem_used,
+            'output': inference_result['logits'].detach().cpu().numpy().tolist()
+        }
+    
+        return result
+
+    def run_ezkl_test(self, input_file: str, mode: str = None):
+        """Run EZKL witness test"""
+        testing_dir = Path(self.model_directory, "testing")
+        with open(Path(self.model_directory, "testing", input_file), 'r') as f:
+            input_data = json.load(f)
+
+        input_array = np.array(input_data['input_data'])
+        input_tensor = torch.from_numpy(input_array)
+        input_tensor = RunnerUtils.reshape(input_tensor, self.model_directory)
+
+        torch_input_file = Path(testing_dir, "test_run.json")
+        torch_input_file = RunnerUtils.save_to_file_flattened(input_tensor=input_tensor, file_path=str(torch_input_file))
+
+        results = {}
+
+        # Run inference
+        if mode == "sliced":
+            inference_result = self.ezkl_runner.generate_witness(mode="sliced", input_file=torch_input_file)
+            proof_result = self.ezkl_runner.prove(mode="sliced")
+            verification_result = self.ezkl_runner.verify(mode="sliced")
+        else:
+            inference_result = self.ezkl_runner.generate_witness(input_file=torch_input_file)
+            proof_result = self.ezkl_runner.prove()
+            verification_result = self.ezkl_runner.verify()
+
+        total_time = inference_result['total_time']
+
+        # Record results
+        results['witness'] = {
+            'memory_mb': inference_result['memory'],
+            'total_time': total_time,
+            'layer_times': inference_result.get('segment_times', "N/A"),
+            'output': inference_result['result']['logits'].detach().cpu().numpy().tolist()
+        }
+
+        results['proof'] = {
+            'memory_mb': proof_result['memory'],
+            'total_time': proof_result['total_time'],
+            'layer_times': proof_result.get('segment_times', "N/A")
+        }
+
+        results['verification'] = {
+            'memory_mb': verification_result['memory'],
+            'total_time': verification_result['total_time'],
+            'layer_times': verification_result.get('segment_times', "N/A")
+        }
+
+        return results
+
+
+    def run_jstprove_test(self, input_file: str, mode: str = None):
+        testing_dir = Path(self.model_directory, "testing")
+        file_path = Path(testing_dir, input_file)
+        with open(Path(self.model_directory, "testing", input_file), 'r') as f:
+            input_data = json.load(f)
+
+        input_array = np.array(input_data['input_data'])
+        input_tensor = torch.from_numpy(input_array)
+        input_tensor = RunnerUtils.reshape(input_tensor, self.model_directory)
+
+        torch_input_file = Path(testing_dir, "test_run.json")
+        RunnerUtils.save_to_file_flattened(input_tensor=input_tensor, file_path=str(torch_input_file))
+
+        results = {}
+
+        # Run inference
+        if mode == "sliced":
+            inference_result = self.jstprove_runner.generate_witness(mode="sliced", input_file=str(torch_input_file.absolute()))
+            proof_result = self.jstprove_runner.prove(mode="sliced")
+            verification_result = self.jstprove_runner.verify(mode="sliced", input_file=str(torch_input_file.absolute()))
+        else:
+            inference_result = self.jstprove_runner.generate_witness(input_file=str(torch_input_file.absolute()))
+            proof_result = self.jstprove_runner.prove()
+            verification_result = self.jstprove_runner.verify(input_file=str(torch_input_file.absolute()))
+
+        # Record results
+        results['witness'] = {
+            'memory_mb': inference_result['memory'],
+            'total_time': inference_result['total_time'],
+            'layer_times': inference_result.get('segment_times', "N/A"),
+            'output': inference_result['result']
+        }
+
+        results['proof'] = {
+            'memory_mb': proof_result['memory'],
+            'total_time': proof_result['total_time'],
+            'layer_times': proof_result.get('segment_times', "N/A")
+        }
+
+        results['verification'] = {
+            'memory_mb': verification_result['memory'],
+            'total_time': verification_result['total_time'],
+            'layer_times': verification_result.get('segment_times', "N/A")
+        }
+
+        return results
+
+    @staticmethod
+    def get_cifar_data(input_file):
+        """Loads and unpickles CIFAR dataset from input file.
+    
+        Args:
+            input_file (str): Path to the CIFAR pickle file.
+    
+        Returns:
+            dict: Dictionary containing 'data' (10000x3072 numpy array) and 'labels' (list of 10000 numbers)
+        """
+        # Unpickle data file
+        with open(input_file, 'rb') as fo:
+            data_dict = pickle.load(fo, encoding='bytes')
+
+        return data_dict
+
+    def test_all(self, num_runs=10):
+        """Run all test variations"""
+
+        # data prep
+        cifar_data_file = os.path.join(self.model_directory, "testing", "cifar-10-batches-py", "data_batch_1")
+        cifar_data = self.get_cifar_data(cifar_data_file)
+
+        # Ensure testing directory exists
+        testing_dir = os.path.join(self.model_directory, "testing")
+        results_file = os.path.join(testing_dir, "results.json")
+
+        # Initialize results structure
+        results = {}
+
+        # for each num run
+        for i in range(num_runs):
+            # get random cifir image
+            random_index = random.randint(0, 9999)
+            print(f"Random index: {random_index}")
+            random_input = np.frombuffer(cifar_data[b'data'][random_index], dtype=np.uint8)
+            true_label = cifar_data[b'labels'][random_index]
+            normalized_input = (random_input.astype(np.float32) / 127.5) - 1.0
+
+            input_tensor = torch.from_numpy(normalized_input).float().unsqueeze(0)
+
+            input_file = RunnerUtils.save_to_file_flattened(input_tensor=input_tensor,
+                                                            file_path=os.path.join(testing_dir, "random_input.json"))
+
+            # run .pth
+            pytorch_results = self.run_inference_test(input_tensor, mode="whole")
+            sliced_pytorch_results = self.run_inference_test(input_tensor, mode="sliced")
+            original_pytorch_results = {"whole": pytorch_results, "sliced": sliced_pytorch_results}
+
+            # run jstprove
+            jstprove_whole_results = self.run_jstprove_test("random_input.json", mode="whole")
+            jstprove_sliced_results = self.run_jstprove_test("random_input.json", mode="sliced")
+            jstprove_results = {"whole": jstprove_whole_results, "sliced": jstprove_sliced_results}
+
+            # run ezkl
+            ezkl_whole_results = self.run_ezkl_test("random_input.json", mode="whole")
+            ezkl_sliced_results = self.run_ezkl_test("random_input.json", mode="sliced")
+            ezkl_results = {"whole": ezkl_whole_results, "sliced": ezkl_sliced_results}
+
+
+
+            # add data to dict (read and add/dump)
+            results[i] = {
+                "input_data": str(input_tensor.tolist()),
+                "input_data_label": true_label,
+                "original_pytorch_results": original_pytorch_results,
+                "jstprove_results": jstprove_results,
+                "ezkl_results": ezkl_results,
+            }
+
+            # save results file (overwrite)
+            with open(results_file, 'w') as f:
+                json.dump(results, f)
+
+
+        # close things?
+
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
@@ -332,6 +607,8 @@ if __name__ == "__main__":
 
     # TODO: Add test for ezkl time and memory
     if model_choice == 1:
+        # model_tester.run_inference_test("10k_inputs.json", "10k_outputs_sliced.json", mode="sliced")
+        # ModelTester.generate_multiple_random_inputs(model_dir, 100, "testing", "100_inputs.json")
         # accuracy = model_tester.test_model_accuracy(num_runs=10)
         # print(f"Model accuracy: {accuracy}")
         # result = model_tester.test_jst_prove()
@@ -340,7 +617,11 @@ if __name__ == "__main__":
         print(f"Model deep prove result: {result}")
 
     elif model_choice == 2:
-        accuracy = model_tester.test_model_accuracy(num_runs=10000)
-        print(f"Model accuracy: {accuracy}")
-        result = model_tester.test_deep_prove(deep_prove_path=deep_prove_zkml_path, verbose=True, num_samples=1)
-        print(f"Model deep prove result: {result}")
+        start_time = time.time()
+        # ModelTester.generate_multiple_random_inputs(model_dir, 1, "testing", "1_inputs.json")
+        # result = model_tester.run_inference_test("input_data.json", "output_sliced.json", mode="sliced")
+        # result = model_tester.run_ezkl_test("1_inputs.json", "1_outputs.json", mode="whole")
+        # result = model_tester.run_ezkl_test("100_inputs.json", "100_outputs_sliced.json", mode="sliced")
+        model_tester.test_all()
+        print(f"Total execution time: {time.time() - start_time:.2f} seconds")
+        # print(f"sliced: {result}")

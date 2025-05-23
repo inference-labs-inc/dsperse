@@ -3,7 +3,6 @@ import os
 import subprocess
 
 import torch
-
 from models.doom.model import DoomAgent, Conv1Segment, Conv2Segment, Conv3Segment, FC1Segment, FC2Segment
 from models.net.model import Net, Conv1Segment as NetConv1, Conv2Segment as NetConv2, FC1Segment as NetFC1, \
     FC2Segment as NetFC2, FC3Segment as NetFC3
@@ -69,7 +68,7 @@ class ModelCircuitizer:
         )
 
         # generate calibration.json - use input.json for this
-        input_data = os.path.join(self.model_dir, "input.json")
+        input_data = os.path.join("models", "doom", "input.json")
         subprocess.run(
             [
                 "ezkl",
@@ -79,7 +78,7 @@ class ModelCircuitizer:
                 "--settings-path",
                 os.path.join(circuit_folder, "settings.json"),
                 "--data",
-                os.path.join(input_data),
+                input_data,
                 "--target", "accuracy"
             ],
             env=self.env,
@@ -112,7 +111,8 @@ class ModelCircuitizer:
                 "--vk-path",
                 os.path.join(circuit_folder, "vk.key"),
                 "--pk-path",
-                os.path.join(circuit_folder, "pk.key")
+                os.path.join(circuit_folder, "pk.key"),
+                "--srs-path", "/Users/shirinshahabinejad/.ezkl/srs/kzg21.srs"
             ],
             env=self.env,
             check=True
@@ -158,7 +158,7 @@ class ModelCircuitizer:
         )
 
         # generate calibration.json - use input.json for this
-        input_data = os.path.join(self.model_dir, "input.json")
+        input_data = os.path.join("models", "doom", "input.json")
         subprocess.run(
             [
                 "ezkl",
@@ -168,7 +168,7 @@ class ModelCircuitizer:
                 "--settings-path",
                 os.path.join(circuit_folder, "settings.json"),
                 "--data",
-                os.path.join(input_data),
+                input_data,
                 "--target", "accuracy"
             ],
             env=self.env,
@@ -201,7 +201,8 @@ class ModelCircuitizer:
                 "--vk-path",
                 os.path.join(circuit_folder, "vk.key"),
                 "--pk-path",
-                os.path.join(circuit_folder, "pk.key")
+                os.path.join(circuit_folder, "pk.key"),
+                "--srs-path", "/Users/shirinshahabinejad/.ezkl/srs/kzg21.srs"
             ],
             env=self.env,
             check=True
@@ -393,7 +394,8 @@ class ModelCircuitizer:
                     "setup",
                     "--compiled-circuit", os.path.join(slice_output_path, f"segment_{idx}_model.compiled"),
                     "--vk-path", os.path.join(slice_output_path, f"segment_{idx}_vk.key"),
-                    "--pk-path", os.path.join(slice_output_path, f"segment_{idx}_pk.key")
+                    "--pk-path", os.path.join(slice_output_path, f"segment_{idx}_pk.key"),
+                    "--srs-path", "/Users/shirinshahabinejad/.ezkl/srs/kzg21.srs"
                 ],
                 env=self.env,
                 check=True
@@ -496,13 +498,17 @@ class ModelCircuitizer:
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=4)
 
+            segment_model_path = os.path.join(slice_output_path, f"segment_{idx}_model.compiled")
+            segment_vk_path = os.path.join(slice_output_path, f"segment_{idx}_vk.key")
+            segment_pk_path = os.path.join(slice_output_path, f"segment_{idx}_pk.key")
+
             subprocess.run(
                 [
                     "ezkl",
                     "compile-circuit",
                     "--model", onnx_filename,
                     "--settings-path", os.path.join(slice_output_path, f"segment_{idx}_settings.json"),
-                    "--compiled-circuit", os.path.join(slice_output_path, f"segment_{idx}_model.compiled")
+                    "--compiled-circuit", segment_model_path
                 ],
                 env=self.env,
                 check=True
@@ -512,9 +518,10 @@ class ModelCircuitizer:
                 [
                     "ezkl",
                     "setup",
-                    "--compiled-circuit", os.path.join(slice_output_path, f"segment_{idx}_model.compiled"),
-                    "--vk-path", os.path.join(slice_output_path, f"segment_{idx}_vk.key"),
-                    "--pk-path", os.path.join(slice_output_path, f"segment_{idx}_pk.key")
+                    "--compiled-circuit", segment_model_path,
+                    "--vk-path", segment_vk_path,
+                    "--pk-path", segment_pk_path,
+                    "--srs-path", "/Users/shirinshahabinejad/.ezkl/srs/kzg21.srs"
                 ],
                 env=self.env,
                 check=True
@@ -528,8 +535,8 @@ if __name__ == "__main__":
     model_choice = 1  # Change this to test different models
 
     base_paths = {
-        1: "models/doom",
-        2: "models/net"
+        1: "src/models/doom",
+        2: "src/models/net"
     }
 
     model_dir = base_paths[model_choice]

@@ -584,11 +584,11 @@ class ModelSlicer:
 # Example usage:
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
-        1: "models/doom",
-        2: "models/net"
+        1: "src/models/doom",
+        2: "src/models/net"
     }
 
     model_dir = base_paths[model_choice]

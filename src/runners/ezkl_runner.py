@@ -63,22 +63,6 @@ class EzklRunner:
             print(f"Error loading metadata: {e}")
             return {"error": str(e)}
 
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
-
-        # Start time
-        start_time = time.time()
-        segment_times = {}
-
         # Load initial input
         try:
             with open(Path(parent_dir, input_path), 'r') as f:
@@ -149,50 +133,17 @@ class EzklRunner:
                         # Print summary information about the outputs
                         outputs = output_data
                     else:
-                        print(f"WARNING: Witness file does not contain 'outputs' key")
-                        print(f"Available keys: {list(witness_data.keys())}")
-                        raise ValueError(f"Witness file for segment {segment_idx} does not contain outputs")
+                        raise ValueError(f"Witness file for segment {segment_idx} does not contain rescaled_output")
 
                 # Store witness path and timing
                 witness_paths[segment_idx] = segment_witness_path
-                segment_time = time.time() - segment_start_time
-                segment_times[segment_idx] = segment_time
-                # print(f"✓ Segment {segment_idx} witness generated in {segment_time:.2f}s")
 
             except subprocess.CalledProcessError as e:
-                print(f"Error generating witness for segment {segment_idx}")
-                print(f"Command: {' '.join(cmd)}")
-                print(f"Error: {e}")
-                print(f"STDOUT: {e.stdout}")
-                print(f"STDERR: {e.stderr}")
-                break
-
-        # Calculate total time
-        total_time = time.time() - start_time
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
+                error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                raise RuntimeError(error_msg)
         
         final_logits = self.process_sliced_witness_output({"witness_paths": witness_paths})
-
-        # Return the results
-        results = {
-            "memory": memory['total'],
-            "total_time": total_time,
-            "segment_times": segment_times,
-            "result": final_logits,
-            # "witness_paths": witness_paths
-        }
-
-        return results
+        return final_logits
 
     def generate_witness_whole(self, input_file: str = None, model_path: str = None) -> dict:
         input_file = input_file or os.path.join(self.model_directory, "input.json")
@@ -201,19 +152,6 @@ class EzklRunner:
         vk_path = os.path.join(self.base_path, "model", "vk.key")
         parent_dir = self.src_dir
 
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
-
-        witness_time_start = time.time()
         subprocess.run(
             [
                 "ezkl",
@@ -228,29 +166,13 @@ class EzklRunner:
             check=True
         )
 
-        witness_time_end = time.time()
-        witness_time = witness_time_end - witness_time_start
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
-
-        # print(f"Witness time: {witness_time:.2f} seconds")
-
         # return the processed outputs
         with open(Path(parent_dir, witness_path), "r") as f:
             witness_data = json.load(f)
             output = self.process_witness_output(witness_data)
 
-        outputs = {'memory': memory,'total_time': witness_time, 'result': output}
-        return outputs
+        return output
+
 
     def prove(self, mode: str = None):
         if mode == "sliced":
@@ -265,22 +187,6 @@ class EzklRunner:
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)
-
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
-
-        # Start timing
-        start_time = time.time()
-        segment_times = {}
         proof_paths = {}
 
         for segment_idx in range(num_segments):
@@ -321,41 +227,12 @@ class EzklRunner:
 
                 # Store proof path and timing
                 proof_paths[segment_idx] = segment_proof_path
-                segment_time = time.time() - segment_start_time
-                segment_times[segment_idx] = segment_time
-                # print(f"✓ Segment {segment_idx} proof generated in {segment_time:.2f}s")
 
             except subprocess.CalledProcessError as e:
-                print(f"Error generating proof for segment {segment_idx}")
-                print(f"Command: {' '.join(cmd)}")
-                print(f"Error code: {e.returncode}")
-                print(f"STDOUT: {e.stdout}")
-                print(f"STDERR: {e.stderr}")
-                continue
+                error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                raise RuntimeError(error_msg)
 
-        # Calculate total time
-        total_time = time.time() - start_time
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
-
-        # Return the results
-        results = {
-            "memory": memory,
-            "total_time": total_time,
-            "segment_times": segment_times,
-            "proof_paths": proof_paths,
-            "num_segments_processed": len(segment_times)
-        }
-
+        results = proof_paths
         return results
 
     def prove_whole(self):
@@ -364,20 +241,6 @@ class EzklRunner:
         model_path = os.path.join(self.base_path, "model", "model.compiled")
         pk_path = os.path.join(self.base_path, "model", "pk.key")
         proof_path = os.path.join(self.base_path, "model", "proof.json")
-
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
-
-        proof_time_start = time.time()
 
         subprocess.run(
             [
@@ -394,22 +257,7 @@ class EzklRunner:
             check=True
         )
 
-        proof_time_end = time.time()
-        proof_time = proof_time_end - proof_time_start\
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
-
-        results = {"memory": memory, "total_time": proof_time}
-
+        results = proof_path
         return results
 
     def verify(self, mode: str = None) -> dict:
@@ -425,22 +273,6 @@ class EzklRunner:
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)
-
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
-
-        # Start timing
-        start_time = time.time()
-        segment_times = {}
         verify_paths = {}
 
         for segment_idx in range(num_segments):
@@ -472,98 +304,50 @@ class EzklRunner:
 
                 # Store proof path and timing
                 verify_paths[segment_idx] = segment_proof_path
-                segment_time = time.time() - segment_start_time
-                segment_times[segment_idx] = segment_time
-                # print(f"✓ Segment {segment_idx} proof generated in {segment_time:.2f}s")
 
             except subprocess.CalledProcessError as e:
-                print(f"Error generating proof for segment {segment_idx}")
-                print(f"Command: {' '.join(cmd)}")
-                print(f"Error code: {e.returncode}")
-                print(f"STDOUT: {e.stdout}")
-                print(f"STDERR: {e.stderr}")
-                continue
+                error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                raise RuntimeError(error_msg)
 
-        # Calculate total time
-        total_time = time.time() - start_time
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
-
-        # Return the results
-        results = {
-            "memory": memory,
-            "total_time": total_time,
-            "segment_times": segment_times,
-            "verify_paths": verify_paths,
-            "num_segments_processed": len(segment_times)
-        }
-
+        results = verify_paths
         return results
 
-    def verify_whole(self) -> dict:
+    def verify_whole(self) -> bool:
         parent_dir = self.src_dir
         settings_path = os.path.join(self.base_path, "model", "settings.json")
         vk_path = os.path.join(self.base_path, "model", "vk.key")
         proof_path = os.path.join(self.base_path, "model", "proof.json")
 
-        # Start memory tracker
-        parent_pid = os.getpid()
-        monitor_results = {'peak_subprocess_rss': 0}
-        stop_event = threading.Event()
-        monitor_thread = threading.Thread(
-            target=runner_utils.monitor_subprocess_memory,
-            args=(parent_pid, "ezkl", monitor_results, stop_event),
-            daemon=True
-        )
-        monitor_thread.start()
-        time.sleep(0.1)  # Give thread a moment to start up
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "verify",
+                    "--proof-path", proof_path,
+                    "--settings-path", settings_path,
+                    "--vk-path", vk_path
+                ],
+                env=os.environ,  # Use os.environ for environment variables
+                cwd=str(parent_dir),
+                check=True,
+                capture_output=True,
+                text=True
+            )
 
-        verify_time_start = time.time()
+            # print("✓ Proof verified successfully")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error verifying proof: {e}")
+            return False
 
-        subprocess.run(
-            [
-                "ezkl",
-                "verify",
-                "--proof-path", proof_path,
-                "--settings-path", settings_path,
-                "--vk-path", vk_path
-            ],
-            env=env,
-            cwd=str(parent_dir),
-            check=True
-        )
 
-        verify_time_end = time.time()
-        verify_time = verify_time_end - verify_time_start
-
-        # Get peak memory
-        stop_event.set()
-        monitor_thread.join(timeout=2.0)  # Wait briefly for the thread to finish
-        if monitor_thread.is_alive():
-            print("Warning: Child process memory monitor thread did not terminate cleanly.")
-        subprocess_ram = monitor_results.get('peak_subprocess_mem', 0) / 1024
-        subprocess_swap = monitor_results.get('peak_subprocess_swap', 0) / 1024
-        subprocess_total = monitor_results.get('peak_subprocess_total', 0) / 1024
-
-        memory = {'ram': subprocess_ram, 'swap': subprocess_swap, 'total': subprocess_total}
-
-        results = {"memory": memory, "total_time": verify_time}
-
-        return results
 
     def circuitize_model(self, model_path, output_path):
+        # TODO: Implement this
         pass
 
-    def circuitize_model_for_slice(self, model_path, layer_name, output_path):
+    def circuitize_slices(self, model_path, layer_name, output_path):
+        # TODO: Implement this
         pass
 
     @staticmethod
@@ -612,7 +396,7 @@ class EzklRunner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
@@ -622,24 +406,6 @@ if __name__ == "__main__":
     model_dir = base_paths[model_choice]
     runner = EzklRunner(model_dir)
 
-    if model_choice == 1:
-        # circuitize model
-        # TODO Integration the circuitize model functions for ezkl
-        # run inference
-        result = runner.generate_witness()
-        result = runner.generate_witness(mode="sliced")
-        # run proof
-        result = runner.prove()
-        result = runner.prove(mode="sliced")
-        # run verification (mode = slice)
-        # TODO: incorporate verification for ezkl
-        print(result)
-    elif model_choice == 2:
-        # run inference
-        # result = runner.generate_witness()
-        # result = runner.generate_witness(mode="sliced")
-        # run proof
-        # result = runner.prove()
-        # result = runner.prove(mode="sliced")
-        result = runner.verify(mode="sliced")
-        print(result)
+    # run Test
+    result = runner.generate_witness() # change function and mode when needed
+    print(result)

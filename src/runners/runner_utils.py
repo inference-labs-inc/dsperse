@@ -75,25 +75,27 @@ def get_swap_usage_cli(pid: int) -> int:
         print(f"Error getting Swap via vmmap for PID {pid}: {e}")
         return 0
 
+
 def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_event):
     """
     Monitors child processes of parent_pid using CLI tools (ps, vmmap).
     Tracks the peak SUM of RSS ('mem_cli') and Swap ('swap_cli') across
     all children matching the keyword.
+    If process_name_keyword is None or empty, monitors all child processes.
     Updates the 'results' dictionary.
     """
     peak_mem_cli = 0
     peak_swap_cli = 0
     tracked_pids: Set[int] = set()
 
-    # Ensure the results dictionary exists and initialize keys
+    # Ensure the results dictionary exists and initialize keys 
     if not isinstance(results, dict):
         return
 
     # Use different keys to distinguish from psutil results
     results['peak_subprocess_mem'] = 0
     results['peak_subprocess_swap'] = 0
-    results['peak_subprocess_total'] = 0 # Mem + Swap
+    results['peak_subprocess_total'] = 0  # Mem + Swap
 
     try:
         parent = psutil.Process(parent_pid)
@@ -110,7 +112,7 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
                 break
             except Exception as e:
                 # print(f"Error getting children for PID {parent_pid}: {e}")
-                time.sleep(0.1) # Avoid tight loop on error
+                time.sleep(0.1)  # Avoid tight loop on error
                 continue
 
             active_pids_this_cycle = set()
@@ -119,32 +121,36 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
             for proc in children_found_this_cycle:
                 try:
                     pid = proc.pid
-                    active_pids_this_cycle.add(pid) # Keep track of currently running children
+                    active_pids_this_cycle.add(pid)  # Keep track of currently running children
                     if pid not in tracked_pids:
-                         # Check name only for newly found processes
-                        proc_name = proc.name()
-                        if process_name_keyword.lower() in proc_name.lower():
+                        # Check name only for newly found processes
+                        if not process_name_keyword:
+                            # Track all child processes if no keyword specified
                             tracked_pids.add(pid)
+                        else:
+                            proc_name = proc.name()
+                            if process_name_keyword.lower() in proc_name.lower():
+                                tracked_pids.add(pid)
                             # print(f"CLI Monitoring child: {proc_name} (PID: {pid})")
 
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # Process ended or permissions issue while checking name/pid
                     if pid in tracked_pids:
-                        tracked_pids.remove(pid) # Stop tracking
+                        tracked_pids.remove(pid)  # Stop tracking
                     continue
                 except Exception as e:
                     # print(f"Error inspecting potential child {pid}: {e}")
                     if pid in tracked_pids:
-                         tracked_pids.remove(pid) # Stop tracking
+                        tracked_pids.remove(pid)  # Stop tracking
                     continue
 
-            # Second pass: Check memory for all currently tracked PIDs
+            # Second pass: Check memory for all currently tracked PIDs  
             pids_to_remove = set()
             for pid in tracked_pids:
                 if pid not in active_pids_this_cycle:
-                     # Process we were tracking is no longer a child (finished?)
-                     pids_to_remove.add(pid)
-                     continue # Don't try to get memory for it
+                    # Process we were tracking is no longer a child (finished?)
+                    pids_to_remove.add(pid)
+                    continue  # Don't try to get memory for it
 
                 # Get memory and swap using CLI tools
                 mem_kb = get_mem_usage_cli(pid)
@@ -159,8 +165,7 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
             tracked_pids.difference_update(pids_to_remove)
             if pids_to_remove:
                 pass
-                 # print(f"Stopped CLI tracking for finished PIDs: {pids_to_remove}")
-
+                # print(f"Stopped CLI tracking for finished PIDs: {pids_to_remove}")
 
             # Update overall peaks for the SUM of memory/swap
             peak_mem_cli = max(peak_mem_cli, current_total_mem_cli)
@@ -171,7 +176,7 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
                 break
 
             # Sleep before next cycle (might need longer sleep due to CLI overhead)
-            time.sleep(0.1) # Increased sleep interval
+            time.sleep(0.1)  # Increased sleep interval
 
     except psutil.NoSuchProcess:
         print(f"Initial parent process {parent_pid} not found.")
@@ -185,46 +190,55 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
         results['peak_subprocess_total'] = peak_mem_cli + peak_swap_cli
 
 
-
 class RunnerUtils:
     def __init__(self):
         pass
-    
+
+    @staticmethod
+    def _get_file_path() -> str:
+        """Get the parent directory path of the current file."""
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     @staticmethod
     def preprocess_input(input_path:str, model_directory: str = None, save_reshape: bool = False) -> torch.Tensor:
         """
         Preprocess input data from JSON.
         """
-        try:
+
+        if os.path.isfile(input_path):
+            with open(input_path, 'r') as f:
+                input_data = json.load(f)
+        else:
+            input_path = os.path.join(RunnerUtils._get_file_path(), input_path)
+            print(
+                f"Warning: Input file not found. Trying to use relative path: {input_path} instead."
+            )
             with open(input_path, 'r') as f:
                 input_data = json.load(f)
 
-            if isinstance(input_data, dict):
-                if 'input_data' in input_data:
-                    input_data = input_data['input_data']
-                elif 'input' in input_data:
-                    input_data = input_data['input']
+        if isinstance(input_data, dict):
+            if 'input_data' in input_data:
+                input_data = input_data['input_data']
+            elif 'input' in input_data:
+                input_data = input_data['input']
 
-            # Convert to tensor
-            if isinstance(input_data, list):
-                if isinstance(input_data[0], list):
-                    # 2D input
-                    input_tensor = torch.tensor(input_data, dtype=torch.float32)
-                else:
-                    # 1D input
-                    input_tensor = torch.tensor([input_data], dtype=torch.float32)
+        # Convert to tensor
+        if isinstance(input_data, list):
+            if isinstance(input_data[0], list):
+                # 2D input
+                input_tensor = torch.tensor(input_data, dtype=torch.float32)
             else:
-                raise ValueError("Expected input data to be a list or nested list")
+                # 1D input
+                input_tensor = torch.tensor([input_data], dtype=torch.float32)
+        else:
+            raise ValueError("Expected input data to be a list or nested list")
 
-            # reshape input tensor for the model
-            input_tensor = RunnerUtils.reshape(input_tensor, model_directory=model_directory)
-            if save_reshape:
-                ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
-                
-            return input_tensor
+        # reshape input tensor for the model
+        input_tensor = RunnerUtils.reshape(input_tensor, model_directory=model_directory)
+        if save_reshape:
+            ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
 
-        except Exception as e:
-            raise Exception(f"Error preprocessing input: {e}")
+        return input_tensor
         
         
     @staticmethod
@@ -325,4 +339,4 @@ class RunnerUtils:
 
 
 if __name__ == "__main__":
-    pass
+    print(f"Parent path: {RunnerUtils.get_file_path()}")

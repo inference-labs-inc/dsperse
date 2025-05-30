@@ -7,3 +7,4 @@ matplotlib~=3.10.1
 numpy~=2.2.3
 tqdm~=4.67.1
 onnxruntime==1.21.0
+colorama~=0.4.6

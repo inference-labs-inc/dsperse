@@ -14,12 +14,13 @@ env = os.environ
 class ModelRunner:
     def __init__(self, model_directory: str, model_path: str = None):
         self.device = torch.device("cpu")
+        self.model_directory = os.path.join(ModelRunner._get_file_path(), model_directory)
+        self.model_path = os.path.join(ModelRunner._get_file_path(), model_path) if model_path else None
 
-        # model_directory contains the model.pth, model.py and input.json files
-        self.model_directory = model_directory
-        # optional model path to override the model.pth file in the model directory
-        self.model_path = model_path
-
+    @staticmethod
+    def _get_file_path() -> str:
+        """Get the parent directory path of the current file."""
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def infer(self, mode: str = None, input_path: str = None) -> dict:
 
@@ -94,7 +95,7 @@ class ModelRunner:
                     segment_model = SegmentClass()
                 else:
                     raise Exception("Invalid type of segment")
-
+                segment_path = os.path.join(self._get_file_path(), segment_path)
                 checkpoint = torch.load(segment_path, map_location=self.device)
                 if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                     segment_model.load_state_dict(checkpoint['model_state_dict'])
@@ -152,7 +153,7 @@ class ModelRunner:
 if __name__ == "__main__":
 
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",

@@ -79,22 +79,12 @@ class JSTProveRunner:
         # Parse output to get memory and time metrics
         output = result.stdout
 
-        memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                            if 'Peak Memory used Overall' in line).split()[0])
-        time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                          if 'Time elapsed' in line).split()[0])
-
         # Read and parse output JSON file
         with open(output_path, 'r') as f:
             output_data = json.load(f)
 
         results = output_data.get('rescaled_output', None)[0]
-
-        return {
-            'memory': memory,
-            'total_time': time,
-            'result': results
-        }
+        return results
 
 
     def generate_witness_sliced(self, input_file: str = None, model_path: str = None) -> dict:
@@ -102,9 +92,6 @@ class JSTProveRunner:
         slices_folder = model_path or os.path.join(parent_dir, self.base_path, "slices")
         input_path = input_file or os.path.join(slices_folder, "input.json")
         metadata_dir = os.path.join(parent_dir, self.model_directory, "slices")
-
-        print(f"input_path: {input_path}")
-
         slices_dir = slices_folder
 
         metadata = ModelUtils.load_metadata(metadata_dir)
@@ -119,14 +106,11 @@ class JSTProveRunner:
             print(f"Error loading input: {e}")
             return {"error": str(e)}
 
-        # Process each segment
-        segment_results = {}
         final_segment_path = None
 
         class_names = {0: 'NetConv1Model', 1: 'NetConv2Model', 2: 'NetFC1Model', 3: 'NetFC2Model', 4: 'NetFC3Model'}
 
         for segment_idx in range(num_segments):
-
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
             segment_model_name = f"{segment_name}_circuit.compiled"
@@ -148,7 +132,6 @@ class JSTProveRunner:
             # read and print the first line in input.json
             with open(segment_input_path, 'r') as f:
                 input_data = json.load(f)
-                # print(f"{segment_name} input_data: {input_data}")
 
             # Run EZKL witness generation command
             cmd = [
@@ -191,15 +174,6 @@ class JSTProveRunner:
                     else:
                         raise ValueError(f"Witness file for segment {segment_idx} does not contain rescaled_output")
 
-                output = process.stdout
-                memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                    if 'Peak Memory used Overall' in line).split()[0])
-                time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                  if 'Time elapsed' in line).split()[0])
-
-
-                # Store witness path and timing
-                segment_results[segment_idx] = {'memory': memory,'time': time}
 
             except subprocess.CalledProcessError as e:
                 error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
@@ -209,23 +183,10 @@ class JSTProveRunner:
         with open(final_segment_path, 'r') as f:
             output_data = json.load(f)
 
-        results = output_data.get('rescaled_output', None)[0]
+        output = output_data.get('rescaled_output', None)[0]
+        return output
 
-        max_memory = max(segment_results[segment_idx]['memory'] for segment_idx in segment_results)
-        total_time = sum(segment_results[segment_idx]['time'] for segment_idx in segment_results)
-        segment_times = {segment_idx: segment_results[segment_idx]['time'] for segment_idx in segment_results}
-
-        # Return the results
-        results = {
-            "memory": max_memory,
-            "total_time": total_time,
-            "segment_times": segment_times,
-            "result": results
-        }
-
-        return results
-
-    def prove_slices(self) -> dict:
+    def prove_slices(self) -> bool:
         parent_dir = self.src_dir
         slices_folder = os.path.join(parent_dir, self.base_path, "slices")
         metadata_dir = os.path.join(parent_dir, self.model_directory, "slices")
@@ -235,14 +196,9 @@ class JSTProveRunner:
         metadata = ModelUtils.load_metadata(metadata_dir)
         num_segments = len(metadata['segments'])
 
-
-        # Process each segment
-        segment_results = {}
-
         class_names = {0: 'NetConv1Model', 1: 'NetConv2Model', 2: 'NetFC1Model', 3: 'NetFC2Model', 4: 'NetFC3Model'}
 
         for segment_idx in range(num_segments):
-
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
             segment_model_name = f"{segment_name}_circuit.compiled"
@@ -272,36 +228,17 @@ class JSTProveRunner:
                     text=True
                 )
 
-                output = process.stdout
-                print(f"segment {segment_idx} output: {output}")
-
-                memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                    if 'Peak Memory used Overall' in line).split()[0])
-                time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                  if 'Time elapsed' in line).split()[0])
-
-                # Store witness path and timing
-                segment_results[segment_idx] = {'memory': memory, 'time': time}
+                # TODO: parse output to get true of false on success/failure
 
             except subprocess.CalledProcessError as e:
                 error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
-                raise RuntimeError(error_msg)
+                print(error_msg)
+                return False
 
+        print("All segments verified successfully.")
+        return True
 
-        max_memory = max(segment_results[segment_idx]['memory'] for segment_idx in segment_results)
-        total_time = sum(segment_results[segment_idx]['time'] for segment_idx in segment_results)
-        segment_times = {segment_idx: segment_results[segment_idx]['time'] for segment_idx in segment_results}
-
-        # Return the results
-        results = {
-            "memory": max_memory,
-            "total_time": total_time,
-            "segment_times": segment_times
-        }
-
-        return results
-
-    def prove_whole(self) -> dict:
+    def prove_whole(self) -> bool:
         # set base params
         parent_dir = self.src_dir
         model_folder = os.path.join(parent_dir, self.base_path, "model")
@@ -327,17 +264,8 @@ class JSTProveRunner:
             cwd=self.jstprove_project_path,
         )
 
-        # Parse output to get memory and time metrics
-        output = result.stdout
-        memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                            if 'Peak Memory used Overall' in line).split()[0])
-        time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                          if 'Time elapsed' in line).split()[0])
-
-        return {
-            'memory': memory,
-            'total_time': time,
-        }
+        # TODO: parse output to get true of false on success/failure
+        return result.returncode == 0
 
     def verify_slices(self, input_path: str = None) -> dict:
         parent_dir = self.src_dir
@@ -348,9 +276,6 @@ class JSTProveRunner:
 
         metadata = ModelUtils.load_metadata(metadata_dir)
         num_segments = len(metadata['segments'])
-
-        # Process each segment
-        segment_results = {}
 
         class_names = {0: 'NetConv1Model', 1: 'NetConv2Model', 2: 'NetFC1Model', 3: 'NetFC2Model', 4: 'NetFC3Model'}
 
@@ -364,7 +289,6 @@ class JSTProveRunner:
                 print(f"Error copying input file: {e}")
         
         for segment_idx in range(num_segments):
-
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
             segment_model_name = f"{segment_name}_circuit.compiled"
@@ -397,30 +321,10 @@ class JSTProveRunner:
                     cwd=self.jstprove_project_path,
                     text=True
                 )
-
-                output = process.stdout
-                memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                    if 'Peak Memory used Overall' in line).split()[0])
-                time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                                  if 'Time elapsed' in line).split()[0])
-
-                # Store witness path and timing
-                segment_results[segment_idx] = {'memory': memory, 'time': time}
-
+            # TODO: parse output to get true of false on success/failure
             except subprocess.CalledProcessError as e:
                 error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
                 raise RuntimeError(error_msg)
-
-        max_memory = max(segment_results[segment_idx]['memory'] for segment_idx in segment_results)
-        total_time = sum(segment_results[segment_idx]['time'] for segment_idx in segment_results)
-        segment_times = {segment_idx: segment_results[segment_idx]['time'] for segment_idx in segment_results}
-
-        # Return the results
-        results = {
-            "memory": max_memory,
-            "total_time": total_time,
-            "segment_times": segment_times
-        }
 
         return results
 
@@ -454,18 +358,8 @@ class JSTProveRunner:
             cwd=self.jstprove_project_path,
         )
 
-        # Parse output to get memory and time metrics
-        output = result.stdout
-
-        memory = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                            if 'Peak Memory used Overall' in line).split()[0])
-        time = float(next(line.split(':')[1].strip() for line in output.split('\n')
-                          if 'Time elapsed' in line).split()[0])
-
-        return {
-            'memory': memory,
-            'total_time': time,
-        }
+        # TODO: parse output to get true of false on success/failure
+        return results
 
     def circuitize_whole(self):
         # set base params
@@ -582,26 +476,7 @@ if __name__ == "__main__":
     model_dir = base_paths[model_choice]
     runner = JSTProveRunner(model_dir)
 
-    if model_choice == 1:
-        # run inference (mode = slice)
-        # run proof(mode = slice)
-        # run verification (mode = slice)
-        # circuitize model(mode = slice)
-        pass
-    elif model_choice == 2:
-        results = runner.circuitize()
-        print(results)
-        results = runner.circuitize(mode="sliced")
-        print(results)
-        results = runner.generate_witness()
-        print(results)
-        results = runner.generate_witness(mode="sliced", input_file="/Users/dan/Projects/kubz/src/models/net/jstprove/slices/input.json")
-        print(results)
-        results = runner.prove()
-        print(results)
-        results = runner.prove(mode="sliced")
-        print(results)
-        results = runner.verify(mode="sliced")
-        print(results)
-        results = runner.verify()
-        print(results)
+    # Test
+    results = runner.verify(mode="sliced") # change function and mode when needed
+    print(results)
+

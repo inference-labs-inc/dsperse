@@ -22,7 +22,7 @@ Kubz is a toolkit for slicing, analyzing, and running neural network models. It 
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/kubz.git
+   git clone https://github.com/inference-labs-inc/kubz.git
    cd kubz
    ```
 
@@ -36,6 +36,13 @@ Kubz is a toolkit for slicing, analyzing, and running neural network models. It 
    ```bash
    pip install -r requirements.txt
    ```
+
+4. Install the CLI:
+   ```bash
+   pip install -e .
+   ```
+
+   This installs the `kubz` command-line tool, which you can use from anywhere on your system.
 
 ## Usage Examples
 
@@ -191,7 +198,7 @@ Kubz provides a powerful command-line interface for model slicing, inference, an
 #### Basic Usage
 
 ```bash
-python main.py [command] [options]
+kubz [command] [options]
 ```
 
 Available commands:
@@ -204,71 +211,71 @@ Available commands:
 
 ```bash
 # Slice a PyTorch model using the default single_layer strategy
-python main.py slice --model-dir models/net
+kubz slice --model-dir models/net
 
 # Slice a PyTorch model with a specific output directory and strategy
-python main.py slice --model-dir models/net --output-dir custom_slices --strategy by_type
+kubz slice --model-dir models/net --output-dir custom_slices --strategy by_type
 
 # Slice a model with a specific input file
-python main.py slice --model-dir models/net --input-file custom_input.json
+kubz slice --model-dir models/net --input-file custom_input.json
 ```
 
 #### Running Inference
 
 ```bash
 # Run inference on a whole model (default)
-python main.py infer --model-dir models/net
+kubz infer --model-dir models/net
 
 # Run inference on a sliced model
-python main.py infer --model-dir models/net --sliced
+kubz infer --model-dir models/net --sliced
 
 # Run inference with a specific input file and save results
-python main.py infer --model-dir models/net --input-file input.json --output-file results.json
+kubz infer --model-dir models/net --input-file input.json --output-file results.json
 
 # Run inference using the EZKL backend
-python main.py infer --model-dir models/net --ezkl
+kubz infer --model-dir models/net --ezkl
 
 # Run inference using the jstProve backend
-python main.py infer --model-dir models/net --jstprove
+kubz infer --model-dir models/net --jstprove
 ```
 
 #### Generating Proofs
 
 ```bash
 # Generate a proof for a whole model using EZKL
-python main.py prove --model-dir models/net --ezkl
+kubz prove --model-dir models/net --ezkl
 
 # Generate a proof for a sliced model using EZKL
-python main.py prove --model-dir models/net --ezkl --sliced
+kubz prove --model-dir models/net --ezkl --sliced
 
 # Generate a proof using jstProve and save results
-python main.py prove --model-dir models/net --jstprove --output-file proof_results.json
+kubz prove --model-dir models/net --jstprove --output-file proof_results.json
 ```
 
 #### Verifying Proofs
 
 ```bash
 # Verify a proof for a whole model using EZKL
-python main.py verify --model-dir models/net --ezkl
+kubz verify --model-dir models/net --ezkl
 
 # Verify a proof for a sliced model using jstProve
-python main.py verify --model-dir models/net --jstprove --sliced
+kubz verify --model-dir models/net --jstprove --sliced
 
 # Verify a proof with a specific input file
-python main.py verify --model-dir models/net --jstprove --input-file input.json
+kubz verify --model-dir models/net --jstprove --input-file input.json
 ```
 
 #### Getting Help
 
 ```bash
 # Show general help
-python main.py --help
+kubz --help
 
 # Show help for a specific command
-python main.py slice --help
-python main.py infer --help
-python main.py prove --help
-python main.py verify --help
+kubz slice --help
+kubz infer --help
+kubz prove --help
+kubz verify --help
 ```
 
 #### Easter Eggs
@@ -276,7 +283,7 @@ python main.py verify --help
 The CLI includes some fun easter eggs! Try running:
 
 ```bash
-python main.py --easter-egg
+kubz --easter-egg
 ```
 
 Or just run any command - you might get lucky and see an easter egg 20% of the time!

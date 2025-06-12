@@ -562,7 +562,7 @@ class ModelSlicer:
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
         else:
-            output_dir = os.path.join(model_dir, "slices")
+            output_dir = os.path.join(model_dir, "model_slices")
             os.makedirs(output_dir, exist_ok=True)
         if not input_file:
             input_file = os.path.join(model_dir, "input.json")
@@ -583,7 +583,7 @@ class ModelSlicer:
 # Example usage:
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",

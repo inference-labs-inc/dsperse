@@ -27,3 +27,17 @@ venv/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+
+# Python egg artifacts
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+bin/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+

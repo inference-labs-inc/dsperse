@@ -279,8 +279,8 @@ class ModelCircuitizer:
     def circuitize_sliced_doom_model(self, model_directory: str = None):
         """circuitize each slice found in the provided directory."""
         model_directory = model_directory if model_directory else self.model_dir
-        metadata_path = os.path.join(model_directory, "slices/metadata.json")
-        segments_path = os.path.join(model_directory, "slices")
+        metadata_path = os.path.join(model_directory, "model_slices/metadata.json")
+        segments_path = os.path.join(model_directory, "model_slices")
         # Explicitly load metadata details
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
@@ -536,7 +536,7 @@ if __name__ == "__main__":
     model_circuitizer = ModelCircuitizer(model_directory=model_dir)
 
     if model_choice == 1:
-        model_circuitizer.circuitize_doom_model()
+        # model_circuitizer.circuitize_doom_model()
         model_circuitizer.circuitize_sliced_doom_model()
 
     elif model_choice == 2:

@@ -46,7 +46,7 @@ class EzklRunner:
     def generate_witness_sliced(self, input_file: str = None) -> dict:
         parent_dir = self.src_dir
         input_path = input_file or os.path.join(parent_dir, self.model_directory, "input.json")
-        metadata_dir = os.path.join(parent_dir, self.model_directory, "slices")
+        metadata_dir = os.path.join(parent_dir, self.model_directory, "model_slices")
 
         slices_dir = os.path.join(self.base_path, "slices")
 
@@ -183,7 +183,7 @@ class EzklRunner:
     def prove_sliced(self):
         parent_dir = self.src_dir
         slices_directory = os.path.join(parent_dir, self.model_directory, "ezkl", "slices")
-        metadata_directory = os.path.join(parent_dir, self.model_directory, "slices")
+        metadata_directory = os.path.join(parent_dir, self.model_directory, "model_slices")
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)
@@ -269,7 +269,7 @@ class EzklRunner:
     def verify_slices(self) -> dict:
         parent_dir = self.src_dir
         slices_directory = os.path.join(parent_dir, self.model_directory, "ezkl", "slices")
-        metadata_directory = os.path.join(parent_dir, self.model_directory, "slices")
+        metadata_directory = os.path.join(parent_dir, self.model_directory, "model_slices")
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)

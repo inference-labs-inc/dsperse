@@ -303,7 +303,6 @@ class RunnerUtils:
             print("No segments found in metadata.json")
             return None
 
-        num_segments = len(segments)
         return segments
 
     @staticmethod

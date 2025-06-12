@@ -77,7 +77,7 @@ class ModelRunner:
 
     def run_layered_inference(self, input_tensor, slices_directory: str = None):
         try:
-            slices_directory = slices_directory or os.path.join(self.model_directory, "slices")
+            slices_directory = slices_directory or os.path.join(self.model_directory, "model_slices")
             # get the segments this model was split into
             segments = RunnerUtils.get_segments(slices_directory)
             if segments is None:

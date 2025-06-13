@@ -1,14 +1,15 @@
 import os
 import json
 import onnx
-from onnx import shape_inference
+from ..utils.onnx_utils import OnnxUtils
+from typing import Dict, Any, List
 
 class OnnxAnalyzer:
     """
     A class for analyzing ONNX models and generating metadata.
     """
 
-    def __init__(self, onnx_model=None, onnx_path=None):
+    def __init__(self, onnx_model=None, model_path=None):
         """
         Initialize the OnnxAnalyzer with either an ONNX model or a path to an ONNX model.
 
@@ -18,12 +19,61 @@ class OnnxAnalyzer:
         """
         if onnx_model is not None:
             self.onnx_model = onnx_model
-            self.onnx_path = None
-        elif onnx_path is not None:
-            self.onnx_path = onnx_path
-            self.onnx_model = onnx.load(onnx_path)
+        elif model_path is not None:
+            path = os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)
+            self.onnx_path = path
+            self.onnx_model = onnx.load(self.onnx_path)
         else:
-            raise ValueError("Either onnx_model or onnx_path must be provided")
+            raise ValueError("onnx_model path is not found")
+
+        self.model_metadata = None
+
+    def analyze(self) -> Dict[str, Any]:
+        """
+        Analyze the ONNX model and generate comprehensive metadata.
+
+        Returns:
+            Dict[str, Any]: Comprehensive metadata about the ONNX model
+        """
+        # Create output directory for analysis results
+        output_dir = os.path.join(os.path.dirname(self.onnx_path), "onnx_analysis")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        # Extract model metadata
+        graph = self.onnx_model.graph
+
+        # Create maps for initializers and value info
+        initializer_map = {init.name: init for init in graph.initializer}
+
+        # Build a comprehensive value_info map from the original full model
+        full_model_value_info_map = {vi.name: vi for vi in graph.value_info}
+        full_model_value_info_map.update({vi.name: vi for vi in graph.input})
+        full_model_value_info_map.update({vi.name: vi for vi in graph.output})
+
+        # Store node metadata
+        node_metadata = {}
+
+        # Process each node to collect metadata
+        for i, node in enumerate(graph.node):
+            # Analyze the node and store metadata
+            node_info = self.analyze_node(node, i, initializer_map)
+            node_metadata[node.name] = node_info
+
+        # Create model metadata
+        model_metadata = {
+            "original_model": self.onnx_path,
+            "model_type": "ONNX",
+            "node_count": len(graph.node),
+            "initializer_count": len(graph.initializer),
+            "nodes": node_metadata
+        }
+
+        # Save model metadata
+        OnnxUtils.save_metadata_file(model_metadata, output_dir, "model_metadata.json")
+        self.model_metadata = model_metadata
+
+        return model_metadata
 
     def generate_metadata(self, segments_info, output_dir=None):
         """
@@ -85,7 +135,7 @@ class OnnxAnalyzer:
 
         return metadata
 
-    def analyze_node(self, node, index, initializer_map, full_model_value_info_map):
+    def analyze_node(self, node, index, initializer_map):
         """
         Analyze a single node from the ONNX graph and gather metadata.
 
@@ -93,7 +143,6 @@ class OnnxAnalyzer:
             node: ONNX node to analyze
             index: Index of the node in the graph
             initializer_map: Map of initializer names to initializers
-            full_model_value_info_map: Map of value info names to value infos
 
         Returns:
             dict: Metadata for the node
@@ -101,37 +150,27 @@ class OnnxAnalyzer:
         node_inputs = list(node.input)
         node_outputs = list(node.output)
 
-        # Get input and output shapes
-        input_shapes = self._get_tensor_shapes(node_inputs, full_model_value_info_map)
-        output_shapes = self._get_tensor_shapes(node_outputs, full_model_value_info_map)
-
-        # Determine layer type and gather parameter information
-        layer_type, parameters, parameter_details = self._get_layer_info(node, node_inputs, initializer_map)
+        # gather parameter information
+        parameters, parameter_details = self._get_parameter_info(node, node_inputs, initializer_map)
 
         # Determine in_features and out_features
         in_features, out_features = self._get_feature_info(node, parameter_details)
 
         # Determine activation function
-        activation = self._get_activation_info(node)
+        node_type = node.op_type
 
         # Return node metadata
         return {
             "index": index,
-            "type": layer_type,
-            "segment_name": f"{layer_type}_{index}",
-            "filename": f"segment_{index}.onnx",
-            "path": None,  # This will be set by the slicer
-            "layer_count": 1,
+            "segment_name": f"{node_type}_{index}",
             "parameters": parameters,
-            "activation": activation,
+            "node_type": node_type,
             "in_features": in_features,
             "out_features": out_features,
-            "input_shape": input_shapes,
-            "output_shape": output_shapes,
             "parameter_details": parameter_details,
             "dependencies": {
-                "input": list(node.input),
-                "output": list(node.output)
+                "input": node_inputs,
+                "output": node_outputs
             }
         }
 
@@ -226,35 +265,9 @@ class OnnxAnalyzer:
             model_output_shapes.append(shape)
         return model_output_shapes
 
-    def _get_tensor_shapes(self, tensor_names, value_info_map):
+    def _get_parameter_info(self, node, node_inputs, initializer_map):
         """
-        Get shapes for a list of tensors.
-
-        Args:
-            tensor_names: List of tensor names
-            value_info_map: Map of value info names to value infos
-
-        Returns:
-            list: List of shapes for each tensor
-        """
-        shapes = []
-        for name in tensor_names:
-            if name in value_info_map:
-                shape = []
-                if value_info_map[name].type.tensor_type.shape.dim:
-                    for dim in value_info_map[name].type.tensor_type.shape.dim:
-                        if dim.dim_param:
-                            shape.append(dim.dim_param)
-                        else:
-                            shape.append(dim.dim_value if dim.dim_value != 0 else None)
-                shapes.append(shape)
-            else:
-                shapes.append([None])
-        return shapes
-
-    def _get_layer_info(self, node, node_inputs, initializer_map):
-        """
-        Determine layer type and parameter information for a node.
+        Determine parameter information for a node.
 
         Args:
             node: ONNX node
@@ -262,19 +275,8 @@ class OnnxAnalyzer:
             initializer_map: Map of initializer names to initializers
 
         Returns:
-            tuple: (layer_type, parameters, parameter_details)
+            tuple: ( parameters, parameter_details)
         """
-        # Determine layer type based on op_type
-        layer_type = "misc"
-        if node.op_type == "Conv":
-            layer_type = "conv"
-        elif node.op_type == "Gemm":
-            layer_type = "fc"
-        elif node.op_type == "MatMul":
-            layer_type = "fc"
-        elif node.op_type == "BatchNormalization":
-            layer_type = "norm"
-
         # Calculate parameters if possible
         parameters = 0
         parameter_details = {}
@@ -298,7 +300,7 @@ class OnnxAnalyzer:
                         "size": size
                     }
 
-        return layer_type, parameters, parameter_details
+        return parameters, parameter_details
 
     def _get_feature_info(self, node, parameter_details):
         """

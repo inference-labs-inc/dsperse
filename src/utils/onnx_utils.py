@@ -9,15 +9,16 @@ class OnnxUtils:
     """
     
     @staticmethod
-    def save_metadata(metadata, output_dir):
+    def save_metadata_file(metadata, output_dir, filename="metadata.json"):
         """
         Save metadata to a JSON file.
         
         Args:
             metadata: Dictionary containing metadata
             output_dir: Directory where the metadata will be saved
+            filename: Name of the metadata file (default: "metadata.json")
         """
-        metadata_path = os.path.join(output_dir, "metadata.json")
+        metadata_path = os.path.join(output_dir, filename)
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=4)
     
@@ -124,4 +125,4 @@ class OnnxUtils:
         Returns:
             str: Path to the output directory
         """
-        return os.path.join(os.path.dirname(onnx_path), "onnx_slices", "single_layers")
+        return os.path.join(os.path.dirname(onnx_path), "onnx_slices")

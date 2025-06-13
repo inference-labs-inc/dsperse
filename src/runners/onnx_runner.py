@@ -41,7 +41,12 @@ class OnnxRunner:
         """
         try:
             # Get the directory containing the sliced models
-            slices_directory = os.path.join(self.model_directory, "onnx_slices", "single_layers")
+            # First try the new structure (onnx_slices)
+            slices_directory = os.path.join(self.model_directory, "onnx_slices")
+
+            # If that doesn't exist, try the old structure (onnx_slices directly)
+            if not os.path.exists(slices_directory) or not os.path.exists(os.path.join(slices_directory, "metadata.json")):
+                slices_directory = os.path.join(self.model_directory, "onnx_slices")
 
             # Get the segments this model was split into
             segments = RunnerUtils.get_segments(slices_directory)
@@ -127,8 +132,5 @@ if __name__ == "__main__":
     model_dir = base_paths[model_choice]
     model_runner = OnnxRunner(model_directory=model_dir)
 
-    if model_choice in [1, 2, 3, 4]:
-        # print(model_runner.infer())
-        print(model_runner.infer(mode="sliced"))
-    else:
-        print("Invalid model choice. Please choose 1, 2, 3, or 4.")
+    result = model_runner.infer(mode="sliced") # change function and mode when needed
+    print(result)

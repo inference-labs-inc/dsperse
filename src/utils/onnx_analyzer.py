@@ -51,6 +51,9 @@ class OnnxAnalyzer:
         full_model_value_info_map.update({vi.name: vi for vi in graph.input})
         full_model_value_info_map.update({vi.name: vi for vi in graph.output})
 
+        model_input_shape = self._get_model_input_shapes(graph, initializer_map)
+        model_output_shape = self._get_model_output_shapes(graph)
+
         # Store node metadata
         node_metadata = {}
 
@@ -66,6 +69,8 @@ class OnnxAnalyzer:
             "model_type": "ONNX",
             "node_count": len(graph.node),
             "initializer_count": len(graph.initializer),
+            "input_shape": model_input_shape,
+            "output_shapes": model_output_shape,
             "nodes": node_metadata
         }
 
@@ -74,66 +79,6 @@ class OnnxAnalyzer:
         self.model_metadata = model_metadata
 
         return model_metadata
-
-    def generate_metadata(self, segments_info, output_dir=None):
-        """
-        Generate metadata for the ONNX model based on segment information.
-
-        Args:
-            segments_info: List of dictionaries containing segment information
-            output_dir: Directory where the metadata will be saved
-
-        Returns:
-            dict: Complete metadata for the model
-        """
-        graph = self.onnx_model.graph
-
-        # Create maps for initializers and value info
-        initializer_map = {init.name: init for init in graph.initializer}
-
-        # Get model input and output shapes
-        model_input_shapes = self._get_model_input_shapes(graph, initializer_map)
-        model_output_shapes = self._get_model_output_shapes(graph)
-
-        # Calculate total parameters
-        total_parameters = sum(segment.get("parameters", 0) for segment in segments_info)
-
-        # Generate slice points
-        slice_points = []
-        if len(segments_info) > 1:
-            for i in range(len(segments_info) - 1):
-                slice_points.append(i)
-
-        # Create complete metadata
-        # Format the original_model path to be consistent with the expected format
-        original_model_path = self.onnx_path
-        if original_model_path and os.path.isabs(original_model_path):
-            # Convert absolute path to relative path format like "models/doom/model.onnx"
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(original_model_path)))
-            original_model_path = os.path.relpath(original_model_path, base_dir)
-
-        metadata = {
-            "original_model": original_model_path,
-            "model_type": "ONNX",
-            "total_parameters": total_parameters,
-            "slicing_strategy": "single_layer",
-            "segments": segments_info,
-            "slice_points": slice_points,
-            "input_shapes": model_input_shapes,
-            "output_shapes": model_output_shapes,
-            "input_data_info": {
-                "input_file": os.path.join(os.path.dirname(self.onnx_path), "input.json") if self.onnx_path else None,
-                "input_shape": model_input_shapes[0] if model_input_shapes else []
-            }
-        }
-
-        # Save metadata if output_dir is provided
-        if output_dir and self.onnx_path:
-            metadata_path = os.path.join(output_dir, "metadata.json")
-            with open(metadata_path, 'w') as f:
-                json.dump(metadata, f, indent=4)
-
-        return metadata
 
     def analyze_node(self, node, index, initializer_map):
         """
@@ -173,51 +118,6 @@ class OnnxAnalyzer:
                 "output": node_outputs
             }
         }
-
-    def create_segments_from_metadata(self, node_metadata):
-        """
-        Create segments array from node metadata.
-
-        Args:
-            node_metadata: Dictionary of node metadata
-
-        Returns:
-            tuple: (segments, total_parameters)
-        """
-        segments = []
-        total_parameters = 0
-
-        for node_name, node_info in node_metadata.items():
-            # Create layer information
-            layer_info = self._create_layer_info(node_name, node_info)
-
-            # Create segment information
-            segment = {
-                "index": node_info["index"],
-                "type": node_info["type"],
-                "segment_name": node_info["segment_name"],
-                "filename": node_info["filename"],
-                "path": node_info["path"],
-                "layer_count": 1,
-                "parameters": node_info.get("parameters", 0),
-                "layers": [layer_info],
-                "activation": node_info["activation"],
-                "dependencies": node_info["dependencies"]
-            }
-
-            # Add in/out features to segment level if available
-            if node_info.get("in_features") is not None:
-                segment["in_features"] = node_info["in_features"]
-
-            if node_info.get("out_features") is not None:
-                segment["out_features"] = node_info["out_features"]
-
-            segments.append(segment)
-
-            # Add to total parameters
-            total_parameters += node_info.get("parameters", 0)
-
-        return segments, total_parameters
 
     def _get_model_input_shapes(self, graph, initializer_map):
         """
@@ -407,5 +307,264 @@ class OnnxAnalyzer:
                     layer_info["stride"] = [1, 1]
                     layer_info["padding"] = [0, 0]
                     break
+
+        return layer_info
+
+    def generate_slices_metadata(self, model_metadata, slice_points, output_dir=None):
+        """
+        Generate metadata for sliced ONNX models.
+
+        Args:
+            model_metadata: The model analysis metadata containing node information
+            slice_points: List of indices representing nodes with parameter details
+            output_dir: Directory where the metadata will be saved
+
+        Returns:
+            dict: Complete metadata for the sliced models
+        """
+        # Get model-level metadata
+        model_overview = self._get_model_metadata(model_metadata, slice_points)
+
+        # Process each segment
+        segments = []
+
+        for i in range(len(slice_points)):
+            segment_idx = i - 1
+            if segment_idx < 0:
+                continue
+
+            start_idx = slice_points[i - 1] if i > 0 else 0
+            end_idx = slice_points[i]
+
+            # Skip if start and end are the same
+            if start_idx == end_idx:
+                continue
+
+            # Get segment metadata
+            segment_metadata = self._get_segment_metadata(
+                model_metadata, 
+                segment_idx, 
+                start_idx, 
+                end_idx
+            )
+
+            if segment_metadata:
+                segments.append(segment_metadata)
+
+        # Add segments to metadata
+        model_overview["segments"] = segments
+
+        # Save metadata if output_dir is provided
+        OnnxUtils.save_metadata_file(model_overview, output_dir=output_dir)
+
+        return model_overview
+
+    def _get_model_metadata(self, model_metadata, slice_points):
+        """
+        Get model-level metadata.
+
+        Args:
+            model_metadata: The model analysis metadata containing node information
+            slice_points: List of indices representing nodes with parameter details
+
+        Returns:
+            dict: Model-level metadata
+        """
+        graph = self.onnx_model.graph
+
+        # Create maps for initializers
+        initializer_map = {init.name: init for init in graph.initializer}
+
+        # Get model input and output shapes
+        model_input_shapes = model_metadata["input_shape"]
+        model_output_shapes = model_metadata["output_shapes"]
+
+        # Calculate total parameters
+        total_parameters = sum(node_info.get("parameters", 0) for node_info in model_metadata["nodes"].values())
+
+        # Format the original_model path to be consistent with the expected format
+        original_model_path = model_metadata["original_model"]
+        model_type = model_metadata["model_type"]
+
+        # Create model metadata
+        metadata = {
+            "original_model": original_model_path,
+            "model_type": model_type,
+            "total_parameters": total_parameters,
+            "input_shape": model_input_shapes,
+            "output_shapes": model_output_shapes,
+            "slice_points": slice_points[:-1]
+        }
+
+        return metadata
+
+    def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx):
+        """
+        Get metadata for a specific segment.
+
+        Args:
+            model_metadata: The model analysis metadata containing node information
+            segment_idx: Index of the segment
+            start_idx: Start index of the segment
+            end_idx: End index of the segment
+
+        Returns:
+            dict: Segment metadata
+        """
+        # Collect nodes for this segment
+        segment_nodes = []
+        for idx in range(start_idx, end_idx):
+            for node_name, node_info in model_metadata["nodes"].items():
+                if node_info["index"] == idx:
+                    segment_nodes.append((node_name, node_info))
+
+        # Skip if no nodes in this segment
+        if not segment_nodes:
+            return None
+
+        # Calculate segment parameters
+        segment_parameters = sum(node_info.get("parameters", 0) for _, node_info in segment_nodes)
+
+        # Create layers information
+        layers = []
+        for node_name, node_info in segment_nodes:
+            layer_metadata = self._get_layer_metadata(node_name, node_info)
+            layers.append(layer_metadata)
+
+        segment_dependencies = self._get_segment_dependencies(model_metadata, start_idx, end_idx)
+
+        segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx)
+
+        # Create segment info
+        segment_info = {
+            "index": segment_idx,
+            "filename": f"segment_{segment_idx}.onnx",
+            "path": os.path.join(os.path.dirname(self.onnx_path), "onnx_slices", f"segment_{segment_idx}.onnx"),
+            "parameters": segment_parameters,
+            "shape": segment_shape,
+            "dependencies": segment_dependencies,
+            "layers": layers,
+        }
+
+        return segment_info
+
+    def _get_segment_dependencies(self, model_metadata, start_idx, end_idx):
+        # TODO: fix doubling of output
+        # Create segment dependencies
+        segment_dependencies = {
+            "input": [],
+            "output": []
+        }
+
+        # Create an output_map dictionary to store all tensor names we have encountered
+        output_map = {}
+
+        # Go through each node in segment and populate output_map
+        for idx in range(start_idx, end_idx):
+            for node_name, node_info in model_metadata['nodes'].items():
+                if node_info['index'] == idx:
+                    # Add outputs to map
+                    for output in node_info['dependencies']['output']:
+                        output_map[output] = True
+
+                    # Check inputs and add any missing to dependencies 
+                    for input_name in node_info['dependencies']['input']:
+                        if input_name not in output_map:
+                            if input_name not in segment_dependencies['input']:
+                                segment_dependencies['input'].append(input_name)
+
+        # Whatever outputs we have in the map that aren't already in input dependencies
+        # need to be added to segment output dependencies
+        for output in output_map:
+            if output not in segment_dependencies['input']:
+                segment_dependencies['output'].append(output)
+
+        return segment_dependencies
+
+    def _get_segment_shape(self, end_idx, model_metadata, start_idx):
+        # TODO: Fix this to calculate the shapes correctly
+        segment_shape = {
+            "input": [],
+            "output": []
+        }
+        # Get first and last nodes of segment
+        first_node = None
+        last_node = None
+        for node_name, node_info in model_metadata['nodes'].items():
+            if node_info['index'] == start_idx:
+                first_node = node_info
+            if node_info['index'] == end_idx - 1:
+                last_node = node_info
+        # Get segment shapes from first and last nodes if available
+        if start_idx == 0:
+            segment_shape["input"] = model_metadata["input_shape"][0]
+        elif first_node and "parameter_details" in first_node:
+            for param_name, param_info in first_node["parameter_details"].items():
+                if "shape" in param_info:
+                    segment_shape["input"] = param_info["shape"]
+                    break
+        if last_node:
+            # For the last segment, use model output shape
+            if end_idx == len(model_metadata['nodes']):
+                segment_shape["output"] = model_metadata["output_shapes"][0]
+            # Otherwise use last node shape if available
+            elif "parameter_details" in last_node:
+                for param_name, param_info in last_node["parameter_details"].items():
+                    if "shape" in param_info:
+                        segment_shape["output"] = param_info["shape"]
+                        break
+
+        return segment_shape
+
+    def _get_layer_metadata(self, node_name, node_info):
+        """
+        Get metadata for a specific layer.
+
+        Args:
+            node_name: Name of the node
+            node_info: Dictionary of node information
+
+        Returns:
+            dict: Layer metadata
+        """
+        # Determine layer type
+        layer_type = node_info["node_type"]
+
+        # Determine activation function
+        activation = self._get_activation_info(onnx.NodeProto(op_type=node_info["node_type"]))
+
+        # Add parameter details if available
+        node_details = {}
+        if "parameter_details" in node_info and node_info["parameter_details"]:
+            for param_name, param_info in node_info["parameter_details"].items():
+                node_details[param_name] = param_info
+
+        # Add in/out features if available
+        if "in_features" in node_info and node_info["in_features"] is not None:
+            node_details["in_features"] = node_info["in_features"]
+            node_details["in_channels"] = node_info["in_features"]
+
+        if "out_features" in node_info and node_info["out_features"] is not None:
+            node_details["out_features"] = node_info["out_features"]
+            node_details["out_channels"] = node_info["out_features"]
+
+        # For Conv layers, add kernel_size, stride, padding if available
+        if layer_type == "conv" and "parameter_details" in node_info:
+            for param_name, param_info in node_info["parameter_details"].items():
+                if "shape" in param_info and len(
+                        param_info["shape"]) == 4:  # Conv weight shape: [out_channels, in_channels, kernel_h, kernel_w]
+                    node_details["kernel_size"] = [param_info["shape"][2], param_info["shape"][3]]
+                    # Default stride and padding (could be extracted from attributes if needed) TODO: Extract this
+                    node_details["stride"] = [1, 1]
+                    node_details["padding"] = [0, 0]
+                    break
+
+        # Create layer info
+        layer_info = {
+            "name": node_name,
+            "type": layer_type,
+            "activation": activation,
+            "parameter_details": node_details,
+        }
 
         return layer_info

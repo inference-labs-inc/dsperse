@@ -138,6 +138,21 @@ class OnnxSlicer:
         segment_outputs = []
         segment_initializers = []
 
+        # Build a complete map of all value infos including intermediate outputs
+        all_value_infos = {}
+
+        # Add model inputs
+        for input_info in graph.input:
+            all_value_infos[input_info.name] = input_info
+
+        # Add model outputs
+        for output_info in graph.output:
+            all_value_infos[output_info.name] = output_info
+
+        # Add any intermediate value infos
+        for value_info in graph.value_info:
+            all_value_infos[value_info.name] = value_info
+
         # Get all outputs from nodes in this segment
         segment_node_outputs = set()
         for node in segment_nodes:
@@ -153,9 +168,9 @@ class OnnxSlicer:
         # Inputs are those that are used by nodes in this segment but not produced by any node in this segment
         for inp in segment_node_inputs:
             if inp not in segment_node_outputs:
-                # Check if it's a model input or an initializer
-                if inp in value_info_map:
-                    segment_inputs.append(value_info_map[inp])
+                # Check if it's a model input, intermediate value, or an initializer
+                if inp in all_value_infos:
+                    segment_inputs.append(all_value_infos[inp])
                 elif inp in initializer_map:
                     init = initializer_map[inp]
                     segment_initializers.append(init)
@@ -167,11 +182,13 @@ class OnnxSlicer:
                     )
                     segment_inputs.append(t)
                 else:
-                    # Create a dummy value info
+                    # For unknown intermediate tensors, we need to infer reasonable shapes
+                    # Look at the node that would consume this input to guess the shape
+                    inferred_shape = OnnxSlicer._infer_input_shape(inp, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
                         inp,
                         onnx.TensorProto.FLOAT,
-                        [None]
+                        inferred_shape
                     )
                     segment_inputs.append(t)
 
@@ -187,18 +204,62 @@ class OnnxSlicer:
 
             # If it's not used as an input or it's a model output, add it as a segment output
             if is_output or out in [o.name for o in graph.output]:
-                if out in value_info_map:
-                    segment_outputs.append(value_info_map[out])
+                if out in all_value_infos:
+                    segment_outputs.append(all_value_infos[out])
                 else:
-                    # Create a dummy value info
+                    # For unknown outputs, infer shape from the producing node
+                    inferred_shape = OnnxSlicer._infer_output_shape(out, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
                         out,
                         onnx.TensorProto.FLOAT,
-                        [None]
+                        inferred_shape
                     )
                     segment_outputs.append(t)
 
         return segment_inputs, segment_outputs, segment_initializers
+
+    @staticmethod
+    def _infer_input_shape(input_name, segment_nodes):
+        """
+        Infer a reasonable shape for an input tensor based on the nodes that consume it.
+        """
+        for node in segment_nodes:
+            if input_name in node.input:
+                if node.op_type == "Conv":
+                    # Conv expects 4D input: [batch, channels, height, width]
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "Gemm":
+                    # Gemm expects 2D input: [batch, features]
+                    return ["batch_size", None]
+                elif node.op_type in ["Relu", "BatchNormalization"]:
+                    # These preserve input shape, so use a flexible 4D shape
+                    return ["batch_size", None, None, None]
+
+        # Default fallback for unknown cases
+        return ["batch_size", None]
+
+    @staticmethod
+    def _infer_output_shape(output_name, segment_nodes):
+        """
+        Infer a reasonable shape for an output tensor based on the node that produces it.
+        """
+        for node in segment_nodes:
+            if output_name in node.output:
+                if node.op_type == "Conv":
+                    # Conv output is 4D: [batch, out_channels, height, width]
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "Gemm":
+                    # Gemm output is 2D: [batch, out_features]
+                    return ["batch_size", None]
+                elif node.op_type in ["Relu", "BatchNormalization"]:
+                    # These preserve input shape
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "Reshape":
+                    # Reshape output depends on the target shape
+                    return ["batch_size", None]
+
+        # Default fallback
+        return ["batch_size", None]
 
     def slice(self, slice_points: List[int], model_metadata):
         """
@@ -273,8 +334,6 @@ class OnnxSlicer:
             save_path = os.path.join(output_dir, f"segment_{segment_idx}.onnx")
             onnx.save(segment_model, save_path)
             slice_paths.append(save_path)
-
-            print(f"Created slice segment_{segment_idx}.onnx with {len(segment_nodes)} nodes")
 
         return slice_paths
 

@@ -2,8 +2,11 @@ import os.path
 import json
 import onnx
 from src.utils.onnx_analyzer import OnnxAnalyzer
-from src.utils.onnx_utils import OnnxUtils
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+import onnxruntime_extensions as ortx
+import onnxruntime as ort
+from onnxruntime.tools import optimize_onnx_model, symbolic_shape_infer
+from typing import List, Dict
 
 
 class OnnxSlicer:
@@ -337,6 +340,83 @@ class OnnxSlicer:
 
         return slice_paths
 
+    @staticmethod
+    def slice_post_process(slices_paths):
+        for path in slices_paths:
+            print(f"Processing {path}")
+            # Convert to absolute path if it's relative
+            if not os.path.isabs(path):
+                path = os.path.join(os.path.dirname(__file__), path)
+            print(f"Path: {path}")
+
+            try:
+                # Load the model
+                model = onnx.load(path)
+                print(f"Model loaded successfully")
+
+                # Check if model is valid before optimization
+                onnx.checker.check_model(model)
+                print(f"Model validation passed")
+
+                # Create output path for optimized model
+                path_obj = Path(path)
+                optimized_path = str(path_obj)
+
+                try:
+                    # Use onnxruntime-extensions for optimization
+                    # This provides more advanced optimization than the basic onnxruntime optimizer
+                    ortx.optimize_model(model, optimized_path)
+                    print(f"Model optimization with onnxruntime-extensions successful")
+
+                    # Load the optimized model
+                    model = onnx.load(optimized_path)
+                except Exception as opt_error:
+                    print(f"Optimization with onnxruntime-extensions failed: {opt_error}, trying fallback optimization")
+
+                    # Fallback to original optimization method
+                    try:
+                        optimized_model = optimize_onnx_model.optimize_model(path_obj, output_path=path_obj)
+                        if optimized_model is not None:
+                            model = optimized_model
+                            print(f"Fallback model optimization successful")
+                        else:
+                            print(f"Fallback model optimization returned None, using original model")
+                    except Exception as fallback_error:
+                        print(f"Fallback optimization failed: {fallback_error}, continuing with original model")
+
+                # Try shape inference
+                try:
+                    model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(model)
+                    print(f"Shape inference successful")
+                except Exception as shape_error:
+                    print(f"Shape inference failed: {shape_error}, continuing without shape inference")
+
+                # Save the processed model
+                onnx.save(model, path)
+                print(f"Model saved successfully to {path}")
+
+                # Additional verification step - try to create a session with the optimized model
+                try:
+                    # Create session options with additional optimizations
+                    session_options = ort.SessionOptions()
+                    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    session_options.optimized_model_filepath = str(path_obj) #+ ".optimized"
+
+                    # Register custom ops from onnxruntime-extensions
+                    session_options.register_custom_ops_library(ortx.get_library_path())
+
+                    # Create a session to verify and further optimize the model
+                    _ = ort.InferenceSession(path, session_options)
+                    print(f"Additional optimization and verification successful")
+                except Exception as verify_error:
+                    print(
+                        f"Additional optimization verification failed: {verify_error}, but model should still be usable")
+
+            except Exception as e:
+                print(f"Error processing {path}: {e}")
+                # Continue with next slice instead of failing completely
+                continue
+
     def slice_model(self, model_metadata=None):
         """
         Run the complete workflow: determine slice points and slice.
@@ -362,6 +442,7 @@ class OnnxSlicer:
 
         # Step 3: Slice the model
         slices_paths = self.slice(slice_points, model_metadata)
+        self.slice_post_process(slices_paths)
 
         # Step 4: generate slices metadata
         onnx_analyzer.generate_slices_metadata(model_metadata, slice_points, os.path.join(os.path.dirname(self.onnx_path), "onnx_slices"))

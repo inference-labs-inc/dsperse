@@ -234,9 +234,9 @@ class RunnerUtils:
             raise ValueError("Expected input data to be a list or nested list")
 
         # reshape input tensor for the model
-        input_tensor = RunnerUtils.reshape(input_tensor, model_directory=model_directory)
-        if save_reshape:
-            ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
+        # input_tensor = RunnerUtils.reshape(input_tensor, model_directory=model_directory)
+        # if save_reshape:
+        #     ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
 
         return input_tensor
         

@@ -481,8 +481,8 @@ class OnnxAnalyzer:
 
         return segment_dependencies
 
-    def _get_segment_shape(self, end_idx, model_metadata, start_idx):
-        # TODO: Fix this to calculate the shapes correctly
+    @staticmethod
+    def _get_segment_shape(end_idx, model_metadata, start_idx):
         segment_shape = {
             "input": [],
             "output": []
@@ -490,11 +490,15 @@ class OnnxAnalyzer:
         # Get first and last nodes of segment
         first_node = None
         last_node = None
+        next_node = None
         for node_name, node_info in model_metadata['nodes'].items():
             if node_info['index'] == start_idx:
                 first_node = node_info
             if node_info['index'] == end_idx - 1:
                 last_node = node_info
+            if node_info['index'] == end_idx:
+                next_node = node_info
+
         # Get segment shapes from first and last nodes if available
         if start_idx == 0:
             segment_shape["input"] = model_metadata["input_shape"][0]
@@ -503,16 +507,44 @@ class OnnxAnalyzer:
                 if "shape" in param_info:
                     segment_shape["input"] = param_info["shape"]
                     break
+
+        # For the output shape:
         if last_node:
             # For the last segment, use model output shape
             if end_idx == len(model_metadata['nodes']):
                 segment_shape["output"] = model_metadata["output_shapes"][0]
-            # Otherwise use last node shape if available
-            elif "parameter_details" in last_node:
-                for param_name, param_info in last_node["parameter_details"].items():
-                    if "shape" in param_info:
-                        segment_shape["output"] = param_info["shape"]
-                        break
+            # Otherwise, use the weight shape of the next node
+            elif next_node:
+                # If the next node has dependencies, use the shape of the first input
+                if "dependencies" in next_node and "input" in next_node["dependencies"] and next_node["dependencies"][
+                    "input"]:
+                    # Try to find the shape from the next node's parameter details
+                    if "parameter_details" in next_node:
+                        # First, try to find a weight parameter with a 4D shape (for Conv layers)
+                        for param_name, param_info in next_node["parameter_details"].items():
+                            if "shape" in param_info and len(param_info["shape"]) == 4:
+                                # This is likely a Conv weight tensor
+                                segment_shape["output"] = param_info["shape"]
+                                break
+
+                        # If we didn't find a 4D shape, try to find a 2D shape (for Gemm/Linear layers)
+                        if not segment_shape["output"]:
+                            for param_name, param_info in next_node["parameter_details"].items():
+                                if "shape" in param_info and len(param_info["shape"]) == 2:
+                                    # This is likely a Gemm/Linear weight tensor
+                                    segment_shape["output"] = param_info["shape"]
+                                    break
+
+                        # If we still didn't find a shape, try any parameter with a shape
+                        if not segment_shape["output"]:
+                            for param_name, param_info in next_node["parameter_details"].items():
+                                if "shape" in param_info and len(param_info["shape"]) > 1:
+                                    segment_shape["output"] = param_info["shape"]
+                                    break
+
+                # If we couldn't determine the output shape from the next node, use the last node's output features if available
+                if not segment_shape["output"] and "out_features" in last_node:
+                    segment_shape["output"] = ["batch_size", last_node["out_features"]]
 
         return segment_shape
 

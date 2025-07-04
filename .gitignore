@@ -41,3 +41,28 @@ sdist/
 develop-eggs/
 .installed.cfg
 
+# ONNX model files and generated artifacts
+*.onnx
+*.pb
+*.pt
+*.pth
+
+# Generated model analysis and slices
+*/onnx_analysis/
+*/onnx_slices/
+*/complex_nodes/
+
+# Temporary files
+*temp*.onnx
+sym_shape_infer_temp*
+
+# UUID files (temporary artifacts)
+[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*
+
+# Generated reports
+*_REPORT.md
+
+# Model input/output files (unless specifically needed)
+input.json
+output.json
+

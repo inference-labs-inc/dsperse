@@ -2,8 +2,13 @@ import os.path
 import json
 import onnx
 from src.utils.onnx_analyzer import OnnxAnalyzer
-from src.utils.onnx_utils import OnnxUtils
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+import onnxruntime_extensions as ortx
+import onnxruntime as ort
+from onnxruntime.tools import optimize_onnx_model, symbolic_shape_infer
+from typing import List, Dict, Tuple, Set
+import onnx_graphsurgeon as gs
+import numpy as np
 
 
 class OnnxSlicer:
@@ -16,13 +21,14 @@ class OnnxSlicer:
 
     def determine_slice_points(self, model_metadata) -> List[int]:
         """
-        Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
+        Determine the slice points for the model based on nodes with parameter_details 
+        and complex nodes in the model_metadata.
 
         Args:
             model_metadata: The model analysis metadata containing node information.
 
         Returns:
-            List[int]: List of indices representing nodes with parameter details
+            List[int]: List of indices representing nodes with parameter details and complex nodes
         """
         if not model_metadata or "nodes" not in model_metadata:
             raise ValueError("Invalid model metadata. Please run 'analyze()' first.")
@@ -33,11 +39,176 @@ class OnnxSlicer:
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 slice_points.append(node_info["index"])
 
-        # Sort slice points by index
-        slice_points.sort()
+        # Add complex nodes as slice points using the complex node info from analyzer
+        if "complex_nodes" in model_metadata:
+            complex_nodes = model_metadata["complex_nodes"]
+            
+            # Add complex node indices to slice points
+            for node_type, nodes in complex_nodes.items():
+                for node_info in nodes:
+                    node_name = node_info['node_name']
+                    # Find the corresponding index in model_metadata
+                    for meta_node_name, meta_node_info in model_metadata["nodes"].items():
+                        if meta_node_name == node_name:
+                            slice_points.append(meta_node_info["index"])
+                            print(f"Added complex node {node_type} '{node_name}' at index {meta_node_info['index']} as slice point")
+                            break
+
+        # Sort slice points by index and remove duplicates
+        slice_points = sorted(list(set(slice_points)))
 
         self.slice_points = slice_points
         return slice_points
+
+    def create_complex_node_exports(self, model_metadata, output_dir: str) -> List[str]:
+        """
+        Create standalone ONNX exports for complex nodes using the metadata from analyzer.
+        
+        Args:
+            model_metadata: The model analysis metadata containing complex node information
+            output_dir: Directory to save the complex node exports
+            
+        Returns:
+            List of paths to created complex node files
+        """
+        if "complex_nodes" not in model_metadata:
+            print("No complex nodes found in model metadata")
+            return []
+        
+        complex_nodes = model_metadata["complex_nodes"]
+        gs_graph = gs.import_onnx(self.onnx_model)
+        
+        complex_node_paths = []
+        complex_nodes_dir = os.path.join(output_dir, "complex_nodes")
+        os.makedirs(complex_nodes_dir, exist_ok=True)
+        
+        # Process each type of complex node
+        for node_type, nodes in complex_nodes.items():
+            for i, node_info in enumerate(nodes):
+                node_name = node_info['node_name']
+                
+                # Find the GraphSurgeon node
+                gs_node = None
+                for graph_node in gs_graph.nodes:
+                    if graph_node.name == node_name:
+                        gs_node = graph_node
+                        break
+                
+                if gs_node is None:
+                    print(f"✗ Could not find GraphSurgeon node for {node_name}")
+                    continue
+                
+                # Create a minimal graph containing just this complex node
+                complex_graph = self._create_complex_node_graph(gs_node, node_info)
+                
+                if complex_graph is not None:
+                    # Export to ONNX
+                    filename = f"{node_type}_{i}_{node_name.replace('/', '_')}.onnx"
+                    filepath = os.path.join(complex_nodes_dir, filename)
+                    
+                    try:
+                        onnx_model = gs.export_onnx(complex_graph)
+                        onnx.save(onnx_model, filepath)
+                        complex_node_paths.append(filepath)
+                        
+                        print(f"✓ Created complex node export: {filename}")
+                        print(f"  Type: {node_type}")
+                        print(f"  Inputs: {node_info['inputs']}, Outputs: {node_info['outputs']}")
+                        
+                    except Exception as e:
+                        print(f"✗ Failed to create complex node export for {node_name}: {e}")
+        
+        return complex_node_paths
+    
+    def _create_complex_node_graph(self, gs_node, node_info) -> gs.Graph:
+        """
+        Create a minimal GraphSurgeon graph containing just the complex node.
+        
+        Args:
+            gs_node: GraphSurgeon node
+            node_info: Complex node information
+            
+        Returns:
+            GraphSurgeon graph containing the complex node
+        """
+        try:
+            # Create input tensors with fixed shapes (not dynamic)
+            graph_inputs = []
+            for i, inp in enumerate(gs_node.inputs):
+                if inp is not None:
+                    # Use fixed batch size of 1 instead of dynamic shapes
+                    if inp.shape is not None:
+                        shape = [1 if (dim is None or dim < 0) else dim for dim in inp.shape]
+                    else:
+                        shape = [1, 64]  # Default fixed shape
+                    
+                    # Create input tensor
+                    input_tensor = gs.Variable(
+                        name=f"input_{i}",
+                        dtype=inp.dtype if inp.dtype is not None else np.float32,
+                        shape=shape
+                    )
+                    graph_inputs.append(input_tensor)
+                else:
+                    # Create placeholder for missing input with fixed shape
+                    input_tensor = gs.Variable(
+                        name=f"input_{i}",
+                        dtype=np.float32,
+                        shape=[1, 64]  # Fixed shape
+                    )
+                    graph_inputs.append(input_tensor)
+            
+            # Create output tensors with fixed shapes (not dynamic)
+            graph_outputs = []
+            for i, out in enumerate(gs_node.outputs):
+                if out is not None:
+                    # Use fixed batch size of 1 instead of dynamic shapes
+                    if out.shape is not None:
+                        shape = [1 if (dim is None or dim < 0) else dim for dim in out.shape]
+                    else:
+                        shape = [1, 64]  # Default fixed shape
+                    
+                    # Create output tensor
+                    output_tensor = gs.Variable(
+                        name=f"output_{i}",
+                        dtype=out.dtype if out.dtype is not None else np.float32,
+                        shape=shape
+                    )
+                    graph_outputs.append(output_tensor)
+                else:
+                    # Create placeholder for missing output with fixed shape
+                    output_tensor = gs.Variable(
+                        name=f"output_{i}",
+                        dtype=np.float32,
+                        shape=[1, 64]  # Fixed shape
+                    )
+                    graph_outputs.append(output_tensor)
+            
+            # Create a new node with the same operation and attributes
+            new_node = gs.Node(
+                op=gs_node.op,
+                name=f"complex_{gs_node.name}",
+                inputs=graph_inputs,
+                outputs=graph_outputs,
+                attrs=gs_node.attrs.copy() if gs_node.attrs else {}
+            )
+            
+            # Create the graph
+            complex_graph = gs.Graph(
+                nodes=[new_node],
+                inputs=graph_inputs,
+                outputs=graph_outputs,
+                name=f"complex_node_{gs_node.name}"
+            )
+            
+            # Clean up and validate the graph
+            complex_graph.cleanup().toposort()
+            
+            return complex_graph
+            
+        except Exception as e:
+            print(f"Error creating complex node graph for {gs_node.name}: {e}")
+            return None
 
     def _slice_setup(self, model_metadata):
         """
@@ -337,18 +508,108 @@ class OnnxSlicer:
 
         return slice_paths
 
+    @staticmethod
+    def slice_post_process(slices_paths, complex_node_paths=None):
+        """
+        Post-process sliced models and complex node exports.
+        
+        Args:
+            slices_paths: List of paths to regular slice files
+            complex_node_paths: List of paths to complex node export files
+        """
+        all_paths = slices_paths.copy()
+        if complex_node_paths:
+            all_paths.extend(complex_node_paths)
+            
+        for path in all_paths:
+            print(f"Processing {path}")
+            # Convert to absolute path if it's relative
+            if not os.path.isabs(path):
+                path = os.path.join(os.path.dirname(__file__), path)
+            print(f"Path: {path}")
+
+            try:
+                # Load the model
+                model = onnx.load(path)
+                print(f"Model loaded successfully")
+
+                # Check if model is valid before optimization
+                onnx.checker.check_model(model)
+                print(f"Model validation passed")
+
+                # Create output path for optimized model
+                path_obj = Path(path)
+                optimized_path = str(path_obj)
+
+                try:
+                    # Use onnxruntime-extensions for optimization
+                    # This provides more advanced optimization than the basic onnxruntime optimizer
+                    ortx.optimize_model(model, optimized_path)
+                    print(f"Model optimization with onnxruntime-extensions successful")
+
+                    # Load the optimized model
+                    model = onnx.load(optimized_path)
+                except Exception as opt_error:
+                    print(f"Optimization with onnxruntime-extensions failed: {opt_error}, trying fallback optimization")
+
+                    # Fallback to original optimization method
+                    try:
+                        optimized_model = optimize_onnx_model.optimize_model(path_obj, output_path=path_obj)
+                        if optimized_model is not None:
+                            model = optimized_model
+                            print(f"Fallback model optimization successful")
+                        else:
+                            print(f"Fallback model optimization returned None, using original model")
+                    except Exception as fallback_error:
+                        print(f"Fallback optimization failed: {fallback_error}, continuing with original model")
+
+                # Try shape inference
+                try:
+                    model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(model)
+                    print(f"Shape inference successful")
+                except Exception as shape_error:
+                    print(f"Shape inference failed: {shape_error}, continuing without shape inference")
+
+                # Save the processed model
+                onnx.save(model, path)
+                print(f"Model saved successfully to {path}")
+
+                # Additional verification step - try to create a session with the optimized model
+                try:
+                    # Create session options with additional optimizations
+                    session_options = ort.SessionOptions()
+                    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    session_options.optimized_model_filepath = str(path_obj) #+ ".optimized"
+
+                    # Register custom ops from onnxruntime-extensions
+                    session_options.register_custom_ops_library(ortx.get_library_path())
+
+                    # Create a session to verify and further optimize the model
+                    _ = ort.InferenceSession(path, session_options)
+                    print(f"Additional optimization and verification successful")
+                except Exception as verify_error:
+                    print(
+                        f"Additional optimization verification failed: {verify_error}, but model should still be usable")
+
+            except Exception as e:
+                print(f"Error processing {path}: {e}")
+                # Continue with next slice instead of failing completely
+                continue
+
     def slice_model(self, model_metadata=None):
         """
-        Run the complete workflow: determine slice points and slice.
+        Run the complete workflow: determine slice points, slice, and handle complex nodes.
 
         Args:
             model_metadata: The model analysis metadata. If None, it will be determined.
 
         Returns:
-            Dict[str, Any]: Metadata about the sliced model
+            Dict[str, Any]: Metadata about the sliced model including complex nodes
         """
         # Step 1: Set model metadata if provided
-        if not model_metadata:
+        if model_metadata:
+            self.model_metadata = model_metadata
+        else:
             # Check if model metadata exists in onnx_analysis directory
             metadata_path = os.path.join(os.path.dirname(self.onnx_path), "onnx_analysis", "model_metadata.json")
             if os.path.exists(metadata_path):
@@ -357,20 +618,50 @@ class OnnxSlicer:
             else:
                 raise ValueError("Model metadata not found. Please run 'analyze()' first.")
 
-        # Step 2: Determine slice points
-        slice_points = self.determine_slice_points(model_metadata)
+        # Step 2: Determine slice points (includes complex nodes)
+        slice_points = self.determine_slice_points(self.model_metadata)
 
-        # Step 3: Slice the model
-        slices_paths = self.slice(slice_points, model_metadata)
+        print(f"\n=== Complex Node Detection ===")
+        complex_nodes = self.model_metadata.get("complex_nodes", {})
+        for node_type, nodes in complex_nodes.items():
+            if nodes:
+                print(f"{node_type.replace('_', ' ').title()}: {len(nodes)} detected")
+                for node_info in nodes:
+                    print(f"  - {node_info['node_name']} (inputs: {node_info['inputs']}, outputs: {node_info['outputs']})")
+            else:
+                print(f"{node_type.replace('_', ' ').title()}: None detected")
 
-        # Step 4: generate slices metadata
-        onnx_analyzer.generate_slices_metadata(model_metadata, slice_points, os.path.join(os.path.dirname(self.onnx_path), "onnx_slices"))
+        # Step 3: Create complex node exports
+        output_dir = os.path.dirname(self.onnx_path)
+        complex_node_paths = self.create_complex_node_exports(self.model_metadata, output_dir)
+        
+        print(f"\n=== Complex Node Exports ===")
+        if complex_node_paths:
+            print(f"Created {len(complex_node_paths)} complex node exports:")
+            for path in complex_node_paths:
+                print(f"  - {os.path.basename(path)}")
+        else:
+            print("No complex node exports created")
 
-        return slices_paths
+        # Step 4: Slice the model
+        slices_paths = self.slice(slice_points, self.model_metadata)
+        
+        # Step 5: Post-process all models (slices + complex nodes)
+        self.slice_post_process(slices_paths, complex_node_paths)
+
+        # Step 6: generate slices metadata
+        analyzer = OnnxAnalyzer(model_path=self.onnx_path)
+        analyzer.generate_slices_metadata(self.model_metadata, slice_points, os.path.join(os.path.dirname(self.onnx_path), "onnx_slices"))
+
+        return {
+            'slice_paths': slices_paths,
+            'complex_node_paths': complex_node_paths,
+            'complex_nodes_detected': complex_nodes
+        }
 
 if __name__ == "__main__":
 
-    model_choice = 1 # Change this to test different models
+    model_choice = 3 # Change this to test different models
 
     base_paths = {
         1: "models/doom",

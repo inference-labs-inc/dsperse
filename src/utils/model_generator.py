@@ -330,9 +330,54 @@ def create_test_cnn_model_with_biases(model_dir="models/test_cnn_model_with_bias
 
     return model_path, config_path
 
+def generate_input(shape, output_file="input.json", batch_size=1):
+    """
+    Takes an input shape and generates an input.json file which can be used to run models.
+    
+    :param shape: Input shape for the model (e.g., [3, 224, 224] or [4, 28, 28])
+    :type shape: list
+    :param output_file: Name of the output JSON file. Default is "input.json"
+    :type output_file: str
+    :param batch_size: Batch size to use for inference. Default is 1
+    :type batch_size: int
+    :return: Path to the generated input file
+    :rtype: str
+    """
+    import numpy as np
+    
+    # Add batch dimension to the shape if not already present
+    if isinstance(shape, list) and len(shape) >= 1:
+        # Create full input shape with batch dimension
+        full_shape = [batch_size] + shape
+        
+        # Generate random input data matching the shape
+        # Using normal distribution with mean=0, std=1 (typical for model inputs)
+        input_data = np.random.randn(*full_shape).astype(np.float32)
+        
+        # Create the input dictionary
+        input_dict = {
+            "input": input_data.tolist(),  # Convert numpy array to list for JSON serialization
+            "shape": full_shape,
+            "dtype": "float32",
+            "batch_size": batch_size
+        }
+        
+        # Write to JSON file
+        with open(output_file, 'w') as f:
+            json.dump(input_dict, f, indent=2)
+        
+        print(f"Generated input file: {output_file}")
+        print(f"Input shape: {full_shape}")
+        print(f"Data type: float32")
+        
+        return output_file
+    else:
+        raise ValueError("Shape must be a list with at least one dimension")
+
 if __name__ == "__main__":
     # generate model
     # create_test_model()
     # create_test_model_with_embedded_activations()
     # create_test_model_with_biases()
-    create_test_cnn_model_with_biases()
+    # create_test_cnn_model_with_biases()
+    generate_input([3, 224, 224], output_file="input.json", batch_size=1)

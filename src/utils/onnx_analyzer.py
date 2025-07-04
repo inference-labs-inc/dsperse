@@ -3,6 +3,7 @@ import json
 import onnx
 from ..utils.onnx_utils import OnnxUtils
 from typing import Dict, Any, List
+import onnx_graphsurgeon as gs
 
 class OnnxAnalyzer:
     """
@@ -20,13 +21,18 @@ class OnnxAnalyzer:
         if onnx_model is not None:
             self.onnx_model = onnx_model
         elif model_path is not None:
-            path = os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)
-            self.onnx_path = path
+            # Use the model_path directly if it's absolute, otherwise make it relative to current directory
+            if os.path.isabs(model_path):
+                self.onnx_path = model_path
+            else:
+                self.onnx_path = model_path
             self.onnx_model = onnx.load(self.onnx_path)
         else:
             raise ValueError("onnx_model path is not found")
 
         self.model_metadata = None
+        self.gs_graph = None
+        self.complex_nodes = {}
 
     def analyze(self) -> Dict[str, Any]:
         """
@@ -63,6 +69,20 @@ class OnnxAnalyzer:
             node_info = self.analyze_node(node, i, initializer_map)
             node_metadata[node.name] = node_info
 
+        # Detect complex nodes using GraphSurgeon
+        print("\n🔍 Detecting complex nodes...")
+        complex_nodes = self.detect_complex_nodes()
+        
+        # Mark complex nodes in node metadata
+        for node_type, nodes in complex_nodes.items():
+            for complex_node_info in nodes:
+                node_name = complex_node_info['node_name']
+                if node_name in node_metadata:
+                    node_metadata[node_name]['is_complex'] = True
+                    node_metadata[node_name]['complex_type'] = complex_node_info['type']
+                    node_metadata[node_name]['complex_details'] = complex_node_info
+                    print(f"  ✓ Marked {node_name} as {complex_node_info['type']} complex node")
+
         # Create model metadata
         model_metadata = {
             "original_model": self.onnx_path,
@@ -71,6 +91,7 @@ class OnnxAnalyzer:
             "initializer_count": len(graph.initializer),
             "input_shape": model_input_shape,
             "output_shapes": model_output_shape,
+            "complex_nodes": complex_nodes,
             "nodes": node_metadata
         }
 
@@ -481,8 +502,8 @@ class OnnxAnalyzer:
 
         return segment_dependencies
 
-    def _get_segment_shape(self, end_idx, model_metadata, start_idx):
-        # TODO: Fix this to calculate the shapes correctly
+    @staticmethod
+    def _get_segment_shape(end_idx, model_metadata, start_idx):
         segment_shape = {
             "input": [],
             "output": []
@@ -490,11 +511,15 @@ class OnnxAnalyzer:
         # Get first and last nodes of segment
         first_node = None
         last_node = None
+        next_node = None
         for node_name, node_info in model_metadata['nodes'].items():
             if node_info['index'] == start_idx:
                 first_node = node_info
             if node_info['index'] == end_idx - 1:
                 last_node = node_info
+            if node_info['index'] == end_idx:
+                next_node = node_info
+
         # Get segment shapes from first and last nodes if available
         if start_idx == 0:
             segment_shape["input"] = model_metadata["input_shape"][0]
@@ -503,16 +528,44 @@ class OnnxAnalyzer:
                 if "shape" in param_info:
                     segment_shape["input"] = param_info["shape"]
                     break
+
+        # For the output shape:
         if last_node:
             # For the last segment, use model output shape
             if end_idx == len(model_metadata['nodes']):
                 segment_shape["output"] = model_metadata["output_shapes"][0]
-            # Otherwise use last node shape if available
-            elif "parameter_details" in last_node:
-                for param_name, param_info in last_node["parameter_details"].items():
-                    if "shape" in param_info:
-                        segment_shape["output"] = param_info["shape"]
-                        break
+            # Otherwise, use the weight shape of the next node
+            elif next_node:
+                # If the next node has dependencies, use the shape of the first input
+                if "dependencies" in next_node and "input" in next_node["dependencies"] and next_node["dependencies"][
+                    "input"]:
+                    # Try to find the shape from the next node's parameter details
+                    if "parameter_details" in next_node:
+                        # First, try to find a weight parameter with a 4D shape (for Conv layers)
+                        for param_name, param_info in next_node["parameter_details"].items():
+                            if "shape" in param_info and len(param_info["shape"]) == 4:
+                                # This is likely a Conv weight tensor
+                                segment_shape["output"] = param_info["shape"]
+                                break
+
+                        # If we didn't find a 4D shape, try to find a 2D shape (for Gemm/Linear layers)
+                        if not segment_shape["output"]:
+                            for param_name, param_info in next_node["parameter_details"].items():
+                                if "shape" in param_info and len(param_info["shape"]) == 2:
+                                    # This is likely a Gemm/Linear weight tensor
+                                    segment_shape["output"] = param_info["shape"]
+                                    break
+
+                        # If we still didn't find a shape, try any parameter with a shape
+                        if not segment_shape["output"]:
+                            for param_name, param_info in next_node["parameter_details"].items():
+                                if "shape" in param_info and len(param_info["shape"]) > 1:
+                                    segment_shape["output"] = param_info["shape"]
+                                    break
+
+                # If we couldn't determine the output shape from the next node, use the last node's output features if available
+                if not segment_shape["output"] and "out_features" in last_node:
+                    segment_shape["output"] = ["batch_size", last_node["out_features"]]
 
         return segment_shape
 
@@ -568,3 +621,122 @@ class OnnxAnalyzer:
         }
 
         return layer_info
+
+    def detect_complex_nodes(self) -> Dict[str, List[Dict]]:
+        """
+        Detect complex nodes (skip connections, merging points, splitting points) in the graph.
+        
+        Returns:
+            Dict containing lists of detected complex nodes by type
+        """
+        if self.gs_graph is None:
+            self.gs_graph = gs.import_onnx(self.onnx_model)
+        
+        complex_nodes = {
+            'skip_connections': [],
+            'merging_points': [],
+            'splitting_points': []
+        }
+        
+        # Build node connectivity map
+        tensor_producers = {}
+        tensor_consumers = {}
+        
+        for node in self.gs_graph.nodes:
+            # Track tensor producers and consumers
+            for inp in node.inputs:
+                if inp is not None:
+                    if inp.name not in tensor_consumers:
+                        tensor_consumers[inp.name] = []
+                    tensor_consumers[inp.name].append(node.name)
+                    
+            for out in node.outputs:
+                if out is not None:
+                    tensor_producers[out.name] = node.name
+        
+        # Detect splitting points (1 input, multiple outputs)
+        for node in self.gs_graph.nodes:
+            if len(node.inputs) == 1 and len(node.outputs) > 1:
+                # Check if outputs go to different consumers
+                output_consumers = []
+                for out in node.outputs:
+                    if out is not None and out.name in tensor_consumers:
+                        output_consumers.extend(tensor_consumers[out.name])
+                
+                if len(set(output_consumers)) > 1:  # Multiple different consumers
+                    complex_nodes['splitting_points'].append({
+                        'node_name': node.name,
+                        'type': 'splitting',
+                        'inputs': len(node.inputs),
+                        'outputs': len(node.outputs),
+                        'output_tensors': [out.name for out in node.outputs if out is not None]
+                    })
+        
+        # Detect merging points (multiple inputs, 1 output)
+        for node in self.gs_graph.nodes:
+            if len(node.inputs) > 1 and len(node.outputs) == 1:
+                complex_nodes['merging_points'].append({
+                    'node_name': node.name,
+                    'type': 'merging',
+                    'inputs': len(node.inputs),
+                    'outputs': len(node.outputs),
+                    'input_tensors': [inp.name for inp in node.inputs if inp is not None]
+                })
+        
+        # Detect skip connections (Add/Concat nodes with paths of different lengths)
+        for node in self.gs_graph.nodes:
+            if node.op in ['Add', 'Concat'] and len(node.inputs) > 1:
+                # Calculate path lengths from inputs to this node
+                path_lengths = []
+                for inp in node.inputs:
+                    if inp is not None and inp.name in tensor_producers:
+                        path_length = self._calculate_path_length(tensor_producers[inp.name], node.name)
+                        path_lengths.append(path_length)
+                
+                # If path lengths differ significantly, it's likely a skip connection
+                if len(set(path_lengths)) > 1 and max(path_lengths) - min(path_lengths) > 2:
+                    complex_nodes['skip_connections'].append({
+                        'node_name': node.name,
+                        'type': 'skip_connection',
+                        'inputs': len(node.inputs),
+                        'outputs': len(node.outputs),
+                        'path_lengths': path_lengths,
+                        'input_tensors': [inp.name for inp in node.inputs if inp is not None]
+                    })
+        
+        self.complex_nodes = complex_nodes
+        return complex_nodes
+
+    def _calculate_path_length(self, start_node_name: str, end_node_name: str) -> int:
+        """Calculate the path length between two nodes."""
+        if start_node_name == end_node_name:
+            return 0
+            
+        visited = set()
+        queue = [(start_node_name, 0)]
+        
+        while queue:
+            current_node, depth = queue.pop(0)
+            if current_node in visited:
+                continue
+            visited.add(current_node)
+            
+            if current_node == end_node_name:
+                return depth
+                
+            # Find nodes that consume outputs of current node
+            current_gs_node = None
+            for node in self.gs_graph.nodes:
+                if node.name == current_node:
+                    current_gs_node = node
+                    break
+                    
+            if current_gs_node:
+                for output in current_gs_node.outputs:
+                    if output is not None:
+                        for consumer_node in self.gs_graph.nodes:
+                            if any(inp is not None and inp.name == output.name for inp in consumer_node.inputs):
+                                if consumer_node.name not in visited:
+                                    queue.append((consumer_node.name, depth + 1))
+        
+        return float('inf')  # No path found

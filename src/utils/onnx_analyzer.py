@@ -1,7 +1,7 @@
 import os
 import json
 import onnx
-from ..utils.onnx_utils import OnnxUtils
+from utils.onnx_utils import OnnxUtils
 from typing import Dict, Any, List
 
 class OnnxAnalyzer:

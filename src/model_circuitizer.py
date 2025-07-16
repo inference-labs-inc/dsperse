@@ -4,8 +4,8 @@ import subprocess
 
 import torch
 
-from models.doom.model import DoomAgent, Conv1Segment, Conv2Segment, Conv3Segment, FC1Segment, FC2Segment
-from models.net.model import Net, Conv1Segment as NetConv1, Conv2Segment as NetConv2, FC1Segment as NetFC1, \
+from src.models.doom.model import DoomAgent, Conv1Segment, Conv2Segment, Conv3Segment, FC1Segment, FC2Segment
+from src.models.net.model import Net, Conv1Segment as NetConv1, Conv2Segment as NetConv2, FC1Segment as NetFC1, \
     FC2Segment as NetFC2, FC3Segment as NetFC3
 
 
@@ -276,61 +276,126 @@ class ModelCircuitizer:
             print(f"❌ Error writing calibration JSON: {e}")
             raise
 
+    @staticmethod
+    def _fix_constant_nodes(segment_path, output_path):
+        """
+        Convert problematic Constant nodes to initializers for EZKL compatibility.
+        
+        Args:
+            segment_path: Path to the original segment ONNX file
+            output_path: Path to save the fixed segment ONNX file
+        """
+        import onnx
+        
+        # Load the problematic segment
+        model = onnx.load(segment_path)
+        
+        print(f"Fixing Constant nodes in {segment_path}...")
+        
+        # Work directly with the ONNX model to convert Constant to initializer
+        nodes_to_remove = []
+        for i, node in enumerate(model.graph.node):
+            if node.op_type == 'Constant':
+                print(f'Found Constant node: {node.name}')
+                
+                # Get the constant value tensor
+                const_tensor = None
+                for attr in node.attribute:
+                    if attr.name == 'value':
+                        const_tensor = attr.t
+                        break
+                
+                if const_tensor:
+                    # Create a unique name for the initializer
+                    init_name = node.name.replace('/', '_') + '_as_initializer'
+                    
+                    # Create a new initializer with the same data
+                    new_initializer = onnx.TensorProto()
+                    new_initializer.CopyFrom(const_tensor)
+                    new_initializer.name = init_name
+                    
+                    # Add the initializer to the graph
+                    model.graph.initializer.append(new_initializer)
+                    
+                    # Update the node output name to match the initializer
+                    if len(node.output) > 0:
+                        old_output_name = node.output[0]
+                        
+                        # Replace all references to the old output with the new initializer name
+                        for other_node in model.graph.node:
+                            for j, input_name in enumerate(other_node.input):
+                                if input_name == old_output_name:
+                                    other_node.input[j] = init_name
+                        
+                        # Mark node for removal
+                        nodes_to_remove.append(node)
+                        
+                        print(f'Converted Constant node to initializer: {init_name}')
+        
+        # Remove the constant nodes
+        for node in nodes_to_remove:
+            model.graph.node.remove(node)
+        
+        print(f'Saving fixed model to {output_path}...')
+        onnx.save(model, output_path)
+
     def circuitize_sliced_doom_model(self, model_directory: str = None):
         """circuitize each slice found in the provided directory."""
         model_directory = model_directory if model_directory else self.model_dir
-        metadata_path = os.path.join(model_directory, "model_slices/metadata.json")
-        segments_path = os.path.join(model_directory, "model_slices")
+        metadata_path = os.path.join(model_directory, "onnx_analysis/model_metadata.json")
+        segments_path = os.path.join(model_directory, "onnx_slices")
         # Explicitly load metadata details
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        segments = metadata['segments']
+        segments = metadata['nodes']
         circuit_folder = os.path.join(model_directory, "ezkl/slices")
         os.makedirs(circuit_folder, exist_ok=True)
 
-        # Iterate distinctly through segments
-        for idx, segment_meta in enumerate(segments):
-            segment_type = segment_meta['type']
-            segment_filename = segment_meta.get('filename')
+        # Process all segments including segment 2 with fixed version
+        segments_to_process = [0, 1, 2, 3, 4]  # Include all segments
+        print(f"Processing segments: {segments_to_process} (with segment 2 fixed for Constant node compatibility)")
+
+        # Iterate through all segments
+        for idx in segments_to_process:
+            print(f"\n🔄 Starting circuitization of doom segment {idx}...")
+            segment_filename = f"segment_{idx}.onnx"
             segment_path = os.path.join(segments_path, segment_filename)
             slice_output_path = os.path.join(circuit_folder, f"segment_{idx}")
             os.makedirs(slice_output_path, exist_ok=True)
 
-            # instantiate the specific segment class
-            SegmentClass = self._get_doom_segment_class(idx)
-            segment_model = SegmentClass()
-            segment_model.load_state_dict(torch.load(segment_path, map_location=self.device))
-            segment_model.to(self.device)
-            segment_model.eval()
+            # Special handling for segment 2 - use fixed version
+            if idx == 2:
+                fixed_segment_path = os.path.join(segments_path, "segment_2_fixed.onnx")
+                if not os.path.exists(fixed_segment_path):
+                    # Create fixed version if it doesn't exist
+                    self._fix_constant_nodes(segment_path, fixed_segment_path)
+                segment_path = fixed_segment_path
+                print(f"Using fixed segment 2: {segment_path}")
+
+            # Load the ONNX model directly instead of using PyTorch segments
+            import onnx
+            onnx_model = onnx.load(segment_path)
+            
+            # Export to ONNX (already in ONNX format, just copy)
+            onnx_filename = os.path.join(slice_output_path, f"segment_{idx}.onnx")
+            onnx.save(onnx_model, onnx_filename)
 
             # Generate dummy input matching segment
             if idx == 0:
                 dummy_input_shape = (1, 4, 28, 28)
             elif idx == 1:
                 dummy_input_shape = (1, 16, 28, 28)
-            elif idx == 2:
-                dummy_input_shape = (1, 32, 14, 14)
-            elif idx == 3:
+            elif idx == 2:  # Conv3 segment - from 16 channels to 32 channels
+                dummy_input_shape = (1, 16, 28, 28)
+            elif idx == 3:  # FC1 segment
                 dummy_input_shape = (1, 32, 7, 7)
-            elif idx == 4:
+            elif idx == 4:  # FC2 segment
                 dummy_input_shape = (1, 256)
             else:
                 raise ValueError(f"Unknown index: {idx}")
 
             dummy_input = torch.randn(dummy_input_shape, device=self.device)
-
-            # Export to ONNX
-            onnx_filename = os.path.join(slice_output_path, f"segment_{idx}.onnx")
-            torch.onnx.export(
-                segment_model,
-                dummy_input,
-                onnx_filename,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-                opset_version=12
-            )
 
             # generate settings.json
             subprocess.run(
@@ -362,16 +427,15 @@ class ModelCircuitizer:
                 check=True
             )
 
-            # change settings
-            # json load setting file and change 'decomp_legs' to 2
-            # settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
-            # with open(settings_path, 'r') as f:
-            #     settings = json.load(f)
-            #
-            # settings["run_args"]['decomp_legs'] = 2
-            #
-            # with open(settings_path, 'w') as f:
-            #     json.dump(settings, f, indent=4)
+            # Set logrows to 21 for all segments
+            settings_path = os.path.join(slice_output_path, f"segment_{idx}_settings.json")
+            with open(settings_path, 'r') as f:
+                settings = json.load(f)
+
+            settings["run_args"]['logrows'] = 21
+
+            with open(settings_path, 'w') as f:
+                json.dump(settings, f, indent=4)
 
             # generate model.compiled
             subprocess.run(
@@ -398,35 +462,39 @@ class ModelCircuitizer:
                 env=self.env,
                 check=True
             )
+            
+            print(f"✅ Completed circuitization of doom segment {idx}")
+
+        print(f"\n🎉 Doom model circuitization completed! Processed segments: {segments_to_process}")
+        print("✅ All segments including segment 2 (with Constant node fix) have been processed successfully!")
 
     def circuitize_sliced_net_model(self, model_directory: str = None):
         """circuitize each slice found in the provided directory."""
         model_directory = model_directory if model_directory else self.model_dir
-        metadata_path = os.path.join(model_directory, "slices/metadata.json")
-        segments_path = os.path.join(model_directory, "slices")
+        metadata_path = os.path.join(model_directory, "onnx_analysis/model_metadata.json")
+        segments_path = os.path.join(model_directory, "onnx_slices")
 
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        segments = metadata['segments']
+        segments = metadata['nodes']
         circuit_folder = os.path.join(model_directory, "ezkl/slices")
         os.makedirs(circuit_folder, exist_ok=True)
 
 
-        for idx, segment_meta in enumerate(segments):
-            segment_type = segment_meta['type']
-            segment_filename = segment_meta.get('filename')
+        for idx in range(5):  # We know there are 5 segments from the ONNX slicer
+            segment_filename = f"segment_{idx}.onnx"
             segment_path = os.path.join(segments_path, segment_filename)
             slice_output_path = os.path.join(circuit_folder, f"segment_{idx}")
             os.makedirs(slice_output_path, exist_ok=True)
 
-
-            # instantiate the specific segment class
-            SegmentClass = self._get_net_segment_class(idx)
-            segment_model = SegmentClass()
-            segment_model.load_state_dict(torch.load(segment_path, map_location=self.device))
-            segment_model.to(self.device)
-            segment_model.eval()
+            # Load the ONNX model directly instead of using PyTorch segments
+            import onnx
+            onnx_model = onnx.load(segment_path)
+            
+            # Export to ONNX (already in ONNX format, just copy)
+            onnx_filename = os.path.join(slice_output_path, f"segment_{idx}.onnx")
+            onnx.save(onnx_model, onnx_filename)
 
             # dummy inputs for layers
             if idx == 0:
@@ -443,18 +511,6 @@ class ModelCircuitizer:
                 raise ValueError(f"Unknown index: {idx}")
 
             dummy_input = torch.randn(dummy_input_shape, device=self.device)
-
-            # Export to ONNX
-            onnx_filename = os.path.join(slice_output_path, f"segment_{idx}.onnx")
-            torch.onnx.export(
-                segment_model,
-                dummy_input,
-                onnx_filename,
-                input_names=["input"],
-                output_names=["output"],
-                dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
-                opset_version=12
-            )
 
             # generate settings.json
             subprocess.run(
@@ -492,6 +548,8 @@ class ModelCircuitizer:
                 settings = json.load(f)
 
             settings["run_args"]['decomp_legs'] = 4
+            # Set logrows to 21 for all segments
+            settings["run_args"]['logrows'] = 21
 
             with open(settings_path, 'w') as f:
                 json.dump(settings, f, indent=4)
@@ -528,8 +586,8 @@ if __name__ == "__main__":
     model_choice = 1  # Change this to test different models
 
     base_paths = {
-        1: "models/doom",
-        2: "models/net"
+        1: "src/models/doom",
+        2: "src/models/net"
     }
 
     model_dir = base_paths[model_choice]
@@ -540,5 +598,5 @@ if __name__ == "__main__":
         model_circuitizer.circuitize_sliced_doom_model()
 
     elif model_choice == 2:
-        model_circuitizer.circuitize_net_model()
+        # model_circuitizer.circuitize_net_model()  # Skip unsliced version
         model_circuitizer.circuitize_sliced_net_model()

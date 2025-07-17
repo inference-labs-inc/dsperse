@@ -340,14 +340,17 @@ class OnnxAnalyzer:
             if start_idx == end_idx:
                 continue
 
+            # get input shape
+
             # Get segment metadata
             segment_metadata = self._get_segment_metadata(
                 model_metadata, 
                 segment_idx, 
                 start_idx, 
                 end_idx
+                # if input shapes doesnt exist, use shape from above
             )
-
+            # extract shape
             if segment_metadata:
                 segments.append(segment_metadata)
 

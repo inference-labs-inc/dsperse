@@ -106,6 +106,7 @@ class OnnxRunner:
 
                 # Run inference on this segment
                 outputs = session.run(None, input_feed)
+                outputs = session.run(None, {"leakyRelu": value1, "conv": val2})
 
                 # Store all outputs in our intermediate outputs dictionary
                 for i, output_info in enumerate(session.get_outputs()):
@@ -267,7 +268,7 @@ if __name__ == "__main__":
 
     model_dir = base_paths[model_choice]
     model_runner = OnnxRunner(model_directory=model_dir)
-    model_runner.preprocess_onnx_model()
+    # model_runner.preprocess_onnx_model()
 
-    # result = model_runner.infer(mode="sliced") # change function and mode when needed
-    # print(result)
+    result = model_runner.infer(mode="sliced") # change function and mode when needed
+    print(result)

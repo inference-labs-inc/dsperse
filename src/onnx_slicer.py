@@ -333,6 +333,8 @@ class OnnxSlicer:
             # Create a model from the graph
             segment_model = onnx.helper.make_model(segment_graph)
 
+            # TODO: check model here?
+
             # Save the segment model
             save_path = os.path.join(output_dir, f"segment_{segment_idx}.onnx")
             onnx.save(segment_model, save_path)

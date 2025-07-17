@@ -18,6 +18,13 @@ Kubz is a toolkit for slicing, analyzing, and running neural network models. It 
 - **Zero-Knowledge Proofs**: Generate proofs for model execution (via ezkl integration)
 - **Visualization**: Analyze model structure and performance
 
+## Documentation
+
+For more detailed information about the project, please refer to the following documentation:
+
+- [Overview](docs/overview.md): A high-level overview of the project, its goals, and features
+- [Architecture](docs/arc42.md): Detailed architecture documentation following the arc42 template
+
 ## Installation
 
 1. Clone the repository:
@@ -57,10 +64,9 @@ model_slicer = ModelSlicer(model_directory="models/net")
 # Slice the model (creates slices in the model directory by default)
 model_slicer.slice_model()
 
-# You can also specify an output directory and slicing strategy
+# You can also specify an output directory
 model_slicer.slice_model(
     output_dir="custom_output_dir",
-    strategy="single_layer",  # Slice by individual layers
     input_file="path/to/input.json"  # Sample input for analysis
 )
 ```
@@ -73,8 +79,8 @@ from src.onnx_slicer import OnnxSlicer
 # Initialize the ONNX slicer with the path to your ONNX model
 onnx_slicer = OnnxSlicer("models/yolov3/model.onnx")
 
-# Slice the model by individual layers
-onnx_slicer.slice_model(mode="single_layer")
+# Slice the model
+onnx_slicer.slice_model()
 ```
 
 ### Running Inference on a Sliced PyTorch Model
@@ -113,7 +119,7 @@ print(result)
 
 ### Zero-Knowledge Proofs for Models
 
-Kubz supports generating zero-knowledge proofs for neural network models using both ezkl and jstProve libraries. You can run proofs on either whole models or sliced models:
+Kubz supports generating zero-knowledge proofs for neural network models using the ezkl library. You can run proofs on either whole models or sliced models:
 
 #### Using ezkl
 
@@ -148,46 +154,6 @@ result = ezkl_runner.verify(mode="sliced")
 print(result)
 ```
 
-#### Using jstProve
-
-```python
-from src.runners.jstprove_runner import JSTProveRunner
-
-# Initialize the jstProve runner with the model directory
-jstprove_runner = JSTProveRunner(model_directory="models/net")
-
-# Circuitize the whole model
-result = jstprove_runner.circuitize()
-print(result)
-
-# Circuitize the sliced model
-result = jstprove_runner.circuitize(mode="sliced")
-print(result)
-
-# Generate witness for the whole model
-result = jstprove_runner.generate_witness()
-print(result)
-
-# Generate witness for the sliced model
-result = jstprove_runner.generate_witness(mode="sliced")
-print(result)
-
-# Generate proof for the whole model
-result = jstprove_runner.prove()
-print(result)
-
-# Generate proof for the sliced model
-result = jstprove_runner.prove(mode="sliced")
-print(result)
-
-# Verify proof for the whole model
-result = jstprove_runner.verify()
-print(result)
-
-# Verify proof for the sliced model
-result = jstprove_runner.verify(mode="sliced")
-print(result)
-```
 
 You can also use the CLI interface for various operations:
 
@@ -203,18 +169,18 @@ kubz [command] [options]
 
 Available commands:
 - `slice`: Slice a model into segments
-- `infer`: Run inference on a model
+- `run`: Run inference on a model
 - `prove`: Generate a proof for a model
 - `verify`: Verify a proof for a model
 
 #### Slicing Models
 
 ```bash
-# Slice a PyTorch model using the default single_layer strategy
+# Slice a PyTorch model
 kubz slice --model-dir models/net
 
-# Slice a PyTorch model with a specific output directory and strategy
-kubz slice --model-dir models/net --output-dir custom_slices --strategy by_type
+# Slice a PyTorch model with a specific output directory
+kubz slice --model-dir models/net --output-dir custom_slices
 
 # Slice a model with a specific input file
 kubz slice --model-dir models/net --input-file custom_input.json
@@ -224,19 +190,17 @@ kubz slice --model-dir models/net --input-file custom_input.json
 
 ```bash
 # Run inference on a whole model (default)
-kubz infer --model-dir models/net
+kubz run --model-dir models/net
 
 # Run inference on a sliced model
-kubz infer --model-dir models/net --sliced
+kubz run --model-dir models/net --sliced
 
 # Run inference with a specific input file and save results
-kubz infer --model-dir models/net --input-file input.json --output-file results.json
+kubz run --model-dir models/net --input-file input.json --output-file results.json
 
 # Run inference using the EZKL backend
-kubz infer --model-dir models/net --ezkl
+kubz run --model-dir models/net --ezkl
 
-# Run inference using the jstProve backend
-kubz infer --model-dir models/net --jstprove
 ```
 
 #### Generating Proofs
@@ -248,8 +212,6 @@ kubz prove --model-dir models/net --ezkl
 # Generate a proof for a sliced model using EZKL
 kubz prove --model-dir models/net --ezkl --sliced
 
-# Generate a proof using jstProve and save results
-kubz prove --model-dir models/net --jstprove --output-file proof_results.json
 ```
 
 #### Verifying Proofs
@@ -258,11 +220,6 @@ kubz prove --model-dir models/net --jstprove --output-file proof_results.json
 # Verify a proof for a whole model using EZKL
 kubz verify --model-dir models/net --ezkl
 
-# Verify a proof for a sliced model using jstProve
-kubz verify --model-dir models/net --jstprove --sliced
-
-# Verify a proof with a specific input file
-kubz verify --model-dir models/net --jstprove --input-file input.json
 ```
 
 #### Getting Help
@@ -273,7 +230,7 @@ kubz --help
 
 # Show help for a specific command
 kubz slice --help
-kubz infer --help
+kubz run --help
 kubz prove --help
 kubz verify --help
 ```
@@ -298,18 +255,17 @@ Or just run any command - you might get lucky and see an easter egg 20% of the t
     - `onnx_runner.py`: Runs inference on ONNX models
   - `utils/`: Utility functions
   - `models/`: Example models
-- `main.py`: CLI interface for running workflows
+- `cli/`: Command-line interface modules
+  - `base.py`: Common CLI utilities and classes
+  - `slice.py`: CLI module for slicing models
+  - `run.py`: CLI module for running inference
+  - `prove.py`: CLI module for generating proofs
+  - `verify.py`: CLI module for verifying proofs
+- `main.py`: Main entry point for the CLI
 - `requirements.txt`: Project dependencies
 
 ## Advanced Usage
 
-### Custom Slicing Strategies
-
-You can implement custom slicing strategies by modifying the `get_slice_points` method in `ModelUtils`. The default strategies include:
-
-- `single_layer`: Slice at every layer
-- `by_type`: Group layers by type (e.g., all convolutional layers together)
-- `by_size`: Group layers to achieve a target size per segment
 
 ### Working with Model Metadata
 

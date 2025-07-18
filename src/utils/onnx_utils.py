@@ -175,19 +175,6 @@ class OnnxUtils:
         return shape
 
     @staticmethod
-    def get_output_dir_for_slices(onnx_path):
-        """
-        Get the output directory for sliced models.
-
-        Args:
-            onnx_path: Path to the original ONNX model
-
-        Returns:
-            str: Path to the output directory
-        """
-        return os.path.join(os.path.dirname(onnx_path), "onnx_slices")
-
-    @staticmethod
     def unfuse_operations(model):
         """
         Unfuse FusedConv and FusedGemm operations using GraphSurgeon.

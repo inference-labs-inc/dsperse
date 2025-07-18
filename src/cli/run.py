@@ -108,7 +108,7 @@ def run_inference(args):
                 default_output_file = os.path.join(args.model_dir, "output.json")
                 args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)
 
-        # Save the result if output file is specified
+        # Save the result if an output file is specified
         if args.output_file:
             try:
                 save_result(result, args.output_file)

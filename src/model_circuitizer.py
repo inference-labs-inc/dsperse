@@ -374,6 +374,7 @@ class ModelCircuitizer:
             #     json.dump(settings, f, indent=4)
 
             # generate model.compiled
+
             subprocess.run(
                 [
                     "ezkl",

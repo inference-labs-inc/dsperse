@@ -283,7 +283,7 @@ class OnnxSlicer:
 
         # Set up slicing environment
         (graph, node_map, node_type_index_map, initializer_map, value_info_map,
-         index_to_node_name, index_to_segment_name, output_dir) = self._slice_setup(model_metadata, output_path)
+         index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
 
         # Add the end of the model as a final slice point
         max_index = max(node_info["index"] for node_info in model_metadata["nodes"].values())
@@ -333,11 +333,11 @@ class OnnxSlicer:
             segment_model = onnx.helper.make_model(segment_graph)
 
             # Save the segment model
-            save_path = os.path.join(output_dir, f"segment_{segment_idx}.onnx")
+            save_path = os.path.join(output_path, f"segment_{segment_idx}.onnx")
             onnx.save(segment_model, save_path)
             slice_paths.append(save_path)
 
-        return slice_paths
+        return self.slice_post_process(slice_paths, self.analysis)
 
     @staticmethod
     def slice_post_process(slices_paths, model_metadata):
@@ -346,11 +346,11 @@ class OnnxSlicer:
 
             try:
                 model = onnx.load(path)
-                if OnnxUtils.has_fused_operations(model):
-                    model = OnnxUtils.unfuse_operations(model)
+                # if OnnxUtils.has_fused_operations(model):
+                #     model = OnnxUtils.unfuse_operations(model)
 
                 onnx.checker.check_model(model)
-                model = OnnxUtils.optimize_model(abs_path, model)
+                # model = OnnxUtils.optimize_model(abs_path, model)
                 model = OnnxUtils.add_shape_inference(model, model_metadata, path)
                 onnx.save(model, path)
             except Exception as e:
@@ -362,7 +362,7 @@ class OnnxSlicer:
         Run the complete workflow: determine slice points and slice.
 
         Args:
-            output_path: The path to save the sliced model to.
+            output_path: The path to save the slices to.
 
         Returns:
             Dict[str, Any]: Metadata about the sliced model
@@ -373,7 +373,6 @@ class OnnxSlicer:
 
         # Step 2: Slice the model
         slices_paths = self.slice(slice_points, self.analysis, output_path)
-        self.slice_post_process(slices_paths, self.analysis)
 
         # Step 3: generate slices metadata
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, output_path)

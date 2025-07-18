@@ -340,8 +340,8 @@ class OnnxAnalyzer:
                 model_metadata, 
                 segment_idx, 
                 start_idx, 
-                end_idx
-                # if input shapes doesnt exist, use shape from above
+                end_idx,
+                output_dir
             )
             # extract shape
             if segment_metadata:
@@ -394,7 +394,7 @@ class OnnxAnalyzer:
 
         return metadata
 
-    def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx):
+    def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx, output_dir=None):
         """
         Get metadata for a specific segment.
 
@@ -431,11 +431,14 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx)
 
+        output_dir = output_dir if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices")
+        segment_path = os.path.abspath(os.path.join(output_dir, f"segment_{segment_idx}.onnx"))
+
         # Create segment info
         segment_info = {
             "index": segment_idx,
             "filename": f"segment_{segment_idx}.onnx",
-            "path": os.path.join(os.path.dirname(self.onnx_path), "onnx_slices", f"segment_{segment_idx}.onnx"),
+            "path": segment_path,
             "parameters": segment_parameters,
             "shape": segment_shape,
             "dependencies": segment_dependencies,

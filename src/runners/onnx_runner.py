@@ -53,121 +53,73 @@ class OnnxRunner:
 
         return result
 
-    def run_layered_inference(self, input_tensor):
-        """
-        Run inference with sliced ONNX models using a computational graph approach.
-        """
-        try:
-            # Get the directory containing the sliced models
-            slices_directory = os.path.join(self.model_directory, "onnx_slices")
-
-            # Load metadata
-            metadata = ModelUtils.load_metadata(slices_directory)
-            if metadata is None:
-                return None
-
-            # Build computational graph
-            comp_graph = self.build_computational_graph(metadata)
-
-            # Dictionary to store all intermediate outputs
-            intermediate_outputs = {}
-
-            # Get segments
-            segments = metadata.get('segments', [])
-
-            # Process each segment in sequence
-            for segment in segments:
-                segment_idx = segment['index']
-                segment_path = segment['path']
-
-                # Create an ONNX Runtime session for this segment
-                session = ort.InferenceSession(segment_path)
-
-                # Prepare inputs for this segment
-                input_feed = {}
-
-                # Get required inputs from computational graph
-                for input_info in session.get_inputs():
-                    input_name = input_info.name
-
-                    # Skip constants/initializers - they're already in the model
-                    if input_name in comp_graph[segment_idx]['constants']:
-                        continue
-
-                    # Handle original input
-                    if comp_graph[segment_idx]['inputs'].get(input_name) == "original_input":
-                        input_feed[input_name] = input_tensor.numpy()
-
-                    # Handle intermediate outputs from previous segments
-                    elif input_name in intermediate_outputs:
-                        input_feed[input_name] = intermediate_outputs[input_name]
-                    else:
-                        print(f"Warning: Required input '{input_name}' not found in intermediate outputs")
-
-                # Run inference on this segment
-                outputs = session.run(None, input_feed)
-                outputs = session.run(None, {"leakyRelu": value1, "conv": val2})
-
-                # Store all outputs in our intermediate outputs dictionary
-                for i, output_info in enumerate(session.get_outputs()):
-                    output_name = output_info.name
-                    intermediate_outputs[output_name] = outputs[i]
-
-            # Get the final output (from the last segment's last output)
-            final_segment = segments[-1]
-            final_output_name = final_segment['dependencies']['output'][-1]
-            final_output = intermediate_outputs[final_output_name]
-
-            # Convert to PyTorch tensor and process
-            output_tensor = torch.tensor(final_output)
-            result = RunnerUtils.process_final_output(output_tensor)
-            return result
-
-        except Exception as e:
-            print(f"Error during layered ONNX inference: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
     # def run_layered_inference(self, input_tensor):
     #     """
-    #     Run inference with sliced ONNX models and return the logits, probabilities, and predictions.
+    #     Run inference with sliced ONNX models using a computational graph approach.
     #     """
     #     try:
     #         # Get the directory containing the sliced models
-    #         # First try the new structure (onnx_slices)
-    #         slices_directory = os.path.join(self.model_directory, "onnx_slices")
+    #         slices_directory = os.path.join(self.model_directory, "slices")
     #
-    #         # If that doesn't exist, try the old structure (onnx_slices directly)
-    #         if not os.path.exists(slices_directory) or not os.path.exists(os.path.join(slices_directory, "metadata.json")):
-    #             slices_directory = os.path.join(self.model_directory, "onnx_slices")
-    #
-    #         # Get the segments this model was split into
-    #         segments = RunnerUtils.get_segments(slices_directory)
-    #         if segments is None:
+    #         # Load metadata
+    #         metadata = ModelUtils.load_metadata(slices_directory)
+    #         if metadata is None:
     #             return None
     #
+    #         # Build computational graph
+    #         comp_graph = self.build_computational_graph(metadata)
+    #
+    #         # Dictionary to store all intermediate outputs
+    #         intermediate_outputs = {}
+    #
+    #         # Get segments
+    #         segments = metadata.get('segments', [])
+    #
     #         # Process each segment in sequence
-    #         for idx, segment in enumerate(segments):
-    #             segment_path = segment["path"]
+    #         for segment in segments:
+    #             segment_idx = segment['index']
+    #             segment_path = segment['path']
     #
     #             # Create an ONNX Runtime session for this segment
     #             session = ort.InferenceSession(segment_path)
     #
-    #             # Get the input name for the ONNX model
-    #             input_name = session.get_inputs()[0].name
+    #             # Prepare inputs for this segment
+    #             input_feed = {}
     #
-    #             # Convert PyTorch tensor to numpy array for ONNX Runtime
-    #             input_numpy = input_tensor.numpy()
+    #             # Get required inputs from the computational graph
+    #             for input_info in session.get_inputs():
+    #                 input_name = input_info.name
+    #
+    #                 # Skip constants/initializers - they're already in the model
+    #                 if input_name in comp_graph[segment_idx]['constants']:
+    #                     continue
+    #
+    #                 # Handle original input
+    #                 if comp_graph[segment_idx]['inputs'].get(input_name) == "original_input":
+    #                     input_feed[input_name] = input_tensor.numpy()
+    #
+    #                 # Handle intermediate outputs from previous segments
+    #                 elif input_name in intermediate_outputs:
+    #                     input_feed[input_name] = intermediate_outputs[input_name]
+    #                 else:
+    #                     print(f"Warning: Required input '{input_name}' not found in intermediate outputs")
     #
     #             # Run inference on this segment
-    #             raw_output = session.run(None, {input_name: input_numpy})
+    #             outputs = session.run(None, input_feed)
     #
-    #             # Convert the output back to a PyTorch tensor and use as input for next layer
-    #             input_tensor = torch.tensor(raw_output[0])
+    #             # Store all outputs in our intermediate outputs dictionary
+    #             for i, output_info in enumerate(session.get_outputs()):
+    #                 output_name = output_info.name
+    #                 intermediate_outputs[output_name] = outputs[i]
     #
-    #         # Process the final output
-    #         result = RunnerUtils.process_final_output(input_tensor)
+    #         # Get the final output (from the last segment's last output)
+    #         final_segment = segments[-1]
+    #         final_output_name = final_segment['dependencies']['output'][-1]
+    #         final_output = intermediate_outputs[final_output_name]
+    #
+    #         # Convert to PyTorch tensor and process
+    #         output_tensor = torch.tensor(final_output)
+    #         result = RunnerUtils.process_final_output(output_tensor)
     #         return result
     #
     #     except Exception as e:
@@ -175,6 +127,53 @@ class OnnxRunner:
     #         import traceback
     #         traceback.print_exc()
     #         return None
+
+    def run_layered_inference(self, input_tensor):
+        """
+        Run inference with sliced ONNX models and return the logits, probabilities, and predictions.
+        """
+        try:
+            # Get the directory containing the sliced models
+            # First try the new structure (onnx_slices)
+            slices_directory = os.path.join(self.model_directory, "slices")
+
+            # If that doesn't exist, try the old structure (onnx_slices directly)
+            if not os.path.exists(slices_directory) or not os.path.exists(os.path.join(slices_directory, "metadata.json")):
+                slices_directory = os.path.join(self.model_directory, "slices")
+
+            # Get the segments this model was split into
+            segments = RunnerUtils.get_segments(slices_directory)
+            if segments is None:
+                return None
+
+            # Process each segment in sequence
+            for idx, segment in enumerate(segments):
+                segment_path = segment["path"]
+
+                # Create an ONNX Runtime session for this segment
+                session = ort.InferenceSession(segment_path)
+
+                # Get the input name for the ONNX model
+                input_name = session.get_inputs()[0].name
+
+                # Convert PyTorch tensor to numpy array for ONNX Runtime
+                input_numpy = input_tensor.numpy()
+
+                # Run inference on this segment
+                raw_output = session.run(None, {input_name: input_numpy})
+
+                # Convert the output back to a PyTorch tensor and use as input for next layer
+                input_tensor = torch.tensor(raw_output[0])
+
+            # Process the final output
+            result = RunnerUtils.process_final_output(input_tensor)
+            return result
+
+        except Exception as e:
+            print(f"Error during layered ONNX inference: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def run_inference(self, input_tensor):
         """
@@ -270,5 +269,7 @@ if __name__ == "__main__":
     model_runner = OnnxRunner(model_directory=model_dir)
     # model_runner.preprocess_onnx_model()
 
-    result = model_runner.infer(mode="sliced") # change function and mode when needed
+    result = model_runner
+
+    result = model_runner.infer(mode="whole") # change function and mode when needed
     print(result)

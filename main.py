@@ -8,11 +8,12 @@ different backends (ezkl, plain).
 
 import sys
 import random
+import logging
 from colorama import Fore, Style
 
 # Import CLI modules
-from cli import (
-    KubzArgumentParser, print_header, print_easter_egg,
+from src.cli import (
+    KubzArgumentParser, print_header, print_easter_egg, configure_logging, logger,
     setup_slice_parser, slice_model,
     setup_run_parser, run_inference,
     setup_prove_parser, run_proof,
@@ -31,6 +32,12 @@ def main():
     # Add version argument
     parser.add_argument('--version', action='version', version='Kubz CLI v1.0.0')
 
+    # Add logging level argument
+    parser.add_argument('--log-level', 
+                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                      default='WARNING',
+                      help='Set the logging level (default: WARNING)')
+
     # Add easter egg argument
     parser.add_argument('--easter-egg', action='store_true', help=sys.modules['argparse'].SUPPRESS)
 
@@ -45,6 +52,10 @@ def main():
 
     # Parse arguments
     args = parser.parse_args()
+
+    # Configure logging
+    configure_logging(args.log_level)
+    logger.debug(f"Logging configured with level: {args.log_level}")
 
     # Print header
     print_header()

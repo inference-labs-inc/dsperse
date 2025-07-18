@@ -8,7 +8,7 @@ import traceback
 from colorama import Fore, Style
 
 from src.runners.ezkl_runner import EzklRunner
-from cli.base import check_model_dir, save_result, prompt_for_value
+from src.cli.base import check_model_dir, save_result, prompt_for_value
 
 def setup_parser(subparsers):
     """

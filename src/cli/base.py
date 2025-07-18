@@ -6,10 +6,35 @@ Contains common utilities and classes used by all CLI commands.
 import argparse
 import random
 import colorama
+import logging
 from colorama import Fore, Style
 
 # Initialize colorama
 colorama.init()
+
+# Configure logging
+logger = logging.getLogger('kubz')
+
+def configure_logging(log_level='WARNING'):
+    """
+    Configure the logging system.
+
+    Args:
+        log_level (str): The logging level to use (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    """
+    numeric_level = getattr(logging, log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        numeric_level = logging.INFO
+
+    # Configure the root logger
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Set the level for the kubz logger
+    logger.setLevel(numeric_level)
 
 # Easter eggs
 EASTER_EGGS = [
@@ -42,11 +67,14 @@ def print_header():
 {Style.RESET_ALL}
 {Fore.YELLOW}Distributed zkML Toolkit{Style.RESET_ALL}
 """
-    print(header)
+    print(header)  # Keep print for header as it's visual UI element
+    logger.info("Kubz CLI started")
 
 def print_easter_egg():
     """Print a random easter egg."""
-    print(f"\n{Fore.GREEN}🥚 {random.choice(EASTER_EGGS)}{Style.RESET_ALL}\n")
+    easter_egg = f"\n{Fore.GREEN}🥚 {random.choice(EASTER_EGGS)}{Style.RESET_ALL}\n"
+    print(easter_egg)  # Keep print for easter egg as it's visual UI element
+    logger.debug(f"Easter egg displayed: {random.choice(EASTER_EGGS)}")
 
 # Custom ArgumentParser that shows header and easter egg with help
 class KubzArgumentParser(argparse.ArgumentParser):
@@ -63,26 +91,29 @@ class KubzArgumentParser(argparse.ArgumentParser):
 
 def check_model_dir(model_dir):
     """
-    Check if the model directory exists.
+    Check if the model directory or file exists.
 
     Args:
-        model_dir (str): Path to the model directory
+        model_dir (str): Path to the model directory or file
 
     Returns:
-        bool: True if the directory exists, False otherwise
+        bool: True if the path exists, False otherwise
     """
     import os
     if not os.path.exists(model_dir):
-        print(f"{Fore.RED}Error: Model directory '{model_dir}' does not exist.{Style.RESET_ALL}")
+        error_msg = f"Path '{model_dir}' does not exist."
+        print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
+        logger.error(error_msg)
         return False
+    logger.debug(f"Model directory/file exists: {model_dir}")
     return True
 
-def detect_model_type(model_dir):
+def detect_model_type(model_path):
     """
-    Detect the model type (ONNX or PyTorch) based on the files in the model directory.
+    Detect the model type (ONNX or PyTorch) based on the file path or files in the directory.
 
     Args:
-        model_dir (str): Path to the model directory
+        model_path (str): Path to the model file or directory
 
     Returns:
         tuple: (is_onnx, error_message) where is_onnx is a boolean and error_message is a string or None
@@ -91,10 +122,31 @@ def detect_model_type(model_dir):
     is_onnx = False
     error_message = None
 
-    if os.path.exists(os.path.join(model_dir, "model.onnx")):
-        is_onnx = True
-    elif not os.path.exists(os.path.join(model_dir, "model.pth")):
-        error_message = f"{Fore.RED}Error: No model.pth or model.onnx found in '{model_dir}'.{Style.RESET_ALL}"
+    # Check if the path is a file
+    if os.path.isfile(model_path):
+        # Determine model type from file extension
+        if model_path.lower().endswith('.onnx'):
+            is_onnx = True
+            logger.debug(f"Detected ONNX model from file extension: {model_path}")
+        elif model_path.lower().endswith('.pth'):
+            is_onnx = False
+            logger.debug(f"Detected PyTorch model from file extension: {model_path}")
+        else:
+            error_msg = f"Unsupported model file format. Expected .onnx or .pth file."
+            error_message = f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}"
+            logger.error(error_msg)
+    else:
+        # Check for model files in the directory
+        if os.path.exists(os.path.join(model_path, "model.onnx")):
+            is_onnx = True
+            logger.debug(f"Detected ONNX model in directory: {model_path}")
+        elif os.path.exists(os.path.join(model_path, "model.pth")):
+            is_onnx = False
+            logger.debug(f"Detected PyTorch model in directory: {model_path}")
+        else:
+            error_msg = f"No model.pth or model.onnx found in '{model_path}'."
+            error_message = f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}"
+            logger.error(error_msg)
 
     return is_onnx, error_message
 
@@ -109,7 +161,9 @@ def save_result(result, output_file):
     import json
     with open(output_file, 'w') as f:
         json.dump(result, f, indent=2)
-    print(f"{Fore.GREEN}✓ Results saved to {output_file}{Style.RESET_ALL}")
+    success_msg = f"Results saved to {output_file}"
+    print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
+    logger.info(success_msg)
 
 def prompt_for_value(param_name, prompt_message, default=None, required=True):
     """
@@ -125,21 +179,34 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         str: The value provided by the user or the default value
     """
     try:
+        logger.debug(f"Prompting for {param_name} with message: {prompt_message}")
         if default:
             user_input = input(f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}")
             if not user_input.strip():
+                logger.debug(f"Using default value for {param_name}: {default}")
                 return default
+            logger.debug(f"User provided value for {param_name}: {user_input.strip()}")
             return user_input.strip()
         else:
             while True:
                 user_input = input(f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}")
                 if user_input.strip() or not required:
+                    if user_input.strip():
+                        logger.debug(f"User provided value for {param_name}: {user_input.strip()}")
+                    else:
+                        logger.debug(f"Empty value provided for non-required parameter {param_name}")
                     return user_input.strip()
-                print(f"{Fore.RED}Error: {param_name} is required.{Style.RESET_ALL}")
+                error_msg = f"{param_name} is required."
+                print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
+                logger.warning(error_msg)
     except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Operation cancelled by user.{Style.RESET_ALL}")
+        cancel_msg = "Operation cancelled by user."
+        print(f"\n{Fore.YELLOW}{cancel_msg}{Style.RESET_ALL}")
+        logger.info(cancel_msg)
         import sys
         sys.exit(1)
     except Exception as e:
-        print(f"{Fore.RED}Error getting input: {e}{Style.RESET_ALL}")
+        error_msg = f"Error getting input: {e}"
+        print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+        logger.error(error_msg)
         return default if not required else None

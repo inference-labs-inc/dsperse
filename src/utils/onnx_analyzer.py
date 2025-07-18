@@ -1,5 +1,7 @@
 import os
 import json
+from pathlib import Path
+
 import onnx
 from ..utils.onnx_utils import OnnxUtils
 from typing import Dict, Any, List
@@ -9,37 +11,22 @@ class OnnxAnalyzer:
     A class for analyzing ONNX models and generating metadata.
     """
 
-    def __init__(self, onnx_model=None, model_path=None):
+    def __init__(self, model_path:str):
         """
         Initialize the OnnxAnalyzer with either an ONNX model or a path to an ONNX model.
-
-        Args:
-            onnx_model: An ONNX model object
-            onnx_path: Path to an ONNX model file
         """
-        if onnx_model is not None:
-            self.onnx_model = onnx_model
-        elif model_path is not None:
-            path = os.path.join(os.path.dirname(os.path.dirname(__file__)), model_path)
-            self.onnx_path = path
-            self.onnx_model = onnx.load(self.onnx_path)
-        else:
-            raise ValueError("onnx_model path is not found")
+        self.onnx_path = os.path.abspath(model_path)
+        self.onnx_model = onnx.load(self.onnx_path)
 
         self.model_metadata = None
 
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, save_path:str = None) -> Dict[str, Any]:
         """
         Analyze the ONNX model and generate comprehensive metadata.
 
         Returns:
             Dict[str, Any]: Comprehensive metadata about the ONNX model
         """
-        # Create output directory for analysis results
-        output_dir = os.path.join(os.path.dirname(self.onnx_path), "onnx_analysis")
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-
         # Extract model metadata
         graph = self.onnx_model.graph
 
@@ -75,7 +62,13 @@ class OnnxAnalyzer:
         }
 
         # Save model metadata
-        OnnxUtils.save_metadata_file(model_metadata, output_dir, "model_metadata.json")
+        if save_path is not None:
+            # output_dir = os.path.join(os.path.dirname(self.onnx_path), "onnx_analysis")
+            if Path(save_path).is_dir():
+                os.makedirs(save_path, exist_ok=True)
+                save_path = os.path.join(save_path, "model_metadata.json")
+
+            OnnxUtils.save_metadata_file(model_metadata, save_path)
         self.model_metadata = model_metadata
 
         return model_metadata
@@ -358,7 +351,7 @@ class OnnxAnalyzer:
         model_overview["segments"] = segments
 
         # Save metadata if output_dir is provided
-        OnnxUtils.save_metadata_file(model_overview, output_dir=output_dir)
+        OnnxUtils.save_metadata_file(model_overview, output_path=output_dir)
 
         return model_overview
 

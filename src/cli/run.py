@@ -1,5 +1,5 @@
 """
-CLI module for verifying proofs for models.
+CLI module for running inference on models.
 """
 
 import os
@@ -7,12 +7,14 @@ import time
 import traceback
 from colorama import Fore, Style
 
+from src.runners.model_runner import ModelRunner
+from src.runners.onnx_runner import OnnxRunner
 from src.runners.ezkl_runner import EzklRunner
-from cli.base import check_model_dir, save_result, prompt_for_value
+from src.cli.base import check_model_dir, detect_model_type, save_result, prompt_for_value
 
 def setup_parser(subparsers):
     """
-    Set up the argument parser for the verify command.
+    Set up the argument parser for the run command.
 
     Args:
         subparsers: The subparsers object from argparse
@@ -20,32 +22,39 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    verify_parser = subparsers.add_parser('verify', help='Verify a proof for a model')
-    verify_parser.add_argument('--model-dir', help='Directory containing the model')
-    verify_parser.add_argument('--input-file', help='Path to input file')
-    verify_parser.add_argument('--output-file', help='Path to save output results')
-    verify_parser.add_argument('--sliced', action='store_true', help='Verify proof for sliced model')
+    run_parser = subparsers.add_parser('run', help='Run inference on a model')
+    run_parser.add_argument('--model-dir', help='Directory containing the model')
+    run_parser.add_argument('--input-file', help='Path to input file (default: model_dir/input.json)')
+    run_parser.add_argument('--output-file', help='Path to save output results')
+    run_parser.add_argument('--sliced', action='store_true', help='Run inference on sliced model')
 
-    # Add backend group for verifying
-    verify_backend_group = verify_parser.add_mutually_exclusive_group(required=True)
-    verify_backend_group.add_argument('--ezkl', action='store_true', help='Use EZKL backend for verification')
+    # Add backend group for inference
+    run_backend_group = run_parser.add_mutually_exclusive_group()
+    run_backend_group.add_argument('--ezkl', action='store_true', help='Use EZKL backend for inference')
+    run_backend_group.add_argument('--plain', action='store_true', help='Use plain inference (default)')
 
-    return verify_parser
+    return run_parser
 
-def verify_proof(args):
+def run_inference(args):
     """
-    Verify a proof for a model based on the provided arguments.
+    Run inference on a model based on the provided arguments.
 
     Args:
         args: The parsed command-line arguments
     """
-    print(f"{Fore.CYAN}Verifying proof...{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}Running inference...{Style.RESET_ALL}")
 
     # Prompt for model directory if not provided
     if not hasattr(args, 'model_dir') or not args.model_dir:
         args.model_dir = prompt_for_value('model-dir', 'Enter the model directory')
 
     if not check_model_dir(args.model_dir):
+        return
+
+    # Determine if it's a PyTorch or ONNX model
+    is_onnx, error_message = detect_model_type(args.model_dir)
+    if error_message:
+        print(error_message)
         return
 
     # Determine the mode (sliced or whole)
@@ -72,23 +81,31 @@ def verify_proof(args):
             args.input_file = None
 
     try:
-        # Verify proof with the appropriate backend
+        # Run inference with the appropriate backend
         if args.ezkl:
-            # Verify proof with ezkl
+            # Run inference with ezkl
             runner = EzklRunner(model_directory=args.model_dir)
             start_time = time.time()
-            result = runner.verify(mode=mode)
+            result = runner.generate_witness(mode=mode, input_file=args.input_file)
             elapsed_time = time.time() - start_time
-            print(f"{Fore.GREEN}✓ EZKL proof verified in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}✓ EZKL inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         else:
-            print(f"{Fore.RED}Error: Please specify a proof backend (--ezkl).{Style.RESET_ALL}")
-            return
+            # Run plain inference
+            if is_onnx:
+                runner = OnnxRunner(model_directory=args.model_dir)
+            else:
+                runner = ModelRunner(model_directory=args.model_dir)
+
+            start_time = time.time()
+            result = runner.infer(mode=mode, input_path=args.input_file)
+            elapsed_time = time.time() - start_time
+            print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
 
         # Prompt for output file if not provided
         if not hasattr(args, 'output_file') or not args.output_file:
-            save_output = prompt_for_value('save-output', 'Save verification results to file?', default='y', required=False).lower()
+            save_output = prompt_for_value('save-output', 'Save output to file?', default='y', required=False).lower()
             if save_output.startswith('y'):
-                default_output_file = os.path.join(args.model_dir, "verification_results.json")
+                default_output_file = os.path.join(args.model_dir, "output.json")
                 args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)
 
         # Save the result if output file is specified
@@ -103,5 +120,5 @@ def verify_proof(args):
         print(result)
 
     except Exception as e:
-        print(f"{Fore.RED}Error verifying proof: {e}{Style.RESET_ALL}")
+        print(f"{Fore.RED}Error during inference: {e}{Style.RESET_ALL}")
         traceback.print_exc()

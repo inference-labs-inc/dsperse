@@ -4,13 +4,12 @@ CLI module for slicing models.
 
 import os
 import traceback
-import logging
+
 from colorama import Fore, Style
 
-from src.model_slicer import ModelSlicer
-from src.onnx_slicer import OnnxSlicer
 from src.cli.base import check_model_dir, prompt_for_value, logger
-from src.utils.onnx_analyzer import OnnxAnalyzer
+from src.slicers.model_slicer import ModelSlicer
+from src.slicers.onnx_slicer import OnnxSlicer
 
 
 def setup_parser(subparsers):

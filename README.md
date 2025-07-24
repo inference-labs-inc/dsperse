@@ -121,40 +121,6 @@ print(result)
 
 Kubz supports generating zero-knowledge proofs for neural network models using the ezkl library. You can run proofs on either whole models or sliced models:
 
-#### Using ezkl
-
-```python
-from src.runners.ezkl_runner import EzklRunner
-
-# Initialize the ezkl runner with the model directory
-ezkl_runner = EzklRunner(model_directory="models/net")
-
-# Generate witness for the whole model
-result = ezkl_runner.generate_witness()
-print(result)
-
-# Generate witness for the sliced model
-result = ezkl_runner.generate_witness(mode="sliced")
-print(result)
-
-# Generate proof for the whole model
-result = ezkl_runner.prove()
-print(result)
-
-# Generate proof for the sliced model
-result = ezkl_runner.prove(mode="sliced")
-print(result)
-
-# Verify proof for the whole model
-result = ezkl_runner.verify()
-print(result)
-
-# Verify proof for the sliced model
-result = ezkl_runner.verify(mode="sliced")
-print(result)
-```
-
-
 You can also use the CLI interface for various operations:
 
 ### Command Line Interface (CLI)
@@ -172,6 +138,7 @@ Available commands:
 - `run`: Run inference on a model
 - `prove`: Generate a proof for a model
 - `verify`: Verify a proof for a model
+- `circuitize`: Circuitize a model or slices
 
 #### Slicing Models
 
@@ -198,28 +165,38 @@ kubz run --model-dir models/net --sliced
 # Run inference with a specific input file and save results
 kubz run --model-dir models/net --input-file input.json --output-file results.json
 
-# Run inference using the EZKL backend
-kubz run --model-dir models/net --ezkl
+# Run inference 
+kubz run --model-dir models/net
 
 ```
 
 #### Generating Proofs
 
 ```bash
-# Generate a proof for a whole model using EZKL
-kubz prove --model-dir models/net --ezkl
+# Generate a proof for a whole model 
+kubz prove --model-dir models/net
 
-# Generate a proof for a sliced model using EZKL
-kubz prove --model-dir models/net --ezkl --sliced
+# Generate a proof for a sliced model 
+kubz prove --model-dir models/net --sliced
 
 ```
 
 #### Verifying Proofs
 
 ```bash
-# Verify a proof for a whole model using EZKL
-kubz verify --model-dir models/net --ezkl
+# Verify a proof for a whole model
+kubz verify --model-dir models/net
 
+```
+
+#### Circuitizing Models
+
+```bash
+# Circuitize a single ONNX model
+kubz circuitize --model-path models/my_model.onnx
+
+# Circuitize sliced model with custom input file
+kubz circuitize --model-path models/my_model/slices --input-file models/my_model/input.json
 ```
 
 #### Getting Help
@@ -230,6 +207,7 @@ kubz --help
 
 # Show help for a specific command
 kubz slice --help
+kubz circuitize --help
 kubz run --help
 kubz prove --help
 kubz verify --help
@@ -258,6 +236,7 @@ Or just run any command - you might get lucky and see an easter egg 20% of the t
 - `cli/`: Command-line interface modules
   - `base.py`: Common CLI utilities and classes
   - `slice.py`: CLI module for slicing models
+  - `circuitize.py`: CLI module for circuitizing models
   - `run.py`: CLI module for running inference
   - `prove.py`: CLI module for generating proofs
   - `verify.py`: CLI module for verifying proofs

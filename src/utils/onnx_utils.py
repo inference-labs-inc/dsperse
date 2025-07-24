@@ -175,66 +175,29 @@ class OnnxUtils:
         return shape
 
     @staticmethod
-    def unfuse_operations(model):
-        """
-        Unfuse FusedConv and FusedGemm operations using GraphSurgeon.
+    def filter_inputs(segment_inputs, graph):
+        # Filter input names from segment details
+        segment_filtered_inputs = []
+        for input_info in segment_inputs:
+            # Only include actual inputs that are not weights or biases
+            # Typically, weights and biases have names containing "weight" or "bias"
+            if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
+                    input_info.name in [inp.name for inp in graph.input]):
+                segment_filtered_inputs.append(input_info.name)
+            # Also include intermediate tensors from previous layers
+            elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
+                segment_filtered_inputs.append(input_info.name)
+        # If there are no inputs after filtering, include the first non-weight/bias input
+        if not segment_filtered_inputs:
+            for input_info in segment_inputs:
+                if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
+                    segment_filtered_inputs.append(input_info.name)
+                    break
 
-        Args:
-            model: ONNX model to process
-
-        Returns:
-            ONNX model with unfused operations, or original model if GraphSurgeon unavailable
-        """
-
-        try:
-            logger.debug("Starting unfuse operations process")
-            graph = gs.import_onnx(model)
-
-            unfused_count = 0
-            for node in graph.nodes:
-                if node.op in ["FusedConv", "FusedGemm"]:
-                    logger.debug(f"Unfusing {node.op} node: {node.name}")
-
-                    # Convert to standard operations
-                    if node.op == "FusedConv":
-                        node.op = "Conv"
-                    elif node.op == "FusedGemm":
-                        node.op = "Gemm"
-
-                    # Remove fusion-related attributes
-                    node.attrs = {k: v for k, v in node.attrs.items() if "fusion" not in k.lower()}
-                    unfused_count += 1
-
-            if unfused_count > 0:
-                logger.info(f"Successfully unfused {unfused_count} operations")
-                return gs.export_onnx(graph)
-            else:
-                logger.debug("No fused operations found")
-                return model
-
-        except Exception as e:
-            logger.warning(f"Failed to unfuse operations: {e}")
-            return model
-
-    @staticmethod
-    def has_fused_operations(model):
-        """
-        Check if the model contains any fused operations.
-
-        Args:
-            model: ONNX model to check
-
-        Returns:
-            bool: True if fused operations are found
-        """
-        try:
-            graph = gs.import_onnx(model)
-            for node in graph.nodes:
-                if node.op in ["FusedConv", "FusedGemm"]:
-                    return True
-            return False
-        except Exception:
-            return False
+            # If still no inputs, use the first input as a fallback
+            if not segment_filtered_inputs and segment_inputs:
+                segment_filtered_inputs.append(segment_inputs[0].name)
+        return segment_filtered_inputs
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):

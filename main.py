@@ -17,7 +17,8 @@ from src.cli import (
     setup_slice_parser, slice_model,
     setup_run_parser, run_inference,
     setup_prove_parser, run_proof,
-    setup_verify_parser, verify_proof
+    setup_verify_parser, verify_proof,
+    setup_circuitize_parser, circuitize_model
 )
 
 def main():
@@ -49,6 +50,7 @@ def main():
     setup_run_parser(subparsers)
     setup_prove_parser(subparsers)
     setup_verify_parser(subparsers)
+    setup_circuitize_parser(subparsers)
 
     # Parse arguments
     args = parser.parse_args()
@@ -77,6 +79,8 @@ def main():
         run_proof(args)
     elif args.command == 'verify':
         verify_proof(args)
+    elif args.command == 'circuitize':
+        circuitize_model(args)
     else:
         # If no command is provided, show help
         parser.print_help()

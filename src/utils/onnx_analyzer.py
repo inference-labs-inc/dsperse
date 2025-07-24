@@ -431,7 +431,8 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx)
 
-        output_dir = output_dir if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices")
+        output_dir = os.path.join(os.path.dirname(output_dir), "slices", "segment_{}".format(segment_idx)) if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
+        os.makedirs(output_dir, exist_ok=True)
         segment_path = os.path.abspath(os.path.join(output_dir, f"segment_{segment_idx}.onnx"))
 
         # Create segment info
@@ -448,11 +449,11 @@ class OnnxAnalyzer:
         return segment_info
 
     def _get_segment_dependencies(self, model_metadata, start_idx, end_idx):
-        # TODO: fix doubling of output
         # Create segment dependencies
         segment_dependencies = {
             "input": [],
-            "output": []
+            "output": [],
+            "filtered_inputs": []
         }
 
         # Create an output_map dictionary to store all tensor names we have encountered
@@ -477,6 +478,29 @@ class OnnxAnalyzer:
         for output in output_map:
             if output not in segment_dependencies['input']:
                 segment_dependencies['output'].append(output)
+                
+        # Filter input names to exclude weights and biases
+        filtered_inputs = []
+        for input_name in segment_dependencies['input']:
+            # Only include actual inputs that are not weights or biases
+            # Typically, weights and biases have names containing "weight" or "bias"
+            if not any(pattern in input_name.lower() for pattern in ["weight", "bias"]):
+                # Include model inputs and intermediate tensors
+                if input_name in [inp.name for inp in self.onnx_model.graph.input] or input_name.startswith('/'):
+                    filtered_inputs.append(input_name)
+        
+        # If there are no inputs after filtering, include the first non-weight/bias input
+        if not filtered_inputs:
+            for input_name in segment_dependencies['input']:
+                if not any(pattern in input_name.lower() for pattern in ["weight", "bias"]):
+                    filtered_inputs.append(input_name)
+                    break
+            
+            # If still no inputs, use the first input as a fallback
+            if not filtered_inputs and segment_dependencies['input']:
+                filtered_inputs.append(segment_dependencies['input'][0])
+        
+        segment_dependencies['filtered_inputs'] = filtered_inputs
 
         return segment_dependencies
 

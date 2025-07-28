@@ -16,6 +16,112 @@ from src.utils.model_utils import ModelUtils
 
 env = os.environ
 
+# New integration functions for layer-by-layer execution
+def run_slice(slice_info: dict, input_tensor: torch.Tensor, output_dir: str) -> tuple:
+    """Run single slice with EZKL proof generation."""
+    import src.runners.onnx_runner as onnx_runner
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get ONNX path for fallback
+    onnx_path = slice_info.get("path", "")
+    
+    # Initialize execution info
+    exec_info = {
+        "method": "onnx_fallback",
+        "attempted_ezkl": True,
+        "witness_generated": False,
+        "proof_generated": False,
+        "verified": False
+    }
+    
+    # Prepare EZKL input
+    witness_input_data = _prepare_ezkl_input(input_tensor)
+    witness_input_file = os.path.join(output_dir, "witness_input.json")
+    with open(witness_input_file, 'w') as f:
+        json.dump(witness_input_data, f)
+    
+    # Generate witness
+    witness_path = os.path.join(output_dir, "witness.json")
+    try:
+        _generate_witness(slice_info["circuit_path"], witness_input_file, witness_path)
+        print(f"Witness generated for {slice_info.get('circuit_path', 'unknown')}")
+        exec_info["witness_generated"] = True
+    except Exception as e:
+        print(f"Witness generation failed: {e}")
+        exec_info["witness_error"] = str(e)
+        # Fallback to ONNX
+        output_tensor = onnx_runner.run_slice(onnx_path, input_tensor, output_dir)
+        return output_tensor, exec_info
+    
+    # Generate proof if keys exist
+    pk_path = slice_info.get("pk_path", "")
+    if pk_path and os.path.exists(pk_path):
+        try:
+            proof_path = os.path.join(output_dir, "proof.json")
+            _prove(slice_info["circuit_path"], witness_path, pk_path, proof_path)
+            print(f"Proof generated")
+            exec_info["proof_generated"] = True
+            exec_info["proof_path"] = proof_path
+            
+            # Verify if VK exists
+            vk_path = slice_info.get("vk_path", "")
+            if vk_path and os.path.exists(vk_path):
+                verified = _verify(proof_path, slice_info["settings_path"], vk_path)
+                exec_info["verified"] = verified
+                if verified:
+                    print(f"Proof verified")
+                    exec_info["method"] = "ezkl_circuit_complete"
+                else:
+                    print(f"Proof verification failed")
+                    exec_info["method"] = "ezkl_circuit_unverified"
+            else:
+                print(f"VK not found, cannot verify")
+                exec_info["method"] = "ezkl_circuit_no_vk"
+        except Exception as e:
+            print(f"Proof generation failed: {e}")
+            exec_info["proof_error"] = str(e)
+            exec_info["method"] = "ezkl_witness_only"
+    else:
+        print(f"PK not found, skipping proof")
+        exec_info["method"] = "ezkl_witness_only"
+    
+    # Always run ONNX to get output tensor
+    output_tensor = onnx_runner.run_slice(onnx_path, input_tensor, output_dir)
+    return output_tensor, exec_info
+
+def _prepare_ezkl_input(input_tensor: torch.Tensor) -> dict:
+    """Prepare input tensor for EZKL witness generation."""
+    # Simple scaling approach max 12
+    scale = 7 #7 is low but efficient for testing
+    scaled_tensor = (input_tensor * (2**scale)).round().long()
+    
+    # Flatten for EZKL
+    flattened_data = scaled_tensor.flatten().tolist()
+    return {"input_data": [flattened_data]}
+
+def _generate_witness(compiled_circuit_path: str, input_path: str, output_path: str):
+    """Generate a witness for a circuit."""
+    cmd = ["ezkl", "gen-witness", "--compiled-circuit", compiled_circuit_path, 
+           "--data", input_path, "--output", output_path]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+def _prove(compiled_circuit_path: str, witness_path: str, pk_path: str, proof_path: str):
+    """Generate a proof for a circuit."""
+    cmd = ["ezkl", "prove", "--compiled-circuit", compiled_circuit_path, 
+           "--witness", witness_path, "--pk-path", pk_path, "--proof-path", proof_path]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+def _verify(proof_path: str, settings_path: str, vk_path: str) -> bool:
+    """Verify a proof."""
+    cmd = ["ezkl", "verify", "--proof-path", proof_path, 
+           "--settings-path", settings_path, "--vk-path", vk_path]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
 
 class EzklRunner:
     def __init__(self, model_directory: str):
@@ -34,6 +140,12 @@ class EzklRunner:
         self.model_directory = model_directory
         self.base_path = os.path.join(model_directory, "ezkl")
         self.src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Legacy wrapper for compatibility
+    @staticmethod
+    def run_slice(slice_info: dict, input_tensor: torch.Tensor, output_dir: str) -> torch.Tensor:
+        output_tensor, _ = run_slice(slice_info, input_tensor, output_dir)
+        return output_tensor
 
 
     def generate_witness(self, mode: str = None, input_file: str = None, model_path: str = None) -> dict:

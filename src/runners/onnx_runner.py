@@ -1,4 +1,5 @@
 import os
+import json
 
 import onnx
 import onnxruntime as ort
@@ -9,6 +10,85 @@ from src.utils.model_utils import ModelUtils
 from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
 from onnxruntime.tools.onnx_model_utils import optimize_model, ModelProtoWithShapeInfo
 # from onnxruntime.tools.remove_initializer_from_input import remove_initializer_from_input
+
+try:
+    import onnx_graphsurgeon as gs
+    GRAPHSURGEON_AVAILABLE = True
+except ImportError:
+    GRAPHSURGEON_AVAILABLE = False
+
+
+# Standalone helper functions for new integration
+def write_input(tensor: torch.Tensor, file_path: str):
+    """Write tensor to input.json format."""
+    data = {"input_data": tensor.tolist()}
+    with open(file_path, 'w') as f:
+        json.dump(data, f)
+
+def write_output(tensor: torch.Tensor, file_path: str):
+    """Write tensor to output.json format."""
+    data = {"output_data": tensor.tolist()}
+    with open(file_path, 'w') as f:
+        json.dump(data, f)
+
+def read_input(file_path: str) -> torch.Tensor:
+    """Read tensor from input.json format."""
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    return torch.tensor(data["input_data"])
+
+def read_output(file_path: str) -> torch.Tensor:
+    """Read tensor from output.json format."""
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    return torch.tensor(data["output_data"])
+
+def get_input_shape(onnx_path: str):
+    """Get input shape from ONNX model using GraphSurgeon if available."""
+    if not GRAPHSURGEON_AVAILABLE:
+        return None
+    
+    try:
+        model = onnx.load(onnx_path)
+        graph = gs.import_onnx(model)
+        
+        for input_tensor in graph.inputs:
+            if hasattr(input_tensor, 'shape') and input_tensor.shape:
+                # Convert symbolic dimensions to concrete values
+                shape = []
+                for dim in input_tensor.shape:
+                    if isinstance(dim, str) and 'batch' in dim.lower():
+                        shape.append(1)
+                    elif isinstance(dim, str):
+                        shape.append(-1)
+                    else:
+                        shape.append(dim)
+                return shape
+    except:
+        pass
+    return None
+
+def run_slice(onnx_path: str, input_tensor: torch.Tensor, output_dir: str = None) -> torch.Tensor:
+    """Run inference on a single ONNX slice."""
+    try:
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            output_file = os.path.join(output_dir, "output.json")
+        
+        session = ort.InferenceSession(onnx_path)
+        input_name = session.get_inputs()[0].name
+        input_numpy = input_tensor.numpy()
+        
+        raw_output = session.run(None, {input_name: input_numpy})
+        output_tensor = torch.tensor(raw_output[0])
+        
+        if output_dir:
+            write_output(output_tensor, output_file)
+        
+        return output_tensor
+    except Exception as e:
+        print(f"Error during ONNX slice inference for {onnx_path}: {e}")
+        raise
 
 
 class OnnxRunner:
@@ -21,6 +101,23 @@ class OnnxRunner:
     def _get_file_path() -> str:
         """Get the parent directory path of the current file."""
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    # Legacy wrapper methods for compatibility
+    @staticmethod
+    def write_input(tensor: torch.Tensor, file_path: str):
+        return write_input(tensor, file_path)
+    
+    @staticmethod
+    def read_input(file_path: str) -> torch.Tensor:
+        return read_input(file_path)
+    
+    @staticmethod
+    def read_output(file_path: str) -> torch.Tensor:
+        return read_output(file_path)
+    
+    @staticmethod
+    def run_slice(onnx_path: str, input_tensor: torch.Tensor, output_dir: str = None) -> torch.Tensor:
+        return run_slice(onnx_path, input_tensor, output_dir)
 
 
     def preprocess_onnx_model_slices(self):

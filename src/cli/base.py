@@ -79,7 +79,7 @@ def print_easter_egg():
 # Custom ArgumentParser that shows header and easter egg with help
 class KubzArgumentParser(argparse.ArgumentParser):
     def print_help(self, file=None):
-        print_header()
+        # print_header()
         if random.random() < 0.2:  # 20% chance to show an easter egg
             print_easter_egg()
         super().print_help(file)

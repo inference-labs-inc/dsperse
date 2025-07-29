@@ -303,7 +303,7 @@ class OnnxAnalyzer:
 
         return layer_info
 
-    def generate_slices_metadata(self, model_metadata, slice_points, output_dir=None):
+    def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None):
         """
         Generate metadata for sliced ONNX models.
 
@@ -311,6 +311,7 @@ class OnnxAnalyzer:
             model_metadata: The model analysis metadata containing node information
             slice_points: List of indices representing nodes with parameter details
             output_dir: Directory where the metadata will be saved
+            slices_paths: Paths to sliced onnx files
 
         Returns:
             dict: Complete metadata for the sliced models
@@ -333,7 +334,7 @@ class OnnxAnalyzer:
             if start_idx == end_idx:
                 continue
 
-            # get input shape
+            slice_path = slices_paths[segment_idx] if slices_paths else None
 
             # Get segment metadata
             segment_metadata = self._get_segment_metadata(
@@ -341,6 +342,7 @@ class OnnxAnalyzer:
                 segment_idx, 
                 start_idx, 
                 end_idx,
+                slice_path,
                 output_dir
             )
             # extract shape
@@ -394,7 +396,7 @@ class OnnxAnalyzer:
 
         return metadata
 
-    def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx, output_dir=None):
+    def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx, slice_path, output_dir=None):
         """
         Get metadata for a specific segment.
 
@@ -403,6 +405,7 @@ class OnnxAnalyzer:
             segment_idx: Index of the segment
             start_idx: Start index of the segment
             end_idx: End index of the segment
+            slice_path: Path to the sliced ONNX model
 
         Returns:
             dict: Segment metadata
@@ -429,7 +432,7 @@ class OnnxAnalyzer:
 
         segment_dependencies = self._get_segment_dependencies(model_metadata, start_idx, end_idx)
 
-        segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx)
+        segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
         output_dir = os.path.join(os.path.dirname(output_dir), "slices", "segment_{}".format(segment_idx)) if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
         os.makedirs(output_dir, exist_ok=True)
@@ -505,8 +508,52 @@ class OnnxAnalyzer:
         return segment_dependencies
 
     @staticmethod
-    def _get_segment_shape(end_idx, model_metadata, start_idx):
+    def _get_segment_shape(end_idx, model_metadata, start_idx, slice_path):
         segment_shape = {
+            "weight_shape": OnnxAnalyzer._get_weight_shape(end_idx, model_metadata, start_idx),
+            "tensor_shape": OnnxAnalyzer._get_tensor_shape(slice_path),
+        }
+
+        return segment_shape
+
+
+    @staticmethod
+    def _get_tensor_shape(slice_path):
+        tensor_shape = {
+            "input": [],
+            "output": []
+        }
+
+        if slice_path:
+            onnx_model = onnx.load(slice_path)
+            graph = onnx_model.graph
+            for init in graph.initializer:
+                tensor_shape["input"].append(list(init.dims))
+            for inp in graph.input:
+                # Convert Dimension objects to simple values (string or number)
+                dimensions = []
+                for dim in inp.type.tensor_type.shape.dim:
+                    if dim.HasField('dim_param'):
+                        dimensions.append(dim.dim_param)  # Use the string parameter directly
+                    else:
+                        dimensions.append(dim.dim_value)  # Use the numeric value directly
+                tensor_shape["input"].append(dimensions)
+            for out in graph.output:
+                # Convert Dimension objects to simple values (string or number)
+                dimensions = []
+                for dim in out.type.tensor_type.shape.dim:
+                    if dim.HasField('dim_param'):
+                        dimensions.append(dim.dim_param)  # Use the string parameter directly
+                    else:
+                        dimensions.append(dim.dim_value)  # Use the numeric value directly
+                tensor_shape["output"].append(dimensions)
+
+        return tensor_shape
+
+
+    @staticmethod
+    def _get_weight_shape(end_idx, model_metadata, start_idx):
+        weight_shape = {
             "input": [],
             "output": []
         }
@@ -524,18 +571,18 @@ class OnnxAnalyzer:
 
         # Get segment shapes from first and last nodes if available
         if start_idx == 0:
-            segment_shape["input"] = model_metadata["input_shape"][0]
+            weight_shape["input"] = model_metadata["input_shape"][0]
         elif first_node and "parameter_details" in first_node:
             for param_name, param_info in first_node["parameter_details"].items():
                 if "shape" in param_info:
-                    segment_shape["input"] = param_info["shape"]
+                    weight_shape["input"] = param_info["shape"]
                     break
 
         # For the output shape:
         if last_node:
             # For the last segment, use model output shape
             if end_idx == len(model_metadata['nodes']):
-                segment_shape["output"] = model_metadata["output_shapes"][0]
+                weight_shape["output"] = model_metadata["output_shapes"][0]
             # Otherwise, use the weight shape of the next node
             elif next_node:
                 # If the next node has dependencies, use the shape of the first input
@@ -547,29 +594,29 @@ class OnnxAnalyzer:
                         for param_name, param_info in next_node["parameter_details"].items():
                             if "shape" in param_info and len(param_info["shape"]) == 4:
                                 # This is likely a Conv weight tensor
-                                segment_shape["output"] = param_info["shape"]
+                                weight_shape["output"] = param_info["shape"]
                                 break
 
                         # If we didn't find a 4D shape, try to find a 2D shape (for Gemm/Linear layers)
-                        if not segment_shape["output"]:
+                        if not weight_shape["output"]:
                             for param_name, param_info in next_node["parameter_details"].items():
                                 if "shape" in param_info and len(param_info["shape"]) == 2:
                                     # This is likely a Gemm/Linear weight tensor
-                                    segment_shape["output"] = param_info["shape"]
+                                    weight_shape["output"] = param_info["shape"]
                                     break
 
                         # If we still didn't find a shape, try any parameter with a shape
-                        if not segment_shape["output"]:
+                        if not weight_shape["output"]:
                             for param_name, param_info in next_node["parameter_details"].items():
                                 if "shape" in param_info and len(param_info["shape"]) > 1:
-                                    segment_shape["output"] = param_info["shape"]
+                                    weight_shape["output"] = param_info["shape"]
                                     break
 
                 # If we couldn't determine the output shape from the next node, use the last node's output features if available
-                if not segment_shape["output"] and "out_features" in last_node:
-                    segment_shape["output"] = ["batch_size", last_node["out_features"]]
+                if not weight_shape["output"] and "out_features" in last_node:
+                    weight_shape["output"] = ["batch_size", last_node["out_features"]]
 
-        return segment_shape
+        return weight_shape
 
     def _get_layer_metadata(self, node_name, node_info):
         """

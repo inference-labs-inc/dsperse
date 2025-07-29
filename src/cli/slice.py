@@ -8,8 +8,7 @@ import traceback
 from colorama import Fore, Style
 
 from src.cli.base import check_model_dir, prompt_for_value, logger
-from src.slicers.model_slicer import ModelSlicer
-from src.slicers.onnx_slicer import OnnxSlicer
+from src.slicers.slicer import Slicer
 
 
 def setup_parser(subparsers):
@@ -123,63 +122,18 @@ def slice_model(args):
                 logger.error(error_msg)
                 return
 
-            logger.info(f"Creating ONNX slicer for model: {onnx_path}")
-            slicer = OnnxSlicer(onnx_path, save_path)
+            logger.info(f"Creating slicer for model: {onnx_path}")
+            slicer = Slicer.create(onnx_path, save_path)
             logger.info(f"Slicing ONNX model to output path: {output_dir}")
             slicer.slice_model(output_path=output_dir)
             success_msg = "ONNX model sliced successfully!"
             print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
             logger.info(success_msg)
         else:
-            # Slice PyTorch model
-            if model_file and model_file.lower().endswith('.pth'):
-                pth_path = model_file
-            else:
-                pth_path = os.path.join(model_dir, "model.pth")
-
-            if not os.path.exists(pth_path):
-                error_msg = f"PyTorch model file not found at the specified path '{pth_path}'."
-                print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
-                logger.error(error_msg)
-                return
-
-            # Prompt for input file if not provided
-            if not hasattr(args, 'input_file') or not args.input_file:
-                default_input_file = os.path.join(model_dir, "input.json")
-                args.input_file = prompt_for_value('input-file', 'Enter the input file path', default=default_input_file, required=False)
-
-            # Check if input file exists
-            if args.input_file and not os.path.exists(args.input_file):
-                warning_msg = f"Input file '{args.input_file}' does not exist."
-                print(f"{Fore.YELLOW}Warning: {warning_msg}{Style.RESET_ALL}")
-                logger.warning(warning_msg)
-                create_new = prompt_for_value('create-new', 'Create a new input file?', default='n', required=False).lower()
-                if create_new.startswith('y'):
-                    try:
-                        with open(args.input_file, 'w') as f:
-                            f.write('{"input_data": []}')
-                        success_msg = f"Created empty input file: {args.input_file}"
-                        print(f"{Fore.GREEN}{success_msg}{Style.RESET_ALL}")
-                        logger.info(success_msg)
-                    except Exception as e:
-                        error_msg = f"Error creating input file: {e}"
-                        print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
-                        logger.error(error_msg)
-                        return
-                else:
-                    logger.debug("User chose not to create a new input file")
-                    args.input_file = None
-
-            logger.info(f"Creating PyTorch model slicer for directory: {model_dir}")
-            slicer = ModelSlicer(model_directory=model_dir)
-            logger.info(f"Slicing PyTorch model to output path: {output_dir}")
-            slicer.slice_model(
-                output_dir=output_dir,
-                input_file=args.input_file
-            )
-            success_msg = "PyTorch model sliced successfully!"
-            print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
-            logger.info(success_msg)
+            # PyTorch models are not currently supported by the CLI
+            error_msg = "PyTorch models are not currently supported by the CLI. Please use an ONNX model instead."
+            print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
+            logger.error(error_msg)
     except Exception as e:
         error_msg = f"Error slicing model: {e}"
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")

@@ -87,10 +87,9 @@ class OnnxCircuitizer:
             segment['circuitization'] = circuitization_data
             logger.info(f"Added circuitization data to segment {idx}")
 
-        # Save the updated metadata back to the file
-        from src.utils.onnx_utils import OnnxUtils
-        OnnxUtils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
-        logger.info(f"Updated metadata.json with circuitization data")
+            # Save the updated metadata back to the file
+            OnnxUtils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
+            logger.info(f"Updated metadata.json with circuitization data")
 
         logger.info(f"Circuitization of slices completed. Output saved to {os.path.dirname(segment_output_path)}")
         return os.path.dirname(segment_output_path)
@@ -256,7 +255,8 @@ class OnnxCircuitizer:
         
         return circuitization_data
 
-    def _create_dummy_calibration(self, onnx_model, output_path, segment_details=None):
+    @staticmethod
+    def _create_dummy_calibration(onnx_model, output_path, segment_details=None):
         """
         Create a dummy calibration file for an ONNX model.
 
@@ -265,31 +265,73 @@ class OnnxCircuitizer:
             output_path: Path where to save the calibration file
             segment_details: Details of the segment including shape information
         """
-        if segment_details and "shape" in segment_details and "input" in segment_details["shape"]:
-            shape = segment_details["shape"]["input"]
-            shape = [1 if dim == "batch_size" else dim for dim in shape]
+        # Get shape from metadata if available
+        metadata_shape = None
+
+        # Try to get the shape from the tensor_shape.input field first (most accurate)
+        if segment_details and "shape" in segment_details and "tensor_shape" in segment_details["shape"]:
+            tensor_shape = segment_details["shape"]["tensor_shape"]
+            if "input" in tensor_shape and len(tensor_shape["input"]) > 0:
+                # Find the input tensor (typically the last one, which isn't weights or biases)
+                for shape_entry in tensor_shape["input"]:
+                    # Skip weight tensors which are typically 1D or 4D like [16, 4, 3, 3] or [16]
+                    if any(isinstance(dim, str) for dim in shape_entry):
+                        # This is likely the actual input tensor with dimensions like ["batch_size", 4, 28, 28]
+                        metadata_shape = shape_entry
+                        # Replace any string dimensions (like "batch_size") with 1
+                        metadata_shape = [1 if isinstance(dim, str) else dim for dim in metadata_shape]
+                        break
+
+        # Fallback to weight_shape if tensor_shape approach didn't work
+        if metadata_shape is None and segment_details and "shape" in segment_details and "weight_shape" in \
+                segment_details["shape"]:
+            weight_shape = segment_details["shape"]["weight_shape"]
+            if "input" in weight_shape and weight_shape["input"]:
+                metadata_shape = weight_shape["input"]
+                # Replace any string dimensions (like "batch_size") with 1
+                metadata_shape = [1 if isinstance(dim, str) else dim for dim in metadata_shape]
+
+        # Get shape from ONNX model
+        onnx_shape = []
+        for input_info in onnx_model.graph.input:
+            dim_shape = []
+            for dim in input_info.type.tensor_type.shape.dim:
+                if dim.dim_param:
+                    dim_shape.append(1)
+                else:
+                    dim_shape.append(dim.dim_value)
+            if dim_shape:  # Only add non-empty shapes
+                onnx_shape = dim_shape
+                break
+
+        # Check if shapes are available and compare them
+        if metadata_shape and onnx_shape:
+            # Filter out any dimensions with 0 (dynamic dimensions) from ONNX shape
+            filtered_onnx_shape = [dim for dim in onnx_shape if dim != 0]
+
+            # Compare the shapes
+            if tuple(metadata_shape) != tuple(filtered_onnx_shape):
+                logger.warning(f"Shape mismatch between metadata and ONNX model")
+                logger.warning(f"Metadata shape: {metadata_shape}, ONNX model shape: {filtered_onnx_shape}")
+                logger.warning(f"Using ONNX model shape instead of metadata shape")
+                shape = filtered_onnx_shape
+            else:
+                shape = metadata_shape
+        elif metadata_shape:
+            # Only metadata shape is available
+            shape = metadata_shape
+        elif onnx_shape:
+            # Only ONNX model shape is available
+            shape = onnx_shape
         else:
-            shape = []
-            for input_info in onnx_model.graph.input:
-                dim_shape = []
-                for dim in input_info.type.tensor_type.shape.dim:
-                    if dim.dim_param:
-                        dim_shape.append(1)
-                    else:
-                        dim_shape.append(dim.dim_value)
-                if dim_shape:  # Only add non-empty shapes
-                    shape = dim_shape
-                    break
+            # No shape information available
+            raise ValueError("Failed to determine input shape from ONNX model or segment details")
 
-            if not shape:
-                raise ValueError("Failed to determine input shape from ONNX model or segment details")
-
-        # Create dummy data (all normalized to 0.5)
+        # Create dummy data (random values between 0 and 1)
         total_elements = 1
         for dim in shape:
             total_elements *= dim
         flat_data = [random.random() for _ in range(total_elements)]
-
 
         # Create the calibration data JSON structure
         calibration_data = {"input_data": [flat_data]}
@@ -337,7 +379,8 @@ if __name__ == "__main__":
 
     base_paths = {
         1: "../models/doom",
-        2: "../models/net"
+        2: "../models/net",
+        3: "../models/resnet"
     }
 
     model_dir = base_paths[model_choice] #+ "/model.onnx"

@@ -5,7 +5,7 @@ import onnx
 import onnxruntime as ort
 import torch
 
-from src.runners.runner_utils import RunnerUtils
+from src.runners.utils.runner_utils import RunnerUtils
 from src.utils.model_utils import ModelUtils
 from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
 from onnxruntime.tools.onnx_model_utils import optimize_model, ModelProtoWithShapeInfo

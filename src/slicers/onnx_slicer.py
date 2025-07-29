@@ -404,7 +404,7 @@ class OnnxSlicer:
         slices_paths = self.slice(slice_points, self.analysis, output_path)
 
         # Step 3: generate slices metadata
-        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, output_path)
+        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path)
 
         return slices_paths
 

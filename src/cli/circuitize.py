@@ -7,7 +7,7 @@ import traceback
 import logging
 from colorama import Fore, Style
 
-from src.cicuitizers.onnx_circuitizer import OnnxCircuitizer
+from src.cicuitizers.circuitizer import Circuitizer
 from src.cli.base import check_model_dir, prompt_for_value, logger
 
 
@@ -45,12 +45,12 @@ def circuitize_model(args):
     if not check_model_dir(args.model_path):
         return
 
-    # Initialize the EzklCircuitizer
+    # Initialize the Circuitizer
     try:
-        circuitizer = OnnxCircuitizer()
-        logger.info(f"OnnxCircuitizer initialized successfully")
+        circuitizer = Circuitizer.create(args.model_path)
+        logger.info(f"Circuitizer initialized successfully")
     except RuntimeError as e:
-        error_msg = f"Failed to initialize OnnxCircuitizer: {e}"
+        error_msg = f"Failed to initialize Circuitizer: {e}"
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return

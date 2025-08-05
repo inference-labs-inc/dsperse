@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import onnx
-from ..utils.onnx_utils import OnnxUtils
+from ..utils.onnx_utils import Utils
 from typing import Dict, Any, List
 
 class OnnxAnalyzer:
@@ -68,7 +68,7 @@ class OnnxAnalyzer:
                 os.makedirs(save_path, exist_ok=True)
                 save_path = os.path.join(save_path, "model_metadata.json")
 
-            OnnxUtils.save_metadata_file(model_metadata, save_path)
+            Utils.save_metadata_file(model_metadata, save_path)
         self.model_metadata = model_metadata
 
         return model_metadata
@@ -353,7 +353,7 @@ class OnnxAnalyzer:
         model_overview["segments"] = segments
 
         # Save metadata if output_dir is provided
-        OnnxUtils.save_metadata_file(model_overview, output_path=output_dir)
+        Utils.save_metadata_file(model_overview, output_path=output_dir)
 
         return model_overview
 

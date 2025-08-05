@@ -3,63 +3,97 @@ Runner for EzKL Circuit and ONNX Inference
 """
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-import src.runners.onnx_runner as onnx_runner
-import src.runners.ezkl_runner as ezkl_runner
+from src.runners.onnx_runner import OnnxRunner
+from src.runners.ezkl_runner import EzklRunner
+from src.runners.utils.runner_analyzer import RunnerAnalyzer
+from src.utils.utils import Utils
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class Runner:
-    def __init__(self, slice_output_dir: str):
-        self.slice_output_dir = Path(slice_output_dir)
-        self.run_metadata_path = self.slice_output_dir / "run_metadata.json"
-        
-        if not self.run_metadata_path.exists():
-            raise FileNotFoundError(f"run_metadata.json not found at {self.run_metadata_path}")
+    def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None):
+        if not model_path:
+            raise ValueError("Please provide a model_path (parent of slices dir) to initialize the runner.")
+        self.model_path = model_path
+        self.slices_path = Path(slices_path) if slices_path else Path(model_path) / "slices"
+        self.metadata_path = Path(metadata_path) if metadata_path else self.slices_path / "metadata.json"
+        self.run_metadata_path = Path(run_metadata_path) if run_metadata_path else None
+        if not self.metadata_path.exists():
+            raise FileNotFoundError(f"metadata.json not found at {self.metadata_path}. Please run slicing first.")
+
+        if self.run_metadata_path is None or not self.run_metadata_path.exists():
+            logger.info("run metadata not found. Generating...")
+            print(f"Generating run metadata at {self.run_metadata_path}")
+            runner_metadata = RunnerAnalyzer(self.model_path)
+            self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
         
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
 
-    def run(self, input_tensor: torch.Tensor) -> dict:
+        self.ezkl_runner = EzklRunner()
+
+    def run(self, input_json_path) -> dict:
         """Run inference through the chain of segments."""
+        # input_tensor = Utils.read_input(str(input_json_path))
         execution_chain = self.metadata.get("execution_chain", {})
         current_slice_id = execution_chain.get("head")
-        current_tensor = input_tensor
+        current_input = input_json_path
         slice_results = {}
-        
+
+        run_directory = self.metadata.get("run_directory")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        run_id = f"run_{timestamp}"
+        run_dir = Path(run_directory) / run_id
+
+        current_tensor = Utils.read_input(current_input)
+
         # Chain execution
         while current_slice_id:
             slice_node = execution_chain["nodes"][current_slice_id]
-            segment_dir = self.slice_output_dir / current_slice_id
+            segment_dir = self.slices_path / current_slice_id
             segment_dir.mkdir(exist_ok=True)
+
+            seg_run_dir = run_dir / current_slice_id
+            seg_run_dir.mkdir(parents=True, exist_ok=True)
             
             # Write input for this segment
-            input_file = segment_dir / "input.json"
-            onnx_runner.write_input(current_tensor, str(input_file))
-            
+            input_file = seg_run_dir / "input.json"
+            output_file = seg_run_dir / "output.json"
+            Utils.write_input(current_tensor, str(input_file))
+
+            current_slice_metadata = self.metadata["slices"][current_slice_id]
             # Execute segment based on circuit availability
-            if slice_node.get("use_circuit", False):
-                slice_info = self.metadata["slices"][current_slice_id]
-                current_tensor, execution_info = self._run_ezkl_segment(
-                    slice_info, current_tensor, str(segment_dir)
+            if slice_node.get("use_circuit"):
+                success, tensor, execution_info = self._run_ezkl_segment(
+                    current_slice_metadata, input_file, output_file
                 )
                 slice_results[current_slice_id] = execution_info
+
+                if not success:
+                    success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                    slice_results[current_slice_id] = execution_info
+                    slice_results[current_slice_id]["method"] = "ezkl_fallback_onnx"
+
+                    if not success:
+                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + execution_info.get("error", "Unknown error. Check logs for details."))
+
             else:
-                current_tensor = self._run_onnx_segment(
-                    slice_node["fallback"], current_tensor, str(segment_dir)
-                )
-                slice_results[current_slice_id] = {
-                    "method": "onnx_only",
-                    "attempted_ezkl": False
-                }
-            
-            # Read output and prepare for next segment
-            output_file = segment_dir / "output.json"
-            if output_file.exists():
-                current_tensor = onnx_runner.read_output(str(output_file))
-            
+                success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                execution_info["attempted_ezkl"] = False
+                slice_results[current_slice_id] = execution_info
+
+                if not success:
+                    raise Exception("ONNX inference failed for segment: " + current_slice_id)
+
+            # filter tensor and make tensor next input.json file
+            current_tensor = self._filter_tensor(current_slice_metadata, tensor)
             current_slice_id = slice_node.get("next")
         
         # Final processing
@@ -74,53 +108,55 @@ class Runner:
         }
         
         # Save inference output
-        self._save_inference_output(results)
+        self._save_inference_output(results, run_dir / "run_result.json" )
         
         return results
 
-    def _run_onnx_segment(self, onnx_path: str, input_tensor: torch.Tensor, segment_dir: str) -> torch.Tensor:
+    @staticmethod
+    def _run_onnx_segment(slice_info: dict, input_tensor_path, output_tensor_path):
         """Run ONNX inference for a segment."""
-        return onnx_runner.run_slice(onnx_path, input_tensor, segment_dir)
-
-    def _run_ezkl_segment(self, slice_info: dict, input_tensor: torch.Tensor, segment_dir: str) -> tuple:
-        """Run EZKL inference for a segment with fallback to ONNX."""
+        onnx_path = slice_info.get("path")
         start_time = time.time()
-        
+        success, result =  OnnxRunner.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
+
+        end_time = time.time()
+        exec_info = {'success': success, 'method': 'onnx_only', 'execution_time': end_time - start_time}
+
+        return success, result, exec_info
+
+    def _run_ezkl_segment(self, slice_info: dict, input_tensor_path, output_tensor_path):
+        """Run EZKL inference for a segment with fallback to ONNX."""
+        model_path = slice_info.get("circuit_path")
+        vk_path = slice_info.get("vk_path")
+        start_time = time.time()
         # Attempt EZKL execution
-        output_tensor, exec_info = ezkl_runner.run_slice(slice_info, input_tensor, segment_dir)
+        success, output_tensor = self.ezkl_runner.generate_witness(input_file=input_tensor_path, model_path=model_path, output_file=output_tensor_path, vk_path=vk_path)
+
+        end_time = time.time()
+        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time}
         
-        # Add timing information
-        exec_info["execution_time"] = time.time() - start_time
-        if exec_info.get("verified", False):
-            exec_info["verification_time"] = f"{exec_info['execution_time']:.3f}s"
-        
-        return output_tensor, exec_info
+        return success, output_tensor, exec_info
     
-    def _save_inference_output(self, results: dict):
+    def _save_inference_output(self, results, output_path):
         """Save inference_output.json with execution details."""
-        model_name = self.metadata.get("model_name", "unknown")
+        model_path = self.metadata.get("model_path", "unknown")
         slice_results = results.get("slice_results", {})
         
         # Count execution methods
         ezkl_complete = sum(1 for r in slice_results.values() 
-                           if r.get("method") == "ezkl_circuit_complete")
+                           if r.get("method") == "ezkl_gen_witness")
         total_slices = len(slice_results)
         
         # Build execution results
         execution_results = []
         for slice_id, exec_info in slice_results.items():
             result_entry = {
-                "slice_id": slice_id,
-                "method": exec_info.get("method", "unknown")
+                "segment_id": slice_id,
+                "method": exec_info.get("method", "unknown"),
+                "execution_time": exec_info.get("execution_time", 0),
+                "attempted_ezkl": exec_info.get("attempted_ezkl", True),
+                "success": exec_info.get("success", False),
             }
-            
-            # Add EZKL-specific details if available
-            if exec_info.get("witness_path"):
-                result_entry["witness_path"] = exec_info["witness_path"]
-            if exec_info.get("proof_path"):
-                result_entry["proof_path"] = exec_info["proof_path"]
-            if exec_info.get("verification_time"):
-                result_entry["verification_time"] = exec_info["verification_time"]
             
             execution_results.append(result_entry)
         
@@ -129,7 +165,7 @@ class Runner:
         
         # Build output structure
         inference_output = {
-            "model_name": model_name,
+            "model_path": model_path,
             "prediction": results["prediction"],
             "probabilities": results["probabilities"],
             "execution_chain": {
@@ -144,57 +180,124 @@ class Runner:
         }
         
         # Save to file
-        output_path = self.slice_output_dir / "inference_output.json"
         with open(output_path, 'w') as f:
             json.dump(inference_output, f, indent=2)
-        
-        print(f"Inference output saved to: {output_path}")
 
-def main():
-    """Test runner with different models."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Run inference on sliced models")
-    parser.add_argument("--model", type=int, default=2, choices=[1, 2, 3],
-                       help="Model choice: 1=doom, 2=net, 3=resnet")
-    args = parser.parse_args()
-    
+
+    @staticmethod
+    def _filter_tensor(current_slice_metadata, tensor):
+        # take the tensor object, and extract the output that is relevant to the next segment
+        logits = tensor["logits"]
+        probabilities = tensor["probabilities"]
+        predicted_action = tensor["predicted_action"]
+
+        # Check the shape using our new function
+        expected_shape = current_slice_metadata["output_shape"]
+        Runner.check_expected_shape(logits, expected_shape, tensor_name="logits")
+
+        return logits
+
+    @staticmethod
+    def check_expected_shape(tensor, expected_shape_data, tensor_name="tensor"):
+        """
+        Check if the tensor shape matches the expected shape from metadata.
+
+        Args:
+            tensor: The PyTorch tensor to check
+            expected_shape_data: The shape data from metadata (usually a nested list with possible string placeholders)
+            tensor_name: Name of the tensor for logging purposes
+
+        Returns:
+            bool: True if shapes match, False otherwise
+        """
+        # Handle the case where output_shape is a nested list
+        if isinstance(expected_shape_data, list) and len(expected_shape_data) > 0:
+            # Extract the inner shape list - the first element of output_shape
+            shape_values = expected_shape_data[0]
+
+            # Replace string placeholders with actual values from tensor
+            expected_elements = 1
+            shape_dict = {
+                "batch_size": tensor.shape[0] if tensor.dim() > 0 else 1,
+                "unk__0": tensor.shape[0] if tensor.dim() > 0 else 1
+            }
+
+            # Build the expected shape with placeholders replaced
+            expected_shape = []
+            for dim in shape_values:
+                if isinstance(dim, str):
+                    if dim in shape_dict:
+                        expected_shape.append(shape_dict[dim])
+                        expected_elements *= shape_dict[dim]
+                    else:
+                        logger.warning(f"Unknown dimension placeholder: {dim}")
+                        # Default to using 1 for unknown dimensions
+                        expected_shape.append(1)
+                        expected_elements *= 1
+                else:
+                    expected_shape.append(dim)
+                    expected_elements *= dim
+
+            # Check total elements
+            tensor_elements = torch.numel(tensor)
+            if tensor_elements != expected_elements:
+                logger.warning(
+                    f"{tensor_name} shape {list(tensor.shape)} has {tensor_elements} elements, "
+                    f"but expected shape {expected_shape} has {expected_elements} elements"
+                )
+                return False
+
+            # If the tensor is flattened but should be multidimensional
+            if len(tensor.shape) == 1 and len(expected_shape) > 1:
+                logger.info(
+                    f"{tensor_name} is flattened ({tensor.shape[0]} elements), "
+                    f"but expected shape is {expected_shape}"
+                )
+                return True
+
+            # Check actual dimensions if tensor is not flattened
+            if len(tensor.shape) == len(expected_shape):
+                for i, (actual, expected) in enumerate(zip(tensor.shape, expected_shape)):
+                    if actual != expected:
+                        logger.warning(
+                            f"Dimension mismatch at index {i}: {tensor_name} has size {actual}, "
+                            f"expected {expected}"
+                        )
+                        return False
+                return True
+
+        # If we can't determine expected shape, just return True
+        logger.debug(f"Could not determine precise expected shape for {tensor_name}")
+        return True
+
+
+if __name__ == "__main__":
+    # Choose which model to test
+    model_choice = 1  # Change this to test different models
+
     # Model configurations
-    model_configs = {
-        1: ("kubz/output/doom_slices", "kubz/src/models/doom/input.json"),
-        2: ("kubz/output/net_slices", "kubz/src/models/net/input.json"),
-        3: ("kubz/output/resnet_slices", "kubz/src/models/resnet/input.json")
+    base_paths = {
+        1: "../models/doom",
+        2: "../models/net",
+        3: "../models/resnet"
     }
-    
-    slice_output_dir, input_json_path = model_configs[args.model]
-    
-    # Check if sliced model exists
-    if not Path(slice_output_dir).exists():
-        print(f"Sliced model not found at {slice_output_dir}")
-        print("Please run slicing first or check the path")
-        return
-    
-    # Initialize runner
-    runner = Runner(slice_output_dir)
-    
-    # Load input
-    input_tensor = onnx_runner.read_input(input_json_path)
-    
-    # Reshape based on metadata
-    expected_shape = runner.metadata.get("input_shape", [])
-    if expected_shape and isinstance(expected_shape[0], list):
-        shape = [1] + expected_shape[0][1:]
-        input_tensor = input_tensor.reshape(shape)
-    
+
+    # Get model directory
+    abs_path = os.path.abspath(base_paths[model_choice])
+    slices_dir = os.path.join(abs_path, "slices")
+    input_json = os.path.join(abs_path, "input.json")
+    run_metadata_path = Path("../models/doom/run/metadata.json").resolve()
+    print(f"Run metadata path: {run_metadata_path}")
+
+    # Initialize runner  
+    runner = Runner(model_path=abs_path, slices_path=slices_dir, run_metadata_path=run_metadata_path)
+
     # Run inference
     print(f"Running inference on model...")
-    results = runner.run(input_tensor)
-    
+    results = runner.run(input_json)
+
     # Display results
     print(f"\nPrediction: {results['prediction']}")
     print(f"Execution summary:")
     for slice_id, info in results["slice_results"].items():
         print(f"  {slice_id}: {info['method']}")
-
-if __name__ == "__main__":
-    main()

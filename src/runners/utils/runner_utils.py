@@ -76,38 +76,6 @@ class RunnerUtils:
         return result
 
     @staticmethod
-    def needs_reshape(input_tensor, model_directory: str = None) -> bool:
-        """Check if tensor needs reshaping based on dimensions and model type"""
-        if input_tensor.dim() != 2:
-            return False
-        if input_tensor.size(1) == 3136 and model_directory and 'doom' in model_directory.lower():
-            return True
-        if input_tensor.size(1) == 3072:
-            return True
-        return False
-
-    @staticmethod
-    def reshape(input_tensor, model_directory: str = None):
-        # TODO: remove hardcoding to doom and net
-        if input_tensor.dim() == 1:
-            input_tensor = input_tensor.unsqueeze(0)
-
-        if input_tensor.dim() == 2 and input_tensor.size(1) == 3136 and 'doom' in model_directory.lower():
-            input_tensor = input_tensor.reshape(1, 4, 28, 28)
-        elif input_tensor.dim() == 2 and input_tensor.size(1) == 3072:
-            if input_tensor.size(0) == 1:
-                # Single sample case
-                input_tensor = input_tensor.reshape(1, 3, 32, 32)
-            else:
-                # Multiple samples case (e.g., batch size 100)
-                print(f"Processing only the first sample out of {input_tensor.size(0)}")
-                input_tensor = input_tensor[0:1].reshape(1, 3, 32, 32)
-        else:
-            raise ValueError(f"Input tensor has unsupported dimensions: {input_tensor.shape}")
-
-        return input_tensor
-
-    @staticmethod
     def get_segments(slices_directory):
         metadata = ModelUtils.load_metadata(slices_directory)
         if metadata is None:
@@ -141,7 +109,9 @@ class RunnerUtils:
         tensor_data = input_tensor.flatten().tolist()
 
         # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        file_dir = os.path.dirname(file_path)
+        if file_dir:  # Only create directory if path has a directory component
+            os.makedirs(file_dir, exist_ok=True)
 
         # Save flattened tensor data as JSON
         data = {

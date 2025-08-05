@@ -3,7 +3,7 @@ import onnx
 import logging
 from src.utils.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
-from src.utils.onnx_utils import OnnxUtils
+from src.utils.onnx_utils import Utils
 from onnx.utils import extract_model
 
 # Configure logger
@@ -326,7 +326,7 @@ class OnnxSlicer:
                 os.makedirs(save_path, exist_ok=True)
             file_path = os.path.join(save_path, f"segment_{segment_idx}.onnx")
 
-            input_names = OnnxUtils.filter_inputs(segment_inputs, graph)
+            input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
 
             # Use extract_model to create the segment
@@ -421,5 +421,5 @@ if __name__ == "__main__":
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
-    onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
+    onnx_slicer = OnnxSlicer(model_dir) #, save_path=base_paths[model_choice])
     onnx_slicer.slice_model(output_path=output_dir)

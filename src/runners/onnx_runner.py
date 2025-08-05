@@ -1,309 +1,200 @@
 import os
 import json
+import logging
 
+import numpy as np
 import onnx
 import onnxruntime as ort
 import torch
 
 from src.runners.utils.runner_utils import RunnerUtils
-from src.utils.model_utils import ModelUtils
-from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
-from onnxruntime.tools.onnx_model_utils import optimize_model, ModelProtoWithShapeInfo
-# from onnxruntime.tools.remove_initializer_from_input import remove_initializer_from_input
-
-try:
-    import onnx_graphsurgeon as gs
-    GRAPHSURGEON_AVAILABLE = True
-except ImportError:
-    GRAPHSURGEON_AVAILABLE = False
+from src.utils.utils import Utils
 
 
-# Standalone helper functions for new integration
-def write_input(tensor: torch.Tensor, file_path: str):
-    """Write tensor to input.json format."""
-    data = {"input_data": tensor.tolist()}
-    with open(file_path, 'w') as f:
-        json.dump(data, f)
-
-def write_output(tensor: torch.Tensor, file_path: str):
-    """Write tensor to output.json format."""
-    data = {"output_data": tensor.tolist()}
-    with open(file_path, 'w') as f:
-        json.dump(data, f)
-
-def read_input(file_path: str) -> torch.Tensor:
-    """Read tensor from input.json format."""
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return torch.tensor(data["input_data"])
-
-def read_output(file_path: str) -> torch.Tensor:
-    """Read tensor from output.json format."""
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    return torch.tensor(data["output_data"])
-
-def get_input_shape(onnx_path: str):
-    """Get input shape from ONNX model using GraphSurgeon if available."""
-    if not GRAPHSURGEON_AVAILABLE:
-        return None
-    
-    try:
-        model = onnx.load(onnx_path)
-        graph = gs.import_onnx(model)
-        
-        for input_tensor in graph.inputs:
-            if hasattr(input_tensor, 'shape') and input_tensor.shape:
-                # Convert symbolic dimensions to concrete values
-                shape = []
-                for dim in input_tensor.shape:
-                    if isinstance(dim, str) and 'batch' in dim.lower():
-                        shape.append(1)
-                    elif isinstance(dim, str):
-                        shape.append(-1)
-                    else:
-                        shape.append(dim)
-                return shape
-    except:
-        pass
-    return None
-
-def run_slice(onnx_path: str, input_tensor: torch.Tensor, output_dir: str = None) -> torch.Tensor:
-    """Run inference on a single ONNX slice."""
-    try:
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = os.path.join(output_dir, "output.json")
-        
-        session = ort.InferenceSession(onnx_path)
-        input_name = session.get_inputs()[0].name
-        input_numpy = input_tensor.numpy()
-        
-        raw_output = session.run(None, {input_name: input_numpy})
-        output_tensor = torch.tensor(raw_output[0])
-        
-        if output_dir:
-            write_output(output_tensor, output_file)
-        
-        return output_tensor
-    except Exception as e:
-        print(f"Error during ONNX slice inference for {onnx_path}: {e}")
-        raise
-
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class OnnxRunner:
-    def __init__(self, model_directory: str,  model_path: str = None):
+    def __init__(self):
         self.device = torch.device("cpu")
-        self.model_directory = os.path.join(OnnxRunner._get_file_path(), model_directory)
-        self.model_path = os.path.join(OnnxRunner._get_file_path(), model_path) if model_path else None
 
     @staticmethod
-    def _get_file_path() -> str:
-        """Get the parent directory path of the current file."""
-        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    
-    # Legacy wrapper methods for compatibility
-    @staticmethod
-    def write_input(tensor: torch.Tensor, file_path: str):
-        return write_input(tensor, file_path)
-    
-    @staticmethod
-    def read_input(file_path: str) -> torch.Tensor:
-        return read_input(file_path)
-    
-    @staticmethod
-    def read_output(file_path: str) -> torch.Tensor:
-        return read_output(file_path)
-    
-    @staticmethod
-    def run_slice(onnx_path: str, input_tensor: torch.Tensor, output_dir: str = None) -> torch.Tensor:
-        return run_slice(onnx_path, input_tensor, output_dir)
-
-
-    def preprocess_onnx_model_slices(self):
-        """Remove initializers from inputs in an ONNX model"""
-        print("Preprocessing ONNX model...")
-        path = self.model_directory + "/onnx_slices/model.onnx"
-
-        model = onnx.load(path)
-        # model = optimize_model(self.model_path, output_path=model_path)
-        model = ModelProtoWithShapeInfo(path).model_with_shape_info
-        # model = remove_initializer_from_input(model)
-        onnx.save(model, path)
-
-    def infer(self, mode: str = None, input_path: str = None) -> dict:
-        """
-        Run inference with the ONNX model.
-        Args:
-            mode: "sliced" to run layered inference, None or any other value for whole model inference
-            input_path: path to the input JSON file, if None uses default input.json in model directory
-        Returns:
-            dict with inference results
-        """
-        input_path = input_path if input_path else os.path.join(self.model_directory, "input.json")
-        input_tensor = RunnerUtils.preprocess_input(input_path, self.model_directory)
-
-        if mode == "sliced":
-            result = self.run_layered_inference(input_tensor)
-        else:
-            result = self.run_inference(input_tensor)
-
-        return result
-
-    # def run_layered_inference(self, input_tensor):
-    #     """
-    #     Run inference with sliced ONNX models using a computational graph approach.
-    #     """
-    #     try:
-    #         # Get the directory containing the sliced models
-    #         slices_directory = os.path.join(self.model_directory, "slices")
-    #
-    #         # Load metadata
-    #         metadata = ModelUtils.load_metadata(slices_directory)
-    #         if metadata is None:
-    #             return None
-    #
-    #         # Build computational graph
-    #         comp_graph = self.build_computational_graph(metadata)
-    #
-    #         # Dictionary to store all intermediate outputs
-    #         intermediate_outputs = {}
-    #
-    #         # Get segments
-    #         segments = metadata.get('segments', [])
-    #
-    #         # Process each segment in sequence
-    #         for segment in segments:
-    #             segment_idx = segment['index']
-    #             segment_path = segment['path']
-    #
-    #             # Create an ONNX Runtime session for this segment
-    #             session = ort.InferenceSession(segment_path)
-    #
-    #             # Prepare inputs for this segment
-    #             input_feed = {}
-    #
-    #             # Get required inputs from the computational graph
-    #             for input_info in session.get_inputs():
-    #                 input_name = input_info.name
-    #
-    #                 # Skip constants/initializers - they're already in the model
-    #                 if input_name in comp_graph[segment_idx]['constants']:
-    #                     continue
-    #
-    #                 # Handle original input
-    #                 if comp_graph[segment_idx]['inputs'].get(input_name) == "original_input":
-    #                     input_feed[input_name] = input_tensor.numpy()
-    #
-    #                 # Handle intermediate outputs from previous segments
-    #                 elif input_name in intermediate_outputs:
-    #                     input_feed[input_name] = intermediate_outputs[input_name]
-    #                 else:
-    #                     print(f"Warning: Required input '{input_name}' not found in intermediate outputs")
-    #
-    #             # Run inference on this segment
-    #             outputs = session.run(None, input_feed)
-    #
-    #             # Store all outputs in our intermediate outputs dictionary
-    #             for i, output_info in enumerate(session.get_outputs()):
-    #                 output_name = output_info.name
-    #                 intermediate_outputs[output_name] = outputs[i]
-    #
-    #         # Get the final output (from the last segment's last output)
-    #         final_segment = segments[-1]
-    #         final_output_name = final_segment['dependencies']['output'][-1]
-    #         final_output = intermediate_outputs[final_output_name]
-    #
-    #         # Convert to PyTorch tensor and process
-    #         output_tensor = torch.tensor(final_output)
-    #         result = RunnerUtils.process_final_output(output_tensor)
-    #         return result
-    #
-    #     except Exception as e:
-    #         print(f"Error during layered ONNX inference: {e}")
-    #         import traceback
-    #         traceback.print_exc()
-    #         return None
-
-    def run_layered_inference(self, input_tensor):
-        """
-        Run inference with sliced ONNX models and return the logits, probabilities, and predictions.
-        """
-        try:
-            # Get the directory containing the sliced models
-            # First try the new structure (onnx_slices)
-            slices_directory = os.path.join(self.model_directory, "slices")
-
-            # If that doesn't exist, try the old structure (onnx_slices directly)
-            if not os.path.exists(slices_directory) or not os.path.exists(os.path.join(slices_directory, "metadata.json")):
-                slices_directory = os.path.join(self.model_directory, "slices")
-
-            # Get the segments this model was split into
-            segments = RunnerUtils.get_segments(slices_directory)
-            if segments is None:
-                return None
-
-            # Process each segment in sequence
-            for idx, segment in enumerate(segments):
-                segment_path = segment["path"]
-
-                # Create an ONNX Runtime session for this segment
-                session = ort.InferenceSession(segment_path)
-
-                # Get the input name for the ONNX model
-                input_name = session.get_inputs()[0].name
-
-                # Convert PyTorch tensor to numpy array for ONNX Runtime
-                input_numpy = input_tensor.numpy()
-
-                # Run inference on this segment
-                raw_output = session.run(None, {input_name: input_numpy})
-
-                # Convert the output back to a PyTorch tensor and use as input for next layer
-                input_tensor = torch.tensor(raw_output[0])
-
-            # Process the final output
-            result = RunnerUtils.process_final_output(input_tensor)
-            return result
-
-        except Exception as e:
-            print(f"Error during layered ONNX inference: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def run_inference(self, input_tensor):
+    def run_inference(input_file: str, model_path: str, output_file: str):
         """
         Run inference with the ONNX model and return the logits, probabilities, and predictions.
         """
         try:
-            # Load the ONNX model
-            model_path = os.path.join(self.model_directory, "model.onnx")
-
             # Create an ONNX Runtime session
             session = ort.InferenceSession(model_path)
 
-            # Get the input name for the ONNX model
-            input_name = session.get_inputs()[0].name
-
             # Convert PyTorch tensor to numpy array for ONNX Runtime
-            input_numpy = input_tensor.numpy()
+            input_tensor = RunnerUtils.preprocess_input(input_file)
+
+            # Apply proper shaping based on the ONNX model's expected input
+            input_dict = OnnxRunner.apply_onnx_shape(model_path, input_tensor)
 
             # Run inference
-            raw_output = session.run(None, {input_name: input_numpy})
+            raw_output = session.run(None, input_dict)
 
             # Convert the output back to a PyTorch tensor
             output_tensor = torch.tensor(raw_output[0])
 
             # Process the output
             result = RunnerUtils.process_final_output(output_tensor)
-            return result
+
+            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
+
+            return True, result
 
         except Exception as e:
-            print(f"Error during ONNX inference: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
+            logger.warning(f"Error during inference: {e}")
+            return False, None
+
+    @staticmethod
+    def apply_onnx_shape(model_path, input_tensor, is_numpy=False):
+        """
+        Reshapes the input tensor to match the expected input shape of the ONNX model.
+
+        Args:
+            model_path: Path to the ONNX model
+            input_tensor: Input tensor (can be a PyTorch tensor or NumPy array)
+            is_numpy: Boolean indicating if input_tensor is already a NumPy array
+
+        Returns:
+            Dictionary mapping input names to properly shaped tensors
+        """
+        try:
+            # Create an ONNX Runtime session to get model metadata
+            session = ort.InferenceSession(model_path)
+
+            # Get input details from the model
+            model_inputs = session.get_inputs()
+            logger.info(f"Model expects {len(model_inputs)} input(s)")
+
+            # Convert input to numpy if it's not already
+            if not is_numpy:
+                if isinstance(input_tensor, torch.Tensor):
+                    input_numpy = input_tensor.numpy()
+                else:
+                    input_numpy = np.array(input_tensor)
+            else:
+                input_numpy = input_tensor
+
+            # Handle multiple inputs
+            if len(model_inputs) > 1:
+                # If we have a flattened tensor, we need to split it for each input
+                result = {}
+                total_elements_used = 0
+
+                for i, model_input in enumerate(model_inputs):
+                    input_name = model_input.name
+                    input_shape = model_input.shape
+                    logger.info(f"Input {i + 1}: {input_name} with shape {input_shape}")
+
+                    # Calculate number of elements needed for this input
+                    elements_needed = 1
+                    final_shape = []
+
+                    for dim in input_shape:
+                        if isinstance(dim, int):
+                            elements_needed *= dim
+                            final_shape.append(dim)
+                        elif dim == 'batch_size' or dim.startswith('unk'):
+                            batch_size = 1  # Default batch size
+                            elements_needed *= batch_size
+                            final_shape.append(batch_size)
+                        else:
+                            # For any other symbolic dimension, default to 1
+                            elements_needed *= 1
+                            final_shape.append(1)
+
+                    # Extract the portion of the flattened tensor for this input
+                    if input_numpy.size > total_elements_used + elements_needed:
+                        input_portion = input_numpy.flatten()[total_elements_used:total_elements_used + elements_needed]
+                        total_elements_used += elements_needed
+                    else:
+                        # If we don't have enough elements, use what's left
+                        input_portion = input_numpy.flatten()[total_elements_used:]
+                        logger.warning(
+                            f"Not enough elements for input {input_name}. Expected {elements_needed}, got {input_portion.size}")
+
+                        # Pad with zeros if necessary
+                        if input_portion.size < elements_needed:
+                            padding = np.zeros(elements_needed - input_portion.size)
+                            input_portion = np.concatenate([input_portion, padding])
+
+                    # Reshape to match expected shape
+                    result[input_name] = input_portion.reshape(final_shape)
+
+                return result
+            else:
+                # Single input case
+                input_name = model_inputs[0].name
+                input_shape = model_inputs[0].shape
+                logger.info(f"Single input: {input_name} with shape {input_shape}")
+
+                # Check if we need to reshape
+                if len(input_numpy.shape) != len(input_shape):
+                    # Determine the appropriate shape
+                    final_shape = []
+                    for dim in input_shape:
+                        if isinstance(dim, int):
+                            final_shape.append(dim)
+                        elif dim == 'batch_size' or dim.startswith('unk'):
+                            final_shape.append(1)  # Default batch size to 1
+                        else:
+                            # For any other symbolic dimension, default to 1
+                            final_shape.append(1)
+
+                    # Calculate total elements needed
+                    elements_needed = np.prod(final_shape)
+
+                    # Check if we have enough elements
+                    if input_numpy.size < elements_needed:
+                        logger.warning(f"Not enough elements. Expected {elements_needed}, got {input_numpy.size}")
+
+                        # Pad with zeros if necessary
+                        flat = input_numpy.flatten()
+                        padding = np.zeros(elements_needed - flat.size)
+                        input_numpy = np.concatenate([flat, padding])
+
+                    # Reshape the input
+                    input_numpy = input_numpy.reshape(final_shape)
+                    logger.info(f"Reshaped input to {input_numpy.shape}")
+                elif not np.array_equal(input_numpy.shape,
+                                        [int(dim) if isinstance(dim, int) else 1 for dim in input_shape]):
+                    # If dimensions don't match (after replacing symbolic dims with 1)
+                    expected_shape = [int(dim) if isinstance(dim, int) else 1 for dim in input_shape]
+
+                    # Check if total elements match
+                    elements_needed = np.prod(expected_shape)
+                    if input_numpy.size == elements_needed:
+                        # If same number of elements, just reshape
+                        input_numpy = input_numpy.reshape(expected_shape)
+                        logger.info(f"Reshaped input from {input_numpy.shape} to {expected_shape}")
+                    else:
+                        # Try to use what we have
+                        logger.warning(f"Input shape {input_numpy.shape} doesn't match expected shape {expected_shape}")
+
+                        # Flatten and reshape, padding if necessary
+                        flat = input_numpy.flatten()
+                        if flat.size < elements_needed:
+                            padding = np.zeros(elements_needed - flat.size)
+                            flat = np.concatenate([flat, padding])
+                        elif flat.size > elements_needed:
+                            flat = flat[:elements_needed]
+
+                        input_numpy = flat.reshape(expected_shape)
+
+                return {input_name: input_numpy}
+
+        except Exception as e:
+            logger.error(f"Error in apply_onnx_shape: {e}")
+            # In case of error, return the original tensor with the first input name
+            if len(session.get_inputs()) > 0:
+                return {session.get_inputs()[0].name: input_numpy}
+            else:
+                return {"input": input_numpy}
 
     @staticmethod
     def build_computational_graph(metadata):
@@ -355,18 +246,21 @@ if __name__ == "__main__":
     # Choose which model to test
     model_choice = 1  # Change this to test different models
 
+    # Model configurations
     base_paths = {
-        1: "models/doom",
-        2: "models/net",
-        3: "models/resnet",
-        4: "models/yolov3"
+        1: "../models/doom",
+        2: "../models/net",
+        3: "../models/resnet"
     }
 
-    model_dir = base_paths[model_choice]
-    model_runner = OnnxRunner(model_directory=model_dir)
-    # model_runner.preprocess_onnx_model()
+    # Get model directory
+    abs_path = os.path.abspath(base_paths[model_choice])
+    slices_dir = os.path.join(abs_path, "slices")
+    input_json = os.path.join(abs_path, "input.json")
+    output_json = os.path.join(abs_path, "output.json")
 
-    result = model_runner
+    print(f"Running inference on {abs_path}")
 
-    result = model_runner.infer(mode="whole") # change function and mode when needed
+    result = OnnxRunner.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
+
     print(result)

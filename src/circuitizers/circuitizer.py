@@ -78,16 +78,19 @@ class Circuitizer:
         """
         self.circuitizer_impl = circuitizer_impl
         
-    def circuitize(self, model_path: str, input_file: Optional[str] = None) -> Dict[str, Any]:
+    def circuitize(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None) -> Dict[str, Any]:
         """
         Circuitize the model using the appropriate circuitizer implementation.
         
         Args:
             model_path: Path to the model file or directory
             input_file: Optional path to input file for calibration
+            layers: Optional string specifying which layers to circuitize (e.g., "3, 20-22")
             
         Returns:
             The result of the circuitization operation
         """
         logger.info(f"Circuitizing model: {model_path}")
-        return self.circuitizer_impl.circuitize(model_path=model_path, input_file=input_file)
+        if layers:
+            logger.info(f"Circuitizing specific layers: {layers}")
+        return self.circuitizer_impl.circuitize(model_path=model_path, input_file=input_file, layers=layers)

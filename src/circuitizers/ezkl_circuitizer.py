@@ -25,13 +25,14 @@ class EZKLCircuitizer:
             raise RuntimeError("EZKL CLI is not installed. Please install EZKL before using this circuitizer.")
 
 
-    def _circuitize_slices(self, dir_path, input_file_path=None):
+    def _circuitize_slices(self, dir_path, input_file_path=None, layer_indices=None):
         """
         Circuitize ONNX slices found in the provided directory.
 
         Args:
             dir_path (str): Path to the directory containing ONNX slices.
             input_file_path (str, optional): Path to input data file for calibration.
+            layer_indices (list, optional): List of layer indices to circuitize. If None, all layers will be circuitized.
             
         Returns:
             str: Path to the directory where circuitization results are saved.
@@ -56,7 +57,17 @@ class EZKLCircuitizer:
 
         # Process each segment
         segments = metadata.get('segments', [])
+        segment_output_path = None
+        circuitized_count = 0
+        skipped_count = 0
+        
         for idx, segment in enumerate(segments):
+            # Skip this segment if it's not in the specified layer indices
+            if layer_indices is not None and idx not in layer_indices:
+                logger.info(f"Skipping segment {idx} as it's not in the specified layers")
+                skipped_count += 1
+                continue
+                
             segment_filename = segment.get('filename')
             if not segment_filename:
                 logger.warning(f"No filename found for segment {idx}")
@@ -81,13 +92,20 @@ class EZKLCircuitizer:
             # Add circuitization data to the segment
             segment['ezkl_circuitization'] = circuitization_data
             logger.info(f"Added circuitization data to segment {idx}")
+            circuitized_count += 1
 
             # Save the updated metadata back to the file
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
             logger.info(f"Updated metadata.json with circuitization data")
 
-        logger.info(f"Circuitization of slices completed. Output saved to {os.path.dirname(segment_output_path)}")
-        return os.path.dirname(segment_output_path)
+        if segment_output_path:
+            output_dir = os.path.dirname(segment_output_path)
+        else:
+            output_dir = os.path.dirname(metadata_path)
+            
+        logger.info(f"Circuitization of slices completed. Circuitized {circuitized_count} segments, skipped {skipped_count} segments.")
+        logger.info(f"Output saved to {output_dir}")
+        return output_dir
 
     def _circuitize_model(self, model_path, input_file_path=None):
         """
@@ -152,7 +170,7 @@ class EZKLCircuitizer:
         try:
             # Step 1: Generate settings
             logger.info(f"Generating settings for {model_name}")
-            subprocess.run(
+            process = subprocess.run(
                 [
                     "ezkl",
                     "gen-settings",
@@ -164,12 +182,16 @@ class EZKLCircuitizer:
                 env=self.env,
                 check=True
             )
+            
+            if process.returncode != 0:
+                logger.warning("Failed to generate settings")
+                circuitization_data["gen-settings_error"] = f"Failed to generate settings with EZKL with message {process.stderr}, {process.stderr}"
 
             # Step 2: Create calibration data if input_file_path is provided
             if input_file_path and os.path.exists(input_file_path):
                 # Step 3: Calibrate settings
                 logger.info(f"Calibrating settings using {input_file_path}")
-                subprocess.run(
+                process = subprocess.run(
                     [
                         "ezkl",
                         "calibrate-settings",
@@ -182,6 +204,11 @@ class EZKLCircuitizer:
                     check=True
                 )
                 circuitization_data["calibration"] = input_file_path
+                if process.returncode != 0:
+                    logger.warning("Failed to calibrate settings")
+                    circuitization_data[
+                        "calibrate-settings_error"] = f"Failed to calibrate settings with EZKL with message {process.stderr}, {process.stderr}"
+
             else:
                 # If no input file, try to analyze the model to create a dummy calibration
                 try:
@@ -195,7 +222,7 @@ class EZKLCircuitizer:
                     circuitization_data["calibration"] = calibration_path
 
                     # Calibrate settings with the dummy data
-                    subprocess.run(
+                    process = subprocess.run(
                         [
                             "ezkl",
                             "calibrate-settings",
@@ -206,6 +233,11 @@ class EZKLCircuitizer:
                         env=self.env,
                         check=True
                     )
+                    if process.returncode != 0:
+                        logger.warning("Failed to calibrate settings")
+                        circuitization_data[
+                            "calibrate-settings_error"] = f"Failed to calibrate settings with EZKL with message {process.stderr}, {process.stderr}"
+
                 except Exception as e:
                     error_msg = f"Failed to create dummy calibration: {e}"
                     logger.warning(error_msg)
@@ -214,7 +246,7 @@ class EZKLCircuitizer:
 
             # Step 4: Compile circuit
             logger.info(f"Compiling circuit for {model_path}")
-            subprocess.run(
+            process = subprocess.run(
                 [
                     "ezkl",
                     "compile-circuit",
@@ -226,9 +258,14 @@ class EZKLCircuitizer:
                 check=True
             )
 
+            if process.returncode != 0:
+                logger.warning("Failed to compile circuit")
+                circuitization_data["compile-circuit_error"] = f"Failed to compile circuit with EZKL with message {process.stderr}, {process.stderr}"
+
+
             # Step 5: Setup (generate verification and proving keys)
             logger.info("Setting up verification and proving keys")
-            subprocess.run(
+            process = subprocess.run(
                 [
                     "ezkl",
                     "setup",
@@ -239,6 +276,11 @@ class EZKLCircuitizer:
                 env=self.env,
                 check=True
             )
+
+            if process.returncode != 0:
+                logger.warning("Failed to setup (generate keys)")
+                circuitization_data["setup_error"] = f"Failed to generate keys with EZKL with message {process.stderr}, {process.stderr}"
+
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
         
@@ -333,27 +375,72 @@ class EZKLCircuitizer:
             logger.error(f"Failed to create dummy calibration file: {str(e)}")
             raise
 
-    def circuitize(self, model_path, input_file=None):
+    def _parse_layers(self, layers_str):
+        """
+        Parse a layers string into a list of layer indices.
+        
+        Args:
+            layers_str (str): String specifying which layers to circuitize (e.g., "3, 20-22")
+            
+        Returns:
+            list: List of layer indices to circuitize
+        """
+        if not layers_str:
+            return None
+            
+        layer_indices = []
+        # Split by comma and process each part
+        parts = [p.strip() for p in layers_str.split(',')]
+        
+        for part in parts:
+            if '-' in part:
+                # Handle range (e.g., "20-22")
+                try:
+                    start, end = map(int, part.split('-'))
+                    layer_indices.extend(range(start, end + 1))
+                except ValueError:
+                    logger.warning(f"Invalid layer range: {part}. Skipping.")
+            else:
+                # Handle single number
+                try:
+                    layer_indices.append(int(part))
+                except ValueError:
+                    logger.warning(f"Invalid layer index: {part}. Skipping.")
+                    
+        return sorted(set(layer_indices))  # Remove duplicates and sort
+    
+    def circuitize(self, model_path, input_file=None, layers=None):
         """
         Circuitize an ONNX model or slices.
 
         Args:
             model_path (str): Path to the ONNX model file or directory containing slices.
             input_file (str): Path to the input file for calibration.
+            layers (str, optional): String specifying which layers to circuitize (e.g., "3, 20-22").
+                                   If not provided, all layers will be circuitized.
 
-    Raises:
-        ValueError: If the model_path is invalid or doesn't contain required files,
-        FileNotFoundError: If the model_path doesn't exist
-    """
+        Raises:
+            ValueError: If the model_path is invalid or doesn't contain required files,
+            FileNotFoundError: If the model_path doesn't exist
+        """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Path does not exist: {model_path}")
+            
+        # Parse layers string if provided
+        layer_indices = self._parse_layers(layers)
+        if layer_indices:
+            logger.info(f"Will circuitize only layers with indices: {layer_indices}")
+        else:
+            logger.info("No layers specified, will circuitize all layers")
 
         # Check if it's a directory with metadata.json
         if os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or os.path.exists(
                 os.path.join(model_path, "slices", "metadata.json"))):
-            return self._circuitize_slices(model_path, input_file)
+            return self._circuitize_slices(model_path, input_file, layer_indices)
         # Check if it's an ONNX file
         elif os.path.isfile(model_path) and model_path.endswith('.onnx'):
+            if layer_indices:
+                logger.warning("Layer selection is only supported for sliced models, not single ONNX files.")
             return self._circuitize_model(model_path, input_file)
         else:
             raise ValueError(
@@ -362,7 +449,7 @@ class EZKLCircuitizer:
 
 
 if __name__ == "__main__":
-    model_choice = 1
+    model_choice = 2
 
     base_paths = {
         1: "../models/doom",

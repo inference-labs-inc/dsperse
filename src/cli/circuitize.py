@@ -3,11 +3,94 @@ CLI module for circuitizing models using EZKL.
 """
 
 import traceback
+import os
+import json
 
 from colorama import Fore, Style
 
 from src.circuitizers.circuitizer import Circuitizer
 from src.cli.base import check_model_dir, prompt_for_value, logger
+
+
+def _check_layers(model_path, layers_str):
+    """
+    Check if the layers provided exist in the metadata.json file.
+    
+    Args:
+        model_path (str): Path to the model directory
+        layers_str (str): String specifying which layers to circuitize (e.g., "3, 20-22")
+        
+    Returns:
+        str: Validated layers string with only existing layers
+    """
+    if not layers_str:
+        return None
+        
+    # Parse the layers string into a list of indices
+    layer_indices = []
+    parts = [p.strip() for p in layers_str.split(',')]
+    
+    for part in parts:
+        if '-' in part:
+            # Handle range (e.g., "20-22")
+            try:
+                start, end = map(int, part.split('-'))
+                layer_indices.extend(range(start, end + 1))
+            except ValueError:
+                logger.warning(f"Invalid layer range: {part}. Skipping.")
+                print(f"{Fore.YELLOW}Warning: Invalid layer range: {part}. Skipping.{Style.RESET_ALL}")
+        else:
+            # Handle single number
+            try:
+                layer_indices.append(int(part))
+            except ValueError:
+                logger.warning(f"Invalid layer index: {part}. Skipping.")
+                print(f"{Fore.YELLOW}Warning: Invalid layer index: {part}. Skipping.{Style.RESET_ALL}")
+    
+    # Remove duplicates and sort
+    layer_indices = sorted(set(layer_indices))
+    
+    # Find metadata.json file
+    metadata_path = os.path.join(model_path, "metadata.json")
+    if not os.path.exists(metadata_path):
+        # Check for metadata.json in slices subdirectory
+        metadata_path = os.path.join(model_path, "slices", "metadata.json")
+        if not os.path.exists(metadata_path):
+            logger.warning(f"metadata.json not found in {model_path} or {os.path.join(model_path, 'slices')}")
+            print(f"{Fore.YELLOW}Warning: metadata.json not found. Cannot validate layers.{Style.RESET_ALL}")
+            return layers_str
+    
+    # Load metadata
+    try:
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load metadata.json: {e}")
+        print(f"{Fore.YELLOW}Warning: Failed to load metadata.json. Cannot validate layers.{Style.RESET_ALL}")
+        return layers_str
+    
+    # Get available segments
+    segments = metadata.get('segments', [])
+    available_indices = [segment.get('index') for segment in segments]
+    
+    # Check if each layer exists
+    valid_indices = []
+    for idx in layer_indices:
+        if idx in available_indices:
+            valid_indices.append(idx)
+        else:
+            logger.warning(f"Layer {idx} not found in metadata.json, skipping circuitization of it")
+            print(f"{Fore.YELLOW}Warning: Layer {idx} not found, skipping circuitization of it{Style.RESET_ALL}")
+    
+    # If no valid indices, return None
+    if not valid_indices:
+        logger.warning("No valid layers found")
+        print(f"{Fore.YELLOW}Warning: No valid layers found. Will circuitize all layers.{Style.RESET_ALL}")
+        return None
+    
+    # Convert valid indices back to a string
+    # For simplicity, we'll just use comma-separated values
+    return ','.join(map(str, valid_indices))
 
 
 def setup_parser(subparsers):
@@ -23,6 +106,7 @@ def setup_parser(subparsers):
     circuitize_parser = subparsers.add_parser('circuitize', help='Circuitize a model or slices using EZKL')
     circuitize_parser.add_argument('--model-path', help='Path to the model file or directory containing slices')
     circuitize_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
+    circuitize_parser.add_argument('--layers', help='Specify which layers to circuitize (e.g., "3, 20-22"). If not provided, all layers will be circuitized.')
     
     return circuitize_parser
 
@@ -54,11 +138,18 @@ def circuitize_model(args):
         logger.error(error_msg)
         return
 
+    # Check if the layers exist in the metadata
+    if hasattr(args, 'layers') and args.layers:
+        validated_layers = _check_layers(args.model_path, args.layers)
+    else:
+        validated_layers = None
+    
     # Run the circuitization
     try:
         output_path = circuitizer.circuitize(
             model_path=args.model_path,
-            input_file=args.input_file
+            input_file=args.input_file,
+            layers=validated_layers
         )
         success_msg = f"Model circuitized successfully! Output saved to {output_path}"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

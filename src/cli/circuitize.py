@@ -2,12 +2,11 @@
 CLI module for circuitizing models using EZKL.
 """
 
-import os
 import traceback
-import logging
+
 from colorama import Fore, Style
 
-from src.cicuitizers.circuitizer import Circuitizer
+from src.circuitizers.circuitizer import Circuitizer
 from src.cli.base import check_model_dir, prompt_for_value, logger
 
 

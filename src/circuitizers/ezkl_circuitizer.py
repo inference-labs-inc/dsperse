@@ -5,10 +5,10 @@ import subprocess
 import logging
 from pathlib import Path
 import onnx
-from src.utils.onnx_utils import Utils
+from src.utils.utils import Utils
 
 # Configure logger
-logger = logging.getLogger('kubz.ezkl_circuitizer')
+logger = logging.getLogger(__name__)
 
 class EZKLCircuitizer:
     def __init__(self):

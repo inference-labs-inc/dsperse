@@ -10,9 +10,7 @@ import os
 import logging
 from typing import Optional, Dict, Any
 
-from src.cicuitizers.onnx_circuitizer import OnnxCircuitizer
-# Import ModelCircuitizer for future use
-# from src.cicuitizers.model_circuitizer import ModelCircuitizer
+from src.circuitizers.ezkl_circuitizer import EZKLCircuitizer
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +63,7 @@ class Circuitizer:
         # Create appropriate circuitizer
         if is_onnx:
             logger.info(f"Creating ONNX circuitizer for model: {model_path}")
-            return Circuitizer(OnnxCircuitizer())
+            return Circuitizer(EZKLCircuitizer())
         else:
             # For now, we only support ONNX models as per requirements
             # In the future, this can be extended to support other model types

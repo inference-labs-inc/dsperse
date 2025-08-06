@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import onnx
-from ..utils.onnx_utils import Utils
+from src.utils.utils import Utils
 from typing import Dict, Any, List
 
 class OnnxAnalyzer:

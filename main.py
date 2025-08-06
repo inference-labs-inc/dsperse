@@ -2,8 +2,8 @@
 """
 Kubz CLI - A command-line interface for the Kubz neural network model slicing and analysis toolkit.
 
-This CLI allows you to slice models and run verified inference (both whole and sliced) using
-different backends (ezkl, plain).
+This CLI allows you to slice models and run verified inference on sliced models, with the runner
+automatically determining the appropriate backend (EZKL or ONNX) for each slice.
 """
 
 import sys
@@ -71,9 +71,6 @@ def main():
     if args.command == 'slice':
         slice_model(args)
     elif args.command == 'run':
-        # Set plain as default if no backend specified
-        if not args.ezkl:
-            args.plain = True
         run_inference(args)
     elif args.command == 'prove':
         run_proof(args)

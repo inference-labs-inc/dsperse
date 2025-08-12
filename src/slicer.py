@@ -90,3 +90,46 @@ class Slicer:
         """
         logger.info(f"Slicing model to output path: {output_path}")
         return self.slicer_impl.slice_model(output_path=output_path)
+
+
+if __name__ == "__main__":
+    # Choose which model to test
+    model_choice = 1  # Change this to test different models
+
+    # Model configurations
+    base_paths = {
+        1: "models/doom",
+        2: "models/net",
+        3: "models/resnet",
+        4: "models/yolov3"
+    }
+
+    # Resolve paths
+    abs_path = os.path.abspath(base_paths[model_choice])
+    model_file = os.path.join(abs_path, "model.onnx")
+    output_dir = os.path.join(abs_path, "slices")
+
+    try:
+        # Initialize slicer via orchestrator (auto-selects ONNX slicer)
+        slicer = Slicer.create(model_path=model_file, save_path=abs_path)
+
+        # Run slicing
+        print(f"Slicing model at {model_file} to {output_dir}...")
+        slices = slicer.slice_model(output_path=output_dir)
+
+        # Display results
+        print("\nSlicing completed!")
+        if isinstance(slices, list):
+            print(f"Created {len(slices)} segments.")
+            # Optionally display first few slice paths
+            preview = slices[:5]
+            if preview:
+                print("Sample slice files:")
+                for p in preview:
+                    print(f"  {p}")
+        else:
+            print("Slicing returned no slice list. Check logs for details.")
+
+    except Exception as e:
+        print(f"Error during slicing: {e}")
+

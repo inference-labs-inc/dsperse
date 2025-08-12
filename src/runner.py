@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from src.backends.onnx_models import OnnxModels
 from src.backends.ezkl import EZKL
-from src.runners.runner_analyzer import RunnerAnalyzer
+from src.analyzers.runner_analyzer import RunnerAnalyzer
 from src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -293,27 +293,25 @@ if __name__ == "__main__":
 
     # Model configurations
     base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet"
+        1: "models/doom",
+        2: "models/net",
+        3: "models/resnet"
     }
 
     # Get model directory
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
     input_json = os.path.join(abs_path, "input.json")
-    run_metadata_path = Path("../models/doom/run/metadata.json").resolve()
-    print(f"Run metadata path: {run_metadata_path}")
 
-    # Initialize runner  
-    runner = Runner(model_path=abs_path, slices_path=slices_dir, run_metadata_path=run_metadata_path)
+    # Initialize runner (auto-generates run metadata if needed)
+    runner = Runner(model_path=abs_path, slices_path=slices_dir)
 
     # Run inference
-    print(f"Running inference on model...")
+    print(f"Running inference on model {base_paths[model_choice]}...")
     results = runner.run(input_json)
 
     # Display results
     print(f"\nPrediction: {results['prediction']}")
-    print(f"Execution summary:")
+    print("Execution summary:")
     for slice_id, info in results["slice_results"].items():
         print(f"  {slice_id}: {info['method']}")

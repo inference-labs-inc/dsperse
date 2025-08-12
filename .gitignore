@@ -43,3 +43,5 @@ develop-eggs/
 
 # ignore the models we test with
 models/
+src/models/
+

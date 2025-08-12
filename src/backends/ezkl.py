@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import onnx
 from src.utils.utils import Utils
-from src.runners.runner_utils import RunnerUtils
+from src.utils.runner_utils.runner_utils import RunnerUtils
 
 # Configure logger
 logger = logging.getLogger(__name__)

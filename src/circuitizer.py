@@ -112,3 +112,5 @@ if __name__ == "__main__":
     # Circuitize
     model_path = os.path.abspath(model_dir)
     EZKL().circuitize(model_path=abs_path)
+
+    # TODO: Intercept ezkl output and display success/fail message

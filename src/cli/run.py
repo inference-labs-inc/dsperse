@@ -9,7 +9,7 @@ import traceback
 from colorama import Fore, Style
 
 from src.cli.base import check_model_dir, save_result, prompt_for_value, logger
-from src.runners.runner import Runner
+from src.runner import Runner
 
 
 def setup_parser(subparsers):

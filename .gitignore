@@ -41,3 +41,5 @@ sdist/
 develop-eggs/
 .installed.cfg
 
+# ignore the models we test with
+models/

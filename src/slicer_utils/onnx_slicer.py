@@ -421,5 +421,5 @@ if __name__ == "__main__":
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
-    onnx_slicer = OnnxSlicer(model_dir) #, save_path=base_paths[model_choice])
+    onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
     onnx_slicer.slice_model(output_path=output_dir)

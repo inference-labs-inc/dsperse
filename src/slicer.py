@@ -10,7 +10,7 @@ import os
 import logging
 from typing import Optional, List
 
-from src.slicers.onnx_slicer import OnnxSlicer
+from src.slicer_utils.onnx_slicer import OnnxSlicer
 # Import ModelSlicer for future use
 # from src.slicers.model_slicer import ModelSlicer
 

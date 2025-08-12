@@ -8,7 +8,7 @@ import json
 
 from colorama import Fore, Style
 
-from src.circuitizers.circuitizer import Circuitizer
+from src.circuitizer import Circuitizer
 from src.cli.base import check_model_dir, prompt_for_value, logger
 
 

@@ -1,20 +1,16 @@
-import os
-import json
 import logging
+import os
 
 import numpy as np
-import onnx
 import onnxruntime as ort
 import torch
 
-from src.runners.utils.runner_utils import RunnerUtils
-from src.utils.utils import Utils
-
+from src.runners.runner_utils import RunnerUtils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-class OnnxRunner:
+class OnnxModels:
     def __init__(self):
         self.device = torch.device("cpu")
 
@@ -31,7 +27,7 @@ class OnnxRunner:
             input_tensor = RunnerUtils.preprocess_input(input_file)
 
             # Apply proper shaping based on the ONNX model's expected input
-            input_dict = OnnxRunner.apply_onnx_shape(model_path, input_tensor)
+            input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
 
             # Run inference
             raw_output = session.run(None, input_dict)
@@ -196,49 +192,6 @@ class OnnxRunner:
             else:
                 return {"input": input_numpy}
 
-    @staticmethod
-    def build_computational_graph(metadata):
-        """
-        Build a computational graph dictionary from metadata.json
-        """
-        segments = metadata.get('segments', [])
-        comp_graph = {}
-
-        # Dictionary to track where each tensor comes from
-        tensor_sources = {}
-
-        # Process each segment
-        for segment in segments:
-            segment_idx = segment['index']
-            comp_graph[segment_idx] = {
-                'inputs': {},
-                'outputs': [],
-                'constants': {}
-            }
-
-            # Record all outputs from this segment
-            for output in segment['dependencies']['output']:
-                tensor_sources[output] = segment_idx
-                comp_graph[segment_idx]['outputs'].append(output)
-
-            # Process inputs for this segment
-            for input_name in segment['dependencies']['input']:
-                # Check if this is a constant/initializer (starts with "onnx::")
-                if input_name.startswith("onnx::"):
-                    # This is a constant weight/bias
-                    comp_graph[segment_idx]['constants'][input_name] = True
-                # Check if this is the original model input
-                elif input_name == "x" or input_name == "input":
-                    comp_graph[segment_idx]['inputs'][input_name] = "original_input"
-                # Otherwise, it's an intermediate tensor from a previous segment
-                elif input_name in tensor_sources:
-                    source_segment = tensor_sources[input_name]
-                    comp_graph[segment_idx]['inputs'][input_name] = source_segment
-                else:
-                    print(f"Warning: Input {input_name} for segment {segment_idx} has unknown source")
-
-        return comp_graph
-
 
 # Example usage
 if __name__ == "__main__":
@@ -261,6 +214,6 @@ if __name__ == "__main__":
 
     print(f"Running inference on {abs_path}")
 
-    result = OnnxRunner.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
+    result = OnnxModels.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
 
     print(result)

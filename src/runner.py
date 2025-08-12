@@ -9,9 +9,9 @@ import time
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-from src.runners.onnx_runner import OnnxRunner
-from src.runners.ezkl_runner import EzklRunner
-from src.runners.utils.runner_analyzer import RunnerAnalyzer
+from src.backends.onnx_models import OnnxModels
+from src.backends.ezkl import EZKL
+from src.runners.runner_analyzer import RunnerAnalyzer
 from src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class Runner:
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
 
-        self.ezkl_runner = EzklRunner()
+        self.ezkl_runner = EZKL()
 
     def run(self, input_json_path) -> dict:
         """Run inference through the chain of segments."""
@@ -117,24 +117,32 @@ class Runner:
         """Run ONNX inference for a segment."""
         onnx_path = slice_info.get("path")
         start_time = time.time()
-        success, result =  OnnxRunner.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
+        success, result =  OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
 
         end_time = time.time()
-        exec_info = {'success': success, 'method': 'onnx_only', 'execution_time': end_time - start_time}
+        exec_info = {'success': success, 'method': 'onnx_only', 'execution_time': end_time - start_time, 'output_tensor_path': output_tensor_path}
+
+        if success:
+            exec_info['input_file'] = str(input_tensor_path.resolve())
+            exec_info['output_file'] = str(output_tensor_path.resolve())
 
         return success, result, exec_info
 
-    def _run_ezkl_segment(self, slice_info: dict, input_tensor_path, output_tensor_path):
+    def _run_ezkl_segment(self, slice_info: dict, input_tensor_path, output_witness_path):
         """Run EZKL inference for a segment with fallback to ONNX."""
         model_path = slice_info.get("circuit_path")
         vk_path = slice_info.get("vk_path")
         start_time = time.time()
         # Attempt EZKL execution
-        success, output_tensor = self.ezkl_runner.generate_witness(input_file=input_tensor_path, model_path=model_path, output_file=output_tensor_path, vk_path=vk_path)
+        success, output_tensor = self.ezkl_runner.generate_witness(input_file=input_tensor_path, model_path=model_path, output_file=output_witness_path, vk_path=vk_path)
 
         end_time = time.time()
-        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time}
-        
+        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time, 'witness_path': output_witness_path}
+
+        if success:
+            exec_info['input_file'] = str(input_tensor_path.resolve())
+            exec_info['output_file'] = str(output_witness_path.resolve())
+
         return success, output_tensor, exec_info
     
     def _save_inference_output(self, results, output_path):
@@ -150,12 +158,20 @@ class Runner:
         # Build execution results
         execution_results = []
         for slice_id, exec_info in slice_results.items():
-            result_entry = {
-                "segment_id": slice_id,
+            # Create witness_execution object to nest execution data
+            witness_execution = {
                 "method": exec_info.get("method", "unknown"),
                 "execution_time": exec_info.get("execution_time", 0),
                 "attempted_ezkl": exec_info.get("attempted_ezkl", True),
                 "success": exec_info.get("success", False),
+                "input_file": exec_info.get("input_file", "unknown"),
+                "output_file": exec_info.get("output_file", "unknown"),
+            }
+            
+            # Create result_entry with segment_id and witness_execution
+            result_entry = {
+                "segment_id": slice_id,
+                "witness_execution": witness_execution
             }
             
             execution_results.append(result_entry)
@@ -170,7 +186,7 @@ class Runner:
             "probabilities": results["probabilities"],
             "execution_chain": {
                 "total_slices": total_slices,
-                "ezkl_verified_slices": ezkl_complete,
+                "ezkl_witness_slices": ezkl_complete,
                 "overall_security": f"{security_percent:.1f}%",
                 "execution_results": execution_results
             },
@@ -273,7 +289,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     # Model configurations
     base_paths = {

@@ -10,7 +10,7 @@ import os
 import logging
 from typing import Optional, Dict, Any
 
-from src.circuitizers.ezkl_circuitizer import EZKLCircuitizer
+from src.backends.ezkl import EZKL
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class Circuitizer:
         # Create appropriate circuitizer
         if is_onnx:
             logger.info(f"Creating ONNX circuitizer for model: {model_path}")
-            return Circuitizer(EZKLCircuitizer())
+            return Circuitizer(EZKL())
         else:
             # For now, we only support ONNX models as per requirements
             # In the future, this can be extended to support other model types
@@ -94,3 +94,21 @@ class Circuitizer:
         if layers:
             logger.info(f"Circuitizing specific layers: {layers}")
         return self.circuitizer_impl.circuitize(model_path=model_path, input_file=input_file, layers=layers)
+
+if __name__ == "__main__":
+    # Choose which model to test
+    model_choice = 1  # Change this to test different models
+
+    base_paths = {
+        1: "models/doom",
+        2: "models/net",
+        3: "models/resnet",
+        4: "models/yolov3"
+    }
+    abs_path = os.path.abspath(base_paths[model_choice])
+    model_dir = abs_path
+    slices_dir = os.path.join(abs_path, "slices")
+
+    # Circuitize
+    model_path = os.path.abspath(model_dir)
+    EZKL().circuitize(model_path=abs_path)

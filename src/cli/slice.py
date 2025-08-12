@@ -8,7 +8,7 @@ import traceback
 from colorama import Fore, Style
 
 from src.cli.base import check_model_dir, prompt_for_value, logger
-from src.slicers.slicer import Slicer
+from src.slicer import Slicer
 
 
 def setup_parser(subparsers):

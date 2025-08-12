@@ -6,12 +6,12 @@ from pathlib import Path
 from src.utils.model_utils import ModelUtils
 
 
-class JSTProveRunner:
+class JSTProve:
     def __init__(self, model_directory):
         self.jstprove_project_path = os.environ.get('JSTPROVE_PATH')
         if not self.jstprove_project_path:
             raise ValueError("JSTPROVE_PATH environment variable is not set")
-        
+
         # check if jstprove cli python file exists, it should be jstprove project path/cli.py
 
         cli_path = os.path.join(self.jstprove_project_path, 'cli.py')
@@ -28,13 +28,13 @@ class JSTProveRunner:
             return self.generate_witness_sliced(input_file=input_file)
         else:
             return self.generate_witness_whole(input_file=input_file)
-        
+
     def prove(self, mode: str = None):
         if mode == "sliced":
             return self.prove_slices()
         else:
             return self.prove_whole()
-        
+
     def verify(self, mode: str = None, input_file: str = None) -> dict:
         if mode == "sliced":
             return self.verify_slices(input_path=input_file)
@@ -47,8 +47,7 @@ class JSTProveRunner:
         else:
             return self.circuitize_whole()
 
-
-    def generate_witness_whole(self,  input_file: str = None, model_path: str = None) -> dict:
+    def generate_witness_whole(self, input_file: str = None, model_path: str = None) -> dict:
         # set base params
         parent_dir = self.src_dir
         model_folder = model_path or os.path.join(parent_dir, self.base_path, "model")
@@ -85,7 +84,6 @@ class JSTProveRunner:
 
         results = output_data.get('rescaled_output', None)[0]
         return results
-
 
     def generate_witness_sliced(self, input_file: str = None, model_path: str = None) -> dict:
         parent_dir = self.src_dir
@@ -287,7 +285,7 @@ class JSTProveRunner:
                     json.dump(json.load(src), dst)
             except Exception as e:
                 print(f"Error copying input file: {e}")
-        
+
         for segment_idx in range(num_segments):
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
@@ -474,9 +472,9 @@ if __name__ == "__main__":
     }
 
     model_dir = base_paths[model_choice]
-    runner = JSTProveRunner(model_dir)
+    runner = JSTProve(model_dir)
 
     # Test
-    results = runner.verify(mode="sliced") # change function and mode when needed
+    results = runner.verify(mode="sliced")  # change function and mode when needed
     print(results)
 

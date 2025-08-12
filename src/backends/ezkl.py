@@ -2,28 +2,276 @@ import json
 import os
 import random
 import subprocess
+import torch
 import logging
 from pathlib import Path
 import onnx
 from src.utils.utils import Utils
+from src.runners.runner_utils import RunnerUtils
 
 # Configure logger
 logger = logging.getLogger(__name__)
 
-class EZKLCircuitizer:
-    def __init__(self):
+class EZKL:
+    def __init__(self, model_directory=None):
         """
-        Initialize the Ezkl Circuitizer.
+        Initialize the EZKL backend.
+
+        Args:
+            model_directory (str, optional): Path to the model directory.
 
         Raises:
             RuntimeError: If EZKL is not installed
         """
         self.env = os.environ
+        self.model_directory = model_directory
+        
+        if model_directory:
+            self.base_path = os.path.join(model_directory, "ezkl")
+        
+        # Check if ezkl is installed via cli
         try:
-            subprocess.run(['ezkl', '--version'], check=True, capture_output=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            raise RuntimeError("EZKL CLI is not installed. Please install EZKL before using this circuitizer.")
+            result = subprocess.run(['ezkl', '--version'],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+            if result.returncode != 0:
+                raise RuntimeError("EZKL CLI not found. Please install EZKL first.")
+        except FileNotFoundError:
+            raise RuntimeError("EZKL CLI not found. Please install EZKL first.")
 
+    #
+    # High-level methods that dispatch to specific implementations
+    #
+    
+    def generate_witness(self, input_file: str, model_path: str, output_file: str, vk_path: str):
+        """
+        Generate a witness for the given model and input.
+        
+        Args:
+            input_file (str): Path to the input file
+            model_path (str): Path to the compiled model
+            output_file (str): Path where to save the output
+            vk_path (str): Path to the verification key
+            
+        Returns:
+            tuple: (success, output) where success is a boolean and output is the processed witness output
+        """
+        # Validate required files exist
+        if not os.path.exists(input_file):
+            raise FileNotFoundError(f"Input file not found: {input_file}")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(vk_path):
+            raise FileNotFoundError(f"Verification key file not found: {vk_path}")
+
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "gen-witness",
+                    "--data", input_file,
+                    "--compiled-circuit", model_path,
+                    "--output", output_file,
+                    "--vk-path", vk_path
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            if process.returncode != 0:
+                error_msg = f"Witness generation failed with return code {process.returncode}"
+                if process.stderr:
+                    error_msg += f"\nError: {process.stderr}"
+                return False, error_msg
+
+        except subprocess.CalledProcessError as e:
+            error_msg = f"Witness generation failed: {e}"
+            if e.stderr:
+                error_msg += f"\nError output: {e.stderr}"
+            return False, error_msg
+
+        # return the processed outputs
+        with open(output_file, "r") as f:
+            witness_data = json.load(f)
+            output = self.process_witness_output(witness_data)
+
+        return True, output
+
+    def prove(self, witness_path: str, model_path: str, proof_path: str, pk_path: str, check_mode: str = "unsafe"):
+        """
+        Generate a proof for the given witness and model.
+        
+        Args:
+            witness_path (str): Path to the witness file
+            model_path (str): Path to the compiled model
+            proof_path (str): Path where to save the proof
+            pk_path (str): Path to the proving key
+            check_mode (str, optional): Check mode for the prover. Defaults to "unsafe".
+            
+        Returns:
+            tuple: (success, results) where success is a boolean and results is the path to the proof
+        """
+        # Validate required files exist
+        if not os.path.exists(witness_path):
+            raise FileNotFoundError(f"Witness file not found: {witness_path}")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(pk_path):
+            raise FileNotFoundError(f"PK key file not found: {pk_path}")
+
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(proof_path), exist_ok=True)
+
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "prove",
+                    "--check-mode", check_mode,
+                    "--witness", witness_path,
+                    "--compiled-circuit", model_path,
+                    "--proof-path", proof_path,
+                    "--pk-path", pk_path
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            if process.returncode != 0:
+                error_msg = f"Proof generation failed with return code {process.returncode}"
+                if process.stderr:
+                    error_msg += f"\nError: {process.stderr}"
+                return False, error_msg
+
+        except subprocess.CalledProcessError as e:
+            print(f"Error during proof generation: {e}")
+            return False, e.stderr
+
+        results = proof_path
+        return True, results
+
+    def verify(self, proof_path: str, settings_path: str, vk_path: str) -> bool:
+        """
+        Verify a proof.
+        
+        Args:
+            proof_path (str): Path to the proof file
+            settings_path (str): Path to the settings file
+            vk_path (str): Path to the verification key
+            
+        Returns:
+            bool: True if verification succeeded, False otherwise
+        """
+        # Validate required files exist
+        if not os.path.exists(proof_path):
+            raise FileNotFoundError(f"Proof file not found: {proof_path}")
+        if not os.path.exists(settings_path):
+            raise FileNotFoundError(f"Settings file not found: {settings_path}")
+        if not os.path.exists(vk_path):
+            raise FileNotFoundError(f"Verification key file not found: {vk_path}")
+
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "verify",
+                    "--proof-path", proof_path,
+                    "--settings-path", settings_path,
+                    "--vk-path", vk_path
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            if process.returncode != 0:
+                error_msg = f"Verification generation failed with return code {process.returncode}"
+                if process.stderr:
+                    error_msg += f"\nError: {process.stderr}"
+                return False
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"Error verifying proof: {e}")
+            return False
+
+    def circuitize(self, model_path, input_file=None, layers=None):
+        """
+        Circuitize an ONNX model or slices.
+
+        Args:
+            model_path (str): Path to the ONNX model file or directory containing slices.
+            input_file (str, optional): Path to the input file for calibration.
+            layers (str, optional): String specifying which layers to circuitize (e.g., "3, 20-22").
+                                   If not provided, all layers will be circuitized.
+
+        Raises:
+            ValueError: If the model_path is invalid or doesn't contain required files,
+            FileNotFoundError: If the model_path doesn't exist
+            
+        Returns:
+            str: Path to the directory where circuitization results are saved.
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Path does not exist: {model_path}")
+            
+        # Parse layers string if provided
+        layer_indices = self._parse_layers(layers)
+        if layer_indices:
+            logger.info(f"Will circuitize only layers with indices: {layer_indices}")
+        else:
+            logger.info("No layers specified, will circuitize all layers")
+
+        # Check if it's a directory with metadata.json
+        if os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or os.path.exists(
+                os.path.join(model_path, "slices", "metadata.json"))):
+            return self._circuitize_slices(model_path, input_file, layer_indices)
+        # Check if it's an ONNX file
+        elif os.path.isfile(model_path) and model_path.endswith('.onnx'):
+            if layer_indices:
+                logger.warning("Layer selection is only supported for sliced models, not single ONNX files.")
+            return self._circuitize_model(model_path, input_file)
+        else:
+            raise ValueError(
+                f"Invalid model path: {model_path}. Must be either a directory containing metadata.json or an .onnx file")
+
+    #
+    # Helper methods for circuitization
+    #
+    
+    def _circuitize_model(self, model_path, input_file_path=None):
+        """
+        Circuitize a whole ONNX model.
+
+        Args:
+            model_path (str): Path to the ONNX model file.
+            input_file_path (str, optional): Path to input data file for calibration.
+            
+        Returns:
+            str: Path to the directory where circuitization results are saved.
+        """
+        # Ensure model_path is a file
+        if not os.path.isfile(model_path):
+            raise ValueError(f"model_path must be a file: {model_path}")
+
+        output_path = os.path.splitext(model_path)[0]
+
+        # Create output directory
+        circuit_folder = os.path.join(os.path.dirname(output_path), "model")
+        os.makedirs(circuit_folder, exist_ok=True)
+
+        # Run the circuitization pipeline
+        self._circuitization_pipeline(model_path, circuit_folder, input_file_path=input_file_path)
+
+        logger.info(f"Circuitization completed. Output saved to {circuit_folder}")
+        return circuit_folder
 
     def _circuitize_slices(self, dir_path, input_file_path=None, layer_indices=None):
         """
@@ -106,29 +354,6 @@ class EZKLCircuitizer:
         logger.info(f"Circuitization of slices completed. Circuitized {circuitized_count} segments, skipped {skipped_count} segments.")
         logger.info(f"Output saved to {output_dir}")
         return output_dir
-
-    def _circuitize_model(self, model_path, input_file_path=None):
-        """
-        Circuitize a whole ONNX model.
-
-        Args:
-            model_path (str): Path to the ONNX model file.
-        """
-        # Ensure model_path is a file
-        if not os.path.isfile(model_path):
-            raise ValueError(f"model_path must be a file: {model_path}")
-
-        output_path = os.path.splitext(model_path)[0]
-
-        # Create output directory
-        circuit_folder = os.path.join(os.path.dirname(output_path), "model")
-        os.makedirs(circuit_folder, exist_ok=True)
-
-        # Run the circuitization pipeline
-        self._circuitization_pipeline(model_path, circuit_folder, input_file_path=input_file_path)
-
-        logger.info(f"Circuitization completed. Output saved to {circuit_folder}")
-        return circuit_folder
 
     def _circuitization_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
         """
@@ -408,56 +633,51 @@ class EZKLCircuitizer:
                     logger.warning(f"Invalid layer index: {part}. Skipping.")
                     
         return sorted(set(layer_indices))  # Remove duplicates and sort
-    
-    def circuitize(self, model_path, input_file=None, layers=None):
+
+    @staticmethod
+    def process_witness_output(witness_data):
         """
-        Circuitize an ONNX model or slices.
-
-        Args:
-            model_path (str): Path to the ONNX model file or directory containing slices.
-            input_file (str): Path to the input file for calibration.
-            layers (str, optional): String specifying which layers to circuitize (e.g., "3, 20-22").
-                                   If not provided, all layers will be circuitized.
-
-        Raises:
-            ValueError: If the model_path is invalid or doesn't contain required files,
-            FileNotFoundError: If the model_path doesn't exist
+        Process the witness.json data to get prediction results.
         """
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Path does not exist: {model_path}")
-            
-        # Parse layers string if provided
-        layer_indices = self._parse_layers(layers)
-        if layer_indices:
-            logger.info(f"Will circuitize only layers with indices: {layer_indices}")
-        else:
-            logger.info("No layers specified, will circuitize all layers")
+        try:
+            rescaled_outputs = witness_data["pretty_elements"]["rescaled_outputs"][0]
+        except KeyError:
+            print("Error: Could not find rescaled_outputs in witness data")
+            return None
 
-        # Check if it's a directory with metadata.json
-        if os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or os.path.exists(
-                os.path.join(model_path, "slices", "metadata.json"))):
-            return self._circuitize_slices(model_path, input_file, layer_indices)
-        # Check if it's an ONNX file
-        elif os.path.isfile(model_path) and model_path.endswith('.onnx'):
-            if layer_indices:
-                logger.warning("Layer selection is only supported for sliced models, not single ONNX files.")
-            return self._circuitize_model(model_path, input_file)
-        else:
-            raise ValueError(
-                f"Invalid model path: {model_path}. Must be either a directory containing metadata.json or an .onnx file")
+        # Convert string values to float and create a tensor
+        float_values = [float(val) for val in rescaled_outputs]
 
+        # Create a tensor with shape [1, num_classes] to match batch_size, num_classes format
+        tensor_output = torch.tensor([float_values], dtype=torch.float32)
+
+        # Process the tensor through _process_final_output (simulating one segment)
+        output = RunnerUtils.process_final_output(tensor_output)
+        return output
 
 
 if __name__ == "__main__":
-    model_choice = 2
+    # Choose which model to test
+    model_choice = 1 # Change this to test different models
 
     base_paths = {
         1: "../models/doom",
         2: "../models/net",
-        3: "../models/resnet"
+        3: "../models/resnet",
+        4: "../models/yolov3"
     }
+    abs_path = os.path.abspath(base_paths[model_choice])
+    model_dir = abs_path
+    slices_dir = os.path.join(abs_path, "slices")
 
-    model_dir = base_paths[model_choice] #+ "/model.onnx"
-    circuitizer = EZKLCircuitizer()
+    # Circuitize
     model_path = os.path.abspath(model_dir)
-    circuitizer.circuitize(model_path=model_path)
+    EZKL().circuitize(model_path=abs_path)
+
+    # # Generate witness
+    # input_file = os.path.join(model_dir, "input.json")
+    # model_path = os.path.join(model_dir, "model.compiled")
+    # vk_path = os.path.join(model_dir, "vk.json")
+    # output_file = os.path.join(model_dir, "witness.json")
+    # result = ezkl.generate_witness(input_file=input_file, model_path=model_path, output_file=output_file, vk_path=vk_path)
+    # print(result)

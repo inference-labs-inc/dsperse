@@ -6,7 +6,7 @@ from src.models.doom.model import DoomAgent, Conv1Segment as doomConv1, Conv2Seg
     Conv3Segment as doomConv3, FC1Segment as doomFC1, FC2Segment as doomFC2
 from src.models.net.model import Net, Conv1Segment as netConv1, Conv2Segment as netConv2, FC1Segment as netFC1, \
     FC2Segment as netFC2, FC3Segment as netFC3
-from src.runners.utils.runner_utils import RunnerUtils
+from src.runners.runner_utils import RunnerUtils
 
 env = os.environ
 

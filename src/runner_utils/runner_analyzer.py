@@ -130,13 +130,13 @@ class RunnerAnalyzer:
                 circuit_dir = str(Path(compiled_circuit_path).parent)
 
                 # Use standard naming convention for proof and witness paths
-                proof_path = f"{circuit_dir}/segment_{segment_idx}_proof.json"
-                witness_path = f"{circuit_dir}/segment_{segment_idx}_witness.json"
+                # proof_path = f"{circuit_dir}/segment_{segment_idx}_proof.json"
+                # witness_path = f"{circuit_dir}/segment_{segment_idx}_witness.json"
 
                 slice_metadata.update({
                     "circuit_path": compiled_circuit_path,
-                    "proof_path": proof_path,
-                    "witness_path": witness_path,
+                    # "proof_path": proof_path,
+                    # "witness_path": witness_path,
                     "settings_path": settings_path
                 })
 

@@ -8,9 +8,9 @@ based on the model type.
 
 import os
 import logging
-from typing import Optional, List
+from typing import Optional
 
-from src.slicer_utils.onnx_slicer import OnnxSlicer
+from src.utils.slicer_utils.onnx_slicer import OnnxSlicer
 # Import ModelSlicer for future use
 # from src.slicers.model_slicer import ModelSlicer
 

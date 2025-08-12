@@ -1,7 +1,7 @@
 import os.path
 import onnx
 import logging
-from src.utils.onnx_analyzer import OnnxAnalyzer
+from src.analyzers.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
 from src.utils.utils import Utils
 from onnx.utils import extract_model

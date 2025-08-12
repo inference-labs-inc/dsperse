@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import enum
 
-from src.utils.model_analyzer import ModelAnalyzer
 from src.utils.model_utils import ModelUtils
 
 

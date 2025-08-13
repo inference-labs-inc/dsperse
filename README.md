@@ -1,11 +1,11 @@
 # Kubz: Distributed zkML
 
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/inferencelabs/kubz)
-[![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289DA?style=flat-square&logo=discord)](https://discord.gg/inferencelabs)
-[![Telegram](https://img.shields.io/badge/Telegram-Join%20Channel-0088cc?style=flat-square&logo=telegram)](https://t.me/inferencelabs)
-[![Twitter](https://img.shields.io/badge/Twitter-Follow%20Us-1DA1F2?style=flat-square&logo=twitter)](https://twitter.com/inferencelabs)
-[![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.io)
-[![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](https://inferencelabs.io/whitepaper)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289DA?style=flat-square&logo=discord)](https://discord.gg/7UDh8zqv)
+[![Telegram](https://img.shields.io/badge/Telegram-Join%20Channel-0088cc?style=flat-square&logo=telegram)](https://t.me/inference_labs)
+[![Twitter](https://img.shields.io/badge/Twitter-Follow%20Us-1DA1F2?style=flat-square&logo=twitter)](https://x.com/inference_labs)
+[![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.com)
+[![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](http://arxiv.org/abs/2508.06972)
 
 Kubz is a toolkit for slicing, analyzing, and running neural network models. It supports both PyTorch models and ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
@@ -27,240 +27,167 @@ For more detailed information about the project, please refer to the following d
 
 ## Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/inference-labs-inc/kubz.git
-   cd kubz
-   ```
-
-2. Create a virtual environment (optional but recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Install the CLI:
-   ```bash
-   pip install -e .
-   ```
-
-   This installs the `kubz` command-line tool, which you can use from anywhere on your system.
-
-## Usage Examples
-
-### Slicing a PyTorch Model
-
-```python
-from src.model_slicer import ModelSlicer
-
-# Initialize the model slicer with the directory containing your model
-model_slicer = ModelSlicer(model_directory="models/net")
-
-# Slice the model (creates slices in the model directory by default)
-model_slicer.slice_model()
-
-# You can also specify an output directory
-model_slicer.slice_model(
-    output_dir="custom_output_dir",
-    input_file="path/to/input.json"  # Sample input for analysis
-)
-```
-
-### Slicing an ONNX Model
-
-```python
-from src.onnx_slicer import OnnxSlicer
-
-# Initialize the ONNX slicer with the path to your ONNX model
-onnx_slicer = OnnxSlicer("models/yolov3/model.onnx")
-
-# Slice the model
-onnx_slicer.slice_model()
-```
-
-### Running Inference on a Sliced PyTorch Model
-
-```python
-from src.runners.model_runner import ModelRunner
-
-# Initialize the model runner with the model directory
-model_runner = ModelRunner(model_directory="models/net")
-
-# Run inference on the full model
-result = model_runner.infer()
-print(result)
-
-# Run inference on the sliced model
-result = model_runner.infer(mode="sliced")
-print(result)
-```
-
-### Running Inference on a Sliced ONNX Model
-
-```python
-from src.runners.onnx_runner import OnnxRunner
-
-# Initialize the ONNX runner with the model directory
-onnx_runner = OnnxRunner(model_directory="models/yolov3")
-
-# Run inference on the full model
-result = onnx_runner.infer()
-print(result)
-
-# Run inference on the sliced model
-result = onnx_runner.infer(mode="sliced")
-print(result)
-```
-
-### Zero-Knowledge Proofs for Models
-
-Kubz supports generating zero-knowledge proofs for neural network models using the ezkl library. You can run proofs on either whole models or sliced models:
-
-You can also use the CLI interface for various operations:
-
-### Command Line Interface (CLI)
-
-Kubz provides a powerful command-line interface for model slicing, inference, and zero-knowledge proof operations.
-
-#### Basic Usage
-
-```bash
-kubz [command] [options]
-```
-
-Available commands:
-- `slice`: Slice a model into segments
-- `run`: Run inference on a model
-- `prove`: Generate a proof for a model
-- `verify`: Verify a proof for a model
-- `circuitize`: Circuitize a model or slices
-
-#### Slicing Models
-
-```bash
-# Slice a PyTorch model
-kubz slice --model-dir models/net
-
-# Slice a PyTorch model with a specific output directory
-kubz slice --model-dir models/net --output-dir custom_slices
-
-# Slice a model with a specific input file
-kubz slice --model-dir models/net --input-file custom_input.json
-```
-
-#### Running Inference
-
-```bash
-# Run inference on a whole model (default)
-kubz run --model-dir models/net
-
-# Run inference on a sliced model
-kubz run --model-dir models/net --sliced
-
-# Run inference with a specific input file and save results
-kubz run --model-dir models/net --input-file input.json --output-file results.json
-
-# Run inference 
-kubz run --model-dir models/net
-
-```
-
-#### Generating Proofs
-
-```bash
-# Generate a proof for a whole model 
-kubz prove --model-dir models/net
-
-# Generate a proof for a sliced model 
-kubz prove --model-dir models/net --sliced
-
-```
-
-#### Verifying Proofs
-
-```bash
-# Verify a proof for a whole model
-kubz verify --model-dir models/net
-
-```
-
-#### Circuitizing Models
-
-```bash
-# Circuitize a single ONNX model
-kubz circuitize --model-path models/my_model.onnx
-
-# Circuitize sliced model with custom input file
-kubz circuitize --model-path models/my_model/slices --input-file models/my_model/input.json
-```
-
-#### Getting Help
-
-```bash
-# Show general help
-kubz --help
-
-# Show help for a specific command
-kubz slice --help
-kubz circuitize --help
-kubz run --help
-kubz prove --help
-kubz verify --help
-```
-
-#### Easter Eggs
-
-The CLI includes some fun easter eggs! Try running:
-
-```bash
-kubz --easter-egg
-```
-
-Or just run any command - you might get lucky and see an easter egg 20% of the time!
-
-## Project Structure
-
-- `src/`: Main source code
-  - `model_slicer.py`: Slices PyTorch models
-  - `onnx_slicer.py`: Slices ONNX models
-  - `runners/`: Code for running inference on models
-    - `model_runner.py`: Runs inference on PyTorch models
-    - `onnx_runner.py`: Runs inference on ONNX models
-  - `utils/`: Utility functions
-  - `models/`: Example models
-- `cli/`: Command-line interface modules
-  - `base.py`: Common CLI utilities and classes
-  - `slice.py`: CLI module for slicing models
-  - `circuitize.py`: CLI module for circuitizing models
-  - `run.py`: CLI module for running inference
-  - `prove.py`: CLI module for generating proofs
-  - `verify.py`: CLI module for verifying proofs
-- `main.py`: Main entry point for the CLI
-- `requirements.txt`: Project dependencies
-
-## Advanced Usage
-
-
-### Working with Model Metadata
-
-After slicing a model, metadata is saved in a JSON file that contains information about each segment, including:
-
-- Layer types
-- Input/output shapes
-- Dependencies between segments
-- Paths to saved segment files
-
-You can use this metadata to understand the model structure or to implement custom inference pipelines.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
+Preferred: one-step installer script
+
+- Unix/macOS:
+  - Make sure you have Python 3.9+ available (and optionally a virtualenv activated).
+  - From the repo root:
+    - ./install.sh
+  - The script will:
+    - Install the Kubz CLI in editable mode so the kubz command is available
+    - Install EZKL (prompting for cargo or pip method if needed)
+    - Check EZKL SRS files (~/.ezkl/srs). It will offer to download them interactively (downloads can take a while) because having them locally speeds up circuitization/proving.
+
+Non-interactive/CI-friendly:
+- ./install.sh -n
+
+Manual install
+
+If you prefer to install manually or are on Windows:
+
+1) Create and activate a virtual environment (optional but recommended)
+- python -m venv venv
+- source venv/bin/activate  # Windows: venv\Scripts\activate
+
+2) Install the Kubz CLI
+- pip install -e .
+- This exposes the kubz command.
+
+3) Install EZKL CLI
+- Recommended via cargo (requires Rust):
+  - cargo install --locked ezkl
+  - Ensure $HOME/.cargo/bin is on your PATH
+- Alternative via pip:
+  - pip install -U ezkl
+  - Note: CLI availability may vary by platform with the pip package. Verify with: ezkl --version
+
+4) (Optional but recommended) Download EZKL SRS files
+- SRS files are stored at ~/.ezkl/srs (kzg<N>.srs). They are needed for circuit setup/proving and downloading them ahead of time speeds things up.
+- Example manual command to fetch one size:
+  - ezkl get-srs --logrows 20 --commitment kzg
+- Repeat for other logrows you need (commonly 2..21).
+
+Quickstart workflow
+
+Below is an end-to-end walkthrough using the kubz CLI. You can try it with the example model under src/models/net.
+
+1) Slice the model
+- You can provide either the model.onnx file or the model directory containing it.
+- Common examples:
+  - kubz slice --model-dir src/models/net
+  - kubz slice --model-dir src/models/net/model.onnx
+- Choose output directory (default: src/models/net/slices):
+  - kubz slice --model-dir src/models/net --output-dir src/models/net/slices
+- Optionally save analysis metadata to a file:
+  - Use --save-file to write analysis metadata (default path if flag is given without value is model_dir/analysis/model_metadata.json)
+  - kubz slice --model-dir src/models/net --save-file
+  - kubz slice --model-dir src/models/net --save-file src/models/net/analysis/model_metadata.json
+
+What happens:
+- Slices are written to src/models/net/slices/segment_<i>/segment_<i>.onnx
+- A slices metadata.json is created at src/models/net/slices/metadata.json
+
+2) Circuitize with EZKL
+- Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
+  - Whole model:
+    - kubz circuitize --model-path src/models/net/model.onnx
+  - Sliced model directory (auto-detects slices metadata):
+    - kubz circuitize --model-path src/models/net
+- Optional calibration input to improve settings:
+  - kubz circuitize --model-path src/models/net --input-file src/models/net/input.json
+- Optional layer selection (sliced models only):
+  - kubz circuitize --model-path src/models/net --layers 2,3,4
+  - kubz circuitize --model-path src/models/net --layers 0-2
+
+What happens:
+- For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
+- Circuit artifacts are saved under each segment: src/models/net/slices/segment_<i>/ezkl_circuitization/
+  - segment_i_settings.json, segment_i_model.compiled, segment_i_vk.key, segment_i_pk.key
+- Slices metadata is updated with ezkl_circuitization info per segment
+
+Note on missing slices:
+- If you pass a model directory without slices metadata present, the CLI will prompt you to slice first.
+
+3) Run inference
+- Runs a chained execution over the slices using EZKL where available and falling back to ONNX per-segment on failure.
+- Common examples:
+  - kubz run --model-dir src/models/net
+  - kubz run --model-dir src/models/net/slices  # you can point to slices directly
+- You will be prompted for an input file if not provided (default: model_dir/input.json).
+- To save the final output:
+  - kubz run --model-dir src/models/net --input-file src/models/net/input.json --output-file src/models/net/output.json
+
+What happens:
+- A run metadata file is auto-generated at src/models/net/run/metadata.json if missing
+- A timestamped run directory is created: src/models/net/run/run_YYYYMMDD_HHMMSS/
+- Segment-by-segment inputs/outputs are saved under that run directory
+- A run_result.json is written summarizing the chain execution
+
+4) Generate proofs
+- Proves the segments that successfully produced EZKL witnesses in the selected run.
+- Typical usage:
+  - kubz prove --model-dir src/models/net
+  - You will be prompted to choose among existing runs under src/models/net/run/
+- Alternatively, specify a run directly:
+  - kubz prove --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+- Optionally save the updated run results to a separate file:
+  - kubz prove --model-dir src/models/net --output-file src/models/net/proof_results.json
+
+What happens:
+- For each segment with a successful EZKL witness, the CLI calls ezkl prove
+- Proof files are stored under the specific run’s segment folder
+- The run_result.json is updated with proof_execution details
+
+5) Verify proofs
+- Verifies the proofs generated in step 4 against the stored verification keys and settings.
+- Typical usage:
+  - kubz verify --model-dir src/models/net
+  - You will be prompted to choose the run (same as in prove)
+- Or specify a particular run:
+  - kubz verify --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+- Optionally save verification results to a separate file:
+  - kubz verify --model-dir src/models/net --output-file src/models/net/verification_results.json
+
+What happens:
+- For each segment with a proof, the CLI calls ezkl verify
+- The run_result.json is updated with verification_execution details
+- A summary of verified segments is printed
+
+Tips and troubleshooting
+
+- EZKL not found:
+  - Ensure ezkl is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
+- SRS files missing/slow downloads:
+  - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
+- Circuitize says “slice first”:
+  - Run kubz slice --model-dir <model_dir> to produce slices and metadata.json
+- Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
+
+Project structure (updated)
+
+- src/
+  - slicer.py: orchestrator for slicing (uses OnnxSlicer)
+  - circuitizer.py: orchestrator for circuitization (uses EZKL backend pipeline)
+  - runner.py: chained execution across segments (EZKL or ONNX fallback)
+  - backends/
+    - onnx_models.py: ONNX inference utilities
+    - ezkl.py: EZKL CLI bindings and circuitization pipeline
+  - cli/
+    - base.py: shared CLI helpers
+    - slice.py: slice command
+    - circuitize.py: circuitize command
+    - run.py: run command
+    - prove.py: prove command
+    - verify.py: verify command
+  - analyzers/: metadata generation for runs/slices
+  - utils/: common helpers
+- main.py: CLI entry point (kubz)
+- install.sh: installer for CLI, EZKL, and optional SRS
+
+Contributing
+
+Contributions are welcome! Please feel free to open issues and PRs.
+
+License
 
 See the LICENSE file for details.

@@ -202,160 +202,130 @@ class EZKL:
             print(f"Error verifying proof: {e}")
             return False
 
-    def circuitize(self, model_path, input_file=None, layers=None):
+
+    def gen_settings(self, model_path: str, settings_path: str, param_visibility: str = "fixed", input_visibility: str = "public"):
         """
-        Circuitize an ONNX model or slices.
-
-        Args:
-            model_path (str): Path to the ONNX model file or directory containing slices.
-            input_file (str, optional): Path to the input file for calibration.
-            layers (str, optional): String specifying which layers to circuitize (e.g., "3, 20-22").
-                                   If not provided, all layers will be circuitized.
-
-        Raises:
-            ValueError: If the model_path is invalid or doesn't contain required files,
-            FileNotFoundError: If the model_path doesn't exist
-            
-        Returns:
-            str: Path to the directory where circuitization results are saved.
+        Generate EZKL settings.
+        Returns (success: bool, error: str|None)
         """
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Path does not exist: {model_path}")
-            
-        # Parse layers string if provided
-        layer_indices = self._parse_layers(layers)
-        if layer_indices:
-            logger.info(f"Will circuitize only layers with indices: {layer_indices}")
-        else:
-            logger.info("No layers specified, will circuitize all layers")
-
-        # Check if it's a directory with metadata.json
-        if os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or os.path.exists(
-                os.path.join(model_path, "slices", "metadata.json"))):
-            return self._circuitize_slices(model_path, input_file, layer_indices)
-        # Check if it's an ONNX file
-        elif os.path.isfile(model_path) and model_path.endswith('.onnx'):
-            if layer_indices:
-                logger.warning("Layer selection is only supported for sliced models, not single ONNX files.")
-            return self._circuitize_model(model_path, input_file)
-        else:
-            raise ValueError(
-                f"Invalid model path: {model_path}. Must be either a directory containing metadata.json or an .onnx file")
-
-    #
-    # Helper methods for circuitization
-    #
-    
-    def _circuitize_model(self, model_path, input_file_path=None):
-        """
-        Circuitize a whole ONNX model.
-
-        Args:
-            model_path (str): Path to the ONNX model file.
-            input_file_path (str, optional): Path to input data file for calibration.
-            
-        Returns:
-            str: Path to the directory where circuitization results are saved.
-        """
-        # Ensure model_path is a file
-        if not os.path.isfile(model_path):
-            raise ValueError(f"model_path must be a file: {model_path}")
-
-        output_path = os.path.splitext(model_path)[0]
-
-        # Create output directory
-        circuit_folder = os.path.join(os.path.dirname(output_path), "model")
-        os.makedirs(circuit_folder, exist_ok=True)
-
-        # Run the circuitization pipeline
-        self._circuitization_pipeline(model_path, circuit_folder, input_file_path=input_file_path)
-
-        logger.info(f"Circuitization completed. Output saved to {circuit_folder}")
-        return circuit_folder
-
-    def _circuitize_slices(self, dir_path, input_file_path=None, layer_indices=None):
-        """
-        Circuitize ONNX slices found in the provided directory.
-
-        Args:
-            dir_path (str): Path to the directory containing ONNX slices.
-            input_file_path (str, optional): Path to input data file for calibration.
-            layer_indices (list, optional): List of layer indices to circuitize. If None, all layers will be circuitized.
-            
-        Returns:
-            str: Path to the directory where circuitization results are saved.
-        """
-        # Ensure model_path is a directory
-        if not os.path.isdir(dir_path):
-            raise ValueError(f"path must be a directory: {dir_path}")
-
-        # Look for metadata.json in the slices directory
-        metadata_path = os.path.join(dir_path, "metadata.json")
-        if not os.path.exists(metadata_path):
-            # Check for metadata.json in slices subdirectory
-            metadata_path = os.path.join(dir_path, "slices", "metadata.json")
-            if not os.path.exists(metadata_path):
-                raise FileNotFoundError(f"metadata.json not found in {dir_path} or {os.path.join(dir_path, 'slices')}")
-        if not os.path.exists(metadata_path):
-            raise FileNotFoundError(f"metadata.json not found in {dir_path}")
-
-        # Load metadata
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-
-        # Process each segment
-        segments = metadata.get('segments', [])
-        segment_output_path = None
-        circuitized_count = 0
-        skipped_count = 0
-        
-        for idx, segment in enumerate(segments):
-            # Skip this segment if it's not in the specified layer indices
-            if layer_indices is not None and idx not in layer_indices:
-                logger.info(f"Skipping segment {idx} as it's not in the specified layers")
-                skipped_count += 1
-                continue
-                
-            segment_filename = segment.get('filename')
-            if not segment_filename:
-                logger.warning(f"No filename found for segment {idx}")
-                continue
-
-            segment_path = segment.get('path')
-            if not os.path.exists(segment_path):
-                logger.warning(f"Segment file not found: {segment_path}")
-                continue
-
-            # Create output directory for this segment
-            segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
-
-            # Run the circuitization pipeline for this segment and get the circuitization data
-            circuitization_data = self._circuitization_pipeline(
-                segment_path, 
-                segment_output_path,
-                input_file_path=input_file_path,
-                segment_details=segment
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "gen-settings",
+                    "--param-visibility", param_visibility,
+                    "--input-visibility", input_visibility,
+                    "--model", model_path,
+                    "--settings-path", settings_path,
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True,
             )
-            
-            # Add circuitization data to the segment
-            segment['ezkl_circuitization'] = circuitization_data
-            logger.info(f"Added circuitization data to segment {idx}")
-            circuitized_count += 1
+            if process.returncode != 0:
+                return False, process.stderr or "gen-settings failed"
+            return True, None
+        except subprocess.CalledProcessError as e:
+            return False, getattr(e, "stderr", str(e))
 
-            # Save the updated metadata back to the file
-            Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
-            logger.info(f"Updated metadata.json with circuitization data")
+    def calibrate_settings(self, model_path: str, settings_path: str, data_path: str, target: str = None):
+        """
+        Calibrate EZKL settings using provided data.
+        Returns (success: bool, error: str|None)
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(settings_path):
+            raise FileNotFoundError(f"Settings file not found: {settings_path}")
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Calibration data file not found: {data_path}")
+        cmd = [
+            "ezkl",
+            "calibrate-settings",
+            "--model", model_path,
+            "--settings-path", settings_path,
+            "--data", data_path,
+        ]
+        if target:
+            cmd += ["--target", target]
+        try:
+            process = subprocess.run(
+                cmd,
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if process.returncode != 0:
+                return False, process.stderr or "calibrate-settings failed"
+            return True, None
+        except subprocess.CalledProcessError as e:
+            return False, getattr(e, "stderr", str(e))
 
-        if segment_output_path:
-            output_dir = os.path.dirname(segment_output_path)
-        else:
-            output_dir = os.path.dirname(metadata_path)
-            
-        logger.info(f"Circuitization of slices completed. Circuitized {circuitized_count} segments, skipped {skipped_count} segments.")
-        logger.info(f"Output saved to {output_dir}")
-        return output_dir
+    def compile_circuit(self, model_path: str, settings_path: str, compiled_path: str):
+        """
+        Compile EZKL circuit.
+        Returns (success: bool, error: str|None)
+        """
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(settings_path):
+            raise FileNotFoundError(f"Settings file not found: {settings_path}")
+        os.makedirs(os.path.dirname(compiled_path) or ".", exist_ok=True)
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "compile-circuit",
+                    "--model", model_path,
+                    "--settings-path", settings_path,
+                    "--compiled-circuit", compiled_path,
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if process.returncode != 0:
+                return False, process.stderr or "compile-circuit failed"
+            return True, None
+        except subprocess.CalledProcessError as e:
+            return False, getattr(e, "stderr", str(e))
 
-    def _circuitization_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
+    def setup(self, compiled_path: str, vk_path: str, pk_path: str):
+        """
+        Generate proving and verification keys (setup).
+        Returns (success: bool, error: str|None)
+        """
+        if not os.path.exists(compiled_path):
+            raise FileNotFoundError(f"Compiled circuit file not found: {compiled_path}")
+        os.makedirs(os.path.dirname(vk_path) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(pk_path) or ".", exist_ok=True)
+        try:
+            process = subprocess.run(
+                [
+                    "ezkl",
+                    "setup",
+                    "--compiled-circuit", compiled_path,
+                    "--vk-path", vk_path,
+                    "--pk-path", pk_path,
+                ],
+                env=self.env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            if process.returncode != 0:
+                return False, process.stderr or "setup failed"
+            return True, None
+        except subprocess.CalledProcessError as e:
+            return False, getattr(e, "stderr", str(e))
+
+    def circuitization_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
         """
         Run the EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
 
@@ -395,74 +365,31 @@ class EZKL:
         try:
             # Step 1: Generate settings
             logger.info(f"Generating settings for {model_name}")
-            process = subprocess.run(
-                [
-                    "ezkl",
-                    "gen-settings",
-                    "--param-visibility", "fixed",
-                    "--input-visibility", "public",
-                    "--model", model_path,
-                    "--settings-path", settings_path
-                ],
-                env=self.env,
-                check=True
-            )
-            
-            if process.returncode != 0:
+            ok, err = self.gen_settings(model_path=model_path, settings_path=settings_path)
+            if not ok:
                 logger.warning("Failed to generate settings")
-                circuitization_data["gen-settings_error"] = f"Failed to generate settings with EZKL with message {process.stderr}, {process.stderr}"
+                circuitization_data["gen-settings_error"] = err
 
-            # Step 2: Create calibration data if input_file_path is provided
+            # Step 2/3: Calibrate settings
             if input_file_path and os.path.exists(input_file_path):
-                # Step 3: Calibrate settings
                 logger.info(f"Calibrating settings using {input_file_path}")
-                process = subprocess.run(
-                    [
-                        "ezkl",
-                        "calibrate-settings",
-                        "--model", model_path,
-                        "--settings-path", settings_path,
-                        "--data", input_file_path,
-                        "--target", "accuracy"
-                    ],
-                    env=self.env,
-                    check=True
-                )
+                ok, err = self.calibrate_settings(model_path=model_path, settings_path=settings_path, data_path=input_file_path, target="accuracy")
                 circuitization_data["calibration"] = input_file_path
-                if process.returncode != 0:
+                if not ok:
                     logger.warning("Failed to calibrate settings")
-                    circuitization_data[
-                        "calibrate-settings_error"] = f"Failed to calibrate settings with EZKL with message {process.stderr}, {process.stderr}"
-
+                    circuitization_data["calibrate-settings_error"] = err
             else:
-                # If no input file, try to analyze the model to create a dummy calibration
+                # If no input file, create dummy calibration
                 try:
                     logger.info("No input file provided, creating dummy calibration data")
-                    # Load the ONNX model
                     onnx_model = onnx.load(model_path)
-
-                    # Create a dummy calibration file
                     calibration_path = os.path.join(output_path, f"{model_name}_calibration.json")
                     self._create_dummy_calibration(onnx_model, calibration_path, segment_details)
                     circuitization_data["calibration"] = calibration_path
-
-                    # Calibrate settings with the dummy data
-                    process = subprocess.run(
-                        [
-                            "ezkl",
-                            "calibrate-settings",
-                            "--model", model_path,
-                            "--settings-path", settings_path,
-                            "--data", calibration_path
-                        ],
-                        env=self.env,
-                        check=True
-                    )
-                    if process.returncode != 0:
+                    ok, err = self.calibrate_settings(model_path=model_path, settings_path=settings_path, data_path=calibration_path)
+                    if not ok:
                         logger.warning("Failed to calibrate settings")
-                        circuitization_data[
-                            "calibrate-settings_error"] = f"Failed to calibrate settings with EZKL with message {process.stderr}, {process.stderr}"
-
+                        circuitization_data["calibrate-settings_error"] = err
                 except Exception as e:
                     error_msg = f"Failed to create dummy calibration: {e}"
                     logger.warning(error_msg)
@@ -471,48 +398,23 @@ class EZKL:
 
             # Step 4: Compile circuit
             logger.info(f"Compiling circuit for {model_path}")
-            process = subprocess.run(
-                [
-                    "ezkl",
-                    "compile-circuit",
-                    "--model", model_path,
-                    "--settings-path", settings_path,
-                    "--compiled-circuit", compiled_path
-                ],
-                env=self.env,
-                check=True
-            )
-
-            if process.returncode != 0:
+            ok, err = self.compile_circuit(model_path=model_path, settings_path=settings_path, compiled_path=compiled_path)
+            if not ok:
                 logger.warning("Failed to compile circuit")
-                circuitization_data["compile-circuit_error"] = f"Failed to compile circuit with EZKL with message {process.stderr}, {process.stderr}"
-
+                circuitization_data["compile-circuit_error"] = err
 
             # Step 5: Setup (generate verification and proving keys)
             logger.info("Setting up verification and proving keys")
-            process = subprocess.run(
-                [
-                    "ezkl",
-                    "setup",
-                    "--compiled-circuit", compiled_path,
-                    "--vk-path", vk_path,
-                    "--pk-path", pk_path
-                ],
-                env=self.env,
-                check=True
-            )
-
-            if process.returncode != 0:
+            ok, err = self.setup(compiled_path=compiled_path, vk_path=vk_path, pk_path=pk_path)
+            if not ok:
                 logger.warning("Failed to setup (generate keys)")
-                circuitization_data["setup_error"] = f"Failed to generate keys with EZKL with message {process.stderr}, {process.stderr}"
-
+                circuitization_data["setup_error"] = err
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
         
         except Exception as e:
             error_msg = f"Error during circuitization: {str(e)}"
             logger.error(error_msg)
-            # Add error information to the circuitization data
             circuitization_data["error"] = error_msg
         
         return circuitization_data
@@ -600,39 +502,6 @@ class EZKL:
             logger.error(f"Failed to create dummy calibration file: {str(e)}")
             raise
 
-    def _parse_layers(self, layers_str):
-        """
-        Parse a layers string into a list of layer indices.
-        
-        Args:
-            layers_str (str): String specifying which layers to circuitize (e.g., "3, 20-22")
-            
-        Returns:
-            list: List of layer indices to circuitize
-        """
-        if not layers_str:
-            return None
-            
-        layer_indices = []
-        # Split by comma and process each part
-        parts = [p.strip() for p in layers_str.split(',')]
-        
-        for part in parts:
-            if '-' in part:
-                # Handle range (e.g., "20-22")
-                try:
-                    start, end = map(int, part.split('-'))
-                    layer_indices.extend(range(start, end + 1))
-                except ValueError:
-                    logger.warning(f"Invalid layer range: {part}. Skipping.")
-            else:
-                # Handle single number
-                try:
-                    layer_indices.append(int(part))
-                except ValueError:
-                    logger.warning(f"Invalid layer index: {part}. Skipping.")
-                    
-        return sorted(set(layer_indices))  # Remove duplicates and sort
 
     @staticmethod
     def process_witness_output(witness_data):

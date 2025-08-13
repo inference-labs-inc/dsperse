@@ -128,8 +128,25 @@ def circuitize_model(args):
     if not check_model_dir(args.model_path):
         return
 
-    # Initialize the Circuitizer
+    # If a directory was provided, ensure it has slices metadata. Otherwise, guide user to slice first.
     try:
+        if os.path.isdir(args.model_path):
+            has_metadata = (
+                os.path.exists(os.path.join(args.model_path, "metadata.json")) or
+                os.path.exists(os.path.join(args.model_path, "slices", "metadata.json"))
+            )
+            has_onnx = os.path.exists(os.path.join(args.model_path, "model.onnx"))
+            if not has_metadata and has_onnx:
+                msg = (
+                    "It looks like you provided a model directory without slices. "
+                    "Please slice the model first before circuitizing slices.\n"
+                    f"Try: kubz slice --model-path {args.model_path} or \n"
+                    f"     kubz slice --model-path {os.path.join(args.model_path, 'model.onnx')}"
+                )
+                print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
+                logger.error("Circuitize requires slices metadata. Prompted user to run slice first.")
+                return
+        # Initialize the Circuitizer
         circuitizer = Circuitizer.create(args.model_path)
         logger.info(f"Circuitizer initialized successfully")
     except RuntimeError as e:

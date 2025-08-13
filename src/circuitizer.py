@@ -7,10 +7,12 @@ based on the model type.
 """
 
 import os
+import json
 import logging
 from typing import Optional, Dict, Any
 
 from src.backends.ezkl import EZKL
+from src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 
@@ -80,20 +82,116 @@ class Circuitizer:
         
     def circuitize(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None) -> Dict[str, Any]:
         """
-        Circuitize the model using the appropriate circuitizer implementation.
+        Circuitize the model, deciding between whole-model or sliced-model circuitization.
         
         Args:
-            model_path: Path to the model file or directory
+            model_path: Path to the ONNX model file or a directory containing slices/metadata
             input_file: Optional path to input file for calibration
-            layers: Optional string specifying which layers to circuitize (e.g., "3, 20-22")
+            layers: Optional string specifying which layers to circuitize (e.g., "3, 20-22").
+                    Only applicable to sliced models.
             
         Returns:
-            The result of the circuitization operation
+            The path to the directory where circuitization results are saved, or metadata updates path for slices.
         """
-        logger.info(f"Circuitizing model: {model_path}")
-        if layers:
-            logger.info(f"Circuitizing specific layers: {layers}")
-        return self.circuitizer_impl.circuitize(model_path=model_path, input_file=input_file, layers=layers)
+        logger.info(f"Circuitizing: {model_path}")
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Path does not exist: {model_path}")
+
+        layer_indices = self._parse_layers(layers) if layers else None
+        if layer_indices:
+            logger.info(f"Will circuitize only layers with indices: {layer_indices}")
+        elif layers:
+            logger.info("No valid layer indices parsed. Will circuitize all layers.")
+
+        if os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or os.path.exists(os.path.join(model_path, "slices", "metadata.json"))):
+            return self._circuitize_slices(model_path, input_file_path=input_file, layer_indices=layer_indices)
+        elif os.path.isfile(model_path) and model_path.lower().endswith('.onnx'):
+            if layer_indices:
+                logger.warning("Layer selection is only supported for sliced models, not single ONNX files.")
+            return self._circuitize_model(model_path, input_file_path=input_file)
+        else:
+            raise ValueError(f"Invalid model path: {model_path}. Must be either a directory containing metadata.json or an .onnx file")
+
+    @staticmethod
+    def _parse_layers(layers_str: Optional[str]):
+        if not layers_str:
+            return None
+        layer_indices = []
+        parts = [p.strip() for p in layers_str.split(',')]
+        for part in parts:
+            if '-' in part:
+                try:
+                    start, end = map(int, part.split('-'))
+                    layer_indices.extend(range(start, end + 1))
+                except ValueError:
+                    logger.warning(f"Invalid layer range: {part}. Skipping.")
+            else:
+                try:
+                    layer_indices.append(int(part))
+                except ValueError:
+                    logger.warning(f"Invalid layer index: {part}. Skipping.")
+        return sorted(set(layer_indices)) if layer_indices else None
+
+    def _circuitize_model(self, model_file_path: str, input_file_path: Optional[str] = None) -> str:
+        if not os.path.isfile(model_file_path):
+            raise ValueError(f"model_path must be a file: {model_file_path}")
+        output_path_root = os.path.splitext(model_file_path)[0]
+        circuit_folder = os.path.join(os.path.dirname(output_path_root), "model")
+        os.makedirs(circuit_folder, exist_ok=True)
+        # Call backend pipeline
+        self.circuitizer_impl.circuitization_pipeline(model_file_path, circuit_folder, input_file_path=input_file_path)
+        logger.info(f"Circuitization completed. Output saved to {circuit_folder}")
+        return circuit_folder
+
+    def _circuitize_slices(self, dir_path: str, input_file_path: Optional[str] = None, layer_indices=None) -> str:
+        if not os.path.isdir(dir_path):
+            raise ValueError(f"path must be a directory: {dir_path}")
+        # Find metadata.json
+        metadata_path = os.path.join(dir_path, "metadata.json")
+        if not os.path.exists(metadata_path):
+            alt = os.path.join(dir_path, "slices", "metadata.json")
+            if os.path.exists(alt):
+                metadata_path = alt
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"metadata.json not found in {dir_path} or its slices subdirectory")
+
+        # Load metadata
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        segments = metadata.get('segments', [])
+        segment_output_path = None
+        circuitized_count = 0
+        skipped_count = 0
+
+        for idx, segment in enumerate(segments):
+            if layer_indices is not None and idx not in layer_indices:
+                logger.info(f"Skipping segment {idx} as it's not in the specified layers")
+                skipped_count += 1
+                continue
+            segment_path = segment.get('path')
+            if not segment_path or not os.path.exists(segment_path):
+                logger.warning(f"Segment file not found for index {idx}: {segment_path}")
+                continue
+            segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
+            # Run pipeline and get data
+            circuitization_data = self.circuitizer_impl.circuitization_pipeline(
+                segment_path,
+                segment_output_path,
+                input_file_path=input_file_path,
+                segment_details=segment
+            )
+            segment['ezkl_circuitization'] = circuitization_data
+            circuitized_count += 1
+            Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
+
+        if segment_output_path:
+            output_dir = os.path.dirname(segment_output_path)
+        else:
+            output_dir = os.path.dirname(metadata_path)
+        logger.info(f"Circuitization of slices completed. Circuitized {circuitized_count} segments, skipped {skipped_count} segments.")
+        logger.info(f"Output saved to {output_dir}")
+        return output_dir
 
 if __name__ == "__main__":
     # Choose which model to test
@@ -109,8 +207,8 @@ if __name__ == "__main__":
     model_dir = abs_path
     slices_dir = os.path.join(abs_path, "slices")
 
-    # Circuitize
+    # Circuitize via orchestrator
     model_path = os.path.abspath(model_dir)
-    EZKL().circuitize(model_path=abs_path)
-
-    # TODO: Intercept ezkl output and display success/fail message
+    circuitizer = Circuitizer.create(model_path=model_path)
+    result_dir = circuitizer.circuitize(model_path=model_path)
+    print(f"Circuitization finished. Output at: {result_dir}")

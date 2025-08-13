@@ -159,8 +159,17 @@ def save_result(result, output_file):
         output_file (str): Path to the output file
     """
     import json
+    from pathlib import Path
+
+    def _default(o):
+        # Safely convert non-serializable objects
+        if isinstance(o, Path):
+            return str(o)
+        # Fallback to string representation
+        return str(o)
+
     with open(output_file, 'w') as f:
-        json.dump(result, f, indent=2)
+        json.dump(result, f, indent=2, default=_default)
     success_msg = f"Results saved to {output_file}"
     print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
     logger.info(success_msg)

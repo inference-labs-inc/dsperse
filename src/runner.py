@@ -71,18 +71,23 @@ class Runner:
             current_slice_metadata = self.metadata["slices"][current_slice_id]
             # Execute segment based on circuit availability
             if slice_node.get("use_circuit"):
-                success, tensor, execution_info = self._run_ezkl_segment(
+                success, tensor, ezkl_exec_info = self._run_ezkl_segment(
                     current_slice_metadata, input_file, output_file
                 )
-                slice_results[current_slice_id] = execution_info
+                slice_results[current_slice_id] = ezkl_exec_info
 
                 if not success:
-                    success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
-                    slice_results[current_slice_id] = execution_info
-                    slice_results[current_slice_id]["method"] = "ezkl_fallback_onnx"
+                    ezkl_error = ezkl_exec_info.get("error")
+                    success, tensor, onnx_exec_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                    # mark as fallback and that EZKL was attempted
+                    onnx_exec_info["method"] = "ezkl_fallback_onnx"
+                    onnx_exec_info["attempted_ezkl"] = True
+                    if ezkl_error and not onnx_exec_info.get("error"):
+                        onnx_exec_info["error"] = ezkl_error
+                    slice_results[current_slice_id] = onnx_exec_info
 
                     if not success:
-                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + execution_info.get("error", "Unknown error. Check logs for details."))
+                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
 
             else:
                 success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
@@ -120,7 +125,7 @@ class Runner:
         success, result =  OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
 
         end_time = time.time()
-        exec_info = {'success': success, 'method': 'onnx_only', 'execution_time': end_time - start_time, 'output_tensor_path': output_tensor_path}
+        exec_info = {'success': success, 'method': 'onnx_only', 'execution_time': end_time - start_time, 'output_tensor_path': str(output_tensor_path)}
 
         if success:
             exec_info['input_file'] = str(input_tensor_path.resolve())
@@ -137,11 +142,14 @@ class Runner:
         success, output_tensor = self.ezkl_runner.generate_witness(input_file=input_tensor_path, model_path=model_path, output_file=output_witness_path, vk_path=vk_path)
 
         end_time = time.time()
-        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time, 'witness_path': output_witness_path}
+        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time, 'witness_path': str(output_witness_path), 'attempted_ezkl': True}
 
         if success:
             exec_info['input_file'] = str(input_tensor_path.resolve())
             exec_info['output_file'] = str(output_witness_path.resolve())
+        else:
+            # When EZKL fails, output_tensor contains the error string per EZKL.generate_witness
+            exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
 
         return success, output_tensor, exec_info
     
@@ -167,6 +175,9 @@ class Runner:
                 "input_file": exec_info.get("input_file", "unknown"),
                 "output_file": exec_info.get("output_file", "unknown"),
             }
+            # Propagate error message if present (e.g., EZKL failure reason before fallback)
+            if "error" in exec_info and exec_info["error"]:
+                witness_execution["error"] = exec_info["error"]
             
             # Create result_entry with segment_id and witness_execution
             result_entry = {

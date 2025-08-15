@@ -56,6 +56,12 @@ class EZKL:
         Returns:
             tuple: (success, output) where success is a boolean and output is the processed witness output
         """
+        # Normalize possible Path-like arguments to strings for subprocess and logging clarity
+        input_file = str(input_file)
+        model_path = str(model_path)
+        output_file = str(output_file)
+        vk_path = str(vk_path)
+
         # Validate required files exist
         if not os.path.exists(input_file):
             raise FileNotFoundError(f"Input file not found: {input_file}")
@@ -116,6 +122,12 @@ class EZKL:
         Returns:
             tuple: (success, results) where success is a boolean and results is the path to the proof
         """
+        # Normalize path-like args
+        witness_path = str(witness_path)
+        model_path = str(model_path)
+        proof_path = str(proof_path)
+        pk_path = str(pk_path)
+
         # Validate required files exist
         if not os.path.exists(witness_path):
             raise FileNotFoundError(f"Witness file not found: {witness_path}")
@@ -169,6 +181,11 @@ class EZKL:
         Returns:
             bool: True if verification succeeded, False otherwise
         """
+        # Normalize path-like args
+        proof_path = str(proof_path)
+        settings_path = str(settings_path)
+        vk_path = str(vk_path)
+
         # Validate required files exist
         if not os.path.exists(proof_path):
             raise FileNotFoundError(f"Proof file not found: {proof_path}")

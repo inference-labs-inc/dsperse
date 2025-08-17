@@ -111,7 +111,7 @@ if __name__ == "__main__":
 
     try:
         # Initialize slicer via orchestrator (auto-selects ONNX slicer)
-        slicer = Slicer.create(model_path=model_file, save_path=abs_path)
+        slicer = Slicer.create(model_path=model_file, save_path=output_dir)
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")

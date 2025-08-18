@@ -18,7 +18,9 @@ class RunnerAnalyzer:
         Args:
             model_directory: Path to the model directory.
         """
-        self.model_directory = model_directory
+        # Expand and resolve the model directory path
+        self.model_directory = os.path.expanduser(model_directory)
+        # Create absolute paths for slices directory and metadata
         self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
         self.slices_metadata_path = self.slices_dir / "metadata.json"
 

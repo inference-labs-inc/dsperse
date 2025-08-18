@@ -434,8 +434,9 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
-        # Create segment directory path using base output_dir or default path
-        segment_dir = os.path.join(output_dir if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices"), f"segment_{segment_idx}")
+        # Always create segments in a "slices" directory
+        base_dir = output_dir if output_dir else os.path.dirname(self.onnx_path)
+        segment_dir = os.path.join(base_dir, "slices")
         os.makedirs(segment_dir, exist_ok=True)
         segment_path = os.path.abspath(os.path.join(segment_dir, f"segment_{segment_idx}.onnx"))
 

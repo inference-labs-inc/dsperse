@@ -22,7 +22,11 @@ class RunnerAnalyzer:
         self.model_directory = os.path.expanduser(model_directory)
         # Create absolute paths for slices directory and metadata
         self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
-        self.slices_metadata_path = self.slices_dir / "metadata.json"
+        # metadata.json is in the parent directory of slices
+        if os.path.exists(os.path.join(model_directory, "metadata.json")):
+            self.slices_metadata_path = Path(model_directory) / "metadata.json"
+        else:
+            self.slices_metadata_path = Path(model_directory) / "slices" / "metadata.json"
 
         self.size_limit = 100 * 1024 * 1024  # 100MB
 

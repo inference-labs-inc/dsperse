@@ -80,7 +80,7 @@ def run_inference(args):
         )
         or (
             args.slices_dir
-            and os.path.exists(os.path.join(args.slices_dir, "metadata.json"))
+            and os.path.exists(os.path.join(os.path.dirname(args.slices_dir.rstrip("/")), "metadata.json"))
         )
     )
 
@@ -88,7 +88,6 @@ def run_inference(args):
     if is_slices_dir:
         # User provided a slices directory
         slices_dir = args.model_dir if args.model_dir else args.slices_dir
-
         # If metadata.json exists in the current directory, use it as both model_dir and slices_dir
         if os.path.exists(os.path.join(slices_dir, "metadata.json")):
             args.model_dir = slices_dir
@@ -173,7 +172,7 @@ def run_inference(args):
             metadata_path=metadata_path,
             run_metadata_path=run_metadata_path,
         )
-        result = runner.run(args.input_file)
+        result = runner.run(os.path.expanduser(args.input_file)) #Expand user path
         elapsed_time = time.time() - start_time
 
         print(

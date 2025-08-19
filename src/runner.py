@@ -300,7 +300,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -313,9 +313,11 @@ if __name__ == "__main__":
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
     input_json = os.path.join(abs_path, "input.json")
+    run_metadata_path = os.path.join(abs_path, "run", "metadata.json") if os.path.exists(
+        os.path.join(abs_path, "run", "metadata.json")) else None
 
     # Initialize runner (auto-generates run metadata if needed)
-    runner = Runner(model_path=abs_path, slices_path=slices_dir)
+    runner = Runner(model_path=abs_path, slices_path=slices_dir, run_metadata_path=run_metadata_path)
 
     # Run inference
     print(f"Running inference on model {base_paths[model_choice]}...")

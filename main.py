@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Kubz CLI - A command-line interface for the Kubz neural network model slicing and analysis toolkit.
+Dsperse CLI - A command-line interface for the Dsperse neural network model slicing and analysis toolkit.
 
 This CLI allows you to slice models and run verified inference on sliced models, with the runner
 automatically determining the appropriate backend (EZKL or ONNX) for each slice.
@@ -13,7 +13,7 @@ from colorama import Fore, Style
 
 # Import CLI modules
 from src.cli import (
-    KubzArgumentParser, print_header, print_easter_egg, configure_logging, logger,
+    DsperseArgumentParser, print_header, print_easter_egg, configure_logging, logger,
     setup_slice_parser, slice_model,
     setup_run_parser, run_inference,
     setup_prove_parser, run_proof,
@@ -22,16 +22,16 @@ from src.cli import (
 )
 
 def main():
-    """Main entry point for the Kubz CLI."""
+    """Main entry point for the Dsperse CLI."""
     # Create the main parser
-    parser = KubzArgumentParser(
-        description="Kubz - Distributed zkML Toolkit",
+    parser = DsperseArgumentParser(
+        description="Dsperse - Distributed zkML Toolkit",
         formatter_class=sys.modules['argparse'].RawDescriptionHelpFormatter,
         epilog=f"Made with {Fore.RED}❤️{Style.RESET_ALL}  by the Inference Labs team"
     )
 
     # Add version argument
-    parser.add_argument('--version', action='version', version='Kubz CLI v1.0.0')
+    parser.add_argument('--version', action='version', version='Dsperse CLI v1.0.0')
 
     # Add logging level argument
     parser.add_argument('--log-level', 

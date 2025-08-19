@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install.sh - Installer for Kubz CLI and EZKL (with lookup tables)
+# install.sh - Installer for Dsperse CLI and EZKL (with lookup tables)
 # This script installs:
-#   - Kubz CLI (python package, console script: kubz)
+#   - Dsperse CLI (python package, console script: dsperse)
 #   - EZKL CLI (if missing)
 #   - EZKL lookup tables (if missing)
 # It detects existing installations and will skip or prompt accordingly.
@@ -17,12 +17,12 @@ print_usage() {
   cat <<EOF
 Usage: $0 [OPTIONS]
 
-Install Kubz CLI and EZKL dependencies.
+Install Dsperse CLI and EZKL dependencies.
 
 Options:
   -h, --help              Show this help and exit
   -n, --non-interactive   Run without prompts (best-effort automatic install)
-  -f, --force             Force reinstall Kubz package with pip
+  -f, --force             Force reinstall Dsperse package with pip
 
 Examples:
   $0                      Run interactively with prompts
@@ -80,28 +80,28 @@ resolve_pip() {
   fi
 }
 
-# Install Kubz CLI via pip
-install_kubz_cli() {
-  info "Installing Kubz CLI (pip editable install) ..."
+# Install Dsperse CLI via pip
+install_dsperse_cli() {
+  info "Installing Dsperse CLI (pip editable install) ..."
   if [[ "$FORCE_REINSTALL" == true ]]; then
     eval $PIP_BIN install -e .
   else
-    # Try to detect if kubz is already available
-    if command -v kubz >/dev/null 2>&1; then
-      info "Kubz CLI already installed: $(command -v kubz)"
-      if [[ "$INTERACTIVE" == true ]] && confirm "Reinstall/upgrade Kubz CLI?"; then
+    # Try to detect if dsperse is already available
+    if command -v dsperse >/dev/null 2>&1; then
+      info "Dsperse CLI already installed: $(command -v dsperse)"
+      if [[ "$INTERACTIVE" == true ]] && confirm "Reinstall/upgrade Dsperse CLI?"; then
         eval $PIP_BIN install -e .
       else
-        info "Skipping Kubz CLI install."
+        info "Skipping Dsperse CLI install."
       fi
     else
       eval $PIP_BIN install -e .
     fi
   fi
-  if command -v kubz >/dev/null 2>&1; then
-    info "✓ Kubz CLI installed: $(command -v kubz)"
+  if command -v dsperse >/dev/null 2>&1; then
+    info "✓ Dsperse CLI installed: $(command -v dsperse)"
   else
-    warn "Kubz CLI not found on PATH yet. It may appear after you restart your shell or activate your venv."
+    warn "Dsperse CLI not found on PATH yet. It may appear after you restart your shell or activate your venv."
   fi
 }
 
@@ -199,7 +199,7 @@ ensure_srs() {
   fi
   local SRS_DIR="$HOME/.ezkl/srs"
   local MIN_LOGROWS=${MIN_LOGROWS:-2}
-  local MAX_LOGROWS=${MAX_LOGROWS:-21}
+  local MAX_LOGROWS=${MAX_LOGROWS:-24}
   mkdir -p "$SRS_DIR"
 
   info "Checking EZKL SRS files in $SRS_DIR (kzg, logrows ${MIN_LOGROWS}-${MAX_LOGROWS}) ..."
@@ -248,14 +248,14 @@ ensure_srs() {
 }
 
 main() {
-  info "Installing dependencies for Kubz ..."
+  info "Installing dependencies for Dsperse ..."
   resolve_pip
 
   # Display python and pip info
   eval $PIP_BIN --version || true
 
-  # Install Kubz CLI
-  install_kubz_cli
+  # Install Dsperse CLI
+  install_dsperse_cli
 
   # Ensure EZKL
   ensure_ezkl
@@ -267,10 +267,10 @@ main() {
   install_lookup_tables
 
   say ""
-  if command -v kubz >/dev/null 2>&1; then
-    info "You can now run the Kubz CLI: kubz --help"
+  if command -v dsperse >/dev/null 2>&1; then
+    info "You can now run the Dsperse CLI: dsperse --help"
   else
-    warn "kubz command not yet available on PATH. Try restarting your shell or activating your virtualenv."
+    warn "dsperse command not yet available on PATH. Try restarting your shell or activating your virtualenv."
   fi
 
   if command -v ezkl >/dev/null 2>&1; then

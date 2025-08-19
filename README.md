@@ -1,15 +1,13 @@
-# Kubz: Distributed zkML
+# Dsperse: Distributed zkML
 
-[![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/inference-labs-inc/kubz)
+[![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/inference-labs-inc/dsperse)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289DA?style=flat-square&logo=discord)](https://discord.gg/7UDh8zqv)
 [![Telegram](https://img.shields.io/badge/Telegram-Join%20Channel-0088cc?style=flat-square&logo=telegram)](https://t.me/inference_labs)
 [![Twitter](https://img.shields.io/badge/Twitter-Follow%20Us-1DA1F2?style=flat-square&logo=twitter)](https://x.com/inference_labs)
 [![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.com)
 [![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](http://arxiv.org/abs/2508.06972)
 
-Kubz is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
-
-Note: PyTorch models are not supported at this time. Please convert your model to ONNX to use Kubz.
+Dsperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
 ## Features
 
@@ -37,7 +35,7 @@ Preferred: one-step installer script
 ./install.sh
 ```
   - The script will:
-    - Install the Kubz CLI in editable mode so the kubz command is available
+    - Install the Dsperse CLI in editable mode so the dsperse command is available
     - Install EZKL (prompting for cargo or pip method if needed)
     - Check EZKL SRS files (~/.ezkl/srs). It will offer to download them interactively (downloads can take a while) because having them locally speeds up circuitization/proving.
 
@@ -57,12 +55,12 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 ```
 
-2) Install the Kubz CLI
+2) Install the Dsperse CLI
 
 ```bash
 pip install -e .
 ```
-This exposes the kubz command.
+This exposes the dsperse command.
 
 3) Install EZKL CLI
 
@@ -90,26 +88,26 @@ Repeat for other logrows you need (commonly 2..21).
 
 Quickstart workflow
 
-Below is an end-to-end walkthrough using the kubz CLI. You can try it with the example model under src/models/net.
+Below is an end-to-end walkthrough using the dsperse CLI. You can try it with the example model under src/models/net.
 
 1) Slice the model
 - You can provide either the model.onnx file or the model directory containing it.
 
 Common examples:
 ```bash
-kubz slice --model-dir src/models/net
-kubz slice --model-dir src/models/net/model.onnx
+dsperse slice --model-dir src/models/net
+dsperse slice --model-dir src/models/net/model.onnx
 ```
 
 Choose output directory (default: src/models/net/slices):
 ```bash
-kubz slice --model-dir src/models/net --output-dir src/models/net/slices
+dsperse slice --model-dir src/models/net --output-dir src/models/net/slices
 ```
 
 Optionally save analysis metadata to a file (use --save-file; if flag is given without value, default path is model_dir/analysis/model_metadata.json):
 ```bash
-kubz slice --model-dir src/models/net --save-file
-kubz slice --model-dir src/models/net --save-file src/models/net/analysis/model_metadata.json
+dsperse slice --model-dir src/models/net --save-file
+dsperse slice --model-dir src/models/net --save-file src/models/net/analysis/model_metadata.json
 ```
 
 What happens:
@@ -121,23 +119,23 @@ What happens:
 
 Whole model:
 ```bash
-kubz circuitize --model-path src/models/net/model.onnx
+dsperse circuitize --model-path src/models/net/model.onnx
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-kubz circuitize --model-path src/models/net
+dsperse circuitize --model-path src/models/net
 ```
 
 Optional calibration input to improve settings:
 ```bash
-kubz circuitize --model-path src/models/net --input-file src/models/net/input.json
+dsperse circuitize --model-path src/models/net --input-file src/models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-kubz circuitize --model-path src/models/net --layers 2,3,4
-kubz circuitize --model-path src/models/net --layers 0-2
+dsperse circuitize --model-path src/models/net --layers 2,3,4
+dsperse circuitize --model-path src/models/net --layers 0-2
 ```
 
 What happens:
@@ -154,15 +152,15 @@ Note on missing slices:
 
 Common examples:
 ```bash
-kubz run --model-dir src/models/net
-kubz run --model-dir src/models/net/slices  # you can point to slices directly
+dsperse run --model-dir src/models/net
+dsperse run --model-dir src/models/net/slices  # you can point to slices directly
 ```
 
 You will be prompted for an input file if not provided (default: model_dir/input.json).
 
 To save the final output:
 ```bash
-kubz run --model-dir src/models/net --input-file src/models/net/input.json --output-file src/models/net/output.json
+dsperse run --model-dir src/models/net --input-file src/models/net/input.json --output-file src/models/net/output.json
 ```
 
 What happens:
@@ -176,18 +174,18 @@ What happens:
 
 Typical usage:
 ```bash
-kubz prove --model-dir src/models/net
+dsperse prove --model-dir src/models/net
 # You will be prompted to choose among existing runs under src/models/net/run/
 ```
 
 Alternatively, specify a run directly:
 ```bash
-kubz prove --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+dsperse prove --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
 ```
 
 Optionally save the updated run results to a separate file:
 ```bash
-kubz prove --model-dir src/models/net --output-file src/models/net/proof_results.json
+dsperse prove --model-dir src/models/net --output-file src/models/net/proof_results.json
 ```
 
 What happens:
@@ -200,18 +198,18 @@ What happens:
 
 Typical usage:
 ```bash
-kubz verify --model-dir src/models/net
+dsperse verify --model-dir src/models/net
 # You will be prompted to choose the run (same as in prove)
 ```
 
 Or specify a particular run:
 ```bash
-kubz verify --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+dsperse verify --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
 ```
 
 Optionally save verification results to a separate file:
 ```bash
-kubz verify --model-dir src/models/net --output-file src/models/net/verification_results.json
+dsperse verify --model-dir src/models/net --output-file src/models/net/verification_results.json
 ```
 
 What happens:
@@ -226,7 +224,7 @@ Tips and troubleshooting
 - SRS files missing/slow downloads:
   - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
 - Circuitize says “slice first”:
-  - Run kubz slice --model-dir <model_dir> to produce slices and metadata.json
+  - Run dsperse slice --model-dir <model_dir> to produce slices and metadata.json
 - Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
 
 Project structure (updated)
@@ -247,7 +245,7 @@ Project structure (updated)
     - verify.py: verify command
   - analyzers/: metadata generation for runs/slices
   - utils/: common helpers
-- main.py: CLI entry point (kubz)
+- main.py: CLI entry point (dsperse)
 - install.sh: installer for CLI, EZKL, and optional SRS
 
 Contributing

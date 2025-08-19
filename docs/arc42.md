@@ -1,13 +1,13 @@
-# Kubz: Distributed zkML Architecture Document
+# Dsperse: Distributed zkML Architecture Document
 
-This document outlines the high-level architecture for the "kubz" project—a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing users to break down complex models into smaller segments for detailed analysis, optimization, and verification. The project includes capabilities for distributed zkML proof computation, which splits machine learning models into manageable segments to reduce compute and RAM constraints.
+This document outlines the high-level architecture for the "dsperse" project—a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing users to break down complex models into smaller segments for detailed analysis, optimization, and verification. The project includes capabilities for distributed zkML proof computation, which splits machine learning models into manageable segments to reduce compute and RAM constraints.
 
 ---
 
 ## 1. Introduction and Goals
 
 - **Purpose:**  
-  The kubz project provides a toolkit for slicing, analyzing, and running neural network models. It introduces methods for model segmentation and distributed computation, including zkML proofs, enabling more granular control over compute, RAM usage, and overall efficiency.
+  The dsperse project provides a toolkit for slicing, analyzing, and running neural network models. It introduces methods for model segmentation and distributed computation, including zkML proofs, enabling more granular control over compute, RAM usage, and overall efficiency.
 
 - **Scope:**  
   - Support for ONNX models for slicing and analysis
@@ -46,13 +46,13 @@ This document outlines the high-level architecture for the "kubz" project—a to
 
 ### 3.1. System Scope
 
-- **Kubz** is designed to enable distributed zkML proof computation by splitting a neural network’s weight matrix into vertical layers. 
+- **Dsperse** is designed to enable distributed zkML proof computation by splitting a neural network’s weight matrix into vertical layers. 
 - It is the first implementation aiming for distributed zkML proof generation, targeting use cases where large neural networks require distribution of workload.
 
 ### 3.2. External Interfaces and Context Diagram
 
 - **External Systems:**
-  - **ezkl/Halo 2:** Used for generating circuits and proofs. Kubz will adapt these tools to support vertical layer circuitization.
+  - **ezkl/Halo 2:** Used for generating circuits and proofs. Dsperse will adapt these tools to support vertical layer circuitization.
   - **Bittensor Network:** Provides the infrastructure for miners and validators; handles proof submission, scoring, and incentive distribution.
 
 ---

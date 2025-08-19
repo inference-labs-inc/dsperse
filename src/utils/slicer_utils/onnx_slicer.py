@@ -7,7 +7,7 @@ from src.utils.utils import Utils
 from onnx.utils import extract_model
 
 # Configure logger
-logger = logging.getLogger('kubz.onnx_slicer')
+logger = logging.getLogger(__name__)
 
 
 class OnnxSlicer:

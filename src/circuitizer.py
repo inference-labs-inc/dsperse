@@ -190,12 +190,12 @@ class Circuitizer:
         else:
             output_dir = os.path.dirname(metadata_path)
         logger.info(f"Circuitization of slices completed. Circuitized {circuitized_count} segments, skipped {skipped_count} segments.")
-        logger.info(f"Output saved to {output_dir}")
+        logger.info(f"Output saved to {os.path.dirname(output_dir)}")
         return output_dir
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "models/doom",

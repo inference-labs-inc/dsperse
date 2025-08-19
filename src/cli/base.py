@@ -1,5 +1,5 @@
 """
-Base module for Kubz CLI functionality.
+Base module for Dsperse CLI functionality.
 Contains common utilities and classes used by all CLI commands.
 """
 
@@ -13,7 +13,7 @@ from colorama import Fore, Style
 colorama.init()
 
 # Configure logging
-logger = logging.getLogger('kubz')
+logger = logging.getLogger('dsperse')
 
 def configure_logging(log_level='WARNING'):
     """
@@ -33,7 +33,7 @@ def configure_logging(log_level='WARNING'):
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Set the level for the kubz logger
+    # Set the level for the dsperse logger
     logger.setLevel(numeric_level)
 
 # Easter eggs
@@ -41,34 +41,35 @@ EASTER_EGGS = [
     "Did you know? Neural networks are just spicy linear algebra!",
     "Fun fact: The first neural network was created in 1943 by Warren McCulloch and Walter Pitts.",
     "Pro tip: Always normalize your inputs!",
-    "Kubz fact: Slicing models helps with interpretability and verification.",
+    "Dsperse fact: Slicing models helps with interpretability and verification.",
     "ZK fact: Zero-knowledge proofs allow you to prove you know something without revealing what it is.",
-    "Kubz was named after the idea of 'cubes' of computation in neural networks.",
+    "Dsperse makes it easier to reason about model segments.",
     "The answer to life, the universe, and everything is... 42 (but you need a neural network to understand why).",
     "Neural networks don't actually think. They just do math really fast.",
     "If you're reading this, you're awesome! Keep up the great work!",
-    "Kubz: Making neural networks more transparent, one slice at a time."
+    "Dsperse: Making neural networks more transparent, one slice at a time."
 ]
 
 def print_header():
-    """Print the Kubz CLI header with ASCII art."""
+    """Print the Dsperse CLI header with ASCII art."""
     header = f"""
 {Fore.CYAN}
- ██ ▄█▀ █    ██  ▄▄▄▄   ▒███████▒
- ██▄█▒  ██  ▓██▒▓█████▄ ▒ ▒ ▒ ▄▀░
-▓███▄░ ▓██  ▒██░▒██▒ ▄██░ ▒ ▄▀▒░ 
-▓██ █▄ ▓▓█  ░██░▒██░█▀  ░ ▄▀▒   ░
-▒██▒ █▄▒▒█████▓ ░▓█  ▀█▓▒███████▒
-▒ ▒▒ ▓▒░▒▓▒ ▒ ▒ ░▒▓███▀▒░▒▒ ▓░▒░▒
-░ ░▒ ▒░░░▒░ ░ ░ ▒░▒   ░ ░░▒ ▒ ░ ▒
-░ ░░ ░  ░░░ ░ ░  ░    ░ ░ ░ ░ ░ ░
-░  ░      ░      ░      ░ ░    ░ 
-                       ░        
+8888888b.   .d8888b.                                              
+888  "Y88b d88P  Y88b                                             
+888    888 Y88b.                                                 
+888    888  "Y888b.   88888b.   .d88b.  888d888 .d8888b   .d88b.  
+888    888     "Y88b. 888 "88b d8P  Y8b 888P"   88K      d8P  Y8b 
+888    888       "888 888  888 88888888 888     "Y8888b. 88888888 
+888  .d88P Y88b  d88P 888 d88P Y8b.     888          X88 Y8b.     
+8888888P"   "Y8888P"  88888P"   "Y8888  888      88888P'  "Y8888  
+                      888                                          
+                      888                                          
+                      888                                          
 {Style.RESET_ALL}
 {Fore.YELLOW}Distributed zkML Toolkit{Style.RESET_ALL}
 """
     print(header)  # Keep print for header as it's visual UI element
-    logger.info("Kubz CLI started")
+    logger.info("Dsperse CLI started")
 
 def print_easter_egg():
     """Print a random easter egg."""
@@ -77,7 +78,7 @@ def print_easter_egg():
     logger.debug(f"Easter egg displayed: {random.choice(EASTER_EGGS)}")
 
 # Custom ArgumentParser that shows header and easter egg with help
-class KubzArgumentParser(argparse.ArgumentParser):
+class DsperseArgumentParser(argparse.ArgumentParser):
     def print_help(self, file=None):
         # print_header()
         if random.random() < 0.2:  # 20% chance to show an easter egg
@@ -85,8 +86,8 @@ class KubzArgumentParser(argparse.ArgumentParser):
         super().print_help(file)
 
     def add_subparsers(self, **kwargs):
-        # Ensure that subparsers are also KubzArgumentParser instances
-        kwargs.setdefault('parser_class', KubzArgumentParser)
+        # Ensure that subparsers are also DsperseArgumentParser instances
+        kwargs.setdefault('parser_class', DsperseArgumentParser)
         return super().add_subparsers(**kwargs)
 
 def check_model_dir(model_dir):

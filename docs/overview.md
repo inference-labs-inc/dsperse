@@ -1,8 +1,8 @@
-# Kubz: Distributed zkML
+# Dsperse: Distributed zkML
 
 ## Overview
 
-Kubz is a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
+Dsperse is a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
 ### Core Purpose
 The project aims to solve a significant challenge in zkML (zero-knowledge machine learning) by introducing a distributed approach to proof computation and providing tools for model slicing and analysis.

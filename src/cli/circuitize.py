@@ -140,8 +140,8 @@ def circuitize_model(args):
                 msg = (
                     "It looks like you provided a model directory without slices. "
                     "Please slice the model first before circuitizing slices.\n"
-                    f"Try: kubz slice --model-path {args.model_path} or \n"
-                    f"     kubz slice --model-path {os.path.join(args.model_path, 'model.onnx')}"
+                    f"Try: dsperse slice --model-path {args.model_path} or \n"
+                    f"     dsperse slice --model-path {os.path.join(args.model_path, 'model.onnx')}"
                 )
                 print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
                 logger.error("Circuitize requires slices metadata. Prompted user to run slice first.")
@@ -168,7 +168,7 @@ def circuitize_model(args):
             input_file=args.input_file,
             layers=validated_layers
         )
-        success_msg = f"Model circuitized successfully! Output saved to {output_path}"
+        success_msg = f"Model circuitized successfully! Output saved to {os.path.dirname(output_path)}"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)
     except Exception as e:

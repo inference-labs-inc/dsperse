@@ -23,6 +23,6 @@ jobs:
     - name: Install dependencies
       run: ./install.sh
     - name: Add additional dependencies
-      run: pip install onnxruntime_extensions, transformers, onnx_graphsurgeon
+      run: pip install onnxruntime_extensions, transformers, onnx_graphsurgeon,
     - name: Run tests
       run: pytest testing/core/e2e_tests/test_e2e.py

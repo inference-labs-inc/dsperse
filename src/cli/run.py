@@ -145,7 +145,7 @@ def run_inference(args):
             logger.info("Operation cancelled by user")
             return
         elif retry_option:
-            if os.path.exists(retry_option):
+            if os.path.exists(os.path.expanduser(retry_option)):
                 args.input_file = retry_option
                 print(
                     f"{Fore.GREEN}Using input file: {args.input_file}{Style.RESET_ALL}"

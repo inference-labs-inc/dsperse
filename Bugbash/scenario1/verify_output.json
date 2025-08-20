@@ -1,0 +1,132 @@
+{
+  "model_path": "/Users/shirinshahabinejad/Desktop",
+  "prediction": 2,
+  "probabilities": [
+    [
+      0.03280611336231232,
+      0.0006547854864038527,
+      0.5636113286018372,
+      7.176308281486854e-05,
+      3.994216967839748e-05,
+      0.40279486775398254,
+      2.1213125364738517e-05
+    ]
+  ],
+  "execution_chain": {
+    "total_slices": 5,
+    "ezkl_witness_slices": 5,
+    "overall_security": "100.0%",
+    "execution_results": [
+      {
+        "segment_id": "segment_0",
+        "witness_execution": {
+          "method": "ezkl_gen_witness",
+          "execution_time": 0.27781081199645996,
+          "attempted_ezkl": true,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/output.json"
+        },
+        "proof_execution": {
+          "proof_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/proof.json",
+          "success": true,
+          "proof_generation_time": 18.7321720123291
+        },
+        "verification_execution": {
+          "verified": true,
+          "success": true,
+          "verification_time": 0.34446215629577637
+        }
+      },
+      {
+        "segment_id": "segment_1",
+        "witness_execution": {
+          "method": "ezkl_gen_witness",
+          "execution_time": 0.42128515243530273,
+          "attempted_ezkl": true,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/output.json"
+        },
+        "proof_execution": {
+          "proof_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/proof.json",
+          "success": true,
+          "proof_generation_time": 24.95598793029785
+        },
+        "verification_execution": {
+          "verified": true,
+          "success": true,
+          "verification_time": 0.3134729862213135
+        }
+      },
+      {
+        "segment_id": "segment_2",
+        "witness_execution": {
+          "method": "ezkl_gen_witness",
+          "execution_time": 0.1488809585571289,
+          "attempted_ezkl": true,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/output.json"
+        },
+        "proof_execution": {
+          "proof_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/proof.json",
+          "success": true,
+          "proof_generation_time": 10.928767919540405
+        },
+        "verification_execution": {
+          "verified": true,
+          "success": true,
+          "verification_time": 0.11484003067016602
+        }
+      },
+      {
+        "segment_id": "segment_3",
+        "witness_execution": {
+          "method": "ezkl_gen_witness",
+          "execution_time": 0.20363116264343262,
+          "attempted_ezkl": true,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/output.json"
+        },
+        "proof_execution": {
+          "proof_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/proof.json",
+          "success": true,
+          "proof_generation_time": 19.689942836761475
+        },
+        "verification_execution": {
+          "verified": true,
+          "success": true,
+          "verification_time": 0.20529603958129883
+        }
+      },
+      {
+        "segment_id": "segment_4",
+        "witness_execution": {
+          "method": "ezkl_gen_witness",
+          "execution_time": 0.03252387046813965,
+          "attempted_ezkl": true,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/output.json"
+        },
+        "proof_execution": {
+          "proof_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/proof.json",
+          "success": true,
+          "proof_generation_time": 6.350061655044556
+        },
+        "verification_execution": {
+          "verified": true,
+          "success": true,
+          "verification_time": 0.055143117904663086
+        }
+      }
+    ],
+    "ezkl_proved_slices": 5,
+    "ezkl_verified_slices": 5
+  },
+  "performance_comparison": {
+    "note": "Full ONNX vs verified chain comparison would require separate pure ONNX run"
+  }
+}

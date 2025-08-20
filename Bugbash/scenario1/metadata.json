@@ -1,0 +1,531 @@
+{
+    "original_model": "/Users/shirinshahabinejad/Desktop/doom/model.onnx",
+    "model_type": "ONNX",
+    "total_parameters": 417943,
+    "input_shape": [
+        [
+            "batch_size",
+            4,
+            28,
+            28
+        ]
+    ],
+    "output_shapes": [
+        [
+            "batch_size",
+            7
+        ]
+    ],
+    "slice_points": [
+        0,
+        2,
+        4,
+        8,
+        10
+    ],
+    "segments": [
+        {
+            "index": 0,
+            "filename": "segment_0.onnx",
+            "path": "/Users/shirinshahabinejad/Desktop/scenario1/segment_0/segment_0.onnx",
+            "parameters": 592,
+            "shape": {
+                "weight_shape": {
+                    "input": [
+                        "batch_size",
+                        4,
+                        28,
+                        28
+                    ],
+                    "output": [
+                        32,
+                        16,
+                        3,
+                        3
+                    ]
+                },
+                "tensor_shape": {
+                    "input": [
+                        [
+                            16,
+                            4,
+                            3,
+                            3
+                        ],
+                        [
+                            16
+                        ],
+                        [
+                            "batch_size",
+                            4,
+                            28,
+                            28
+                        ]
+                    ],
+                    "output": [
+                        [
+                            "batch_size",
+                            16,
+                            28,
+                            28
+                        ]
+                    ]
+                }
+            },
+            "dependencies": {
+                "input": [
+                    "input",
+                    "conv1.weight",
+                    "conv1.bias"
+                ],
+                "output": [
+                    "/conv1/Conv_output_0",
+                    "/Relu_output_0"
+                ],
+                "filtered_inputs": [
+                    "input"
+                ]
+            },
+            "layers": [
+                {
+                    "name": "/conv1/Conv",
+                    "type": "Conv",
+                    "activation": "Conv",
+                    "parameter_details": {
+                        "conv1.weight": {
+                            "shape": [
+                                16,
+                                4,
+                                3,
+                                3
+                            ],
+                            "size": 576
+                        },
+                        "conv1.bias": {
+                            "shape": [
+                                16
+                            ],
+                            "size": 16
+                        },
+                        "in_features": 4,
+                        "in_channels": 4,
+                        "out_features": 16,
+                        "out_channels": 16
+                    }
+                },
+                {
+                    "name": "/Relu",
+                    "type": "Relu",
+                    "activation": "ReLU",
+                    "parameter_details": {}
+                }
+            ],
+            "ezkl_circuitization": {
+                "settings": "/Users/shirinshahabinejad/Desktop/scenario1/segment_0/ezkl_circuitization/segment_0_settings.json",
+                "compiled": "/Users/shirinshahabinejad/Desktop/scenario1/segment_0/ezkl_circuitization/segment_0_model.compiled",
+                "vk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_0/ezkl_circuitization/segment_0_vk.key",
+                "pk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_0/ezkl_circuitization/segment_0_pk.key",
+                "calibration": "/Users/shirinshahabinejad/Desktop/doom/input.json"
+            }
+        },
+        {
+            "index": 1,
+            "filename": "segment_1.onnx",
+            "path": "/Users/shirinshahabinejad/Desktop/scenario1/segment_1/segment_1.onnx",
+            "parameters": 4640,
+            "shape": {
+                "weight_shape": {
+                    "input": [
+                        32,
+                        16,
+                        3,
+                        3
+                    ],
+                    "output": [
+                        32,
+                        32,
+                        3,
+                        3
+                    ]
+                },
+                "tensor_shape": {
+                    "input": [
+                        [
+                            32,
+                            16,
+                            3,
+                            3
+                        ],
+                        [
+                            32
+                        ],
+                        [
+                            "batch_size",
+                            16,
+                            28,
+                            28
+                        ]
+                    ],
+                    "output": [
+                        [
+                            "batch_size",
+                            32,
+                            14,
+                            14
+                        ]
+                    ]
+                }
+            },
+            "dependencies": {
+                "input": [
+                    "/Relu_output_0",
+                    "conv2.weight",
+                    "conv2.bias"
+                ],
+                "output": [
+                    "/conv2/Conv_output_0",
+                    "/Relu_1_output_0"
+                ],
+                "filtered_inputs": [
+                    "/Relu_output_0"
+                ]
+            },
+            "layers": [
+                {
+                    "name": "/conv2/Conv",
+                    "type": "Conv",
+                    "activation": "Conv",
+                    "parameter_details": {
+                        "conv2.weight": {
+                            "shape": [
+                                32,
+                                16,
+                                3,
+                                3
+                            ],
+                            "size": 4608
+                        },
+                        "conv2.bias": {
+                            "shape": [
+                                32
+                            ],
+                            "size": 32
+                        },
+                        "in_features": 16,
+                        "in_channels": 16,
+                        "out_features": 32,
+                        "out_channels": 32
+                    }
+                },
+                {
+                    "name": "/Relu_1",
+                    "type": "Relu",
+                    "activation": "ReLU",
+                    "parameter_details": {}
+                }
+            ],
+            "ezkl_circuitization": {
+                "settings": "/Users/shirinshahabinejad/Desktop/scenario1/segment_1/ezkl_circuitization/segment_1_settings.json",
+                "compiled": "/Users/shirinshahabinejad/Desktop/scenario1/segment_1/ezkl_circuitization/segment_1_model.compiled",
+                "vk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_1/ezkl_circuitization/segment_1_vk.key",
+                "pk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_1/ezkl_circuitization/segment_1_pk.key",
+                "calibration": "/Users/shirinshahabinejad/Desktop/doom/input.json",
+                "calibrate-settings_error": ""
+            }
+        },
+        {
+            "index": 2,
+            "filename": "segment_2.onnx",
+            "path": "/Users/shirinshahabinejad/Desktop/scenario1/segment_2/segment_2.onnx",
+            "parameters": 9248,
+            "shape": {
+                "weight_shape": {
+                    "input": [
+                        32,
+                        32,
+                        3,
+                        3
+                    ],
+                    "output": [
+                        256,
+                        1568
+                    ]
+                },
+                "tensor_shape": {
+                    "input": [
+                        [
+                            32,
+                            32,
+                            3,
+                            3
+                        ],
+                        [
+                            32
+                        ],
+                        [
+                            "batch_size",
+                            32,
+                            14,
+                            14
+                        ]
+                    ],
+                    "output": [
+                        [
+                            "unk__0",
+                            1568
+                        ]
+                    ]
+                }
+            },
+            "dependencies": {
+                "input": [
+                    "/Relu_1_output_0",
+                    "conv3.weight",
+                    "conv3.bias"
+                ],
+                "output": [
+                    "/conv3/Conv_output_0",
+                    "/Relu_2_output_0",
+                    "/Constant_output_0",
+                    "/Reshape_output_0"
+                ],
+                "filtered_inputs": [
+                    "/Relu_1_output_0"
+                ]
+            },
+            "layers": [
+                {
+                    "name": "/conv3/Conv",
+                    "type": "Conv",
+                    "activation": "Conv",
+                    "parameter_details": {
+                        "conv3.weight": {
+                            "shape": [
+                                32,
+                                32,
+                                3,
+                                3
+                            ],
+                            "size": 9216
+                        },
+                        "conv3.bias": {
+                            "shape": [
+                                32
+                            ],
+                            "size": 32
+                        },
+                        "in_features": 32,
+                        "in_channels": 32,
+                        "out_features": 32,
+                        "out_channels": 32
+                    }
+                },
+                {
+                    "name": "/Relu_2",
+                    "type": "Relu",
+                    "activation": "ReLU",
+                    "parameter_details": {}
+                },
+                {
+                    "name": "/Constant",
+                    "type": "Constant",
+                    "activation": "Constant",
+                    "parameter_details": {}
+                },
+                {
+                    "name": "/Reshape",
+                    "type": "Reshape",
+                    "activation": "Reshape",
+                    "parameter_details": {}
+                }
+            ],
+            "ezkl_circuitization": {
+                "settings": "/Users/shirinshahabinejad/Desktop/scenario1/segment_2/ezkl_circuitization/segment_2_settings.json",
+                "compiled": "/Users/shirinshahabinejad/Desktop/scenario1/segment_2/ezkl_circuitization/segment_2_model.compiled",
+                "vk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_2/ezkl_circuitization/segment_2_vk.key",
+                "pk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_2/ezkl_circuitization/segment_2_pk.key",
+                "calibration": "/Users/shirinshahabinejad/Desktop/doom/input.json",
+                "calibrate-settings_error": ""
+            }
+        },
+        {
+            "index": 3,
+            "filename": "segment_3.onnx",
+            "path": "/Users/shirinshahabinejad/Desktop/scenario1/segment_3/segment_3.onnx",
+            "parameters": 401664,
+            "shape": {
+                "weight_shape": {
+                    "input": [
+                        256,
+                        1568
+                    ],
+                    "output": [
+                        7,
+                        256
+                    ]
+                },
+                "tensor_shape": {
+                    "input": [
+                        [
+                            256,
+                            1568
+                        ],
+                        [
+                            256
+                        ],
+                        [
+                            "unk__0",
+                            1568
+                        ]
+                    ],
+                    "output": [
+                        [
+                            "unk__0",
+                            256
+                        ]
+                    ]
+                }
+            },
+            "dependencies": {
+                "input": [
+                    "/Reshape_output_0",
+                    "fc1.weight",
+                    "fc1.bias"
+                ],
+                "output": [
+                    "/fc1/Gemm_output_0",
+                    "/Relu_3_output_0"
+                ],
+                "filtered_inputs": [
+                    "/Reshape_output_0"
+                ]
+            },
+            "layers": [
+                {
+                    "name": "/fc1/Gemm",
+                    "type": "Gemm",
+                    "activation": "Gemm",
+                    "parameter_details": {
+                        "fc1.weight": {
+                            "shape": [
+                                256,
+                                1568
+                            ],
+                            "size": 401408
+                        },
+                        "fc1.bias": {
+                            "shape": [
+                                256
+                            ],
+                            "size": 256
+                        },
+                        "in_features": 1568,
+                        "in_channels": 1568,
+                        "out_features": 256,
+                        "out_channels": 256
+                    }
+                },
+                {
+                    "name": "/Relu_3",
+                    "type": "Relu",
+                    "activation": "ReLU",
+                    "parameter_details": {}
+                }
+            ],
+            "ezkl_circuitization": {
+                "settings": "/Users/shirinshahabinejad/Desktop/scenario1/segment_3/ezkl_circuitization/segment_3_settings.json",
+                "compiled": "/Users/shirinshahabinejad/Desktop/scenario1/segment_3/ezkl_circuitization/segment_3_model.compiled",
+                "vk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_3/ezkl_circuitization/segment_3_vk.key",
+                "pk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_3/ezkl_circuitization/segment_3_pk.key",
+                "calibration": "/Users/shirinshahabinejad/Desktop/doom/input.json",
+                "setup_error": ""
+            }
+        },
+        {
+            "index": 4,
+            "filename": "segment_4.onnx",
+            "path": "/Users/shirinshahabinejad/Desktop/scenario1/segment_4/segment_4.onnx",
+            "parameters": 1799,
+            "shape": {
+                "weight_shape": {
+                    "input": [
+                        7,
+                        256
+                    ],
+                    "output": [
+                        "batch_size",
+                        7
+                    ]
+                },
+                "tensor_shape": {
+                    "input": [
+                        [
+                            7,
+                            256
+                        ],
+                        [
+                            7
+                        ],
+                        [
+                            "unk__0",
+                            256
+                        ]
+                    ],
+                    "output": [
+                        [
+                            "batch_size",
+                            7
+                        ]
+                    ]
+                }
+            },
+            "dependencies": {
+                "input": [
+                    "/Relu_3_output_0",
+                    "fc2.weight",
+                    "fc2.bias"
+                ],
+                "output": [
+                    "output"
+                ],
+                "filtered_inputs": [
+                    "/Relu_3_output_0"
+                ]
+            },
+            "layers": [
+                {
+                    "name": "/fc2/Gemm",
+                    "type": "Gemm",
+                    "activation": "Gemm",
+                    "parameter_details": {
+                        "fc2.weight": {
+                            "shape": [
+                                7,
+                                256
+                            ],
+                            "size": 1792
+                        },
+                        "fc2.bias": {
+                            "shape": [
+                                7
+                            ],
+                            "size": 7
+                        },
+                        "in_features": 256,
+                        "in_channels": 256,
+                        "out_features": 7,
+                        "out_channels": 7
+                    }
+                }
+            ],
+            "ezkl_circuitization": {
+                "settings": "/Users/shirinshahabinejad/Desktop/scenario1/segment_4/ezkl_circuitization/segment_4_settings.json",
+                "compiled": "/Users/shirinshahabinejad/Desktop/scenario1/segment_4/ezkl_circuitization/segment_4_model.compiled",
+                "vk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_4/ezkl_circuitization/segment_4_vk.key",
+                "pk_key": "/Users/shirinshahabinejad/Desktop/scenario1/segment_4/ezkl_circuitization/segment_4_pk.key",
+                "calibration": "/Users/shirinshahabinejad/Desktop/doom/input.json",
+                "calibrate-settings_error": ""
+            }
+        }
+    ]
+}

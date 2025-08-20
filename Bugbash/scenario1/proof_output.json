@@ -1,0 +1,82 @@
+{
+  "model_path": "/Users/shirinshahabinejad/Desktop",
+  "prediction": 2,
+  "probabilities": [
+    [
+      0.0045220134779810905,
+      0.002179308095946908,
+      0.9145257472991943,
+      0.0004294325190130621,
+      0.002237602835521102,
+      0.07481270283460617,
+      0.0012933268444612622
+    ]
+  ],
+  "execution_chain": {
+    "total_slices": 5,
+    "ezkl_witness_slices": 0,
+    "overall_security": "0.0%",
+    "execution_results": [
+      {
+        "segment_id": "segment_0",
+        "witness_execution": {
+          "method": "onnx_only",
+          "execution_time": 0.1391599178314209,
+          "attempted_ezkl": false,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_0/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_0/output.json"
+        }
+      },
+      {
+        "segment_id": "segment_1",
+        "witness_execution": {
+          "method": "onnx_only",
+          "execution_time": 0.022229909896850586,
+          "attempted_ezkl": false,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_1/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_1/output.json"
+        }
+      },
+      {
+        "segment_id": "segment_2",
+        "witness_execution": {
+          "method": "onnx_only",
+          "execution_time": 0.004291057586669922,
+          "attempted_ezkl": false,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_2/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_2/output.json"
+        }
+      },
+      {
+        "segment_id": "segment_3",
+        "witness_execution": {
+          "method": "onnx_only",
+          "execution_time": 0.005676746368408203,
+          "attempted_ezkl": false,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_3/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_3/output.json"
+        }
+      },
+      {
+        "segment_id": "segment_4",
+        "witness_execution": {
+          "method": "onnx_only",
+          "execution_time": 0.0015468597412109375,
+          "attempted_ezkl": false,
+          "success": true,
+          "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_4/input.json",
+          "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_124147/segment_4/output.json"
+        }
+      }
+    ],
+    "ezkl_proved_slices": 0,
+    "ezkl_verified_slices": 0
+  },
+  "performance_comparison": {
+    "note": "Full ONNX vs verified chain comparison would require separate pure ONNX run"
+  }
+}

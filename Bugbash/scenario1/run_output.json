@@ -1,0 +1,65 @@
+{
+  "prediction": 2,
+  "probabilities": [
+    [
+      0.03280611336231232,
+      0.0006547854864038527,
+      0.5636113286018372,
+      7.176308281486854e-05,
+      3.994216967839748e-05,
+      0.40279486775398254,
+      2.1213125364738517e-05
+    ]
+  ],
+  "tensor_shape": [
+    1,
+    7
+  ],
+  "slice_results": {
+    "segment_0": {
+      "success": true,
+      "method": "ezkl_gen_witness",
+      "execution_time": 0.27781081199645996,
+      "witness_path": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/output.json",
+      "attempted_ezkl": true,
+      "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/input.json",
+      "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_0/output.json"
+    },
+    "segment_1": {
+      "success": true,
+      "method": "ezkl_gen_witness",
+      "execution_time": 0.42128515243530273,
+      "witness_path": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/output.json",
+      "attempted_ezkl": true,
+      "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/input.json",
+      "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_1/output.json"
+    },
+    "segment_2": {
+      "success": true,
+      "method": "ezkl_gen_witness",
+      "execution_time": 0.1488809585571289,
+      "witness_path": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/output.json",
+      "attempted_ezkl": true,
+      "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/input.json",
+      "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_2/output.json"
+    },
+    "segment_3": {
+      "success": true,
+      "method": "ezkl_gen_witness",
+      "execution_time": 0.20363116264343262,
+      "witness_path": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/output.json",
+      "attempted_ezkl": true,
+      "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/input.json",
+      "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_3/output.json"
+    },
+    "segment_4": {
+      "success": true,
+      "method": "ezkl_gen_witness",
+      "execution_time": 0.03252387046813965,
+      "witness_path": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/output.json",
+      "attempted_ezkl": true,
+      "input_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/input.json",
+      "output_file": "/Users/shirinshahabinejad/Desktop/run/run_20250820_132804/segment_4/output.json"
+    }
+  }
+}

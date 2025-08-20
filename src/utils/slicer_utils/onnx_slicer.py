@@ -298,6 +298,13 @@ class OnnxSlicer:
         # Store paths to sliced models
         slice_paths = []
 
+        # Create slices directory
+        slices_dir = os.path.join(output_path, "slices")
+        if not os.path.exists(slices_dir):
+            os.makedirs(slices_dir, exist_ok=True)
+
+        output_path = slices_dir
+
         # Process each segment
         for i in range(len(slice_points)):
             segment_idx = i - 1

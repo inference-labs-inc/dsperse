@@ -1,0 +1,34 @@
+diff --git a/src/analyzers/runner_analyzer.py b/src/analyzers/runner_analyzer.py
+index e5a4353..562a709 100644
+--- a/src/analyzers/runner_analyzer.py
++++ b/src/analyzers/runner_analyzer.py
+@@ -13,19 +13,24 @@ logger = logging.getLogger(__name__)
+ logging.basicConfig(level=logging.INFO)
+ 
+ class RunnerAnalyzer:
+-    def __init__(self, model_directory):
++    def __init__(self, model_directory, metadata_path=None):
+         """
+         Args:
+             model_directory: Path to the model directory.
++            metadata_path: Optional path to the metadata.json file.
+         """
+         self.model_directory = model_directory
+-        self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
+-        self.slices_metadata_path = self.slices_dir / "metadata.json"
++        if metadata_path:
++            self.slices_metadata_path = Path(metadata_path).resolve()
++            self.slices_dir = self.slices_metadata_path.parent
++        else:
++            self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
++            self.slices_metadata_path = self.slices_dir / "metadata.json"
+ 
+         self.size_limit = 100 * 1024 * 1024  # 100MB
+ 
+-        if not self.slices_dir.exists():
+-            raise FileNotFoundError(f"Slice output directory not found: {self.slices_dir}")
++        if not self.slices_metadata_path.exists():
++            raise FileNotFoundError(f"Metadata file not found: {self.slices_metadata_path}")
+ 
+     def generate_metadata(self, save_path=None):
+         """

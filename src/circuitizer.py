@@ -61,7 +61,8 @@ class Circuitizer:
             model_file = os.path.join(model_dir, "model.onnx")
         # Check if it's a directory with metadata.json (sliced model)
         elif os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or 
-                                           os.path.exists(os.path.join(model_path, "slices", "metadata.json"))):
+                                           os.path.exists(os.path.join(model_path, "slices", "metadata.json")) or
+                                           os.path.exists(os.path.join(os.path.dirname(model_path.rstrip("/")), "metadata.json"))):
             is_onnx = True
             
         # Create appropriate circuitizer

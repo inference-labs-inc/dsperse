@@ -104,7 +104,7 @@ def setup_parser(subparsers):
         The created parser
     """
     circuitize_parser = subparsers.add_parser('circuitize', help='Circuitize a model or slices using EZKL')
-    circuitize_parser.add_argument('--model-path', help='Path to the model file or directory containing slices')
+    circuitize_parser.add_argument('--model-path', help='Path to the model file or directory containing slices directory')
     circuitize_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
     circuitize_parser.add_argument('--layers', help='Specify which layers to circuitize (e.g., "3, 20-22"). If not provided, all layers will be circuitized.')
     

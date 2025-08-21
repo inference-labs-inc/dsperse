@@ -101,7 +101,7 @@ def check_model_dir(model_dir):
         bool: True if the path exists, False otherwise
     """
     import os
-    if not os.path.exists(model_dir):
+    if not os.path.exists(os.path.expanduser(model_dir)):
         error_msg = f"Path '{model_dir}' does not exist."
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)

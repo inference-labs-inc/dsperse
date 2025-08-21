@@ -22,7 +22,7 @@ def run_command(cmd):
     return result
 
 def test_full_workflow():
-    """Test the complete workflow: slice -> circuitize -> prove -> verify"""
+    """Test the complete workflow: slice -> circuitize -> run-> prove -> verify"""
     model_dir = TEST_MODELS_DIR / "doom"
     output_dir = TEST_OUTPUT_DIR / "output"
 

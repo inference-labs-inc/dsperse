@@ -22,7 +22,6 @@ def setup_parser(subparsers):
         The created parser
     """
     verify_parser = subparsers.add_parser('verify', help='Verify a proof for a model')
-    verify_parser.add_argument('--model-dir', help='Directory containing the model')
     verify_parser.add_argument('--run-dir', help='Specific run directory to verify')
     verify_parser.add_argument('--output-file', help='Path to save output results')
 
@@ -99,13 +98,12 @@ def verify_proof(args):
         if os.path.exists(os.path.join(potential_model_dir, "run", "metadata.json")):
             model_dir = potential_model_dir
         else:
-            # Prompt for model directory
-            model_dir = prompt_for_value('model-dir', 'Enter the model directory')
-            if not check_model_dir(model_dir):
-                return
+            print(f"{Fore.RED}Error: Could not locate run metadata.json in {os.path.join(potential_model_dir, 'run')} for the provided run directory.{Style.RESET_ALL}")
+            print("Please provide a run directory under a valid model directory (model_dir/run/run_*/).")
+            return
     else:
-        # Prompt for model or run directory
-        dir_input = prompt_for_value('model-or-run-dir', 'Enter model or run directory:')
+        # Prompt for run directory or model directory
+        dir_input = prompt_for_value('model-or-run-dir', 'Enter run directory (or model directory to choose a run)')
         
         # Check if the input is a run directory
         if os.path.exists(os.path.join(dir_input, "run_result.json")):
@@ -115,10 +113,9 @@ def verify_proof(args):
             if os.path.exists(os.path.join(potential_model_dir, "run", "metadata.json")):
                 model_dir = potential_model_dir
             else:
-                # Prompt for model directory
-                model_dir = prompt_for_value('model-dir', 'Enter the model directory')
-                if not check_model_dir(model_dir):
-                    return
+                print(f"{Fore.RED}Error: Could not locate run metadata.json in {os.path.join(potential_model_dir, 'run')} for the provided run directory.{Style.RESET_ALL}")
+                print("Please provide a run directory under a valid model directory (model_dir/run/run_*/).")
+                return
         else:
             # Assume it's a model directory
             model_dir = dir_input
@@ -138,7 +135,7 @@ def verify_proof(args):
             
             # Format the message to match the example in the issue description
             run_list = ", ".join(run_names)
-            print(f"We found {len(all_runs)} runs, {run_list}, enter which run you would like to verify (default {default_run}):")
+            print(f"We found {len(all_runs)} runs, {run_list}, enter which run you would like to verify (default {default_run})")
             user_input = input().strip()  # Hit enter to signify the default
             
             if not user_input:

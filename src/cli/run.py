@@ -23,12 +23,10 @@ def setup_parser(subparsers):
         The created parser
     """
     run_parser = subparsers.add_parser('run', help='Run inference on a model')
-    run_parser.add_argument('--model-dir', help='Directory containing the model (can also be a slices directory)')
-    run_parser.add_argument('--slices-dir', help='Directory containing the slices (default: model_dir/slices)')
-    run_parser.add_argument('--metadata-path', help='Path to slices metadata.json (default: slices_dir/metadata.json)')
+    run_parser.add_argument('--slices-dir', help='Directory containing the slices')
     run_parser.add_argument('--run-metadata-path', help='Path to run metadata.json (auto-generated if not provided)')
-    run_parser.add_argument('--input-file', help='Path to input file (default: model_dir/input.json)')
-    run_parser.add_argument('--output-file', help='Path to save output results')
+    run_parser.add_argument('--input-file', help='Path to input file (default: parent_of_slices/input.json)')
+    run_parser.add_argument('--output-file', help='Path to save output results (default: parent_of_slices/output.json)')
 
     return run_parser
 
@@ -36,9 +34,8 @@ def run_inference(args):
     """
     Run inference on a model based on the provided arguments.
     
-    The function accepts either a model directory or a slices directory as input.
-    If a slices directory is provided, the function will attempt to determine the
-    parent model directory automatically.
+    This command requires a slices directory. The parent directory of the slices
+    is treated as the model directory, which is used for defaults like input/output paths.
 
     Args:
         args: The parsed command-line arguments
@@ -46,42 +43,38 @@ def run_inference(args):
     print(f"{Fore.CYAN}Running inference...{Style.RESET_ALL}")
     logger.info("Starting model inference")
 
-    # Prompt for model or slices directory if not provided
-    if not hasattr(args, 'model_dir') or not args.model_dir:
-        args.model_dir = prompt_for_value('model-dir', 'Enter the model or slices directory')
+    # Require slices directory
+    if not hasattr(args, 'slices_dir') or not args.slices_dir:
+        args.slices_dir = prompt_for_value('slices-dir', 'Enter the slices directory')
 
-    if not check_model_dir(args.model_dir):
+    if not check_model_dir(args.slices_dir):
         return
 
-    # Determine if the provided path is a model directory or a slices directory
-    # Check if the path ends with 'slices' or if it contains a metadata.json file
-    is_slices_dir = args.model_dir.rstrip('/').endswith('slices') or os.path.exists(os.path.join(args.model_dir, 'metadata.json'))
-    
-    # Set model_dir and slices_dir based on what was provided
-    if is_slices_dir:
-        # User provided a slices directory
-        slices_dir = args.model_dir
-        # Try to determine the model directory (parent of slices)
-        parent_dir = os.path.dirname(args.model_dir.rstrip('/'))
-        if parent_dir:
-            args.model_dir = parent_dir
-        # If we couldn't determine a parent, keep the original as both model and slices
+    # Validate slices directory has metadata and normalize to the actual slices directory
+    meta_in_dir = os.path.exists(os.path.join(args.slices_dir, 'metadata.json'))
+    meta_in_sub = os.path.exists(os.path.join(args.slices_dir, 'slices', 'metadata.json'))
+
+    if not (meta_in_dir or meta_in_sub):
+        print(f"{Fore.YELLOW}Warning: No slices metadata found at the provided path. Please slice the model first.{Style.RESET_ALL}")
+        logger.error("Run requires a valid slices directory with metadata.json")
+        return
+
+    if meta_in_dir:
+        slices_dir_effective = args.slices_dir
+        model_dir = os.path.dirname(args.slices_dir.rstrip('/')) or '.'
     else:
-        # User provided a model directory
-        slices_dir = args.slices_dir if hasattr(args, 'slices_dir') and args.slices_dir else os.path.join(args.model_dir, 'slices')
-    
-    # Get metadata path if provided, otherwise use default
-    metadata_path = args.metadata_path if hasattr(args, 'metadata_path') and args.metadata_path else None
-    
-    # Get run metadata path if provided, otherwise use default
+        # metadata inside a 'slices' subfolder; treat provided path as model_dir
+        slices_dir_effective = os.path.join(args.slices_dir, 'slices')
+        model_dir = args.slices_dir
+
+    # Get run metadata path if provided, otherwise None (Runner will auto-generate)
     run_metadata_path = args.run_metadata_path if hasattr(args, 'run_metadata_path') and args.run_metadata_path else None
 
     # Prompt for input file if not provided
     if not hasattr(args, 'input_file') or not args.input_file:
-        # Set default input file path based on model_dir
-        # If the user provided a slices directory, we've already set model_dir to its parent
-        default_input_file = os.path.join(args.model_dir, "input.json")
-        args.input_file = prompt_for_value('input-file', 'Enter the input file path', default=default_input_file, required=False)
+        # Set default input file path based on model_dir (parent of slices)
+        default_input_file = os.path.join(model_dir, "input.json")
+        args.input_file = prompt_for_value('input-file', 'Enter the input file path', default=default_input_file, required=True)
 
     # Check if input file exists
     if args.input_file and not os.path.exists(args.input_file):
@@ -103,16 +96,21 @@ def run_inference(args):
         else:
             args.input_file = None
 
+    # Enforce input file requirement
+    if not args.input_file:
+        print(f"{Fore.RED}Error: input-file is required and must exist. Aborting.{Style.RESET_ALL}")
+        logger.error("Input file missing; aborting run.")
+        return
+
     try:
         # Use the Runner class for inference
         logger.info("Using Runner class for model inference")
-        logger.info(f"Model path: {args.model_dir}, Slices path: {slices_dir}")
+        logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
         
         start_time = time.time()
         runner = Runner(
-            model_path=args.model_dir,
-            slices_path=slices_dir,
-            metadata_path=metadata_path,
+            model_path=model_dir,
+            slices_path=slices_dir_effective,
             run_metadata_path=run_metadata_path
         )
         result = runner.run(args.input_file)
@@ -125,7 +123,7 @@ def run_inference(args):
         if not hasattr(args, 'output_file') or not args.output_file:
             save_output = prompt_for_value('save-output', 'Save output to file?', default='y', required=False).lower()
             if save_output.startswith('y'):
-                default_output_file = os.path.join(args.model_dir, "output.json")
+                default_output_file = os.path.join(model_dir, "output.json")
                 args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)
 
         # Save the result if an output file is specified
@@ -140,7 +138,8 @@ def run_inference(args):
 
         # Print the result
         print(f"\n{Fore.YELLOW}Results:{Style.RESET_ALL}")
-        print(result)
+        print(f"Prediction: {result.get('prediction', 'N/A')}")
+        print(f"Probabilities: {result.get('probabilities', 'N/A')}")
 
     except Exception as e:
         error_msg = f"Error during inference: {e}"

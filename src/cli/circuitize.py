@@ -5,6 +5,7 @@ CLI module for circuitizing models using EZKL.
 import traceback
 import os
 import json
+import logging
 
 from colorama import Fore, Style
 
@@ -12,12 +13,12 @@ from src.circuitizer import Circuitizer
 from src.cli.base import check_model_dir, prompt_for_value, logger
 
 
-def _check_layers(model_path, layers_str):
+def _check_layers(slices_path, layers_str):
     """
-    Check if the layers provided exist in the metadata.json file.
+    Check if the layers provided exist in the metadata.json file within the slices directory.
     
     Args:
-        model_path (str): Path to the model directory
+        slices_path (str): Path to the slices directory
         layers_str (str): String specifying which layers to circuitize (e.g., "3, 20-22")
         
     Returns:
@@ -51,12 +52,12 @@ def _check_layers(model_path, layers_str):
     layer_indices = sorted(set(layer_indices))
     
     # Find metadata.json file
-    metadata_path = os.path.join(model_path, "metadata.json")
+    metadata_path = os.path.join(slices_path, "metadata.json")
     if not os.path.exists(metadata_path):
         # Check for metadata.json in slices subdirectory
-        metadata_path = os.path.join(model_path, "slices", "metadata.json")
+        metadata_path = os.path.join(slices_path, "slices", "metadata.json")
         if not os.path.exists(metadata_path):
-            logger.warning(f"metadata.json not found in {model_path} or {os.path.join(model_path, 'slices')}")
+            logger.warning(f"metadata.json not found in {slices_path} or {os.path.join(slices_path, 'slices')}")
             print(f"{Fore.YELLOW}Warning: metadata.json not found. Cannot validate layers.{Style.RESET_ALL}")
             return layers_str
     
@@ -103,8 +104,8 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    circuitize_parser = subparsers.add_parser('circuitize', help='Circuitize a model or slices using EZKL')
-    circuitize_parser.add_argument('--model-path', help='Path to the model file or directory containing slices')
+    circuitize_parser = subparsers.add_parser('circuitize', help='Circuitize slices using EZKL')
+    circuitize_parser.add_argument('--slices-path', help='Path to the slices directory')
     circuitize_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
     circuitize_parser.add_argument('--layers', help='Specify which layers to circuitize (e.g., "3, 20-22"). If not provided, all layers will be circuitized.')
     
@@ -118,36 +119,42 @@ def circuitize_model(args):
     Args:
         args: The parsed command-line arguments
     """
-    print(f"{Fore.CYAN}Circuitizing model with EZKL...{Style.RESET_ALL}")
-    logger.info("Starting model circuitization")
+    print(f"{Fore.CYAN}Circuitizing slices with EZKL...{Style.RESET_ALL}")
+    logger.info("Starting slices circuitization")
 
-    # Prompt for model path if not provided
-    if not hasattr(args, 'model_path') or not args.model_path:
-        args.model_path = prompt_for_value('model-path', 'Enter the path to the model file or directory containing slices')
+    # Prompt for slices path if not provided
+    if not hasattr(args, 'slices_path') or not args.slices_path:
+        args.slices_path = prompt_for_value('slices-path', 'Enter the path to the slices directory')
 
-    if not check_model_dir(args.model_path):
+    if not check_model_dir(args.slices_path):
         return
 
-    # If a directory was provided, ensure it has slices metadata. Otherwise, guide user to slice first.
+    # Ensure the provided path looks like a slices directory; otherwise guide user to slice first.
     try:
-        if os.path.isdir(args.model_path):
-            has_metadata = (
-                os.path.exists(os.path.join(args.model_path, "metadata.json")) or
-                os.path.exists(os.path.join(args.model_path, "slices", "metadata.json"))
+        if not os.path.isdir(args.slices_path):
+            msg = (
+                "Please provide a slices directory, not a model file. "
+                "If you have a model, slice it first before circuitizing.\n"
+                f"Try: dsperse slice --model-dir {args.slices_path}"
             )
-            has_onnx = os.path.exists(os.path.join(args.model_path, "model.onnx"))
-            if not has_metadata and has_onnx:
-                msg = (
-                    "It looks like you provided a model directory without slices. "
-                    "Please slice the model first before circuitizing slices.\n"
-                    f"Try: dsperse slice --model-path {args.model_path} or \n"
-                    f"     dsperse slice --model-path {os.path.join(args.model_path, 'model.onnx')}"
-                )
-                print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
-                logger.error("Circuitize requires slices metadata. Prompted user to run slice first.")
-                return
+            print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
+            logger.error("Circuitize requires a slices directory (with metadata.json).")
+            return
+        has_metadata = (
+            os.path.exists(os.path.join(args.slices_path, "metadata.json")) or
+            os.path.exists(os.path.join(args.slices_path, "slices", "metadata.json"))
+        )
+        if not has_metadata:
+            msg = (
+                "No slices metadata found at the provided path. "
+                "Please slice the model first before circuitizing slices.\n"
+                f"Try: dsperse slice --model-dir {args.slices_path}"
+            )
+            print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
+            logger.error("Circuitize requires slices metadata. Prompted user to run slice first.")
+            return
         # Initialize the Circuitizer
-        circuitizer = Circuitizer.create(args.model_path)
+        circuitizer = Circuitizer.create(args.slices_path)
         logger.info(f"Circuitizer initialized successfully")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Circuitizer: {e}"
@@ -157,23 +164,31 @@ def circuitize_model(args):
 
     # Check if the layers exist in the metadata
     if hasattr(args, 'layers') and args.layers:
-        validated_layers = _check_layers(args.model_path, args.layers)
+        validated_layers = _check_layers(args.slices_path, args.layers)
     else:
         validated_layers = None
     
     # Run the circuitization
+    ezkl_logger = logging.getLogger('src.backends.ezkl')
+    prev_ezkl_level = ezkl_logger.level
     try:
+        # Suppress verbose EZKL INFO logs during circuitization
+        ezkl_logger.setLevel(logging.WARNING)
+
         output_path = circuitizer.circuitize(
-            model_path=args.model_path,
+            model_path=args.slices_path,
             input_file=args.input_file,
             layers=validated_layers
         )
-        success_msg = f"Model circuitized successfully! Output saved to {os.path.dirname(output_path)}"
+        success_msg = f"Slices circuitized successfully! Output saved to {os.path.dirname(output_path)}"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)
     except Exception as e:
-        error_msg = f"Error circuitizing model: {e}"
+        error_msg = f"Error circuitizing slices: {e}"
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         logger.debug("Stack trace:", exc_info=True)
         traceback.print_exc()
+    finally:
+        # Restore previous EZKL logger level
+        ezkl_logger.setLevel(prev_ezkl_level)

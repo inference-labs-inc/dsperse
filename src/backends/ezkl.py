@@ -396,22 +396,8 @@ class EZKL:
                     logger.warning("Failed to calibrate settings")
                     circuitization_data["calibrate-settings_error"] = err
             else:
-                # If no input file, create dummy calibration
-                try:
-                    logger.info("No input file provided, creating dummy calibration data")
-                    onnx_model = onnx.load(model_path)
-                    calibration_path = os.path.join(output_path, f"{model_name}_calibration.json")
-                    self._create_dummy_calibration(onnx_model, calibration_path, segment_details)
-                    circuitization_data["calibration"] = calibration_path
-                    ok, err = self.calibrate_settings(model_path=model_path, settings_path=settings_path, data_path=calibration_path)
-                    if not ok:
-                        logger.warning("Failed to calibrate settings")
-                        circuitization_data["calibrate-settings_error"] = err
-                except Exception as e:
-                    error_msg = f"Failed to create dummy calibration: {e}"
-                    logger.warning(error_msg)
-                    logger.warning("Skipping calibration step")
-                    circuitization_data["calibration"] = error_msg
+                # If no input file, log and skip calibration
+                logger.info("No input file provided, skipping calibration step")
 
             # Step 4: Compile circuit
             logger.info(f"Compiling circuit for {model_path}")
@@ -435,90 +421,6 @@ class EZKL:
             circuitization_data["error"] = error_msg
         
         return circuitization_data
-
-    @staticmethod
-    def _create_dummy_calibration(onnx_model, output_path, segment_details=None):
-        """
-        Create a dummy calibration file for an ONNX model, handling multiple inputs if needed.
-
-        Args:
-            onnx_model: ONNX model
-            output_path: Path where to save the calibration file
-            segment_details: Details of the segment including shape information
-        """
-        # Get input shapes from the ONNX model
-        input_shapes = []
-        input_names = []
-
-        # First, collect all input shapes from the ONNX model (excluding initializers)
-        initializers = {init.name for init in onnx_model.graph.initializer}
-        for input_info in onnx_model.graph.input:
-            if input_info.name not in initializers:  # Skip weights and biases
-                input_name = input_info.name
-                input_names.append(input_name)
-
-                dim_shape = []
-                for dim in input_info.type.tensor_type.shape.dim:
-                    if dim.dim_param:
-                        dim_shape.append(1)  # Replace named dimensions with 1
-                    else:
-                        dim_shape.append(dim.dim_value if dim.dim_value != 0 else 1)  # Replace 0 with 1
-
-                if dim_shape:  # Only add non-empty shapes
-                    input_shapes.append((input_name, dim_shape))
-
-        logger.info(f"Found {len(input_shapes)} inputs in ONNX model: {input_shapes}")
-
-        # If we have metadata, use it to enhance our understanding of the shapes
-        if segment_details and "shape" in segment_details and "tensor_shape" in segment_details["shape"]:
-            tensor_shape = segment_details["shape"]["tensor_shape"]
-            if "input" in tensor_shape and len(tensor_shape["input"]) > 0:
-                # Try to map each ONNX input to the corresponding metadata shape
-                for i, (input_name, shape) in enumerate(input_shapes):
-                    for meta_shape in tensor_shape["input"]:
-                        # Check if this shape contains string dimensions (likely actual inputs, not weights)
-                        if any(isinstance(dim, str) for dim in meta_shape):
-                            # Found a shape with named dimensions, use it to enhance our understanding
-                            enhanced_shape = [1 if isinstance(dim, str) else dim for dim in meta_shape]
-
-                            # Only update if the rank matches or if we're reasonably sure this is the right shape
-                            if len(enhanced_shape) == len(shape) or i == len(input_shapes) - 1:
-                                input_shapes[i] = (input_name, enhanced_shape)
-                                logger.info(f"Enhanced shape for {input_name}: {enhanced_shape}")
-                                break
-
-        # Generate random data for each input and combine into a single flat array
-        all_flat_data = []
-
-        for input_name, shape in input_shapes:
-            # Calculate total elements for this input
-            total_elements = 1
-            for dim in shape:
-                total_elements *= dim
-
-            # Generate random data (consistent with model_circuitizer.py's approach)
-            input_data = [random.random() for _ in range(total_elements)]
-            all_flat_data.extend(input_data)
-
-            logger.info(f"Generated {len(input_data)} random values for input {input_name} with shape {shape}")
-
-        # If no inputs were found, create a default dummy input
-        if not all_flat_data:
-            logger.warning("No inputs found, creating default dummy input")
-            all_flat_data = [random.random() for _ in range(10)]
-
-        # Create the calibration data JSON structure that EZKL expects
-        calibration_data = {"input_data": [all_flat_data]}
-
-        # Write the calibration data to a JSON file
-        try:
-            with open(output_path, 'w') as f:
-                json.dump(calibration_data, f)
-            logger.info(f"Created dummy calibration file at {output_path} with {len(all_flat_data)} total values")
-        except Exception as e:
-            logger.error(f"Failed to create dummy calibration file: {str(e)}")
-            raise
-
 
     @staticmethod
     def process_witness_output(witness_data):

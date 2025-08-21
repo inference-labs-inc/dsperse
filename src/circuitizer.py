@@ -9,10 +9,12 @@ based on the model type.
 import os
 import json
 import logging
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 from src.backends.ezkl import EZKL
 from src.utils.utils import Utils
+from src.runner import Runner
 
 logger = logging.getLogger(__name__)
 
@@ -163,27 +165,70 @@ class Circuitizer:
         segment_output_path = None
         circuitized_count = 0
         skipped_count = 0
+        
+        # Phase 1: Run ONNX inference chain if we have input file
+        current_input = input_file_path
+        if current_input and os.path.exists(current_input):
+            logger.info("Running ONNX inference chain to generate calibration files")
+            for idx, segment in enumerate(segments):
+                segment_path = segment.get('path')
+                if not segment_path or not os.path.exists(segment_path):
+                    logger.warning(f"Segment file not found for index {idx}: {segment_path}")
+                    continue
 
+                segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
+                os.makedirs(segment_output_path, exist_ok=True)
+
+                # Run ONNX inference to generate calibration data
+                output_tensor_path = os.path.join(segment_output_path, f"segment_{idx}_calibration.json")
+                logger.info(f"Running ONNX inference for segment {idx} with input file {current_input}")
+                success, tensor, exec_info = Runner._run_onnx_segment(
+                    slice_info={"path": segment_path},
+                    input_tensor_path=Path(current_input),
+                    output_tensor_path=Path(output_tensor_path)
+                )
+
+                if not success:
+                    logger.error(f"ONNX inference failed for segment {idx}: {exec_info.get('error', 'Unknown error')}")
+                    return
+
+                current_input = output_tensor_path
+                logger.info(f"Generated calibration file: {output_tensor_path}")
+        else:
+            logger.warning("No input file provided, skipping ONNX inference chain")
+
+        # Phase 2: Circuitize selected layers
         for idx, segment in enumerate(segments):
             if layer_indices is not None and idx not in layer_indices:
-                logger.info(f"Skipping segment {idx} as it's not in the specified layers")
+                logger.info(f"Skipping circuitization for segment {idx} as it's not in the specified layers")
                 skipped_count += 1
                 continue
+
             segment_path = segment.get('path')
             if not segment_path or not os.path.exists(segment_path):
                 logger.warning(f"Segment file not found for index {idx}: {segment_path}")
                 continue
+
             segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
-            # Run pipeline and get data
+            os.makedirs(segment_output_path, exist_ok=True)
+
+            calibration_input = input_file_path if idx == 0 else os.path.join(
+                os.path.dirname(segments[idx-1].get('path')), 
+                "ezkl_circuitization",
+                f"segment_{idx-1}_calibration.json"
+            )
+
+            logger.info(f"Circuitizing segment {idx} with calibration input file {calibration_input}")
             circuitization_data = self.circuitizer_impl.circuitization_pipeline(
                 segment_path,
                 segment_output_path,
-                input_file_path=input_file_path,
+                input_file_path=calibration_input,
                 segment_details=segment
             )
             segment['ezkl_circuitization'] = circuitization_data
             circuitized_count += 1
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
+
 
         if segment_output_path:
             output_dir = os.path.dirname(segment_output_path)

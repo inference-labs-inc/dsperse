@@ -10,7 +10,7 @@ import logging
 from colorama import Fore, Style
 
 from src.circuitizer import Circuitizer
-from src.cli.base import check_model_dir, prompt_for_value, logger
+from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 
 
 def _check_layers(slices_path, layers_str):
@@ -125,9 +125,15 @@ def circuitize_model(args):
     # Prompt for slices path if not provided
     if not hasattr(args, 'slices_path') or not args.slices_path:
         args.slices_path = prompt_for_value('slices-path', 'Enter the path to the slices directory')
+    else:
+        args.slices_path = normalize_path(args.slices_path)
 
     if not check_model_dir(args.slices_path):
         return
+
+    # Normalize input file if provided via flag
+    if hasattr(args, 'input_file') and args.input_file:
+        args.input_file = normalize_path(args.input_file)
 
     # Ensure the provided path looks like a slices directory; otherwise guide user to slice first.
     try:

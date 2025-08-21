@@ -7,7 +7,7 @@ import traceback
 
 from colorama import Fore, Style
 
-from src.cli.base import check_model_dir, prompt_for_value, logger
+from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 from src.slicer import Slicer
 
 
@@ -41,6 +41,8 @@ def slice_model(args):
     # Prompt for model path if not provided
     if not hasattr(args, 'model_dir') or not args.model_dir:
         args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory')
+    else:
+        args.model_dir = normalize_path(args.model_dir)
 
     if not check_model_dir(args.model_dir):
         return
@@ -62,6 +64,8 @@ def slice_model(args):
     if not hasattr(args, 'output_dir') or not args.output_dir:
         default_output_dir = os.path.join(model_dir, "slices")
         args.output_dir = prompt_for_value('output-dir', 'Enter the output directory', default=default_output_dir, required=False)
+    else:
+        args.output_dir = normalize_path(args.output_dir)
 
     # Create output directory if specified
     output_dir = args.output_dir
@@ -80,9 +84,10 @@ def slice_model(args):
     if args.save_file == 'default':
         # Flag included, no value provided
         save_path = os.path.join(model_dir, "analysis", "model_metadata.json")
+        save_path = normalize_path(save_path)
     else:
         # Use the provided value or None (if no flag was provided)
-        save_path = args.save_file
+        save_path = normalize_path(args.save_file) if args.save_file else None
 
     try:
             # Slice ONNX model

@@ -225,7 +225,8 @@ class Circuitizer:
                 f"segment_{idx-1}_calibration.json"
             )
 
-            logger.info(f"Circuitizing segment {idx} with calibration input file {calibration_input}")
+            if calibration_input and os.path.exists(calibration_input):
+                logger.info(f"Circuitizing segment {idx} with calibration input file {calibration_input}")
             circuitization_data = self.circuitizer_impl.circuitization_pipeline(
                 segment_path,
                 segment_output_path,

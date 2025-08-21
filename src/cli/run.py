@@ -8,7 +8,7 @@ import traceback
 
 from colorama import Fore, Style
 
-from src.cli.base import check_model_dir, save_result, prompt_for_value, logger
+from src.cli.base import check_model_dir, save_result, prompt_for_value, logger, normalize_path
 from src.runner import Runner
 
 
@@ -46,6 +46,8 @@ def run_inference(args):
     # Require slices directory
     if not hasattr(args, 'slices_dir') or not args.slices_dir:
         args.slices_dir = prompt_for_value('slices-dir', 'Enter the slices directory')
+    else:
+        args.slices_dir = normalize_path(args.slices_dir)
 
     if not check_model_dir(args.slices_dir):
         return
@@ -67,8 +69,14 @@ def run_inference(args):
         slices_dir_effective = os.path.join(args.slices_dir, 'slices')
         model_dir = args.slices_dir
 
+    # Normalize derived paths
+    slices_dir_effective = normalize_path(slices_dir_effective)
+    model_dir = normalize_path(model_dir)
+
     # Get run metadata path if provided, otherwise None (Runner will auto-generate)
     run_metadata_path = args.run_metadata_path if hasattr(args, 'run_metadata_path') and args.run_metadata_path else None
+    if run_metadata_path:
+        run_metadata_path = normalize_path(run_metadata_path)
 
     # Prompt for input file if not provided
     if not hasattr(args, 'input_file') or not args.input_file:
@@ -77,6 +85,8 @@ def run_inference(args):
         args.input_file = prompt_for_value('input-file', 'Enter the input file path', default=default_input_file, required=True)
 
     # Check if input file exists
+    if args.input_file:
+        args.input_file = normalize_path(args.input_file)
     if args.input_file and not os.path.exists(args.input_file):
         print(f"{Fore.YELLOW}Warning: Input file '{args.input_file}' does not exist.{Style.RESET_ALL}")
         retry_option = prompt_for_value('retry-option', 'Enter a different file path or "q" to quit', required=False).lower()
@@ -129,6 +139,7 @@ def run_inference(args):
         # Save the result if an output file is specified
         if args.output_file:
             try:
+                args.output_file = normalize_path(args.output_file)
                 save_result(result, args.output_file)
                 logger.info(f"Results saved to {args.output_file}")
             except Exception as e:

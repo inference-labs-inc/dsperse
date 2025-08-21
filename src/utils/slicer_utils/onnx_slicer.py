@@ -298,12 +298,9 @@ class OnnxSlicer:
         # Store paths to sliced models
         slice_paths = []
 
-        # Create slices directory
-        slices_dir = os.path.join(output_path, "slices")
-        if not os.path.exists(slices_dir):
-            os.makedirs(slices_dir, exist_ok=True)
-
-        output_path = slices_dir
+        # Create and use slices directory
+        output_path = os.path.join(output_path, "slices")
+        os.makedirs(output_path, exist_ok=True)
 
         # Process each segment
         for i in range(len(slice_points)):
@@ -327,11 +324,10 @@ class OnnxSlicer:
             segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
                 segment_nodes, graph, initializer_map)
 
-            # Save the segment model
-            save_path = os.path.join(output_path, f"segment_{segment_idx}")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path, exist_ok=True)
-            file_path = os.path.join(save_path, f"segment_{segment_idx}.onnx")
+            # Save the segment model directly in the slices directory
+            segment_dir = os.path.join(output_path, f"segment_{segment_idx}")
+            os.makedirs(segment_dir, exist_ok=True)
+            file_path = os.path.join(segment_dir, f"segment_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]

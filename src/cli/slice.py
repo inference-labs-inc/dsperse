@@ -87,19 +87,8 @@ def slice_model(args):
         default_output_dir = os.path.join(model_dir, "slices")
         args.output_dir = prompt_for_value('output-dir', 'Enter the output directory', default=default_output_dir, required=False)
 
-    # Create output directory if specified
+    # Set up output directory path but don't create it yet (slicer will create necessary directories)
     output_dir = os.path.expanduser(args.output_dir) if args.output_dir else None
-    if output_dir:
-        try:
-            os.makedirs(output_dir, exist_ok=True)
-            success_msg = f"Output directory created: {output_dir}"
-            print(f"{Fore.GREEN}{success_msg}{Style.RESET_ALL}")
-            logger.info(success_msg)
-        except Exception as e:
-            error_msg = f"Error creating output directory: {e}"
-            print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
-            logger.error(error_msg)
-            return
 
     if args.save_file == 'default':
         # Flag included, no value provided

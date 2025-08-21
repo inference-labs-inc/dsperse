@@ -56,3 +56,41 @@ def test_full_workflow():
     cmd = f"kubz verify --run-dir {run_dir} --output-file {verify_output}"
     result = run_command(cmd)
     assert result.returncode == 0
+
+def test_layer_flag():
+    """Test the complete workflow: slice -> circuitize -> run-> prove -> verify"""
+    model_dir = TEST_MODELS_DIR / "doom"
+    output_dir = TEST_OUTPUT_DIR / "layer_flag"
+
+    layers = "0,2,4" #First, middle, last layer
+    
+    # Slice the model
+    cmd = f"kubz slice --model-dir {model_dir} --output-dir {output_dir}"
+    result = run_command(cmd)
+    assert result.returncode == 0
+    assert os.path.exists(output_dir / "slices")
+    assert os.path.exists(output_dir / "metadata.json")
+
+    # Circuitize the slices
+    cmd = f"kubz circuitize --model-path {output_dir} --layers {layers} --input-file {TEST_MODELS_DIR/'doom'/'input.json'}"
+    result = run_command(cmd)
+    assert result.returncode == 0
+
+    # Run the circuit
+    cmd = f"kubz run --model-dir {output_dir} --input-file {TEST_MODELS_DIR/'doom'/'input.json'} --metadata-path {output_dir/'metadata.json'} --output-file {output_dir/'output.json'}"
+    result = run_command(cmd)
+    assert result.returncode == 0
+
+    # Prove the circuits
+    run_dir = sorted(list(Path(output_dir/"run").glob("run_*")))[-1]
+    print(f"RUN DIR: {run_dir}")
+    prove_output = output_dir / "prove_output.json"
+    cmd = f"kubz prove --run-dir {run_dir} --output-file {prove_output}"
+    result = run_command(cmd)
+    assert result.returncode == 0
+
+    # Verify the proofs
+    verify_output = output_dir / "verify_output.json"
+    cmd = f"kubz verify --run-dir {run_dir} --output-file {verify_output}"
+    result = run_command(cmd)
+    assert result.returncode == 0

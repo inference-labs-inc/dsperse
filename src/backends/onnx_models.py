@@ -116,11 +116,15 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         if input_portion.size < elements_needed:
-                            padding = np.zeros(elements_needed - input_portion.size)
+                            padding = np.zeros(elements_needed - input_portion.size, dtype=np.float32)
                             input_portion = np.concatenate([input_portion, padding])
 
                     # Reshape to match expected shape
-                    result[input_name] = input_portion.reshape(final_shape)
+                    reshaped = input_portion.reshape(final_shape)
+                    # Ensure float32 for ORT compatibility
+                    if reshaped.dtype != np.float32:
+                        reshaped = reshaped.astype(np.float32)
+                    result[input_name] = reshaped
 
                 return result
             else:
@@ -182,6 +186,9 @@ class OnnxModels:
 
                         input_numpy = flat.reshape(expected_shape)
 
+                # Ensure float32 for ORT compatibility
+                if input_numpy.dtype != np.float32:
+                    input_numpy = input_numpy.astype(np.float32)
                 return {input_name: input_numpy}
 
         except Exception as e:

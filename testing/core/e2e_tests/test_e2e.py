@@ -30,7 +30,7 @@ def test_full_workflow():
     cmd = f"dsperse slice --model-dir {model_dir}"
     result = run_command(cmd)
     assert result.returncode == 0
-    assert os.path.exists(output_dir / "slices")
+    assert os.path.exists(output_dir)
     assert os.path.exists(output_dir / "metadata.json")
 
     # Circuitize the slices
@@ -39,12 +39,12 @@ def test_full_workflow():
     assert result.returncode == 0
 
     # Run the circuit
-    cmd = f"dsperse run --slices-dir {output_dir} --input-file {TEST_MODELS_DIR/'input.json'} --output-file {output_dir/'output.json'}"
+    cmd = f"dsperse run --slices-dir {output_dir} --input-file {model_dir/'input.json'} --output-file {model_dir/'output.json'}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Prove the circuits
-    run_dir = sorted(list(Path(output_dir/"run").glob("run_*")))[-1]
+    run_dir = sorted(list(Path(model_dir/"run").glob("run_*")))[-1]
     print(f"RUN DIR: {run_dir}")
     prove_output = output_dir / "prove_output.json"
     cmd = f"dsperse prove --run-dir {run_dir} --output-file {prove_output}"
@@ -68,7 +68,7 @@ def test_layer_flag():
     cmd = f"dsperse slice --model-dir {model_dir}"
     result = run_command(cmd)
     assert result.returncode == 0
-    assert os.path.exists(output_dir / "slices")
+    assert os.path.exists(output_dir)
     assert os.path.exists(output_dir / "metadata.json")
 
     # Circuitize the slices
@@ -77,12 +77,12 @@ def test_layer_flag():
     assert result.returncode == 0
 
     # Run the circuit
-    cmd = f"dsperse run --slices-dir {output_dir} --input-file {TEST_MODELS_DIR/'input.json'} --output-file {output_dir/'output.json'}"
+    cmd = f"dsperse run --slices-dir {output_dir} --input-file {model_dir/'input.json'} --output-file {model_dir/'output.json'}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Prove the circuits
-    run_dir = sorted(list(Path(output_dir/"run").glob("run_*")))[-1]
+    run_dir = sorted(list(Path(model_dir/"run").glob("run_*")))[-1]
     print(f"RUN DIR: {run_dir}")
     prove_output = output_dir / "prove_output.json"
     cmd = f"dsperse prove --run-dir {run_dir} --output-file {prove_output}"

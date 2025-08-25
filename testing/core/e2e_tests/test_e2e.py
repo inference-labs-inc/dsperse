@@ -1,4 +1,5 @@
 import os
+from pyexpat import model
 import subprocess
 import pytest
 from pathlib import Path
@@ -6,12 +7,11 @@ from colorama import Fore, Style
 
 # Initialize colorama
 import colorama
+from torch import mode
 colorama.init()
 
 # Test data paths
-TEST_MODELS_DIR = Path("~/Downloads/kubz/src/models").expanduser()
-TEST_OUTPUT_DIR = Path("~/Downloads/kubz/src/models").expanduser()
-TEST_OUTPUT_DIR.mkdir(exist_ok=True)
+TEST_MODELS_DIR = Path("./src/models")
 
 def run_command(cmd):
     """Helper function to run CLI commands"""
@@ -24,22 +24,22 @@ def run_command(cmd):
 def test_full_workflow():
     """Test the complete workflow: slice -> circuitize -> run-> prove -> verify"""
     model_dir = TEST_MODELS_DIR / "doom"
-    output_dir = TEST_OUTPUT_DIR / "output"
+    output_dir = model_dir / "slices"
 
     # Slice the model
-    cmd = f"kubz slice --model-dir {model_dir} --output-dir {output_dir}"
+    cmd = f"dsperse slice --model-dir {model_dir}"
     result = run_command(cmd)
     assert result.returncode == 0
     assert os.path.exists(output_dir / "slices")
     assert os.path.exists(output_dir / "metadata.json")
 
     # Circuitize the slices
-    cmd = f"kubz circuitize --model-path {output_dir}"
+    cmd = f"dsperse circuitize --slices-path {output_dir}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Run the circuit
-    cmd = f"kubz run --model-dir {output_dir} --input-file {TEST_MODELS_DIR/'doom'/'input.json'} --metadata-path {output_dir/'metadata.json'} --output-file {output_dir/'output.json'}"
+    cmd = f"dsperse run --slices-dir {output_dir} --input-file {TEST_MODELS_DIR/'input.json'} --output-file {output_dir/'output.json'}"
     result = run_command(cmd)
     assert result.returncode == 0
 
@@ -47,37 +47,37 @@ def test_full_workflow():
     run_dir = sorted(list(Path(output_dir/"run").glob("run_*")))[-1]
     print(f"RUN DIR: {run_dir}")
     prove_output = output_dir / "prove_output.json"
-    cmd = f"kubz prove --run-dir {run_dir} --output-file {prove_output}"
+    cmd = f"dsperse prove --run-dir {run_dir} --output-file {prove_output}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Verify the proofs
     verify_output = output_dir / "verify_output.json"
-    cmd = f"kubz verify --run-dir {run_dir} --output-file {verify_output}"
+    cmd = f"dsperse verify --run-dir {run_dir} --output-file {verify_output}"
     result = run_command(cmd)
     assert result.returncode == 0
 
 def test_layer_flag():
-    """Test the complete workflow: slice -> circuitize -> run-> prove -> verify"""
+    """Test the complete workflow with layer selection flag: slice -> circuitize -> run-> prove -> verify"""
     model_dir = TEST_MODELS_DIR / "doom"
-    output_dir = TEST_OUTPUT_DIR / "layer_flag"
+    output_dir = model_dir / "slices"
 
     layers = "0,2,4" #First, middle, last layer
     
     # Slice the model
-    cmd = f"kubz slice --model-dir {model_dir} --output-dir {output_dir}"
+    cmd = f"dsperse slice --model-dir {model_dir}"
     result = run_command(cmd)
     assert result.returncode == 0
     assert os.path.exists(output_dir / "slices")
     assert os.path.exists(output_dir / "metadata.json")
 
     # Circuitize the slices
-    cmd = f"kubz circuitize --model-path {output_dir} --layers {layers} --input-file {TEST_MODELS_DIR/'doom'/'input.json'}"
+    cmd = f"dsperse circuitize --slices-path {output_dir} --layers {layers}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Run the circuit
-    cmd = f"kubz run --model-dir {output_dir} --input-file {TEST_MODELS_DIR/'doom'/'input.json'} --metadata-path {output_dir/'metadata.json'} --output-file {output_dir/'output.json'}"
+    cmd = f"dsperse run --slices-dir {output_dir} --input-file {TEST_MODELS_DIR/'input.json'} --output-file {output_dir/'output.json'}"
     result = run_command(cmd)
     assert result.returncode == 0
 
@@ -85,12 +85,12 @@ def test_layer_flag():
     run_dir = sorted(list(Path(output_dir/"run").glob("run_*")))[-1]
     print(f"RUN DIR: {run_dir}")
     prove_output = output_dir / "prove_output.json"
-    cmd = f"kubz prove --run-dir {run_dir} --output-file {prove_output}"
+    cmd = f"dsperse prove --run-dir {run_dir} --output-file {prove_output}"
     result = run_command(cmd)
     assert result.returncode == 0
 
     # Verify the proofs
     verify_output = output_dir / "verify_output.json"
-    cmd = f"kubz verify --run-dir {run_dir} --output-file {verify_output}"
+    cmd = f"dsperse verify --run-dir {run_dir} --output-file {verify_output}"
     result = run_command(cmd)
     assert result.returncode == 0

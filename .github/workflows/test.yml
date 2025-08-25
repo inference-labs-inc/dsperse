@@ -23,7 +23,10 @@ jobs:
     - name: Install EZKL CLI
       run: |
         curl https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash
-        source ~/.bashrc
+    - name: Add ezkl to PATH
+      run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    - name: Source ~/.bashrc
+      run: source ~/.bashrc
     - name: Install dependencies
       run: ./install.sh
     - name: Add additional dependencies

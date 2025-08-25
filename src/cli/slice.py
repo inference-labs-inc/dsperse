@@ -47,8 +47,8 @@ def slice_model(args):
     if not check_model_dir(args.model_dir):
         return
 
-    # Expand and normalize paths
-    model_dir = os.path.expanduser(args.model_dir)
+    # Check if the provided path is a file or directory
+    model_dir = args.model_dir
     model_file = None
 
     # If the path is a file, extract the directory and filename
@@ -67,8 +67,19 @@ def slice_model(args):
     else:
         args.output_dir = normalize_path(args.output_dir)
 
-    # Set up output directory path but don't create it yet (slicer will create necessary directories)
-    output_dir = os.path.expanduser(args.output_dir) if args.output_dir else None
+    # Create output directory if specified
+    output_dir = args.output_dir
+    if output_dir:
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            success_msg = f"Output directory created: {output_dir}"
+            print(f"{Fore.GREEN}{success_msg}{Style.RESET_ALL}")
+            logger.info(success_msg)
+        except Exception as e:
+            error_msg = f"Error creating output directory: {e}"
+            print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
+            logger.error(error_msg)
+            return
 
     if args.save_file == 'default':
         # Flag included, no value provided

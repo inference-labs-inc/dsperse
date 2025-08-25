@@ -30,7 +30,6 @@ def setup_parser(subparsers):
 
     return run_parser
 
-
 def run_inference(args):
     """
     Run inference on a model based on the provided arguments.
@@ -96,16 +95,12 @@ def run_inference(args):
             logger.info("Operation cancelled by user")
             return
         elif retry_option:
-            if os.path.exists(os.path.expanduser(retry_option)):
+            if os.path.exists(retry_option):
                 args.input_file = retry_option
-                print(
-                    f"{Fore.GREEN}Using input file: {args.input_file}{Style.RESET_ALL}"
-                )
+                print(f"{Fore.GREEN}Using input file: {args.input_file}{Style.RESET_ALL}")
                 logger.info(f"Using input file: {args.input_file}")
             else:
-                print(
-                    f"{Fore.RED}Error: File '{retry_option}' does not exist. Aborting.{Style.RESET_ALL}"
-                )
+                print(f"{Fore.RED}Error: File '{retry_option}' does not exist. Aborting.{Style.RESET_ALL}")
                 logger.error(f"File '{retry_option}' does not exist")
                 return
         else:
@@ -128,12 +123,10 @@ def run_inference(args):
             slices_path=slices_dir_effective,
             run_metadata_path=run_metadata_path
         )
-        result = runner.run(os.path.expanduser(args.input_file)) #Expand user path
+        result = runner.run(args.input_file)
         elapsed_time = time.time() - start_time
-
-        print(
-            f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}"
-        )
+        
+        print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         logger.info(f"Inference completed in {elapsed_time:.2f} seconds")
 
         # Prompt for output file if not provided

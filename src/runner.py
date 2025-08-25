@@ -19,15 +19,9 @@ logging.basicConfig(level=logging.INFO)
 
 class Runner:
     def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None):
-        print(f"MODEL PATH: {model_path}")
-        print(f"SLICES PATH: {slices_path}")
-        print(f"METADATA PATH: {metadata_path}")
-        print(f"RUN METADATA PATH: {run_metadata_path}")
-
-        if not model_path and not slices_path:
+        if not model_path:
             raise ValueError("Please provide a model_path (parent of slices dir) to initialize the runner.")
-   
-        self.model_path = model_path if model_path else slices_path
+        self.model_path = model_path
         self.slices_path = Path(slices_path) if slices_path else Path(model_path) / "slices"
         self.metadata_path = Path(metadata_path) if metadata_path else self.slices_path / "metadata.json"
         self.run_metadata_path = Path(run_metadata_path) if run_metadata_path else None

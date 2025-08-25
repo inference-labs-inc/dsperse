@@ -61,8 +61,7 @@ class Circuitizer:
             model_file = os.path.join(model_dir, "model.onnx")
         # Check if it's a directory with metadata.json (sliced model)
         elif os.path.isdir(model_path) and (os.path.exists(os.path.join(model_path, "metadata.json")) or 
-                                           os.path.exists(os.path.join(model_path, "slices", "metadata.json")) or
-                                           os.path.exists(os.path.join(os.path.dirname(model_path.rstrip("/")), "metadata.json"))):
+                                           os.path.exists(os.path.join(model_path, "slices", "metadata.json"))):
             is_onnx = True
             
         # Create appropriate circuitizer
@@ -166,16 +165,6 @@ class Circuitizer:
         segment_output_path = None
         circuitized_count = 0
         skipped_count = 0
-        
-        # Phase 1: Run ONNX inference chain if we have input file
-        current_input = input_file_path
-        if current_input and os.path.exists(current_input):
-            logger.info("Running ONNX inference chain to generate calibration files")
-            for idx, segment in enumerate(segments):
-                segment_path = segment.get('path')
-                if not segment_path or not os.path.exists(segment_path):
-                    logger.warning(f"Segment file not found for index {idx}: {segment_path}")
-                    continue
 
         # Phase 1: Run ONNX inference chain if we have input file
         current_input = input_file_path

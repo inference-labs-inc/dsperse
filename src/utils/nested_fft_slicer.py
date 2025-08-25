@@ -4,6 +4,7 @@ Nested FFT Slicer
 Further slices FFT-decomposed models into smaller chunks based on FFT sub-circuits.
 Each Conv → FFT decomposition (DFT → Mul → DFT) gets split into separate segments.
 Follows the exact same format and logic as slicer.py and onnx_slicer.py.
+Creates flattened segments with names like segment_0_1, segment_0_2, etc. in a single parent folder.
 """
 
 import os.path
@@ -13,6 +14,7 @@ from src.analyzers.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
 from src.utils.utils import Utils
 from onnx.utils import extract_model
+import shutil
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -25,7 +27,7 @@ class NestedFFTSlicer:
         self.model_metadata = None
         self.slice_points = None
 
-        self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
+        self.onnx_analyzer = OnnxAnalyzer(onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)
         self.graph = self.onnx_model.graph
 
@@ -336,11 +338,8 @@ class NestedFFTSlicer:
             segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
                 segment_nodes, graph, initializer_map)
 
-            # Save the segment model
-            save_path = os.path.join(output_path, f"nested_segment_{segment_idx}")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path, exist_ok=True)
-            file_path = os.path.join(save_path, f"nested_segment_{segment_idx}.onnx")
+            # Save the segment model directly in the output directory with flattened naming
+            file_path = os.path.join(output_path, f"segment_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
@@ -429,13 +428,17 @@ def main():
     """Main function to run nested slicing on all FFT-decomposed segments."""
     # Use the FFT_cov_dft directory which has properly decomposed models
     input_dir = "./src/models/resnet/FFT_cov_dft/slices"
-    output_base = "./src/models/resnet/nested_slices"
+    output_base = "./src/models/resnet/flattened_nested_slices"
+    final_output_dir = "./src/models/resnet/flattened_segments"
+    
     os.makedirs(output_base, exist_ok=True)
+    os.makedirs(final_output_dir, exist_ok=True)
 
-    print("🔪 Nested FFT Slicer - Creating granular slices from FFT-decomposed models")
+    print("🔪 Nested FFT Slicer - Creating flattened granular slices from FFT-decomposed models")
     print("=" * 70)
     print(f"📁 Input directory: {input_dir}")
-    print(f"📁 Output directory: {output_base}")
+    print(f"📁 Intermediate output: {output_base}")
+    print(f"📁 Final flattened output: {final_output_dir}")
 
     # Find all segment directories
     segment_dirs = sorted([d for d in os.listdir(input_dir) if d.startswith('segment_')])
@@ -448,10 +451,11 @@ def main():
             print(f"   ⚠️  Skipping {segment_dir}: {input_path} not found")
             continue
             
-        nested_output_dir = os.path.join(output_base, f"nested_{segment_num}")
+        # Create output directory for this segment's nested slices
+        nested_output_dir = os.path.join(output_base, f"segment_{segment_num}_nested")
         os.makedirs(nested_output_dir, exist_ok=True)
         
-        print(f"\n📁 Processing {segment_dir} -> nested_{segment_num}/")
+        print(f"\n📁 Processing {segment_dir} -> segment_{segment_num}_nested/")
         
         try:
             nested_slicer = NestedFFTSlicer(input_path, save_path=nested_output_dir)
@@ -465,7 +469,35 @@ def main():
             print(f"   ❌ Error processing {segment_dir}: {e}")
             continue
 
-    print(f"\n🎉 Nested slicing complete! Check output in: {output_base}")
+    # Now flatten all segments into the final directory with proper naming
+    print(f"\n🔄 Flattening segments into final directory...")
+    
+    for segment_dir in segment_dirs:
+        segment_num = segment_dir.split('_')[1]
+        nested_dir = os.path.join(output_base, f"segment_{segment_num}_nested")
+        
+        if not os.path.exists(nested_dir):
+            continue
+            
+        # Find all segment files in the nested directory
+        segment_files = [f for f in os.listdir(nested_dir) if f.endswith('.onnx') and f.startswith('segment_')]
+        segment_files.sort()
+        
+        for segment_file in segment_files:
+            nested_segment_num = segment_file.split('_')[1].split('.')[0]
+            source_path = os.path.join(nested_dir, segment_file)
+            target_filename = f"segment_{segment_num}_{nested_segment_num}.onnx"
+            target_path = os.path.join(final_output_dir, target_filename)
+            
+            try:
+                shutil.copy2(source_path, target_path)
+                print(f"   📋 {segment_file} -> {target_filename}")
+            except Exception as e:
+                print(f"   ❌ Error copying {segment_file}: {e}")
+
+    print(f"\n🎉 Nested slicing and flattening complete!")
+    print(f"📁 Check intermediate output in: {output_base}")
+    print(f"📁 Check final flattened output in: {final_output_dir}")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 FFT Metadata Generator
 Generates metadata.json for FFT-decomposed models by adapting the original metadata
 to reflect the transformation from Conv nodes to DFT → Mul → DFT operations.
+Now supports flattened nested segments with names like segment_0_1, segment_0_2, etc.
 """
 
 import json
@@ -15,18 +16,21 @@ class FFTMetadataGenerator:
     """
     Generates metadata for FFT-decomposed models by analyzing the original metadata
     and the FFT-decomposed ONNX files to create updated metadata.
+    Supports both regular FFT segments and flattened nested segments.
     """
     
-    def __init__(self, original_metadata_path: str, fft_models_dir: str):
+    def __init__(self, original_metadata_path: str, fft_models_dir: str, nested_slices_dir: str = None):
         """
         Initialize with paths to original metadata and FFT-decomposed models.
         
         Args:
             original_metadata_path: Path to original slices metadata.json
             fft_models_dir: Directory containing FFT-decomposed ONNX files
+            nested_slices_dir: Directory containing flattened nested slices (optional)
         """
         self.original_metadata_path = original_metadata_path
         self.fft_models_dir = fft_models_dir
+        self.nested_slices_dir = nested_slices_dir
         self.original_metadata = None
         self.fft_metadata = None
         
@@ -75,13 +79,14 @@ class FFTMetadataGenerator:
             "has_fft_decomposition": len(dft_nodes) > 0
         }
     
-    def transform_segment_metadata(self, original_segment: Dict[str, Any], fft_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def transform_segment_metadata(self, original_segment: Dict[str, Any], fft_analysis: Dict[str, Any], segment_suffix: str = "") -> Dict[str, Any]:
         """
         Transform a segment's metadata to reflect FFT decomposition.
         
         Args:
             original_segment: Original segment metadata
             fft_analysis: Analysis of the corresponding FFT model
+            segment_suffix: Suffix to add to segment names (e.g., "_1", "_2" for nested segments)
             
         Returns:
             Transformed segment metadata
@@ -91,8 +96,13 @@ class FFTMetadataGenerator:
         
         # Update the path to point to FFT model
         segment_index = transformed["index"]
-        transformed["filename"] = f"fft_segment_{segment_index}.onnx"
-        transformed["path"] = os.path.join(self.fft_models_dir, f"fft_segment_{segment_index}.onnx")
+        if segment_suffix and not transformed.get("filename", "").startswith("segment_"):
+            # Only add suffix if filename doesn't already have the correct format
+            transformed["filename"] = f"segment_{segment_index}{segment_suffix}.onnx"
+            transformed["path"] = os.path.join(self.fft_models_dir, f"segment_{segment_index}{segment_suffix}.onnx")
+        else:
+            # Use the filename as-is (already correctly formatted)
+            transformed["path"] = os.path.join(self.fft_models_dir, transformed["filename"])
         
         # Add FFT-specific information
         transformed["fft_decomposition"] = {
@@ -197,6 +207,17 @@ class FFTMetadataGenerator:
         transformed_segments = []
         for segment in fft_metadata["segments"]:
             segment_index = segment["index"]
+            
+            # Check if we have nested slices for this segment
+            if self.nested_slices_dir:
+                nested_dir = os.path.join(self.nested_slices_dir, f"segment_{segment_index}_nested")
+                if os.path.exists(nested_dir):
+                    # Process nested segments
+                    nested_segments = self._process_nested_segments(segment, nested_dir, segment_index)
+                    transformed_segments.extend(nested_segments)
+                    continue
+            
+            # Process regular FFT segment
             fft_model_path = os.path.join(self.fft_models_dir, f"fft_segment_{segment_index}.onnx")
             
             if os.path.exists(fft_model_path):
@@ -217,6 +238,53 @@ class FFTMetadataGenerator:
         fft_metadata["segments"] = transformed_segments
         
         return fft_metadata
+    
+    def _process_nested_segments(self, original_segment: Dict[str, Any], nested_dir: str, segment_index: int) -> List[Dict[str, Any]]:
+        """
+        Process nested segments for a given original segment.
+        
+        Args:
+            original_segment: Original segment metadata
+            nested_dir: Directory containing nested segments
+            segment_index: Index of the original segment
+            
+        Returns:
+            List of transformed nested segment metadata
+        """
+        nested_segments = []
+        
+        # Find all nested segment files
+        nested_files = [f for f in os.listdir(nested_dir) if f.endswith('.onnx') and f.startswith('segment_')]
+        nested_files.sort()  # Ensure consistent ordering
+        
+        for nested_file in nested_files:
+            nested_segment_num = nested_file.split('_')[1].split('.')[0]
+            nested_model_path = os.path.join(nested_dir, nested_file)
+            
+            try:
+                # Analyze the nested FFT model
+                fft_analysis = self.analyze_fft_model(nested_model_path)
+                
+                # Create nested segment metadata
+                nested_segment = original_segment.copy()
+                nested_segment["index"] = f"{segment_index}_{nested_segment_num}"
+                nested_segment["filename"] = f"segment_{segment_index}_{nested_segment_num}.onnx"
+                nested_segment["path"] = nested_model_path
+                nested_segment["parent_segment"] = segment_index
+                nested_segment["nested_level"] = int(nested_segment_num)
+                
+                # Transform the segment metadata
+                transformed_nested_segment = self.transform_segment_metadata(
+                    nested_segment, fft_analysis, f"_{nested_segment_num}"
+                )
+                
+                nested_segments.append(transformed_nested_segment)
+                
+            except Exception as e:
+                print(f"Warning: Could not process nested segment {nested_file}: {e}")
+                continue
+        
+        return nested_segments
     
     def save_fft_metadata(self, output_path: str = None) -> str:
         """
@@ -246,6 +314,7 @@ def main():
     # Paths
     original_metadata_path = "src/models/resnet/slices/metadata.json"
     fft_models_dir = "src/models/resnet/FFT_cov"
+    nested_slices_dir = "src/models/resnet/flattened_nested_slices"
     
     # Check if paths exist
     if not os.path.exists(original_metadata_path):
@@ -257,7 +326,7 @@ def main():
         return
     
     # Generate FFT metadata
-    generator = FFTMetadataGenerator(original_metadata_path, fft_models_dir)
+    generator = FFTMetadataGenerator(original_metadata_path, fft_models_dir, nested_slices_dir)
     
     try:
         output_path = generator.save_fft_metadata()
@@ -274,6 +343,12 @@ def main():
         print(f"   Total segments: {total_segments}")
         print(f"   FFT-decomposed: {fft_segments}")
         print(f"   Model type: {fft_metadata['model_type']}")
+        
+        # Check for nested segments
+        nested_segments = [seg for seg in fft_metadata["segments"] if "parent_segment" in seg]
+        if nested_segments:
+            print(f"   Nested segments: {len(nested_segments)}")
+            print(f"   Parent segments: {len(set(seg['parent_segment'] for seg in nested_segments))}")
         
     except Exception as e:
         print(f"❌ Error generating FFT metadata: {e}")

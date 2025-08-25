@@ -7,6 +7,7 @@ import argparse
 import random
 import colorama
 import logging
+import os
 from colorama import Fore, Style
 
 # Initialize colorama
@@ -14,6 +15,58 @@ colorama.init()
 
 # Configure logging
 logger = logging.getLogger('dsperse')
+
+# --- Path normalization helpers ---
+
+def normalize_path(p: str) -> str:
+    """
+    Expand ~ and environment variables, then return an absolute, normalized path.
+    Returns the input unchanged if falsy.
+    """
+    if not p:
+        return p
+    try:
+        expanded = os.path.expanduser(os.path.expandvars(str(p)))
+        return os.path.normpath(os.path.abspath(expanded))
+    except Exception:
+        return p
+
+
+def _param_name_suggests_path(name: str) -> bool:
+    if not name:
+        return False
+    name = name.lower()
+    for token in ("path", "dir", "file", "model", "slices", "output", "input", "run"):
+        if token in name:
+            return True
+    return False
+
+
+def _looks_like_path(value: str) -> bool:
+    if not value:
+        return False
+    v = str(value)
+    if v.startswith("~"):
+        return True
+    if v.startswith("/") or v.startswith("./") or v.startswith("../"):
+        return True
+    if os.sep in v or (os.altsep and os.altsep in v):
+        return True
+    if v.lower().endswith((".json", ".onnx", ".pth")):
+        return True
+    return False
+
+
+def _maybe_normalize_from_prompt(param_name: str, prompt_message: str, value: str) -> str:
+    try:
+        if _param_name_suggests_path(param_name) or _looks_like_path(value) or (
+            prompt_message and any(t in prompt_message.lower() for t in ["path", "directory", "dir", "file"])  # heuristic
+        ):
+            return normalize_path(value)
+    except Exception:
+        pass
+    return value
+
 
 def configure_logging(log_level='WARNING'):
     """
@@ -100,13 +153,13 @@ def check_model_dir(model_dir):
     Returns:
         bool: True if the path exists, False otherwise
     """
-    import os
-    if not os.path.exists(os.path.expanduser(model_dir)):
+    normalized = normalize_path(model_dir)
+    if not os.path.exists(normalized):
         error_msg = f"Path '{model_dir}' does not exist."
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return False
-    logger.debug(f"Model directory/file exists: {model_dir}")
+    logger.debug(f"Model directory/file exists: {normalized}")
     return True
 
 def detect_model_type(model_path):
@@ -177,7 +230,7 @@ def save_result(result, output_file):
 
 def prompt_for_value(param_name, prompt_message, default=None, required=True):
     """
-    Prompt the user for a value if it's missing.
+    Prompt the user for a value if it's missing. Normalizes path-like inputs.
 
     Args:
         param_name (str): The name of the parameter
@@ -190,22 +243,28 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
     """
     try:
         logger.debug(f"Prompting for {param_name} with message: {prompt_message}")
-        if default:
+        if default is not None:
             user_input = input(f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}")
             if not user_input.strip():
-                logger.debug(f"Using default value for {param_name}: {default}")
-                return default
-            logger.debug(f"User provided value for {param_name}: {user_input.strip()}")
-            return user_input.strip()
+                normalized_default = _maybe_normalize_from_prompt(param_name, prompt_message, str(default))
+                logger.debug(f"Using default value for {param_name}: {normalized_default}")
+                return normalized_default
+            value = user_input.strip()
+            value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
+            logger.debug(f"User provided value for {param_name}: {value}")
+            return value
         else:
             while True:
                 user_input = input(f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}")
                 if user_input.strip() or not required:
                     if user_input.strip():
-                        logger.debug(f"User provided value for {param_name}: {user_input.strip()}")
+                        value = user_input.strip()
+                        value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
+                        logger.debug(f"User provided value for {param_name}: {value}")
+                        return value
                     else:
                         logger.debug(f"Empty value provided for non-required parameter {param_name}")
-                    return user_input.strip()
+                        return user_input.strip()
                 error_msg = f"{param_name} is required."
                 print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
                 logger.warning(error_msg)

@@ -7,7 +7,7 @@ import traceback
 
 from colorama import Fore, Style
 
-from src.cli.base import check_model_dir, prompt_for_value, logger
+from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 from src.slicer import Slicer
 
 
@@ -24,9 +24,6 @@ def setup_parser(subparsers):
     slice_parser = subparsers.add_parser('slice', help='Slice a model into segments')
     slice_parser.add_argument('--model-dir', help='Path to the model file or directory containing the model')
     slice_parser.add_argument('--output-dir', help='Directory to save the sliced model (default: model_dir/slices)')
-    slice_parser.add_argument('--model-type', choices=['onnx', 'pth'], 
-                             help='Type of model to slice (auto-detected if not specified)')
-    slice_parser.add_argument('--input-file', help='Path to input file for analysis (default: model_dir/input.json)')
     slice_parser.add_argument('--save-file', nargs='?', const='default', help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
 
     return slice_parser
@@ -44,6 +41,8 @@ def slice_model(args):
     # Prompt for model path if not provided
     if not hasattr(args, 'model_dir') or not args.model_dir:
         args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory')
+    else:
+        args.model_dir = normalize_path(args.model_dir)
 
     if not check_model_dir(args.model_dir):
         return
@@ -61,31 +60,12 @@ def slice_model(args):
         print(f"{Fore.YELLOW}Using model file: {model_file}{Style.RESET_ALL}")
         logger.info(f"Using model file: {model_file}")
 
-    # Determine if it's a PyTorch or ONNX model based on model_type or auto-detect
-    is_onnx = False
-    if args.model_type:
-        is_onnx = args.model_type.lower() == 'onnx'
-        logger.debug(f"Model type specified: {args.model_type}")
-    else:
-        # Auto-detect model type
-        if model_file and model_file.lower().endswith('.onnx'):
-            is_onnx = True
-            print(f"{Fore.YELLOW}Auto-detected ONNX model from filename.{Style.RESET_ALL}")
-            logger.info("Auto-detected ONNX model from filename.")
-        elif os.path.exists(os.path.join(model_dir, "model.onnx")):
-            is_onnx = True
-            print(f"{Fore.YELLOW}Auto-detected ONNX model in directory.{Style.RESET_ALL}")
-            logger.info("Auto-detected ONNX model in directory.")
-        else:
-            error_msg = f"No ONNX model found at the specified path '{args.model_dir}'."
-            print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
-            logger.error(error_msg)
-            return
-
     # Prompt for output directory if not provided
     if not hasattr(args, 'output_dir') or not args.output_dir:
         default_output_dir = os.path.join(model_dir, "slices")
         args.output_dir = prompt_for_value('output-dir', 'Enter the output directory', default=default_output_dir, required=False)
+    else:
+        args.output_dir = normalize_path(args.output_dir)
 
     # Set up output directory path but don't create it yet (slicer will create necessary directories)
     output_dir = os.path.expanduser(args.output_dir) if args.output_dir else None
@@ -93,36 +73,32 @@ def slice_model(args):
     if args.save_file == 'default':
         # Flag included, no value provided
         save_path = os.path.join(model_dir, "analysis", "model_metadata.json")
+        save_path = normalize_path(save_path)
     else:
         # Use the provided value or None (if no flag was provided)
-        save_path = args.save_file
+        save_path = normalize_path(args.save_file) if args.save_file else None
 
     try:
-        if is_onnx:
             # Slice ONNX model
-            if model_file and model_file.lower().endswith('.onnx'):
-                onnx_path = model_file
-            else:
-                onnx_path = os.path.join(model_dir, "model.onnx")
-
-            if not os.path.exists(onnx_path):
-                error_msg = f"ONNX model file not found at the specified path '{onnx_path}'."
-                print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
-                logger.error(error_msg)
-                return
-
-            logger.info(f"Creating slicer for model: {onnx_path}")
-            slicer = Slicer.create(onnx_path, save_path)
-            logger.info(f"Slicing ONNX model to output path: {output_dir}")
-            slicer.slice_model(output_path=output_dir)
-            success_msg = "ONNX model sliced successfully!"
-            print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
-            logger.info(success_msg)
+        if model_file and model_file.lower().endswith('.onnx'):
+            onnx_path = model_file
         else:
-            # PyTorch models are not currently supported by the CLI
-            error_msg = "PyTorch models are not currently supported by the CLI. Please use an ONNX model instead."
+            onnx_path = os.path.join(model_dir, "model.onnx")
+
+        if not os.path.exists(onnx_path):
+            error_msg = f"ONNX model file not found at the specified path '{onnx_path}'."
             print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
             logger.error(error_msg)
+            return
+
+        logger.info(f"Creating slicer for model: {onnx_path}")
+        slicer = Slicer.create(onnx_path, save_path)
+        logger.info(f"Slicing ONNX model to output path: {output_dir}")
+        slicer.slice_model(output_path=output_dir)
+        success_msg = "ONNX model sliced successfully!"
+        print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
+        logger.info(success_msg)
+
     except Exception as e:
         error_msg = f"Error slicing model: {e}"
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")

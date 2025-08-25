@@ -177,6 +177,16 @@ class Circuitizer:
                     logger.warning(f"Segment file not found for index {idx}: {segment_path}")
                     continue
 
+        # Phase 1: Run ONNX inference chain if we have input file
+        current_input = input_file_path
+        if current_input and os.path.exists(current_input):
+            logger.info("Running ONNX inference chain to generate calibration files")
+            for idx, segment in enumerate(segments):
+                segment_path = segment.get('path')
+                if not segment_path or not os.path.exists(segment_path):
+                    logger.warning(f"Segment file not found for index {idx}: {segment_path}")
+                    continue
+
                 segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
                 os.makedirs(segment_output_path, exist_ok=True)
 
@@ -209,17 +219,25 @@ class Circuitizer:
             if not segment_path or not os.path.exists(segment_path):
                 logger.warning(f"Segment file not found for index {idx}: {segment_path}")
                 continue
-
+            # Prepare concise progress information similar to slicer output
+            deps = segment.get('dependencies', {}) if isinstance(segment, dict) else {}
+            input_names = deps.get('filtered_inputs') or deps.get('input') or []
+            output_names = deps.get('output') or []
+            try:
+                logger.info(f"Circuitizing segment {idx}: {input_names} -> {output_names}")
+            except Exception:
+                logger.info(f"Circuitizing segment {idx}")
             segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
             os.makedirs(segment_output_path, exist_ok=True)
 
             calibration_input = input_file_path if idx == 0 else os.path.join(
-                os.path.dirname(segments[idx-1].get('path')), 
+                os.path.dirname(segments[idx-1].get('path')),
                 "ezkl_circuitization",
                 f"segment_{idx-1}_calibration.json"
             )
 
-            logger.info(f"Circuitizing segment {idx} with calibration input file {calibration_input}")
+            if calibration_input and os.path.exists(calibration_input):
+                logger.info(f"Circuitizing segment {idx} with calibration input file {calibration_input}")
             circuitization_data = self.circuitizer_impl.circuitization_pipeline(
                 segment_path,
                 segment_output_path,
@@ -228,6 +246,7 @@ class Circuitizer:
             )
             segment['ezkl_circuitization'] = circuitization_data
             circuitized_count += 1
+            logger.info(f"Completed segment {idx}")
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
 
 

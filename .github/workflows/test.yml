@@ -22,8 +22,8 @@ jobs:
         python-version: "3.10"  #Should we specify more versions?
     - name: Install dependencies
       run: ./install.sh
-    - name: Install EZKL #Manual install for tests
-      run: pip install ezkl
+    - name: Install EZKL CLI
+      run: curl https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash
     - name: Add additional dependencies
       run: pip install onnxruntime_extensions transformers onnx_graphsurgeon
     - name: Run tests

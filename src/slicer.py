@@ -94,14 +94,16 @@ class Slicer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 6  # Change this to test different models
 
     # Model configurations
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3"
+        4: "models/yolov3",
+        5: "models/age",
+        6: "models/version"
     }
 
     # Resolve paths
@@ -122,7 +124,7 @@ if __name__ == "__main__":
         if isinstance(slices, list):
             print(f"Created {len(slices)} segments.")
             # Optionally display first few slice paths
-            preview = slices[:5]
+            preview = slices[:]
             if preview:
                 print("Sample slice files:")
                 for p in preview:

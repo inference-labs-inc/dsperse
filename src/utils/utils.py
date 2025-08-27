@@ -42,28 +42,71 @@ class Utils:
 
     @staticmethod
     def filter_inputs(segment_inputs, graph):
-        # Filter input names from segment details
-        segment_filtered_inputs = []
-        for input_info in segment_inputs:
-            # Only include actual inputs that are not weights or biases
-            # Typically, weights and biases have names containing "weight" or "bias"
-            if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
-                    input_info.name in [inp.name for inp in graph.input]):
-                segment_filtered_inputs.append(input_info.name)
-            # Also include intermediate tensors from previous layers
-            elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                segment_filtered_inputs.append(input_info.name)
-        # If there are no inputs after filtering, include the first non-weight/bias input
-        if not segment_filtered_inputs:
-            for input_info in segment_inputs:
-                if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    segment_filtered_inputs.append(input_info.name)
-                    break
+        """
+        Return the correct set of external input tensor names for ONNX extract_model.
+        Rules:
+        - Exclude initializers (weights/biases/constants) — extractor includes them automatically.
+        - Prefer only names that have type/shape in the original model (present in graph.input or graph.value_info).
+        - Preserve order and avoid duplicates.
+        - Provide safe fallbacks so we never return an empty list.
+        """
+        # Names of model-level inputs and typed value_infos
+        graph_input_names = [inp.name for inp in graph.input]
+        graph_input_name_set = set(graph_input_names)
+        typed_names = set(graph_input_names)
+        typed_names.update({vi.name for vi in graph.value_info})
+        # Names of initializers (weights/biases/statistics/constants)
+        initializer_names = {init.name for init in graph.initializer}
 
-            # If still no inputs, use the first input as a fallback
-            if not segment_filtered_inputs and segment_inputs:
-                segment_filtered_inputs.append(segment_inputs[0].name)
-        return segment_filtered_inputs
+        # Phase 1: collect candidate external inputs from provided segment_inputs
+        # Exclude initializers
+        candidates_in_order = []
+        seen = set()
+        for vi in segment_inputs:
+            name = getattr(vi, 'name', None)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            if name in initializer_names:
+                # Skip parameters; extractor will wire them automatically
+                continue
+            candidates_in_order.append(name)
+
+        # Phase 2: keep only "typed" candidates (present in model inputs or value_info)
+        typed_candidates = [n for n in candidates_in_order if n in typed_names]
+
+        # Use typed candidates if available
+        if typed_candidates:
+            return typed_candidates
+
+        # Phase 3: fallbacks
+        # 3a) If the model has at least one input, use it as a conservative default
+        if graph_input_names:
+            return [graph_input_names[0]]
+
+        # 3b) Use first non-initializer candidate if any
+        if candidates_in_order:
+            return [candidates_in_order[0]]
+
+        # 3c) Last resort: if segment_inputs exist, return its first name
+        if segment_inputs:
+            first_name = getattr(segment_inputs[0], 'name', None)
+            if first_name:
+                return [first_name]
+
+        # Should not happen, but return empty list if absolutely nothing is available
+        return []
+
+    @staticmethod
+    def get_unfiltered_inputs(segment_inputs):
+        """
+        Return raw input tensor names from segment inputs for extract_model usage.
+        This intentionally avoids filtering out weights/biases/etc.
+        """
+        segment_unfiltered_inputs = [getattr(inp, 'name', None) for inp in segment_inputs if getattr(inp, 'name', None)]
+        if not segment_unfiltered_inputs and segment_inputs:
+            segment_unfiltered_inputs = [segment_inputs[0].name]
+        return segment_unfiltered_inputs
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):

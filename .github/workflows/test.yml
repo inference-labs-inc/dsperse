@@ -24,14 +24,12 @@ jobs:
       run: |
         curl https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash
     - name: Add ezkl to PATH
-      run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-    - name: Source ~/.bashrc
-      run: source ~/.bashrc
+      run: echo "$HOME/.config/.ezkl/ezkl" >> $GITHUB_PATH
+    - name: Test EZKL
+      run: ezkl --version
     - name: Install dependencies
       run: ./install.sh
     - name: Add additional dependencies
       run: pip install onnxruntime_extensions transformers onnx_graphsurgeon
-    - name: Test EZKL
-      run: ezkl --version
     - name: Run tests
       run: pytest testing/core/e2e_tests/test_e2e.py

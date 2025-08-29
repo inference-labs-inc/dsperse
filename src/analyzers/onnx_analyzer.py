@@ -48,7 +48,9 @@ class OnnxAnalyzer:
         for i, node in enumerate(graph.node):
             # Analyze the node and store metadata
             node_info = self.analyze_node(node, i, initializer_map)
-            node_metadata[node.name] = node_info
+            # Use node name if available, otherwise use index as key to avoid collisions
+            node_key = node.name if node.name else f"node_{i}"
+            node_metadata[node_key] = node_info
 
         # Create model metadata
         model_metadata = {
@@ -100,6 +102,7 @@ class OnnxAnalyzer:
         # Return node metadata
         return {
             "index": index,
+            "node_name": node.name,
             "segment_name": f"{node_type}_{index}",
             "parameters": parameters,
             "node_type": node_type,

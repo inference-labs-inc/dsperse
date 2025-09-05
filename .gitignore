@@ -45,3 +45,8 @@ develop-eggs/
 models/
 src/models/
 
+
+# Local virtual envs
+python.venv/
+.venv/
+venv/

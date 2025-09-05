@@ -43,7 +43,21 @@ class Prover:
         # Initialize counters
         proved_segments = 0
         total_ezkl_segments = 0
-        
+
+        # Check if any circuit files exist before proceeding
+        has_circuit_files = False
+        for segment in run_results["execution_chain"]["execution_results"]:
+            segment_id = segment["segment_id"]
+            witness_execution = segment["witness_execution"]
+            if witness_execution["method"] == "ezkl_gen_witness" and witness_execution["success"]:
+                segment_metadata = metadata["slices"].get(segment_id)
+                if segment_metadata and segment_metadata.get("circuit_path") and os.path.exists(segment_metadata["circuit_path"]):
+                    has_circuit_files = True
+                    break
+
+        if not has_circuit_files:
+            raise ValueError("No circuit files found. Please run 'dsperse circuitize' first to generate circuit files before attempting to prove.")
+
         # Process each segment in the execution results
         for segment in run_results["execution_chain"]["execution_results"]:
             segment_id = segment["segment_id"]
@@ -64,12 +78,20 @@ class Prover:
                 witness_path = witness_execution["output_file"]
                 model_path = segment_metadata["circuit_path"]
                 pk_path = segment_metadata["pk_path"]
-                
+
+                # Check if circuit file exists
+                if model_path is None:
+                    print(f"Warning: No circuit file found for segment {segment_id} (circuit_path is null)")
+                    continue
+                if not os.path.exists(model_path):
+                    print(f"Warning: Circuit file not found for segment {segment_id}: {model_path}")
+                    continue
+
                 # Create proof directory and path
                 proof_dir = os.path.join(run_dir, segment_id)
                 os.makedirs(proof_dir, exist_ok=True)
                 proof_path = os.path.join(proof_dir, "proof.json")
-                
+
                 # Generate proof
                 print(f"Generating proof for {segment_id}...")
                 start_time = time.time()

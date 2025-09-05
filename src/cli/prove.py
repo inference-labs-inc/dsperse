@@ -83,10 +83,90 @@ def run_proof(args):
         return os.path.exists(os.path.join(p, "metadata.json"))
 
     # Determine input
+    default_model_path = None  # Initialize at function scope
     if hasattr(args, 'run_dir') and args.run_dir:
         candidate = normalize_path(args.run_dir)
     else:
-        candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)')
+        # Try to suggest latest run as default
+        default_run = None
+
+        # First, check if there's a run/ directory in current directory
+        current_run_dir = os.path.join(os.getcwd(), "run")
+        if os.path.exists(current_run_dir):
+            latest_run = get_latest_run(current_run_dir)
+            if latest_run:
+                default_run = os.path.basename(latest_run)
+                default_model_path = os.getcwd()
+
+        # If no local run directory, find latest run across all model directories
+        if not default_run:
+            models_dir = os.path.join(os.getcwd(), "src", "models")
+            if os.path.exists(models_dir):
+                all_runs = []
+
+                # Find all run_* directories in all model directories
+                for model_name in os.listdir(models_dir):
+                    model_path = os.path.join(models_dir, model_name)
+                    if os.path.isdir(model_path):
+                        model_run_dir = os.path.join(model_path, "run")
+                        if os.path.exists(model_run_dir):
+                            for item in os.listdir(model_run_dir):
+                                if item.startswith('run_') and os.path.isdir(os.path.join(model_run_dir, item)):
+                                    run_path = os.path.join(model_run_dir, item)
+                                    all_runs.append(run_path)
+
+                # Sort by timestamp descending (run_YYYYMMDD_HHMMSS format)
+                if all_runs:
+                    all_runs.sort(key=lambda x: os.path.basename(x), reverse=True)
+                    latest_run_path = all_runs[0]
+                    default_run = os.path.basename(latest_run_path)
+                    default_model_path = os.path.dirname(os.path.dirname(latest_run_path))
+
+        # Prompt with default if found
+        if default_run:
+            candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)', default=default_run)
+        else:
+            candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)')
+
+    # Handle run names (starts with "run_") - prepend run/ directory BEFORE normalization
+    if candidate and candidate.startswith('run_') and not candidate.startswith('/') and not candidate.startswith('./') and not candidate.startswith('../'):
+        # Always try current directory's run/ first (for when running from model directory)
+        current_run_dir = os.path.join(os.getcwd(), "run")
+        if os.path.exists(current_run_dir):
+            candidate = os.path.join(current_run_dir, candidate)
+        elif 'default_model_path' in locals() and default_model_path and default_model_path != os.getcwd():
+            # Use stored default model path if different from current directory
+            model_run_dir = os.path.join(default_model_path, "run")
+            candidate = os.path.join(model_run_dir, candidate)
+        else:
+            # Look for the run in model directories
+            models_dir = os.path.join(os.getcwd(), "src", "models")
+            if os.path.exists(models_dir):
+                for model_name in os.listdir(models_dir):
+                    model_path = os.path.join(models_dir, model_name)
+                    if os.path.isdir(model_path):
+                        model_run_dir = os.path.join(model_path, "run")
+                        if os.path.exists(model_run_dir) and os.path.exists(os.path.join(model_run_dir, candidate)):
+                            candidate = os.path.join(model_run_dir, candidate)
+                            break
+    # Handle already-normalized run names (absolute paths ending with run_*)
+    elif candidate and candidate.startswith('/') and os.path.basename(candidate).startswith('run_'):
+        # Check if this is a run name that was normalized to the wrong directory
+        basename = os.path.basename(candidate)
+        dirname = os.path.dirname(candidate)
+
+        # If the directory doesn't exist but we have model directories, look there
+        if not os.path.exists(candidate):
+            models_dir = os.path.join(os.getcwd(), "src", "models")
+            if os.path.exists(models_dir):
+                for model_name in os.listdir(models_dir):
+                    model_path = os.path.join(models_dir, model_name)
+                    if os.path.isdir(model_path):
+                        model_run_dir = os.path.join(model_path, "run")
+                        potential_path = os.path.join(model_run_dir, basename)
+                        if os.path.exists(potential_path):
+                            candidate = potential_path
+                            break
 
     # Ensure candidate is normalized in case prompt returned a path-like
     candidate = normalize_path(candidate)

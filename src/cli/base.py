@@ -79,15 +79,26 @@ def configure_logging(log_level='WARNING'):
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
-    # Configure the root logger
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Only call basicConfig if logging hasn't been configured yet
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=numeric_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+    else:
+        # If basicConfig was already called, just update the level
+        logging.root.setLevel(numeric_level)
 
-    # Set the level for the dsperse logger
+    # Ensure all existing loggers respect the new level
+    for name in logging.root.manager.loggerDict:
+        logging.getLogger(name).setLevel(numeric_level)
+
+    # Set the level for the dsperse logger specifically
     logger.setLevel(numeric_level)
+
+    # Ensure future loggers also respect this level by setting a default level
+    logging.getLogger().setLevel(numeric_level)
 
 # Easter eggs
 EASTER_EGGS = [

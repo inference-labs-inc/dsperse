@@ -117,6 +117,8 @@ class Prover:
                 else:
                     # If proof generation was successful, increment proved_segments
                     proved_segments += 1
+                    # Display individual segment proof time immediately
+                    print(f"  {segment_id}: {prove_time:.2f}s")
                 
                 # Update the segment with the new structure
                 segment.clear()

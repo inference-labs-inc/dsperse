@@ -114,6 +114,29 @@ What happens:
 - Slices are written to models/net/slices/segment_<i>/segment_<i>.onnx
 - A slices metadata.json is created at models/net/slices/metadata.json
 
+### Metadata Files Behavior
+
+Dsperse creates different types of metadata files for different purposes:
+
+**Operational Metadata** (`metadata.json`):
+- **Location**: Always created in the output directory (e.g., `models/net/slices/metadata.json`)
+- **Purpose**: Contains segment information, paths, and parameters needed for circuitization and proving
+- **Created**: Automatically during slicing
+- **Used by**: circuitize, prove, verify commands
+
+**Analysis Metadata** (`model_metadata.json`):
+- **Location**: Created in `model_dir/analysis/` when using `--save-file` flag
+- **Purpose**: Detailed node-by-node analysis information for debugging and inspection
+- **Created**: Only when `--save-file` flag is used
+- **Used by**: Developers and analysts for model inspection
+
+**Important Notes:**
+- These are **two different files** serving different purposes
+- The operational metadata is essential for dsperse to function
+- The analysis metadata is optional and primarily for debugging
+- Both files contain similar top-level information but different levels of detail
+- **This behavior is intended** but can be confusing due to similar names and purposes
+
 2) Circuitize with EZKL
 - Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 

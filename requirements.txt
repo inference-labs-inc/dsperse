@@ -1,7 +1,7 @@
 torch==2.6.0
-onnx==1.17.0
+onnx==1.18.0
 pytest==8.3.5
-ezkl==20.2.0
+ezkl==22.2.1
 networkx~=3.4.2
 matplotlib~=3.10.1
 numpy~=2.2.3

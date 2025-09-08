@@ -70,10 +70,8 @@ This document outlines the high-level architecture for the "dsperse" project—a
 - **Key Technology Decisions:**
   - **Circuitization Approach:**  
     Start by treating each vertical layer (i.e., a row or column of the weight matrix) as a circuit. Allow for dynamic adjustment so that multiple layers can be combined based on miner capability.
-  - **Resource Allocation:**  
+  - **Resource Allocation:**
     Expose CLI parameters so that miners can specify the amount of compute (number of layers and nodes) they can handle.
-  - **Caching Mechanism:**  
-    Implement Redis-based caching for table lookups to reduce RAM usage by storing the most frequently accessed lookup values.
 
 ---
 
@@ -85,11 +83,9 @@ This document outlines the high-level architecture for the "dsperse" project—a
      Interfaces with ezkl/Halo 2 to generate circuits for vertical layers.
   2. **Proof Distribution Engine:**  
      Allocates vertical layers to miners based on computed resource capacity (RAM and compute).
-  3. **Validator Module:**  
+  3. **Validator Module:**
      Assembles proofs from miners to produce the final inference proof.
-  4. **Caching System:**  
-     Implements Redis for table lookups to free up RAM.
-  5. **CLI Parameter Interface:**  
+  4. **CLI Parameter Interface:**
      Exposes knobs for miners to specify compute capacity (number of layers, nodes, etc.).
 
 - **Component Descriptions:**
@@ -97,11 +93,9 @@ This document outlines the high-level architecture for the "dsperse" project—a
     Splits the neural net's weight matrix vertically. By default, 1 layer = 1 circuit; configurable to group 2 or more layers.
   - **Proof Distribution Engine:**  
     Scores miners based on available compute and RAM, then assigns vertical layer circuits accordingly.
-  - **Validator Module:**  
+  - **Validator Module:**
     Collects proofs from miners. If a miner fails or is too slow, falls back to more granular circuit assignments.
-  - **Caching System:**  
-    Reduces RAM load by storing frequently used table lookup values in Redis, keeping less critical data in storage.
-  - **CLI Parameter Interface:**  
+  - **CLI Parameter Interface:**
     Allows miners to set their preferred circuit size and compute allocation.
 
 
@@ -164,13 +158,9 @@ This document outlines the high-level architecture for the "dsperse" project—a
     _Rationale:_ Reduces compute and RAM constraints, allows distributed proof computation, and provides finer control over resource allocation.  
     _Alternatives:_ Circuitizing the entire model; however, this is less flexible and resource-intensive.
 
-  - **Dynamic Grouping of Layers:**  
-    _Decision:_ Expose CLI parameters to allow grouping of multiple vertical layers into one circuit.  
+  - **Dynamic Grouping of Layers:**
+    _Decision:_ Expose CLI parameters to allow grouping of multiple vertical layers into one circuit.
     _Rationale:_ Enables adaptation based on miner capacity, optimizing proof time and resource usage.
-
-  - **Caching with Redis:**  
-    _Decision:_ Use Redis for table lookup caching.  
-    _Rationale:_ Minimizes RAM usage while providing fast lookup performance.
 
 - **Impact:**  
   These decisions directly affect the design of the Circuit Generator and Proof Distribution Engine, and will influence incentive mechanisms on the Bittensor network.
@@ -189,15 +179,12 @@ This document outlines the high-level architecture for the "dsperse" project—a
 - **Identified Risks:**
   - **Miner Overload:**  
     Risk of miners being assigned circuits that exceed their compute/RAM capabilities.
-  - **Proof Assembly Failure:**  
+  - **Proof Assembly Failure:**
     Potential failures in assembling partial proofs due to communication or computation delays.
-  - **Cache Performance:**  
-    Redis cache may not scale as expected, impacting lookup times.
 
-- **Mitigation Strategies:**  
+- **Mitigation Strategies:**
   - Implement fallback mechanisms to assign smaller circuits.
   - Penalty mechanisms for miners that consistently fail or are slow.
-  - Monitor cache performance and adjust parameters as needed.
 
 - **Technical Debts:**  
   - Initial testing and benchmarking required for optimal CLI parameter defaults.

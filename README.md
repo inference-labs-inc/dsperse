@@ -119,23 +119,23 @@ What happens:
 
 Whole model:
 ```bash
-dsperse circuitize --model-path src/models/net/model.onnx
+dsperse circuitize --slices-path src/models/net/slices
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-dsperse circuitize --model-path src/models/net
+dsperse circuitize --slices-path src/models/net/slices
 ```
 
 Optional calibration input to improve settings:
 ```bash
-dsperse circuitize --model-path src/models/net --input-file src/models/net/input.json
+dsperse circuitize --slices-path src/models/net/slices --input-file src/models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-dsperse circuitize --model-path src/models/net --layers 2,3,4
-dsperse circuitize --model-path src/models/net --layers 0-2
+dsperse circuitize --slices-path src/models/net/slices --layers 2,3,4
+dsperse circuitize --slices-path src/models/net/slices --layers 0-2
 ```
 
 What happens:

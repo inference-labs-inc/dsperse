@@ -12,6 +12,89 @@ from src.utils.runner_utils.runner_utils import RunnerUtils
 # Configure logger
 logger = logging.getLogger(__name__)
 
+def _detect_srs_error(stderr_output):
+    """
+    Detect SRS-related errors in EZKL stderr output.
+
+    Args:
+        stderr_output (str): The stderr output from EZKL command
+
+    Returns:
+        str: SRS error message if detected, None otherwise
+    """
+    if not stderr_output:
+        return None
+
+    stderr_lower = stderr_output.lower()
+
+    # Common SRS error patterns
+    srs_error_patterns = [
+        "srs",  # General SRS reference
+        "structured reference string",  # Full name
+        "trusted setup",  # Alternative name
+        "ceremony",  # Related to trusted setup ceremonies
+        "powers of tau",  # Technical SRS component
+        "no srs file",  # Specific error message
+        "srs not found",  # Specific error message
+        "missing srs",  # Specific error message
+        "srs table",  # SRS table reference
+        "srs path",  # SRS path reference
+    ]
+
+    for pattern in srs_error_patterns:
+        if pattern in stderr_lower:
+            return f"SRS Error Detected: {stderr_output.strip()}"
+
+    return None
+
+def _run_ezkl_command_with_srs_check(cmd_list, env=None, check=True, capture_output=True, text=True, **kwargs):
+    """
+    Wrapper for subprocess.run that detects SRS errors and bubbles them up.
+
+    Args:
+        cmd_list (list): Command list to run
+        env (dict): Environment variables
+        check (bool): Whether to check return code
+        capture_output (bool): Whether to capture output
+        text (bool): Whether to return text
+        **kwargs: Additional subprocess.run arguments
+
+    Returns:
+        subprocess.CompletedProcess: The completed process
+
+    Raises:
+        RuntimeError: If SRS error is detected
+    """
+    try:
+        process = subprocess.run(
+            cmd_list,
+            env=env,
+            check=check,
+            capture_output=capture_output,
+            text=text,
+            **kwargs
+        )
+
+        # Check for SRS errors even if command succeeded
+        if process.stderr:
+            srs_error = _detect_srs_error(process.stderr)
+            if srs_error:
+                logger.error(f"EZKL SRS Error in command '{' '.join(cmd_list)}': {srs_error}")
+                raise RuntimeError(f"DSperse detected SRS error: {srs_error}")
+
+        return process
+
+    except subprocess.CalledProcessError as e:
+        # Check for SRS errors in stderr
+        if e.stderr:
+            srs_error = _detect_srs_error(e.stderr)
+            if srs_error:
+                logger.error(f"EZKL SRS Error in command '{' '.join(cmd_list)}': {srs_error}")
+                raise RuntimeError(f"DSperse detected SRS error: {srs_error}")
+
+        # Re-raise the original exception if not SRS-related
+        raise
+
 class EZKL:
     def __init__(self, model_directory=None):
         """
@@ -140,7 +223,7 @@ class EZKL:
         os.makedirs(os.path.dirname(proof_path), exist_ok=True)
 
         try:
-            process = subprocess.run(
+            process = _run_ezkl_command_with_srs_check(
                 [
                     "ezkl",
                     "prove",
@@ -165,6 +248,9 @@ class EZKL:
         except subprocess.CalledProcessError as e:
             print(f"Error during proof generation: {e}")
             return False, e.stderr
+        except RuntimeError as e:
+            # SRS error detected and bubbled up
+            return False, str(e)
 
         results = proof_path
         return True, results
@@ -323,7 +409,7 @@ class EZKL:
         os.makedirs(os.path.dirname(vk_path) or ".", exist_ok=True)
         os.makedirs(os.path.dirname(pk_path) or ".", exist_ok=True)
         try:
-            process = subprocess.run(
+            process = _run_ezkl_command_with_srs_check(
                 [
                     "ezkl",
                     "setup",
@@ -341,6 +427,9 @@ class EZKL:
             return True, None
         except subprocess.CalledProcessError as e:
             return False, getattr(e, "stderr", str(e))
+        except RuntimeError as e:
+            # SRS error detected and bubbled up
+            return False, str(e)
 
     def circuitization_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
         """

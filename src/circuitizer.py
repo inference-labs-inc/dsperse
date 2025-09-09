@@ -249,13 +249,14 @@ class Circuitizer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 5  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3"
+        5: "models/age",
+        6: "models/version"
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path
@@ -263,6 +264,10 @@ if __name__ == "__main__":
 
     # Circuitize via orchestrator
     model_path = os.path.abspath(model_dir)
+    print(f"Circuitizing {model_path}")
+    input_file = os.path.join(model_dir, "input.json")
     circuitizer = Circuitizer.create(model_path=model_path)
-    result_dir = circuitizer.circuitize(model_path=model_path)
+    result_dir = circuitizer.circuitize(model_path=model_path, layers="12")
+                                     #   input_file=input_file if os.path.exists(input_file) else None,
+                                     #   layers="3, 4")
     print(f"Circuitization finished. Output at: {result_dir}")

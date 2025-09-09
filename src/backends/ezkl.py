@@ -372,10 +372,10 @@ class EZKL:
         
         # Initialize circuitization data dictionary
         circuitization_data = {
-            "settings": settings_path,
-            "compiled": compiled_path,
-            "vk_key": vk_path,
-            "pk_key": pk_path,
+            "settings": None,
+            "compiled": None,
+            "vk_key": None,
+            "pk_key": None,
             "calibration": None
         }
 
@@ -386,6 +386,8 @@ class EZKL:
             if not ok:
                 logger.warning("Failed to generate settings")
                 circuitization_data["gen-settings_error"] = err
+            else:
+                circuitization_data["settings"] = settings_path
 
             # Step 2/3: Calibrate settings
             if input_file_path and os.path.exists(input_file_path):
@@ -405,6 +407,8 @@ class EZKL:
             if not ok:
                 logger.warning("Failed to compile circuit")
                 circuitization_data["compile-circuit_error"] = err
+            else:
+                circuitization_data["compiled"] = compiled_path
 
             # Step 5: Setup (generate verification and proving keys)
             logger.info("Setting up verification and proving keys")
@@ -412,6 +416,9 @@ class EZKL:
             if not ok:
                 logger.warning("Failed to setup (generate keys)")
                 circuitization_data["setup_error"] = err
+            else:
+                circuitization_data["vk_key"] = vk_path
+                circuitization_data["pk_key"] = pk_path
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
         

@@ -62,7 +62,7 @@ class Runner:
 
             seg_run_dir = run_dir / current_slice_id
             seg_run_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Write input for this segment
             input_file = seg_run_dir / "input.json"
             output_file = seg_run_dir / "output.json"
@@ -71,26 +71,31 @@ class Runner:
             current_slice_metadata = self.metadata["slices"][current_slice_id]
             # Execute segment based on circuit availability
             if slice_node.get("use_circuit"):
-                success, tensor, ezkl_exec_info = self._run_ezkl_segment(
-                    current_slice_metadata, input_file, output_file
-                )
-                slice_results[current_slice_id] = ezkl_exec_info
-
-                if not success:
-                    ezkl_error = ezkl_exec_info.get("error")
-                    success, tensor, onnx_exec_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                try:
+                    success, tensor, ezkl_exec_info = self._run_ezkl_segment(
+                        current_slice_metadata, input_file, output_file
+                    )
+                    if success:
+                        slice_results[current_slice_id] = ezkl_exec_info
+                    else:
+                        raise Exception("EZKL execution failed")
+                except Exception as e:
+                    ezkl_error = str(e)
+                    success, tensor, onnx_exec_info = self._run_onnx_segment(current_slice_metadata, input_file,
+                                                                             output_file)
                     # mark as fallback and that EZKL was attempted
                     onnx_exec_info["method"] = "ezkl_fallback_onnx"
                     onnx_exec_info["attempted_ezkl"] = True
-                    if ezkl_error and not onnx_exec_info.get("error"):
-                        onnx_exec_info["error"] = ezkl_error
+                    onnx_exec_info["error"] = ezkl_error
                     slice_results[current_slice_id] = onnx_exec_info
 
                     if not success:
-                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
-
+                        raise Exception(
+                            "EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get(
+                                "error", "Unknown error. Check logs for details."))
             else:
-                success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file,
+                                                                         output_file)
                 execution_info["attempted_ezkl"] = False
                 slice_results[current_slice_id] = execution_info
 
@@ -100,21 +105,21 @@ class Runner:
             # filter tensor and make tensor next input.json file
             current_tensor = self._filter_tensor(current_slice_metadata, tensor)
             current_slice_id = slice_node.get("next")
-        
+
         # Final processing
         probabilities = F.softmax(current_tensor, dim=1)
         prediction = torch.argmax(probabilities, dim=1).item()
-        
+
         results = {
             "prediction": prediction,
             "probabilities": probabilities.tolist(),
             "tensor_shape": list(current_tensor.shape),
             "slice_results": slice_results
         }
-        
+
         # Save inference output
-        self._save_inference_output(results, run_dir / "run_result.json" )
-        
+        self._save_inference_output(results, run_dir / "run_result.json")
+
         return results
 
     @staticmethod
@@ -300,14 +305,13 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 6  # Change this to test different models
+    model_choice = 5  # Change this to test different models
 
     # Model configurations
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3",
         5: "models/age",
         6: "models/version"
     }

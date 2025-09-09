@@ -67,14 +67,14 @@ class OnnxModels:
             model_inputs = session.get_inputs()
             logger.info(f"Model expects {len(model_inputs)} input(s)")
 
-            # Convert input to numpy if it's not already
+            # Convert input to numpy if it's not already, enforce float32
             if not is_numpy:
                 if isinstance(input_tensor, torch.Tensor):
-                    input_numpy = input_tensor.numpy()
+                    input_numpy = input_tensor.detach().cpu().numpy().astype(np.float32, copy=False)
                 else:
-                    input_numpy = np.array(input_tensor)
+                    input_numpy = np.array(input_tensor, dtype=np.float32)
             else:
-                input_numpy = input_tensor
+                input_numpy = np.asarray(input_tensor, dtype=np.float32)
 
             # Handle multiple inputs
             if len(model_inputs) > 1:
@@ -104,23 +104,24 @@ class OnnxModels:
                             elements_needed *= 1
                             final_shape.append(1)
 
-                    # Extract the portion of the flattened tensor for this input
-                    if input_numpy.size > total_elements_used + elements_needed:
-                        input_portion = input_numpy.flatten()[total_elements_used:total_elements_used + elements_needed]
-                        total_elements_used += elements_needed
+                    # Extract the portion of the flattened tensor for this input using correct bounds
+                    flat = input_numpy.flatten()
+                    end_idx = total_elements_used + elements_needed
+                    if flat.size >= end_idx:
+                        input_portion = flat[total_elements_used:end_idx]
+                        total_elements_used = end_idx
                     else:
-                        # If we don't have enough elements, use what's left
-                        input_portion = input_numpy.flatten()[total_elements_used:]
-                        logger.warning(
-                            f"Not enough elements for input {input_name}. Expected {elements_needed}, got {input_portion.size}")
-
-                        # Pad with zeros if necessary
-                        if input_portion.size < elements_needed:
-                            padding = np.zeros(elements_needed - input_portion.size)
-                            input_portion = np.concatenate([input_portion, padding])
-
-                    # Reshape to match expected shape
-                    result[input_name] = input_portion.reshape(final_shape)
+                        # Use what's left and pad if needed
+                        input_portion = flat[total_elements_used:]
+                        got = input_portion.size
+                        if got < elements_needed:
+                            logger.warning(f"Not enough elements for input {input_name}. Expected {elements_needed}, got {got}")
+                            padding = np.zeros(elements_needed - got, dtype=np.float32)
+                            input_portion = np.concatenate([input_portion, padding]).astype(np.float32, copy=False)
+                    
+                    # Ensure dtype float32 and reshape to match expected shape
+                    input_portion = np.asarray(input_portion, dtype=np.float32).reshape(final_shape)
+                    result[input_name] = input_portion
 
                 return result
             else:
@@ -151,8 +152,8 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         flat = input_numpy.flatten()
-                        padding = np.zeros(elements_needed - flat.size)
-                        input_numpy = np.concatenate([flat, padding])
+                        padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
+                        input_numpy = np.concatenate([flat, padding]).astype(np.float32, copy=False)
 
                     # Reshape the input
                     input_numpy = input_numpy.reshape(final_shape)
@@ -175,45 +176,117 @@ class OnnxModels:
                         # Flatten and reshape, padding if necessary
                         flat = input_numpy.flatten()
                         if flat.size < elements_needed:
-                            padding = np.zeros(elements_needed - flat.size)
-                            flat = np.concatenate([flat, padding])
+                            padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
+                            flat = np.concatenate([flat, padding]).astype(np.float32, copy=False)
                         elif flat.size > elements_needed:
                             flat = flat[:elements_needed]
 
                         input_numpy = flat.reshape(expected_shape)
 
+                # Ensure float32 before returning
+                input_numpy = np.asarray(input_numpy, dtype=np.float32)
                 return {input_name: input_numpy}
 
         except Exception as e:
             logger.error(f"Error in apply_onnx_shape: {e}")
-            # In case of error, return the original tensor with the first input name
-            if len(session.get_inputs()) > 0:
-                return {session.get_inputs()[0].name: input_numpy}
-            else:
-                return {"input": input_numpy}
+            # In case of error, return the original tensor with the first input name, enforce float32
+            safe_np = np.asarray(input_numpy, dtype=np.float32)
+            try:
+                inputs = session.get_inputs()
+                if len(inputs) > 0:
+                    return {inputs[0].name: safe_np}
+            except Exception:
+                pass
+            return {"input": safe_np}
+
+    @staticmethod
+    def _run_inference_raw(model_path: str, input_file: str):
+        """
+        Internal: Run plain ONNX inference and return full raw outputs.
+
+        Args:
+            model_path: Path to the .onnx file
+            input_file: Path to input.json
+
+        Returns:
+            (success: bool, result: dict)
+                result on success:
+                    {
+                        "outputs": [
+                            {
+                                "name": <output name>,
+                                "shape": [..],
+                                "dtype": "float32" (etc),
+                                "data": <nested list>
+                            }, ...
+                        ]
+                    }
+                result on failure:
+                    { "error": <string> }
+        """
+        try:
+            # Build ORT session
+            session = ort.InferenceSession(model_path)
+
+            # Read and prepare input
+            input_tensor = RunnerUtils.preprocess_input(input_file)
+            input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
+
+            # Collect all output names to preserve ordering
+            outputs_meta = session.get_outputs()
+            output_names = [o.name for o in outputs_meta]
+
+            # Run inference
+            raw_outputs = session.run(output_names, input_dict)
+
+            # Process output tensor for prediction
+            output_tensor = torch.tensor(raw_outputs[0])
+            prediction_result = RunnerUtils.process_final_output(output_tensor)
+
+            # Normalize to JSON-serializable result
+            outputs = []
+            for meta, arr in zip(outputs_meta, raw_outputs):
+                np_arr = np.asarray(arr)
+                outputs.append({
+                    "name": meta.name,
+                    "shape": list(np_arr.shape),
+                    "dtype": str(np_arr.dtype),
+                    "data": np_arr.tolist(),
+                })
+
+            return True, {"prediction": prediction_result, "outputs": outputs}
+
+        except Exception as e:
+            logger.warning(f"Error during raw ONNX inference: {e}")
+            return False, {"error": str(e)}
 
 
 # Example usage
 if __name__ == "__main__":
 
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 5  # Change this to test different models
 
     # Model configurations
     base_paths = {
         1: "../models/doom",
         2: "../models/net",
-        3: "../models/resnet"
+        3: "../models/resnet",
+        4: "../models/yolov3",
+        5: "../models/age",
+        6: "../models/version"
     }
 
     # Get model directory
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
-    input_json = os.path.join(abs_path, "input.json")
+    # input_json = os.path.join(abs_path, "input.json")
     output_json = os.path.join(abs_path, "output.json")
-
+    # model_path = os.path.join(abs_path, "model.onnx")
+    input_json = "/Volumes/SSD/Users/dan/Projects/dsperse/src/models/age/run/run_20250905_154933/segment_12/input.json"
+    model_path = "/Volumes/SSD/Users/dan/Projects/dsperse/src/models/age/slices/segment_12/segment_12.onnx"
     print(f"Running inference on {abs_path}")
 
-    result = OnnxModels.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
-
+    # result = OnnxModels.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
+    result = OnnxModels._run_inference_raw(model_path=model_path, input_file=input_json)
     print(result)

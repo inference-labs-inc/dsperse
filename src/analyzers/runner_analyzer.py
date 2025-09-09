@@ -10,7 +10,6 @@ from pathlib import Path
 from src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 class RunnerAnalyzer:
     def __init__(self, model_directory):

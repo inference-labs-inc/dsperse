@@ -105,31 +105,7 @@ install_dsperse_cli() {
   fi
 }
 
-# Try installing ezkl via cargo (preferred if available)
-install_ezkl_via_cargo() {
-  if ! command -v cargo >/dev/null 2>&1; then
-    return 1
-  fi
-  info "Installing EZKL via cargo (this may take several minutes) ..."
-  if cargo install --list | grep -q "^ezkl "; then
-    info "EZKL already installed via cargo. Updating to latest compatible version ..."
-  fi
-  if cargo install --locked ezkl; then
-    # Ensure cargo bin in PATH for current session
-    export PATH="$HOME/.cargo/bin:$PATH"
-    return 0
-  fi
-  return 1
-}
-
-# Try installing ezkl via pip (provides python package; CLI availability may vary)
-install_ezkl_via_pip() {
-  info "Attempting to install ezkl via pip ..."
-  if eval $PIP_BIN install -U ezkl; then
-    return 0
-  fi
-  return 1
-}
+# Deprecated installers (cargo/pip) removed: we now install EZKL only via the official source.
 
 # Attempt to download lookup tables with available subcommands
 install_lookup_tables() {
@@ -147,6 +123,12 @@ install_lookup_tables() {
   fi
   set -e
   warn "Could not detect a lookup tables subcommand on this EZKL version. If witness generation asks for lookup tables, please consult EZKL docs to download them."
+  if [[ "$INTERACTIVE" == true ]]; then
+    say "Manual instructions:"
+    say "  - Visit EZKL docs: https://github.com/zkonduit/ezkl"
+    say "  - Look for 'lookup tables' instructions for your version"
+    read -r -p "Press Enter to continue after manual lookup-table setup (or Ctrl+C to abort)..." _ || true
+  fi
 }
 
 # Ensure EZKL installed
@@ -157,37 +139,33 @@ ensure_ezkl() {
     return 0
   fi
 
-  if [[ "$INTERACTIVE" == true ]]; then
-    say ""
-    say "EZKL CLI is not installed. Choose an installation method:"
-    say "  1) cargo install (recommended if Rust is installed)"
-    say "  2) pip install ezkl (Python package; CLI availability may vary)"
-    say "  3) Skip (I'll install manually)"
-    read -r -p "Select [1/2/3]: " choice || true
-    case "$choice" in
-      1)
-        install_ezkl_via_cargo || warn "cargo install failed."
-        ;;
-      2)
-        install_ezkl_via_pip || warn "pip install ezkl failed."
-        ;;
-      *)
-        warn "Skipping EZKL installation as per user choice."
-        ;;
-    esac
+  # Install only from the official source
+  info "Installing EZKL from the official source ..."
+  if curl -fsSL https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash; then
+    info "✓ EZKL installed via official script"
   else
-    # Non-interactive: best-effort cargo then pip
-    install_ezkl_via_cargo || install_ezkl_via_pip || true
+    err "Failed to install EZKL via the official script. Please see https://github.com/zkonduit/ezkl for manual installation instructions."
   fi
 
   if command -v ezkl >/dev/null 2>&1; then
     info "✓ EZKL installed: $(command -v ezkl)"
     ezkl --version || true
   else
-    warn "EZKL CLI not found after installation attempts. You may need to add its install location to PATH or install manually."
-    warn "Common options:"
-    warn "  - Cargo: cargo install --locked ezkl (ensure \"$HOME/.cargo/bin\" on PATH)"
-    warn "  - Prebuilt binaries: see EZKL GitHub releases"
+    err "EZKL CLI not found after installation attempt."
+    warn "- Ensure your PATH includes the installation directory."
+    warn "- Manual install instructions: https://github.com/zkonduit/ezkl#installation"
+    if [[ "$INTERACTIVE" == true ]]; then
+      read -r -p "Install EZKL manually now, then press Enter to retry detection (or type 's' to skip): " resp || true
+      if [[ ! "$resp" =~ ^[Ss]$ ]]; then
+        if command -v ezkl >/dev/null 2>&1; then
+          info "Detected EZKL after manual install."
+        else
+          warn "EZKL still not detected. You can proceed, but ezkl-dependent features will not work."
+        fi
+      else
+        warn "Skipping EZKL after user choice."
+      fi
+    fi
   fi
 }
 
@@ -245,6 +223,19 @@ ensure_srs() {
     fi
   done
   info "SRS download summary: success=$ok_count, failed=$fail_count, total_missing=${#missing[@]}"
+  if (( fail_count > 0 )); then
+    warn "Some SRS downloads failed."
+    warn "You can manually fetch missing files with: ezkl get-srs --logrows <N> --commitment kzg"
+    warn "Files are stored under: $SRS_DIR"
+    if [[ "$INTERACTIVE" == true ]]; then
+      read -r -p "Try to download SRS manually now and press Enter to continue (or type 's' to skip): " resp || true
+      if [[ ! "$resp" =~ ^[Ss]$ ]]; then
+        info "Continuing after manual SRS step."
+      else
+        warn "Skipping remaining SRS downloads as per user choice."
+      fi
+    fi
+  fi
 }
 
 main() {

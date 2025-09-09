@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import torch
 import torch.nn.functional as F
 
 from src.utils.model_utils import ModelUtils
+
+logger = logging.getLogger(__name__)
 
 class RunnerUtils:
     def __init__(self):
@@ -61,7 +64,7 @@ class RunnerUtils:
         """Process the final output of the model."""
         # Apply softmax to get probabilities if not already applied
         if len(torch_tensor.shape) != 2:  # Ensure raw output is 2D [batch_size, num_classes]
-            print(f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1].")
+            logger.debug(f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1].")
             torch_tensor = torch_tensor.reshape(1, -1)
 
         probabilities = F.softmax(torch_tensor, dim=1)

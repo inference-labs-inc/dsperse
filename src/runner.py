@@ -15,7 +15,6 @@ from src.analyzers.runner_analyzer import RunnerAnalyzer
 from src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 class Runner:
     def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None):

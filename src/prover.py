@@ -19,6 +19,120 @@ class Prover:
         """
         self.ezkl_runner = EZKL()
     
+    # ------------------------
+    # Internal helpers
+    # ------------------------
+    def _load_run_and_metadata(self, run_results_path, metadata_path):
+        with open(run_results_path, 'r') as f:
+            run_results = json.load(f)
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        return run_results, metadata
+
+    def _has_circuit_files(self, run_results, metadata):
+        for segment in run_results.get("execution_chain", {}).get("execution_results", []):
+            segment_id = segment.get("segment_id")
+            witness_execution = segment.get("witness_execution", {})
+            if witness_execution.get("method") == "ezkl_gen_witness" and witness_execution.get("success"):
+                segment_metadata = metadata.get("slices", {}).get(segment_id)
+                if segment_metadata and segment_metadata.get("circuit_path") and os.path.exists(segment_metadata["circuit_path"]):
+                    return True
+        return False
+
+    def _process_segment(self, segment, metadata, run_dir):
+        """Process a single segment; returns tuple (updated_segment, counters_delta).
+        counters_delta: (ezkl_witness_increment, proved_increment)
+        """
+        segment_id = segment["segment_id"]
+        witness_execution = segment["witness_execution"]
+
+        if witness_execution.get("method") != "ezkl_gen_witness" or not witness_execution.get("success"):
+            # Just normalize structure
+            return {
+                "segment_id": segment_id,
+                "witness_execution": witness_execution
+            }, (0, 0)
+
+        # It's an EZKL slice we should try to prove
+        ezkl_witness_inc = 1
+
+        segment_metadata = metadata.get("slices", {}).get(segment_id)
+        if not segment_metadata:
+            print(f"Warning: Metadata for segment {segment_id} not found")
+            return {
+                "segment_id": segment_id,
+                "witness_execution": witness_execution
+            }, (ezkl_witness_inc, 0)
+
+        witness_path = witness_execution.get("output_file")
+        model_path = segment_metadata.get("circuit_path")
+        pk_path = segment_metadata.get("pk_path")
+
+        # Validate circuit path
+        if model_path is None:
+            print(f"Warning: No circuit file found for segment {segment_id} (circuit_path is null)")
+            return {
+                "segment_id": segment_id,
+                "witness_execution": witness_execution
+            }, (ezkl_witness_inc, 0)
+        if not os.path.exists(model_path):
+            print(f"Warning: Circuit file not found for segment {segment_id}: {model_path}")
+            return {
+                "segment_id": segment_id,
+                "witness_execution": witness_execution
+            }, (ezkl_witness_inc, 0)
+
+        # Prepare proof path
+        proof_dir = os.path.join(run_dir, segment_id)
+        os.makedirs(proof_dir, exist_ok=True)
+        proof_path = os.path.join(proof_dir, "proof.json")
+
+        # Generate proof
+        print(f"Generating proof for {segment_id}...")
+        start_time = time.time()
+        prove_success, prove_result = self.ezkl_runner.prove(
+            witness_path=witness_path,
+            model_path=model_path,
+            proof_path=proof_path,
+            pk_path=pk_path
+        )
+        prove_time = time.time() - start_time
+
+        proof_execution = {
+            "proof_file": proof_path,
+            "success": prove_success,
+            "proof_generation_time": prove_time
+        }
+        if not prove_success:
+            print(f"Failed to generate proof for {segment_id}: {prove_result}")
+            proof_execution["error"] = f"Proof generation failed: {prove_result}"
+            proved_inc = 0
+        else:
+            proved_inc = 1
+            print(f"  {segment_id}: {prove_time:.2f}s")
+
+        updated_segment = {
+            "segment_id": segment_id,
+            "witness_execution": witness_execution,
+            "proof_execution": proof_execution
+        }
+        return updated_segment, (ezkl_witness_inc, proved_inc)
+
+    def _finalize_run_results(self, run_results, proved_segments, total_ezkl_segments):
+        run_results["execution_chain"]["ezkl_witness_slices"] = total_ezkl_segments
+        run_results["execution_chain"]["ezkl_proved_slices"] = proved_segments
+        run_results["execution_chain"]["ezkl_verified_slices"] = 0
+        if "verification" in run_results:
+            del run_results["verification"]
+        return run_results
+
+    def _save_run_results(self, run_results_path, run_results):
+        with open(run_results_path, 'w') as f:
+            json.dump(run_results, f, indent=2)
+
+    # ------------------------
+    # Public API
+    # ------------------------
     def prove_run(self, run_results_path, metadata_path):
         """
         Prove the segments in a run.
@@ -30,108 +144,31 @@ class Prover:
         Returns:
             dict: Updated run results with proof information
         """
-        # Load the run results and metadata
-        with open(run_results_path, 'r') as f:
-            run_results = json.load(f)
-        
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-        
-        # Get the run directory from the run_results_path
+        run_results, metadata = self._load_run_and_metadata(run_results_path, metadata_path)
         run_dir = os.path.dirname(run_results_path)
-        
-        # Initialize counters
+
+        # Pre-check circuits exist
+        if not self._has_circuit_files(run_results, metadata):
+            raise ValueError("No circuit files found. Please run 'dsperse circuitize' first to generate circuit files before attempting to prove.")
+
         proved_segments = 0
         total_ezkl_segments = 0
-        
-        # Process each segment in the execution results
+        updated_segments = []
         for segment in run_results["execution_chain"]["execution_results"]:
-            segment_id = segment["segment_id"]
-            
-            # Create a witness_execution object from the existing segment data
-            witness_execution = segment["witness_execution"]
-            # Only process segments with method "ezkl_gen_witness" and success=true
-            if witness_execution["method"] == "ezkl_gen_witness" and witness_execution["success"]:
-                total_ezkl_segments += 1
-                
-                # Get the segment metadata
-                segment_metadata = metadata["slices"].get(segment_id)
-                if not segment_metadata:
-                    print(f"Warning: Metadata for segment {segment_id} not found")
-                    continue
-                
-                # Get the paths for verification
-                witness_path = witness_execution["output_file"]
-                model_path = segment_metadata["circuit_path"]
-                pk_path = segment_metadata["pk_path"]
-                
-                # Create proof directory and path
-                proof_dir = os.path.join(run_dir, segment_id)
-                os.makedirs(proof_dir, exist_ok=True)
-                proof_path = os.path.join(proof_dir, "proof.json")
-                
-                # Generate proof
-                print(f"Generating proof for {segment_id}...")
-                start_time = time.time()
-                prove_success, prove_result = self.ezkl_runner.prove(
-                    witness_path=witness_path,
-                    model_path=model_path,
-                    proof_path=proof_path,
-                    pk_path=pk_path
-                )
-                prove_time = time.time() - start_time
-                
-                # Create proof_execution object
-                proof_execution = {
-                    "proof_file": proof_path,
-                    "success": prove_success,
-                    "proof_generation_time": prove_time
-                }
-                
-                # Add error message if proof generation failed
-                if not prove_success:
-                    print(f"Failed to generate proof for {segment_id}: {prove_result}")
-                    proof_execution["error"] = f"Proof generation failed: {prove_result}"
-                else:
-                    # If proof generation was successful, increment proved_segments
-                    proved_segments += 1
-                
-                # Update the segment with the new structure
-                segment.clear()
-                segment.update({
-                    "segment_id": segment_id,
-                    "witness_execution": witness_execution,
-                    "proof_execution": proof_execution
-                })
-            else:
-                # For segments that are not ezkl_gen_witness or not successful,
-                # just restructure them to use the new format
-                segment.clear()
-                segment.update({
-                    "segment_id": segment_id,
-                    "witness_execution": witness_execution
-                })
-        
-        # Update the execution_chain with the new counters
-        run_results["execution_chain"]["ezkl_witness_slices"] = total_ezkl_segments
-        run_results["execution_chain"]["ezkl_proved_slices"] = proved_segments
-        # Set verified_slices to 0 as verification is not performed in the prove command
-        run_results["execution_chain"]["ezkl_verified_slices"] = 0
-        
-        # Remove the old verification section if it exists
-        if "verification" in run_results:
-            del run_results["verification"]
-        
-        # Save the updated run results
-        with open(run_results_path, 'w') as f:
-            json.dump(run_results, f, indent=2)
-        
+            updated_segment, (w_inc, p_inc) = self._process_segment(segment, metadata, run_dir)
+            updated_segments.append(updated_segment)
+            total_ezkl_segments += w_inc
+            proved_segments += p_inc
+
+        run_results["execution_chain"]["execution_results"] = updated_segments
+        run_results = self._finalize_run_results(run_results, proved_segments, total_ezkl_segments)
+        self._save_run_results(run_results_path, run_results)
         return run_results
 
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {

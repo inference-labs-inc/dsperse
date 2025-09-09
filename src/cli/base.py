@@ -79,15 +79,26 @@ def configure_logging(log_level='WARNING'):
     if not isinstance(numeric_level, int):
         numeric_level = logging.INFO
 
-    # Configure the root logger
-    logging.basicConfig(
-        level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Only call basicConfig if logging hasn't been configured yet
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=numeric_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+    else:
+        # If basicConfig was already called, just update the level
+        logging.root.setLevel(numeric_level)
 
-    # Set the level for the dsperse logger
+    # Ensure all existing loggers respect the new level
+    for name in logging.root.manager.loggerDict:
+        logging.getLogger(name).setLevel(numeric_level)
+
+    # Set the level for the dsperse logger specifically
     logger.setLevel(numeric_level)
+
+    # Ensure future loggers also respect this level by setting a default level
+    logging.getLogger().setLevel(numeric_level)
 
 # Easter eggs
 EASTER_EGGS = [
@@ -246,19 +257,29 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         if default is not None:
             user_input = input(f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}")
             if not user_input.strip():
-                normalized_default = _maybe_normalize_from_prompt(param_name, prompt_message, str(default))
-                logger.debug(f"Using default value for {param_name}: {normalized_default}")
-                return normalized_default
-            value = user_input.strip()
-            value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
-            logger.debug(f"User provided value for {param_name}: {value}")
-            return value
+                # Don't normalize run names (they're not real paths until resolved)
+                if str(default).startswith('run_'):
+                    logger.debug(f"Using default run name for {param_name}: {default}")
+                    return str(default)
+                else:
+                    normalized_default = _maybe_normalize_from_prompt(param_name, prompt_message, str(default))
+                    logger.debug(f"Using default value for {param_name}: {normalized_default}")
+                    return normalized_default
+            value = user_input.strip().strip('\'"')  # Strip surrounding quotes
+            # Don't normalize run names from user input either
+            if value.startswith('run_'):
+                logger.debug(f"User provided run name for {param_name}: {value}")
+                return value
+            else:
+                value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
+                logger.debug(f"User provided value for {param_name}: {value}")
+                return value
         else:
             while True:
                 user_input = input(f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}")
                 if user_input.strip() or not required:
                     if user_input.strip():
-                        value = user_input.strip()
+                        value = user_input.strip().strip('\'"')  # Strip surrounding quotes
                         value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
                         logger.debug(f"User provided value for {param_name}: {value}")
                         return value

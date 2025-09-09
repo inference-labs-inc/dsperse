@@ -260,9 +260,10 @@ if __name__ == "__main__":
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path
     slices_dir = os.path.join(abs_path, "slices")
+    input_file = os.path.join(model_dir, "input.json")
 
     # Circuitize via orchestrator
     model_path = os.path.abspath(model_dir)
     circuitizer = Circuitizer.create(model_path=model_path)
-    result_dir = circuitizer.circuitize(model_path=model_path)
-    print(f"Circuitization finished. Output at: {result_dir}")
+    result_dir = circuitizer.circuitize(model_path=model_path, input_file=input_file)
+    print(f"Circuitization finished.")

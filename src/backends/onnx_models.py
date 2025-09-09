@@ -8,7 +8,6 @@ import torch
 from src.utils.runner_utils.runner_utils import RunnerUtils
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
 class OnnxModels:
     def __init__(self):

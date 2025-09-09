@@ -91,6 +91,8 @@ class Verifier:
             if verify_success:
                 verified_segments += 1
                 print(f"Successfully verified {segment_id}")
+                # Display individual segment verification time immediately
+                print(f"  {segment_id}: {verify_time:.2f}s")
             else:
                 print(f"Failed to verify {segment_id}")
             
@@ -110,7 +112,7 @@ class Verifier:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {

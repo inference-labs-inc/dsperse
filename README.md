@@ -88,59 +88,82 @@ Repeat for other logrows you need (commonly 2..21).
 
 Quickstart workflow
 
-Below is an end-to-end walkthrough using the dsperse CLI. You can try it with the example model under src/models/net.
+Below is an end-to-end walkthrough using the dsperse CLI. You can try it with the example model under models/net.
 
 1) Slice the model
 - You can provide either the model.onnx file or the model directory containing it.
 
 Common examples:
 ```bash
-dsperse slice --model-dir src/models/net
-dsperse slice --model-dir src/models/net/model.onnx
+dsperse slice --model-dir models/net
+dsperse slice --model-dir models/net/model.onnx
 ```
 
-Choose output directory (default: src/models/net/slices):
+Choose output directory (default: models/net/slices):
 ```bash
-dsperse slice --model-dir src/models/net --output-dir src/models/net/slices
+dsperse slice --model-dir models/net --output-dir models/net/slices
 ```
 
 Optionally save analysis metadata to a file (use --save-file; if flag is given without value, default path is model_dir/analysis/model_metadata.json):
 ```bash
-dsperse slice --model-dir src/models/net --save-file
-dsperse slice --model-dir src/models/net --save-file src/models/net/analysis/model_metadata.json
+dsperse slice --model-dir models/net --save-file
+dsperse slice --model-dir models/net --save-file models/net/analysis/model_metadata.json
 ```
 
 What happens:
-- Slices are written to src/models/net/slices/segment_<i>/segment_<i>.onnx
-- A slices metadata.json is created at src/models/net/slices/metadata.json
+- Slices are written to models/net/slices/segment_<i>/segment_<i>.onnx
+- A slices metadata.json is created at models/net/slices/metadata.json
+
+### Metadata Files Behavior
+
+Dsperse creates different types of metadata files for different purposes:
+
+**Operational Metadata** (`metadata.json`):
+- **Location**: Always created in the output directory (e.g., `models/net/slices/metadata.json`)
+- **Purpose**: Contains segment information, paths, and parameters needed for circuitization and proving
+- **Created**: Automatically during slicing
+- **Used by**: circuitize, prove, verify commands
+
+**Analysis Metadata** (`model_metadata.json`):
+- **Location**: Created in `model_dir/analysis/` when using `--save-file` flag
+- **Purpose**: Detailed node-by-node analysis information for debugging and inspection
+- **Created**: Only when `--save-file` flag is used
+- **Used by**: Developers and analysts for model inspection
+
+**Important Notes:**
+- These are **two different files** serving different purposes
+- The operational metadata is essential for dsperse to function
+- The analysis metadata is optional and primarily for debugging
+- Both files contain similar top-level information but different levels of detail
+- **This behavior is intended** but can be confusing due to similar names and purposes
 
 2) Circuitize with EZKL
 - Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 
 Whole model:
 ```bash
-dsperse circuitize --model-path src/models/net/model.onnx
+dsperse circuitize --slices-path models/net/slices
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-dsperse circuitize --model-path src/models/net
+dsperse circuitize --slices-path models/net/slices
 ```
 
 Optional calibration input to improve settings:
 ```bash
-dsperse circuitize --model-path src/models/net --input-file src/models/net/input.json
+dsperse circuitize --slices-path models/net/slices --input-file models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-dsperse circuitize --model-path src/models/net --layers 2,3,4
-dsperse circuitize --model-path src/models/net --layers 0-2
+dsperse circuitize --slices-path models/net/slices --layers 2,3,4
+dsperse circuitize --slices-path models/net/slices --layers 0-2
 ```
 
 What happens:
 - For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
-- Circuit artifacts are saved under each segment: src/models/net/slices/segment_<i>/ezkl_circuitization/
+- Circuit artifacts are saved under each segment: models/net/slices/segment_<i>/ezkl_circuitization/
   - segment_i_settings.json, segment_i_model.compiled, segment_i_vk.key, segment_i_pk.key
 - Slices metadata is updated with ezkl_circuitization info per segment
 
@@ -152,20 +175,20 @@ Note on missing slices:
 
 Common examples:
 ```bash
-dsperse run --model-dir src/models/net
-dsperse run --model-dir src/models/net/slices  # you can point to slices directly
+dsperse run --model-dir models/net
+dsperse run --model-dir models/net/slices  # you can point to slices directly
 ```
 
 You will be prompted for an input file if not provided (default: model_dir/input.json).
 
 To save the final output:
 ```bash
-dsperse run --model-dir src/models/net --input-file src/models/net/input.json --output-file src/models/net/output.json
+dsperse run --model-dir models/net --input-file models/net/input.json --output-file models/net/output.json
 ```
 
 What happens:
-- A run metadata file is auto-generated at src/models/net/run/metadata.json if missing
-- A timestamped run directory is created: src/models/net/run/run_YYYYMMDD_HHMMSS/
+- A run metadata file is auto-generated at models/net/run/metadata.json if missing
+- A timestamped run directory is created: models/net/run/run_YYYYMMDD_HHMMSS/
 - Segment-by-segment inputs/outputs are saved under that run directory
 - A run_result.json is written summarizing the chain execution
 
@@ -174,18 +197,18 @@ What happens:
 
 Typical usage:
 ```bash
-dsperse prove --model-dir src/models/net
-# You will be prompted to choose among existing runs under src/models/net/run/
+dsperse prove --model-dir models/net
+# You will be prompted to choose among existing runs under models/net/run/
 ```
 
 Alternatively, specify a run directly:
 ```bash
-dsperse prove --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+dsperse prove --run-dir models/net/run/run_YYYYMMDD_HHMMSS
 ```
 
 Optionally save the updated run results to a separate file:
 ```bash
-dsperse prove --model-dir src/models/net --output-file src/models/net/proof_results.json
+dsperse prove --model-dir models/net --output-file models/net/proof_results.json
 ```
 
 What happens:
@@ -198,18 +221,18 @@ What happens:
 
 Typical usage:
 ```bash
-dsperse verify --model-dir src/models/net
+dsperse verify --model-dir models/net
 # You will be prompted to choose the run (same as in prove)
 ```
 
 Or specify a particular run:
 ```bash
-dsperse verify --run-dir src/models/net/run/run_YYYYMMDD_HHMMSS
+dsperse verify --run-dir models/net/run/run_YYYYMMDD_HHMMSS
 ```
 
 Optionally save verification results to a separate file:
 ```bash
-dsperse verify --model-dir src/models/net --output-file src/models/net/verification_results.json
+dsperse verify --model-dir models/net --output-file models/net/verification_results.json
 ```
 
 What happens:

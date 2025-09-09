@@ -161,6 +161,20 @@ ensure_ezkl() {
     fi
   fi
 
+  # Fallback: try ezkl install script if Linux or previous methods failed
+  if ! command -v ezkl >/dev/null 2>&1; then
+    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ -f /etc/os-release ]]; then
+      info "Trying EZKL installation via official install script..."
+      if curl -s https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash; then
+        info "✓ EZKL installed via official script"
+        # Ensure cargo bin in PATH for current session
+        export PATH="$HOME/.cargo/bin:$PATH"
+      else
+        warn "EZKL install script failed"
+      fi
+    fi
+  fi
+
   if command -v ezkl >/dev/null 2>&1; then
     info "✓ EZKL installed: $(command -v ezkl)"
     ezkl --version || true

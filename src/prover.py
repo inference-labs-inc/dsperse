@@ -149,7 +149,7 @@ class Prover:
 
         # Pre-check circuits exist
         if not self._has_circuit_files(run_results, metadata):
-            raise ValueError("No circuit files found. Please run 'dsperse circuitize' first to generate circuit files before attempting to prove.")
+            raise ValueError("No circuit files found. Please run 'dsperse compile' first to generate circuit files before attempting to prove.")
 
         proved_segments = 0
         total_ezkl_segments = 0

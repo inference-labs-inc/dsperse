@@ -60,7 +60,7 @@ This document outlines the high-level architecture for the "dsperse" project—a
 ## 4. Solution Strategy
 
 - **Overview:**  
-  Dsperse proposes to circuitize the neural network at the level of its vertical layers. In a typical neural network, regardless of whether it is fully connected or uses other structures (such as in modern LLMs like LLAMA), the underlying computations rely on dense weight matrices (with weights and biases). Even though LLMs often use transformers—with feed-forward networks (which are fully connected layers)—the core idea is that each layer (or a group of layers) can be split into smaller circuits.
+  Dsperse proposes to compile circuits for the neural network at the level of its vertical layers. In a typical neural network, regardless of whether it is fully connected or uses other structures (such as in modern LLMs like LLAMA), the underlying computations rely on dense weight matrices (with weights and biases). Even though LLMs often use transformers—with feed-forward networks (which are fully connected layers)—the core idea is that each layer (or a group of layers) can be split into smaller circuits.
 
 - **Neural Net Clarification:**  
   - **Fully Connected Layers in Modern LLMs:**  
@@ -106,7 +106,7 @@ This document outlines the high-level architecture for the "dsperse" project—a
 
 
   ![Vertical Layers Circuitization](images/vertical_layers.jpg)  
-  *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
+  *Note: In the diagram above, each colored node represents a vertical layer of the neural network, compiled
   independently for distributed proof computation.*
 ---
 
@@ -123,7 +123,7 @@ This document outlines the high-level architecture for the "dsperse" project—a
 
   ![Circuit Design Overview](images/circuit_design_overview.jpg)
   *The neural network’s input witness is processed, and as the inference flows through each vertical layer, a circuit and
-  corresponding proof are generated. Each circuitized vertical layer will have its own input witness, allowing
+  corresponding proof are generated. Each compiled vertical layer will have its own input witness, allowing
   computations to be performed independently on separate machines with smaller lookup tables. credit: @HudsonGraeme for image*
 
 ---
@@ -142,7 +142,7 @@ This document outlines the high-level architecture for the "dsperse" project—a
 
 - **Shared Design Principles:**
   - **Modularity:**  
-    Circuitize each vertical layer as an independent unit to allow flexible assignment.
+    Compile each vertical layer as an independent unit to allow flexible assignment.
   - **Scalability:**  
     Distribute proofs across multiple nodes to balance load and reduce proof time.
   - **Resource Optimization:**  
@@ -162,7 +162,7 @@ This document outlines the high-level architecture for the "dsperse" project—a
   - **Vertical Circuitization:**  
     _Decision:_ Split neural net circuits vertically instead of as a whole model.  
     _Rationale:_ Reduces compute and RAM constraints, allows distributed proof computation, and provides finer control over resource allocation.  
-    _Alternatives:_ Circuitizing the entire model; however, this is less flexible and resource-intensive.
+    _Alternatives:_ Compiling the entire model into a single circuit; however, this is less flexible and more resource-intensive.
 
   - **Dynamic Grouping of Layers:**  
     _Decision:_ Expose CLI parameters to allow grouping of multiple vertical layers into one circuit.  

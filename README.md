@@ -114,28 +114,28 @@ What happens:
 - Slices are written to src/models/net/slices/segment_<i>/segment_<i>.onnx
 - A slices metadata.json is created at src/models/net/slices/metadata.json
 
-2) Circuitize with EZKL
-- Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
+2) Compile with a backend (EZKL circuitize the slices)
+- Compile either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 
 Whole model:
 ```bash
-dsperse circuitize --model-path src/models/net/model.onnx
+dsperse compile --slices-path src/models/net/model.onnx
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-dsperse circuitize --model-path src/models/net
+dsperse compile --slices-path src/models/net
 ```
 
 Optional calibration input to improve settings:
 ```bash
-dsperse circuitize --model-path src/models/net --input-file src/models/net/input.json
+dsperse compile --slices-path src/models/net --input-file src/models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-dsperse circuitize --model-path src/models/net --layers 2,3,4
-dsperse circuitize --model-path src/models/net --layers 0-2
+dsperse compile --slices-path src/models/net --layers 2,3,4
+dsperse compile --slices-path src/models/net --layers 0-2
 ```
 
 What happens:
@@ -223,7 +223,7 @@ Tips and troubleshooting
   - Ensure ezkl is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
 - SRS files missing/slow downloads:
   - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
-- Circuitize says “slice first”:
+- Compile says “slice first”: 
   - Run dsperse slice --model-dir <model_dir> to produce slices and metadata.json
 - Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
 
@@ -239,7 +239,7 @@ Project structure (updated)
   - cli/
     - base.py: shared CLI helpers
     - slice.py: slice command
-    - circuitize.py: circuitize command
+    - circuitize.py: compile command (deprecated alias: circuitize)
     - run.py: run command
     - prove.py: prove command
     - verify.py: verify command

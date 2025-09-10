@@ -137,28 +137,28 @@ Dsperse creates different types of metadata files for different purposes:
 - Both files contain similar top-level information but different levels of detail
 - **This behavior is intended** but can be confusing due to similar names and purposes
 
-2) Circuitize with EZKL
-- Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
+2) Compile with a backend (EZKL circuitize the slices)
+- Compile either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 
 Whole model:
 ```bash
-dsperse circuitize --slices-path models/net/slices
+dsperse compile --slices-path models/net/model.onnx
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-dsperse circuitize --slices-path models/net/slices
+dsperse compile --slices-path models/net/slices
 ```
 
 Optional calibration input to improve settings:
 ```bash
-dsperse circuitize --slices-path models/net/slices --input-file models/net/input.json
+dsperse compile --slices-path models/net/slices --input-file models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-dsperse circuitize --slices-path models/net/slices --layers 2,3,4
-dsperse circuitize --slices-path models/net/slices --layers 0-2
+dsperse compile --slices-path models/net/slices --layers 2,3,4
+dsperse compile --slices-path models/net/slices --layers 0-2
 ```
 
 What happens:
@@ -246,7 +246,7 @@ Tips and troubleshooting
   - Ensure ezkl is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
 - SRS files missing/slow downloads:
   - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
-- Circuitize says “slice first”:
+- Compile says “slice first”: 
   - Run dsperse slice --model-dir <model_dir> to produce slices and metadata.json
 - Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
 
@@ -262,7 +262,7 @@ Project structure (updated)
   - cli/
     - base.py: shared CLI helpers
     - slice.py: slice command
-    - circuitize.py: circuitize command
+    - circuitize.py: compile command (deprecated alias: circuitize)
     - run.py: run command
     - prove.py: prove command
     - verify.py: verify command

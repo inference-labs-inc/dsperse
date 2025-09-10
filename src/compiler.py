@@ -266,4 +266,4 @@ if __name__ == "__main__":
     model_path = os.path.abspath(model_dir)
     circuitizer = Circuitizer.create(model_path=model_path)
     result_dir = circuitizer.circuitize(model_path=model_path, input_file=input_file)
-    print(f"Circuitization finished.")
+    print(f"Compilation finished.")

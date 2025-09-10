@@ -296,6 +296,53 @@ class SimpleOnnxSlicer:
             # Create a model from the graph
             segment_model = onnx.helper.make_model(segment_graph)
 
+            # Fix Pad and Unsqueeze attributes before shape inference
+            for node in segment_model.graph.node:
+                if node.op_type == "Pad" and len(node.input) < 2:
+                    # Convert pads attribute to input
+                    for attr in node.attribute:
+                        if attr.name == "pads":
+                            pads_tensor = onnx.helper.make_tensor(
+                                name=f"{node.name or node.output[0]}_pads",
+                                data_type=onnx.TensorProto.INT64,
+                                dims=[len(attr.ints)],
+                                vals=list(attr.ints)
+                            )
+                            segment_model.graph.initializer.append(pads_tensor)
+                            node.input.append(pads_tensor.name)
+                            node.attribute.remove(attr)
+                            break
+
+                    # Handle constant_value if present
+                    for attr in list(node.attribute):
+                        if attr.name == "value":
+                            const_tensor = onnx.helper.make_tensor(
+                                name=f"{node.name or node.output[0]}_value",
+                                data_type=onnx.TensorProto.FLOAT,
+                                dims=[],
+                                vals=[attr.f]
+                            )
+                            segment_model.graph.initializer.append(const_tensor)
+                            if len(node.input) < 3:
+                                node.input.append(const_tensor.name)
+                            node.attribute.remove(attr)
+                            break
+
+                elif node.op_type == "Unsqueeze" and len(node.input) < 2:
+                    # Convert axes attribute to input
+                    for attr in node.attribute:
+                        if attr.name == "axes":
+                            axes_tensor = onnx.helper.make_tensor(
+                                name=f"{node.name or node.output[0]}_axes",
+                                data_type=onnx.TensorProto.INT64,
+                                dims=[len(attr.ints)],
+                                vals=list(attr.ints)
+                            )
+                            segment_model.graph.initializer.append(axes_tensor)
+                            node.input.append(axes_tensor.name)
+                            node.attribute.remove(attr)
+                            break
+
             # Apply shape inference to each segment
             print(f"🔧 Applying shape inference to segment {segment_idx}...")
             try:

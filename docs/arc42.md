@@ -1,25 +1,28 @@
-# Kubz: Distributed zkML Proofs Architecture Document
+# Dsperse: Distributed zkML Architecture Document
 
-This document outlines the high-level architecture for the "kubz" project—a new approach for dynamic zkML proofs that splits the machine learning model into vertical layers for distributed proof computation. The goal is to reduce compute and RAM constraints, distribute proof computation across multiple machines, and ultimately optimize proof time on the Bittensor network.
+This document outlines the high-level architecture for the "dsperse" project—a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing users to break down complex models into smaller segments for detailed analysis, optimization, and verification. The project includes capabilities for distributed zkML proof computation, which splits machine learning models into manageable segments to reduce compute and RAM constraints.
 
 ---
 
 ## 1. Introduction and Goals
 
 - **Purpose:**  
-  The kubz project introduces a distributed method for performing zkML proofs by "circuitizing" individual vertical layers of a neural network rather than the entire model. This enables more granular control over compute, RAM usage, and proof efficiency.
+  The dsperse project provides a toolkit for slicing, analyzing, and running neural network models. It introduces methods for model segmentation and distributed computation, including zkML proofs, enabling more granular control over compute, RAM usage, and overall efficiency.
 
 - **Scope:**  
-  - Implement distributed zkML proofs for large neural nets.
-  - Leverage existing tools such as ezkl (which uses Halo 2 underneath) for circuit generation.
-  - Integrate with the Bittensor network to score and assign work to miners/validators.
-  - Expose CLI parameters for fine-tuning the number of layers per circuit and compute allocation.
+  - Support for ONNX models for slicing and analysis
+  - Implement distributed zkML proofs for large neural nets
+  - Provide comprehensive CLI interface for model operations
+  - Leverage existing tools such as ONNX and ezkl (which uses Halo 2 underneath)
+  - Expose parameters for fine-tuning model slicing and computation
 
 - **Goals and Objectives:**  
-  - **Distribute Compute:** Split ML models into vertical layers to distribute inference proof computation across multiple machines.
-  - **Optimize Resource Usage:** Minimize RAM usage by breaking up large lookup tables and using a caching mechanism.
-  - **Increase Flexibility:** Provide knobs to control the number of layers per circuit, the amount of compute per miner, and the level of interaction for statistical soundness.
-  - **Improve Proof Time:** Drastically reduce overall proof time by balancing circuit size and distributed computation.
+  - **Model Slicing:** Split neural network models into individual layers or custom segments for detailed analysis
+  - **Distributed Compute:** Break down ML models into manageable pieces to distribute computation across multiple machines
+  - **Optimize Resource Usage:** Minimize RAM usage through model splitting and efficient inference pipelines
+  - **Increase Flexibility:** Support different model types and provide configurable slicing strategies
+  - **Enable Zero-Knowledge Proofs:** Generate and verify proofs for model execution via ezkl integration
+  - **Improve Performance:** Enhance overall processing time by balancing segment size and distributed computation
 
 ---
 
@@ -43,13 +46,13 @@ This document outlines the high-level architecture for the "kubz" project—a ne
 
 ### 3.1. System Scope
 
-- **Kubz** is designed to enable distributed zkML proof computation by splitting a neural network’s weight matrix into vertical layers. 
+- **Dsperse** is designed to enable distributed zkML proof computation by splitting a neural network’s weight matrix into vertical layers. 
 - It is the first implementation aiming for distributed zkML proof generation, targeting use cases where large neural networks require distribution of workload.
 
 ### 3.2. External Interfaces and Context Diagram
 
 - **External Systems:**
-  - **ezkl/Halo 2:** Used for generating circuits and proofs. Kubz will adapt these tools to support vertical layer circuitization.
+  - **ezkl/Halo 2:** Used for generating circuits and proofs. Dsperse will adapt these tools to support vertical layer circuitization.
   - **Bittensor Network:** Provides the infrastructure for miners and validators; handles proof submission, scoring, and incentive distribution.
 
 ---
@@ -102,7 +105,7 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Allows miners to set their preferred circuit size and compute allocation.
 
 
-  ![Vertical Layers Circuitization](images/vertical_layers.png)  
+  ![Vertical Layers Circuitization](images/vertical_layers.jpg)  
   *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
   independently for distributed proof computation.*
 ---
@@ -144,7 +147,7 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Distribute proofs across multiple nodes to balance load and reduce proof time.
   - **Resource Optimization:**  
     Use caching and configurable circuit sizes to optimize RAM and compute usage.
-  
+
 - **Quality Aspects:**
   - **Security and Soundness:**  
     Adjust statistical conversational time and zk iteration counts as knobs to maintain overall proof security.
@@ -160,11 +163,11 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     _Decision:_ Split neural net circuits vertically instead of as a whole model.  
     _Rationale:_ Reduces compute and RAM constraints, allows distributed proof computation, and provides finer control over resource allocation.  
     _Alternatives:_ Circuitizing the entire model; however, this is less flexible and resource-intensive.
-  
+
   - **Dynamic Grouping of Layers:**  
     _Decision:_ Expose CLI parameters to allow grouping of multiple vertical layers into one circuit.  
     _Rationale:_ Enables adaptation based on miner capacity, optimizing proof time and resource usage.
-  
+
   - **Caching with Redis:**  
     _Decision:_ Use Redis for table lookup caching.  
     _Rationale:_ Minimizes RAM usage while providing fast lookup performance.
@@ -190,7 +193,7 @@ This document outlines the high-level architecture for the "kubz" project—a ne
     Potential failures in assembling partial proofs due to communication or computation delays.
   - **Cache Performance:**  
     Redis cache may not scale as expected, impacting lookup times.
-  
+
 - **Mitigation Strategies:**  
   - Implement fallback mechanisms to assign smaller circuits.
   - Penalty mechanisms for miners that consistently fail or are slow.

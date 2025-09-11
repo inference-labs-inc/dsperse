@@ -345,6 +345,7 @@ class OnnxSlicer:
             except Exception as e:
                 try:
                     logger.info(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
+                    print(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
                     segment_graph = onnx.helper.make_graph(
                         segment_nodes,
                         f"segment_{segment_idx}_graph",

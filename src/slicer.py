@@ -94,14 +94,14 @@ class Slicer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 4  # Change this to test different models
 
     # Model configurations
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3"
+        4: "models/age",
     }
 
     # Resolve paths

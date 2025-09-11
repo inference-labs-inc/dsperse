@@ -48,11 +48,7 @@ class OnnxAnalyzer:
         for i, node in enumerate(graph.node):
             # Analyze the node and store metadata
             node_info = self.analyze_node(node, i, initializer_map)
-            # Preserve original node name (may be empty or non-unique in ONNX)
-            node_info["original_name"] = node.name
-            # Use a unique, deterministic key for nodes metadata
-            key = node_info["segment_name"]  # e.g., "Conv_12"
-            node_metadata[key] = node_info
+            node_metadata[node.name] = node_info
 
         # Create model metadata
         model_metadata = {

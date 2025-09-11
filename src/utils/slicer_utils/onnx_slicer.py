@@ -326,19 +326,17 @@ class OnnxSlicer:
                 os.makedirs(save_path, exist_ok=True)
             file_path = os.path.join(save_path, f"segment_{segment_idx}.onnx")
 
-            filtered_inputs = Utils.filter_inputs(segment_inputs, graph)
-            unfiltered_inputs = Utils.get_unfiltered_inputs(segment_inputs)
+            input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
 
             # Use extract_model to create the segment
             try:
-                logger.info(f"Extracting segment {segment_idx}: {unfiltered_inputs} -> {output_names}")
-                print(f"Extracting segment {segment_idx}: {unfiltered_inputs} -> {output_names}")
+                logger.info(f"Extracting segment {segment_idx}: {input_names} -> {output_names}")
                 # Extract the model directly to final path
                 extract_model(
                     input_path=self.onnx_path,
                     output_path=file_path,
-                    input_names=unfiltered_inputs,
+                    input_names=input_names,
                     output_names=output_names
                 )
 
@@ -347,7 +345,6 @@ class OnnxSlicer:
             except Exception as e:
                 try:
                     logger.info(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
-                    print(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
                     segment_graph = onnx.helper.make_graph(
                         segment_nodes,
                         f"segment_{segment_idx}_graph",
@@ -413,14 +410,13 @@ class OnnxSlicer:
 
 if __name__ == "__main__":
 
-    model_choice = 5 # Change this to test different models
+    model_choice = 1 # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",
         2: "../../models/net",
         3: "../../models/resnet",
-        4: "../../models/yolov3",
-        5: "../../models/age",
+        4: "../../models/yolov3"
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = os.path.join(abs_path, "model.onnx")

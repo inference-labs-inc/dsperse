@@ -1,5 +1,6 @@
 import os.path
 import onnx
+from onnx import shape_inference
 import logging
 from src.analyzers.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
@@ -16,6 +17,14 @@ class OnnxSlicer:
         self.onnx_model = onnx.load(onnx_path)
         self.model_metadata = None
         self.slice_points = None
+
+        # Apply shape inference to the original model
+        print("🔧 Applying shape inference to original model for better slicing...")
+        try:
+            self.onnx_model = shape_inference.infer_shapes(self.onnx_model)
+            print("✅ Shape inference applied successfully to original model")
+        except Exception as e:
+            print(f"⚠️  Shape inference failed on original model: {e}, continuing with original model")
 
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)
@@ -234,8 +243,17 @@ class OnnxSlicer:
                 elif node.op_type == "Gemm":
                     # Gemm expects 2D input: [batch, features]
                     return ["batch_size", None]
-                elif node.op_type in ["Relu", "BatchNormalization"]:
-                    # These preserve input shape, so use a flexible 4D shape
+                elif node.op_type in ["Relu", "Tanh", "Sigmoid", "LeakyRelu", "BatchNormalization", "LayerNormalization"]:
+                    # Activation functions and normalization preserve input shape
+                    return ["batch_size", None, None, None]
+                elif node.op_type in ["Add", "Mul", "Sub", "Div"]:
+                    # Element-wise operations preserve shape
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "GlobalAveragePool":
+                    # Global average pooling expects 4D input
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "AveragePool":
+                    # Average pooling expects 4D input
                     return ["batch_size", None, None, None]
 
         # Default fallback for unknown cases
@@ -254,9 +272,21 @@ class OnnxSlicer:
                 elif node.op_type == "Gemm":
                     # Gemm output is 2D: [batch, out_features]
                     return ["batch_size", None]
-                elif node.op_type in ["Relu", "BatchNormalization"]:
-                    # These preserve input shape
+                elif node.op_type in ["Relu", "Tanh", "Sigmoid", "LeakyRelu", "BatchNormalization", "LayerNormalization"]:
+                    # Activation functions and normalization preserve input shape
                     return ["batch_size", None, None, None]
+                elif node.op_type in ["Add", "Mul", "Sub", "Div"]:
+                    # Element-wise operations preserve shape
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "GlobalAveragePool":
+                    # Global average pooling reduces spatial dimensions to 1x1
+                    return ["batch_size", None, 1, 1]
+                elif node.op_type == "AveragePool":
+                    # Average pooling preserves batch and channel dimensions
+                    return ["batch_size", None, None, None]
+                elif node.op_type == "Flatten":
+                    # Flatten converts to 2D: [batch, features]
+                    return ["batch_size", None]
                 elif node.op_type == "Reshape":
                     # Reshape output depends on the target shape
                     return ["batch_size", None]
@@ -368,19 +398,33 @@ class OnnxSlicer:
 
     @staticmethod
     def slice_post_process(slices_paths, model_metadata):
+        """
+        Post-process sliced models with shape inference and validation.
+        """
         abs_paths = []
         for path in slices_paths:
             abs_path = os.path.abspath(path)
             abs_paths.append(abs_path)
             try:
                 model = onnx.load(path)
-                # if OnnxUtils.has_fused_operations(model):
-                #     model = OnnxUtils.unfuse_operations(model)
 
+                # Apply ONNX shape inference to infer missing shapes
+                logger.info(f"Applying shape inference to {path}")
+                try:
+                    model_with_shapes = shape_inference.infer_shapes(model)
+                    model = model_with_shapes
+                    logger.info(f"Shape inference successful for {path}")
+                except Exception as shape_error:
+                    logger.warning(f"Shape inference failed for {path}: {shape_error}")
+                    # Continue with original model if shape inference fails
+
+                # Validate the model
                 onnx.checker.check_model(model)
-                # model = OnnxUtils.optimize_model(abs_path, model)
-                # model = OnnxUtils.add_shape_inference(model, model_metadata, path)
+
+                # Save the processed model
                 onnx.save(model, path)
+                logger.info(f"Successfully processed and saved {path}")
+
             except Exception as e:
                 logger.error(f"Error processing {path}: {e}")
                 continue

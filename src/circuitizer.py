@@ -249,19 +249,20 @@ class Circuitizer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 5                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3"
+        4: "models/yolov3",
+        5: "models/age",
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path
     slices_dir = os.path.join(abs_path, "slices")
-    input_file = os.path.join(model_dir, "input.json")
-
+    # input_file = os.path.join(model_dir, "input.json")
+    input_file = None
     # Circuitize via orchestrator
     model_path = os.path.abspath(model_dir)
     circuitizer = Circuitizer.create(model_path=model_path)

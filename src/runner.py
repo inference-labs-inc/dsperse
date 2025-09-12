@@ -305,7 +305,9 @@ if __name__ == "__main__":
     base_paths = {
         1: "models/doom",
         2: "models/net",
-        3: "models/resnet"
+        3: "models/resnet",
+        4: "models/yolov3",
+        5: "models/age",
     }
 
     # Get model directory

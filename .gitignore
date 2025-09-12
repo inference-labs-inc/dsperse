@@ -46,8 +46,8 @@ models/*/slices
 src/models/*/slices/
 models/*/model_metadata.json
 src/models/*/model_metadata.json
-models/*/runs
-src/models/*/runs/
+models/*/run
+src/models/*/run/
 
 
 # Local virtual envs

@@ -8,3 +8,5 @@ numpy~=2.2.3
 tqdm~=4.67.1
 onnxruntime==1.21.0
 colorama~=0.4.6
+onnxruntime_extensions==0.14.0
+transformers[torch]==4.56.1

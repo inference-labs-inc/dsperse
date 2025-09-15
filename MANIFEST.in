@@ -1,0 +1,10 @@
+# Include all Python source files recursively
+recursive-include kubz *.py
+
+# Include all files in templates and utils directories
+recursive-include kubz/templates *
+recursive-include kubz/utils *
+
+# Include all files in models subdirectories
+recursive-include kubz/models *
+

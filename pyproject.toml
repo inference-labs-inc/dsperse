@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubz"
+version = "1.0.0"
+description = "Distributed zkML Toolkit"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
+keywords = ["zkml", "ml", "onnx", "proofs", "zero-knowledge"]
+
+# Runtime dependencies. Dev/test deps are provided as an optional extra below.
+dependencies = [
+  "torch==2.6.0",
+  "onnx==1.17.0",
+  "ezkl==20.2.0",
+  "networkx~=3.4.2",
+  "matplotlib~=3.10.1",
+  "numpy~=2.2.3",
+  "tqdm~=4.67.1",
+  "onnxruntime==1.21.0",
+  "colorama~=0.4.6",
+  "onnxruntime_extensions==0.14.0",
+  "transformers[torch]==4.56.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5"]
+
+[tool.setuptools]
+include-package-data = true
+
+[project.scripts]
+kubz = "kubz.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kubz*"]

@@ -1,0 +1,89 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Set version
+        id: version
+        run: |
+          if [[ "${{ github.ref_name }}" =~ ^v(.+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update pyproject.toml with tag version
+        run: |
+          set -euo pipefail
+          echo "Updating pyproject.toml version to: ${{ steps.version.outputs.version }}"
+          python -c "
+          import re
+
+          version = '${{ steps.version.outputs.version }}'
+
+          with open('pyproject.toml', 'r') as f:
+              content = f.read()
+
+          # Update version in pyproject.toml
+          updated_content = re.sub(
+              r'^version\s*=\s*[\"\'](.*?)[\"\']',
+              f'version = \"{version}\"',
+              content,
+              flags=re.MULTILINE
+          )
+
+          with open('pyproject.toml', 'w') as f:
+              f.write(updated_content)
+          "
+
+      - name: Clean dist
+        run: rm -rf dist
+
+      - name: Generate version file
+        run: |
+          VERSION=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "# This file is auto-generated during build" > version.py
+          echo "\n__version__ = \"$VERSION\"" >> version.py
+
+      - name: Build distributions
+        run: uv build
+        env:
+          CI: true
+
+      - name: Verify package metadata
+        run: uvx twine check dist/*
+
+      - name: Smoke install wheel (no network)
+        run: uv run --no-project --with "$(ls dist/*.whl)" -- python -c "import importlib.metadata as m; print(m.version('kubz'))"
+        env:
+          CI: true
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always

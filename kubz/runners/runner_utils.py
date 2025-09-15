@@ -11,17 +11,17 @@ import psutil
 import torch
 import torch.nn.functional as F
 
-from src.utils.model_utils import ModelUtils
+from kubz.utils.model_utils import ModelUtils
 
 
 def get_mem_usage_cli(pid: int) -> int:
     """Get memory usage (resident set size in KB) from ps."""
-    if sys.platform != 'darwin':
+    if sys.platform != "darwin":
         # ps -o rss= might work on Linux, but vmmap won't
         return 0
     try:
         # Use full path to be sure we get the system's ps
-        command = ['/bin/ps', '-p', str(pid), '-o', 'rss=']
+        command = ["/bin/ps", "-p", str(pid), "-o", "rss="]
         output = subprocess.check_output(command, stderr=subprocess.DEVNULL)
         # Output might be empty if process died; strip whitespace before int conversion
         rss_kb_str = output.decode().strip()
@@ -37,12 +37,14 @@ def get_mem_usage_cli(pid: int) -> int:
 
 def get_swap_usage_cli(pid: int) -> int:
     """Estimate swap usage (in KB) using vmmap. Supports both legacy and modern vmmap output."""
-    if sys.platform != 'darwin':
+    if sys.platform != "darwin":
         return 0
     try:
-        command = ['/usr/bin/sudo', '/usr/bin/vmmap', str(pid)]
+        command = ["/usr/bin/sudo", "/usr/bin/vmmap", str(pid)]
 
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
         stdout, stderr = process.communicate(timeout=5)
 
         if process.returncode != 0:
@@ -55,17 +57,19 @@ def get_swap_usage_cli(pid: int) -> int:
         output = stdout
 
         # First attempt: legacy "Swap used"
-        match_old = re.search(r'Swap used:\s+([\d,]+)\s*(K|KB)', output, re.IGNORECASE)
+        match_old = re.search(r"Swap used:\s+([\d,]+)\s*(K|KB)", output, re.IGNORECASE)
         if match_old:
-            val = int(match_old.group(1).replace(',', ''))
+            val = int(match_old.group(1).replace(",", ""))
             return val
 
         # Second attempt: modern "swapped_out=" or "swapped_out ="
-        match_new = re.search(r'swapped[_ ]?out\s*=\s*([\d.]+)\s*([KMG])', output, re.IGNORECASE)
+        match_new = re.search(
+            r"swapped[_ ]?out\s*=\s*([\d.]+)\s*([KMG])", output, re.IGNORECASE
+        )
         if match_new:
             val = float(match_new.group(1))
             unit = match_new.group(2).upper()
-            multiplier = {'K': 1, 'M': 1024, 'G': 1024 * 1024}.get(unit, 1)
+            multiplier = {"K": 1, "M": 1024, "G": 1024 * 1024}.get(unit, 1)
             swap_kb = int(val * multiplier)
             return swap_kb
 
@@ -88,14 +92,14 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
     peak_swap_cli = 0
     tracked_pids: Set[int] = set()
 
-    # Ensure the results dictionary exists and initialize keys 
+    # Ensure the results dictionary exists and initialize keys
     if not isinstance(results, dict):
         return
 
     # Use different keys to distinguish from psutil results
-    results['peak_subprocess_mem'] = 0
-    results['peak_subprocess_swap'] = 0
-    results['peak_subprocess_total'] = 0  # Mem + Swap
+    results["peak_subprocess_mem"] = 0
+    results["peak_subprocess_swap"] = 0
+    results["peak_subprocess_total"] = 0  # Mem + Swap
 
     try:
         parent = psutil.Process(parent_pid)
@@ -121,7 +125,9 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
             for proc in children_found_this_cycle:
                 try:
                     pid = proc.pid
-                    active_pids_this_cycle.add(pid)  # Keep track of currently running children
+                    active_pids_this_cycle.add(
+                        pid
+                    )  # Keep track of currently running children
                     if pid not in tracked_pids:
                         # Check name only for newly found processes
                         if not process_name_keyword:
@@ -144,7 +150,7 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
                         tracked_pids.remove(pid)  # Stop tracking
                     continue
 
-            # Second pass: Check memory for all currently tracked PIDs  
+            # Second pass: Check memory for all currently tracked PIDs
             pids_to_remove = set()
             for pid in tracked_pids:
                 if pid not in active_pids_this_cycle:
@@ -185,9 +191,9 @@ def monitor_subprocess_memory(parent_pid, process_name_keyword, results, stop_ev
     finally:
         # Store final peak results (convert KB to Bytes for consistency if desired)
         # Store in KB as originally retrieved
-        results['peak_subprocess_mem'] = peak_mem_cli
-        results['peak_subprocess_swap'] = peak_swap_cli
-        results['peak_subprocess_total'] = peak_mem_cli + peak_swap_cli
+        results["peak_subprocess_mem"] = peak_mem_cli
+        results["peak_subprocess_swap"] = peak_swap_cli
+        results["peak_subprocess_total"] = peak_mem_cli + peak_swap_cli
 
 
 class RunnerUtils:
@@ -200,27 +206,29 @@ class RunnerUtils:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     @staticmethod
-    def preprocess_input(input_path:str, model_directory: str = None, save_reshape: bool = False) -> torch.Tensor:
+    def preprocess_input(
+        input_path: str, model_directory: str = None, save_reshape: bool = False
+    ) -> torch.Tensor:
         """
         Preprocess input data from JSON.
         """
 
         if os.path.isfile(input_path):
-            with open(input_path, 'r') as f:
+            with open(input_path, "r") as f:
                 input_data = json.load(f)
         else:
             input_path = os.path.join(RunnerUtils._get_file_path(), input_path)
             print(
                 f"Warning: Input file not found. Trying to use relative path: {input_path} instead."
             )
-            with open(input_path, 'r') as f:
+            with open(input_path, "r") as f:
                 input_data = json.load(f)
 
         if isinstance(input_data, dict):
-            if 'input_data' in input_data:
-                input_data = input_data['input_data']
-            elif 'input' in input_data:
-                input_data = input_data['input']
+            if "input_data" in input_data:
+                input_data = input_data["input_data"]
+            elif "input" in input_data:
+                input_data = input_data["input"]
 
         # Convert to tensor
         if isinstance(input_data, list):
@@ -239,14 +247,17 @@ class RunnerUtils:
         #     ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
 
         return input_tensor
-        
-        
+
     @staticmethod
     def process_final_output(torch_tensor):
         """Process the final output of the model."""
         # Apply softmax to get probabilities if not already applied
-        if len(torch_tensor.shape) != 2:  # Ensure raw output is 2D [batch_size, num_classes]
-            print(f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1].")
+        if (
+            len(torch_tensor.shape) != 2
+        ):  # Ensure raw output is 2D [batch_size, num_classes]
+            print(
+                f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1]."
+            )
             torch_tensor = torch_tensor.reshape(1, -1)
 
         probabilities = F.softmax(torch_tensor, dim=1)
@@ -255,7 +266,7 @@ class RunnerUtils:
         result = {
             "logits": torch_tensor,
             "probabilities": probabilities,
-            "predicted_action": predicted_action
+            "predicted_action": predicted_action,
         }
 
         return result
@@ -265,7 +276,11 @@ class RunnerUtils:
         """Check if tensor needs reshaping based on dimensions and model type"""
         if input_tensor.dim() != 2:
             return False
-        if input_tensor.size(1) == 3136 and model_directory and 'doom' in model_directory.lower():
+        if (
+            input_tensor.size(1) == 3136
+            and model_directory
+            and "doom" in model_directory.lower()
+        ):
             return True
         if input_tensor.size(1) == 3072:
             return True
@@ -277,7 +292,11 @@ class RunnerUtils:
         if input_tensor.dim() == 1:
             input_tensor = input_tensor.unsqueeze(0)
 
-        if input_tensor.dim() == 2 and input_tensor.size(1) == 3136 and 'doom' in model_directory.lower():
+        if (
+            input_tensor.dim() == 2
+            and input_tensor.size(1) == 3136
+            and "doom" in model_directory.lower()
+        ):
             input_tensor = input_tensor.reshape(1, 4, 28, 28)
         elif input_tensor.dim() == 2 and input_tensor.size(1) == 3072:
             if input_tensor.size(0) == 1:
@@ -288,7 +307,9 @@ class RunnerUtils:
                 print(f"Processing only the first sample out of {input_tensor.size(0)}")
                 input_tensor = input_tensor[0:1].reshape(1, 3, 32, 32)
         else:
-            raise ValueError(f"Input tensor has unsupported dimensions: {input_tensor.shape}")
+            raise ValueError(
+                f"Input tensor has unsupported dimensions: {input_tensor.shape}"
+            )
 
         return input_tensor
 
@@ -298,7 +319,7 @@ class RunnerUtils:
         if metadata is None:
             return None
 
-        segments = metadata.get('segments', [])
+        segments = metadata.get("segments", [])
         if not segments:
             print("No segments found in metadata.json")
             return None
@@ -314,10 +335,8 @@ class RunnerUtils:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         # Save tensor data as JSON
-        data = {
-            "input": tensor_data
-        }
-        with open(file_path, 'w') as f:
+        data = {"input": tensor_data}
+        with open(file_path, "w") as f:
             json.dump(data, f)
 
     @staticmethod
@@ -329,11 +348,9 @@ class RunnerUtils:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
         # Save flattened tensor data as JSON
-        data = {
-            "input_data": [tensor_data]
-        }
+        data = {"input_data": [tensor_data]}
 
-        with open(file_path, 'w') as f:
+        with open(file_path, "w") as f:
             json.dump(data, f)
 
 

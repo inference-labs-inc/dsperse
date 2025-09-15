@@ -1,7 +1,7 @@
 import os.path
 import json
 import onnx
-from src.utils.onnx_analyzer import OnnxAnalyzer
+from kubz.utils.onnx_analyzer import OnnxAnalyzer
 from pathlib import Path
 import onnxruntime_extensions as ortx
 import onnxruntime as ort
@@ -82,12 +82,27 @@ class OnnxSlicer:
             index_to_node_name[node_info["index"]] = node_name
             index_to_segment_name[node_info["index"]] = node_info["segment_name"]
 
-        return (graph, node_map, node_type_index_map, initializer_map, value_info_map,
-                index_to_node_name, index_to_segment_name, output_dir)
+        return (
+            graph,
+            node_map,
+            node_type_index_map,
+            initializer_map,
+            value_info_map,
+            index_to_node_name,
+            index_to_segment_name,
+            output_dir,
+        )
 
     @staticmethod
-    def _get_nodes(start_idx, end_idx, index_to_node_name, index_to_segment_name, node_map, node_type_index_map,
-                   segment_idx):
+    def _get_nodes(
+        start_idx,
+        end_idx,
+        index_to_node_name,
+        index_to_segment_name,
+        node_map,
+        node_type_index_map,
+        segment_idx,
+    ):
         """
         Collect nodes for a specific slice.
 
@@ -115,11 +130,15 @@ class OnnxSlicer:
                     if segment_name in node_type_index_map:
                         segment_nodes.append(node_type_index_map[segment_name])
                     else:
-                        print(f"Warning: Node {node_name} (index {idx}) not found in the ONNX model")
+                        print(
+                            f"Warning: Node {node_name} (index {idx}) not found in the ONNX model"
+                        )
 
         # Skip if no nodes in this slice
         if not segment_nodes:
-            print(f"Warning: No nodes found for segment {segment_idx} (indices {start_idx}-{end_idx - 1})")
+            print(
+                f"Warning: No nodes found for segment {segment_idx} (indices {start_idx}-{end_idx - 1})"
+            )
 
         return segment_nodes
 
@@ -179,9 +198,7 @@ class OnnxSlicer:
                     segment_initializers.append(init)
                     # Create a value info for this initializer
                     t = onnx.helper.make_tensor_value_info(
-                        inp,
-                        init.data_type,
-                        list(init.dims)
+                        inp, init.data_type, list(init.dims)
                     )
                     segment_inputs.append(t)
                 else:
@@ -189,9 +206,7 @@ class OnnxSlicer:
                     # Look at the node that would consume this input to guess the shape
                     inferred_shape = OnnxSlicer._infer_input_shape(inp, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
-                        inp,
-                        onnx.TensorProto.FLOAT,
-                        inferred_shape
+                        inp, onnx.TensorProto.FLOAT, inferred_shape
                     )
                     segment_inputs.append(t)
 
@@ -213,9 +228,7 @@ class OnnxSlicer:
                     # For unknown outputs, infer shape from the producing node
                     inferred_shape = OnnxSlicer._infer_output_shape(out, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
-                        out,
-                        onnx.TensorProto.FLOAT,
-                        inferred_shape
+                        out, onnx.TensorProto.FLOAT, inferred_shape
                     )
                     segment_outputs.append(t)
 
@@ -283,11 +296,21 @@ class OnnxSlicer:
             raise ValueError("Invalid model metadata. Please run 'analyze()' first.")
 
         # Set up slicing environment
-        (graph, node_map, node_type_index_map, initializer_map, value_info_map,
-         index_to_node_name, index_to_segment_name, output_dir) = self._slice_setup(model_metadata)
+        (
+            graph,
+            node_map,
+            node_type_index_map,
+            initializer_map,
+            value_info_map,
+            index_to_node_name,
+            index_to_segment_name,
+            output_dir,
+        ) = self._slice_setup(model_metadata)
 
         # Add the end of the model as a final slice point
-        max_index = max(node_info["index"] for node_info in model_metadata["nodes"].values())
+        max_index = max(
+            node_info["index"] for node_info in model_metadata["nodes"].values()
+        )
         # Always add max_index + 1 to ensure we create a segment for the last node
         if max_index + 1 not in slice_points:
             slice_points.append(max_index + 1)
@@ -309,16 +332,26 @@ class OnnxSlicer:
                 continue
 
             # Get nodes for this segment
-            segment_nodes = self._get_nodes(start_idx, end_idx, index_to_node_name,
-                                            index_to_segment_name, node_map, node_type_index_map, segment_idx)
+            segment_nodes = self._get_nodes(
+                start_idx,
+                end_idx,
+                index_to_node_name,
+                index_to_segment_name,
+                node_map,
+                node_type_index_map,
+                segment_idx,
+            )
 
             # Skip if no nodes in this segment
             if not segment_nodes:
                 continue
 
             # Get segment details
-            segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
-                segment_nodes, graph, value_info_map, initializer_map)
+            segment_inputs, segment_outputs, segment_initializers = (
+                self._get_segment_details(
+                    segment_nodes, graph, value_info_map, initializer_map
+                )
+            )
 
             # Create the segment model
             # Create a graph with the nodes
@@ -327,7 +360,7 @@ class OnnxSlicer:
                 f"segment_{segment_idx}_graph",
                 segment_inputs,
                 segment_outputs,
-                segment_initializers
+                segment_initializers,
             )
 
             # Create a model from the graph
@@ -371,25 +404,37 @@ class OnnxSlicer:
                     # Load the optimized model
                     model = onnx.load(optimized_path)
                 except Exception as opt_error:
-                    print(f"Optimization with onnxruntime-extensions failed: {opt_error}, trying fallback optimization")
+                    print(
+                        f"Optimization with onnxruntime-extensions failed: {opt_error}, trying fallback optimization"
+                    )
 
                     # Fallback to original optimization method
                     try:
-                        optimized_model = optimize_onnx_model.optimize_model(path_obj, output_path=path_obj)
+                        optimized_model = optimize_onnx_model.optimize_model(
+                            path_obj, output_path=path_obj
+                        )
                         if optimized_model is not None:
                             model = optimized_model
                             print(f"Fallback model optimization successful")
                         else:
-                            print(f"Fallback model optimization returned None, using original model")
+                            print(
+                                f"Fallback model optimization returned None, using original model"
+                            )
                     except Exception as fallback_error:
-                        print(f"Fallback optimization failed: {fallback_error}, continuing with original model")
+                        print(
+                            f"Fallback optimization failed: {fallback_error}, continuing with original model"
+                        )
 
                 # Try shape inference
                 try:
-                    model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(model)
+                    model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(
+                        model
+                    )
                     print(f"Shape inference successful")
                 except Exception as shape_error:
-                    print(f"Shape inference failed: {shape_error}, continuing without shape inference")
+                    print(
+                        f"Shape inference failed: {shape_error}, continuing without shape inference"
+                    )
 
                 # Save the processed model
                 onnx.save(model, path)
@@ -399,8 +444,12 @@ class OnnxSlicer:
                 try:
                     # Create session options with additional optimizations
                     session_options = ort.SessionOptions()
-                    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    session_options.optimized_model_filepath = str(path_obj) #+ ".optimized"
+                    session_options.graph_optimization_level = (
+                        ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    )
+                    session_options.optimized_model_filepath = str(
+                        path_obj
+                    )  # + ".optimized"
 
                     # Register custom ops from onnxruntime-extensions
                     session_options.register_custom_ops_library(ortx.get_library_path())
@@ -410,7 +459,8 @@ class OnnxSlicer:
                     print(f"Additional optimization and verification successful")
                 except Exception as verify_error:
                     print(
-                        f"Additional optimization verification failed: {verify_error}, but model should still be usable")
+                        f"Additional optimization verification failed: {verify_error}, but model should still be usable"
+                    )
 
             except Exception as e:
                 print(f"Error processing {path}: {e}")
@@ -430,12 +480,16 @@ class OnnxSlicer:
         # Step 1: Set model metadata if provided
         if not model_metadata:
             # Check if model metadata exists in onnx_analysis directory
-            metadata_path = os.path.join(os.path.dirname(self.onnx_path), "onnx_analysis", "model_metadata.json")
+            metadata_path = os.path.join(
+                os.path.dirname(self.onnx_path), "onnx_analysis", "model_metadata.json"
+            )
             if os.path.exists(metadata_path):
-                with open(metadata_path, 'r') as f:
+                with open(metadata_path, "r") as f:
                     self.model_metadata = json.load(f)
             else:
-                raise ValueError("Model metadata not found. Please run 'analyze()' first.")
+                raise ValueError(
+                    "Model metadata not found. Please run 'analyze()' first."
+                )
 
         # Step 2: Determine slice points
         slice_points = self.determine_slice_points(model_metadata)
@@ -445,19 +499,24 @@ class OnnxSlicer:
         self.slice_post_process(slices_paths)
 
         # Step 4: generate slices metadata
-        onnx_analyzer.generate_slices_metadata(model_metadata, slice_points, os.path.join(os.path.dirname(self.onnx_path), "onnx_slices"))
+        onnx_analyzer.generate_slices_metadata(
+            model_metadata,
+            slice_points,
+            os.path.join(os.path.dirname(self.onnx_path), "onnx_slices"),
+        )
 
         return slices_paths
 
+
 if __name__ == "__main__":
 
-    model_choice = 1 # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "models/doom",
         2: "models/net",
         3: "models/resnet",
-        4: "models/yolov3"
+        4: "models/yolov3",
     }
 
     model_dir = os.path.join(base_paths[model_choice], "model.onnx")
@@ -465,5 +524,9 @@ if __name__ == "__main__":
     onnx_slicer = OnnxSlicer(model_dir)
 
     # Run the complete workflow: analyze, determine slice points, and slice
-    model_analysis = onnx_analyzer.analyze()  # Produces the onnx_analysis/model_metadata.json file
-    onnx_slicer.slice_model(model_analysis)  # this uses the model_metadata.json file to first get slice points, then it slices it.
+    model_analysis = (
+        onnx_analyzer.analyze()
+    )  # Produces the onnx_analysis/model_metadata.json file
+    onnx_slicer.slice_model(
+        model_analysis
+    )  # this uses the model_metadata.json file to first get slice points, then it slices it.

@@ -10,9 +10,9 @@ from pathlib import Path
 
 from torch import Tensor
 
-from src.runners import runner_utils
-from src.runners.runner_utils import RunnerUtils
-from src.utils.model_utils import ModelUtils
+from kubz.runners import runner_utils
+from kubz.runners.runner_utils import RunnerUtils
+from kubz.utils.model_utils import ModelUtils
 
 env = os.environ
 
@@ -23,9 +23,9 @@ class EzklRunner:
 
         # check if ezkl is installed via cli
         try:
-            result = subprocess.run(['ezkl', '--version'],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
+            result = subprocess.run(
+                ["ezkl", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             if result.returncode != 0:
                 raise Exception("EZKL CLI not found. Please install EZKL first.")
         except FileNotFoundError:
@@ -35,17 +35,19 @@ class EzklRunner:
         self.base_path = os.path.join(model_directory, "ezkl")
         self.src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-
-    def generate_witness(self, mode: str = None, input_file: str = None, model_path: str = None) -> dict:
+    def generate_witness(
+        self, mode: str = None, input_file: str = None, model_path: str = None
+    ) -> dict:
         if mode == "sliced":
             return self.generate_witness_sliced(input_file)
         else:
             return self.generate_witness_whole(input_file, model_path)
 
-
     def generate_witness_sliced(self, input_file: str = None) -> dict:
         parent_dir = self.src_dir
-        input_path = input_file or os.path.join(parent_dir, self.model_directory, "input.json")
+        input_path = input_file or os.path.join(
+            parent_dir, self.model_directory, "input.json"
+        )
         metadata_dir = os.path.join(parent_dir, self.model_directory, "model_slices")
 
         slices_dir = os.path.join(self.base_path, "slices")
@@ -53,7 +55,7 @@ class EzklRunner:
         # Ensure metadata is loaded
         try:
             metadata = ModelUtils.load_metadata(metadata_dir)
-            num_segments = len(metadata['segments'])
+            num_segments = len(metadata["segments"])
 
             if num_segments == 0:
                 print("No segments found to process!")
@@ -65,7 +67,7 @@ class EzklRunner:
 
         # Load initial input
         try:
-            with open(Path(parent_dir, input_path), 'r') as f:
+            with open(Path(parent_dir, input_path), "r") as f:
                 current_input = json.load(f)
         except Exception as e:
             print(f"Error loading input: {e}")
@@ -80,12 +82,16 @@ class EzklRunner:
             # Get segment model paths
             segment_name = f"segment_{segment_idx}"
             segment_model_name = f"{segment_name}_model.compiled"
-            segment_model_path = os.path.join(parent_dir, slices_dir, segment_name, segment_model_name)
+            segment_model_path = os.path.join(
+                parent_dir, slices_dir, segment_name, segment_model_name
+            )
 
             # Create segment-specific input file
-            segment_input_path = os.path.join(parent_dir, slices_dir, segment_name, f"{segment_name}_input.json")
+            segment_input_path = os.path.join(
+                parent_dir, slices_dir, segment_name, f"{segment_name}_input.json"
+            )
             try:
-                with open(segment_input_path, 'w') as f:
+                with open(segment_input_path, "w") as f:
                     json.dump(current_input, f)
 
             except Exception as e:
@@ -93,15 +99,20 @@ class EzklRunner:
                 continue
 
             # Create segment-specific witness output path
-            segment_witness_path = os.path.join(parent_dir, slices_dir, segment_name, f"{segment_name}_witness.json")
+            segment_witness_path = os.path.join(
+                parent_dir, slices_dir, segment_name, f"{segment_name}_witness.json"
+            )
 
             # Run EZKL witness generation command
             cmd = [
                 "ezkl",
                 "gen-witness",
-                "--compiled-circuit", segment_model_path,
-                "--data", segment_input_path,
-                "--output", segment_witness_path,
+                "--compiled-circuit",
+                segment_model_path,
+                "--data",
+                segment_input_path,
+                "--output",
+                segment_witness_path,
             ]
 
             try:
@@ -110,30 +121,38 @@ class EzklRunner:
                     # capture_output=True,
                     cwd=str(parent_dir),
                     text=True,
-                    check=True
+                    check=True,
                 )
 
                 # If successful, prepare for next segment
                 if segment_idx < num_segments - 1:
                     try:
-                        with open(segment_witness_path, 'r') as f:
+                        with open(segment_witness_path, "r") as f:
                             witness_data = json.load(f)
                     except Exception as e:
                         print(f"Error loading witness file: {e}")
                         continue
 
                     # Extract the output data to use as input for next segment
-                    if 'outputs' in witness_data:
+                    if "outputs" in witness_data:
                         # Format the outputs as input for the next segment
-                        output_data = [[float(val) for val in
-                                        witness_data['pretty_elements']['rescaled_outputs'][0]]]
+                        output_data = [
+                            [
+                                float(val)
+                                for val in witness_data["pretty_elements"][
+                                    "rescaled_outputs"
+                                ][0]
+                            ]
+                        ]
 
                         current_input = {"input_data": output_data}
 
                         # Print summary information about the outputs
                         outputs = output_data
                     else:
-                        raise ValueError(f"Witness file for segment {segment_idx} does not contain rescaled_output")
+                        raise ValueError(
+                            f"Witness file for segment {segment_idx} does not contain rescaled_output"
+                        )
 
                 # Store witness path and timing
                 witness_paths[segment_idx] = segment_witness_path
@@ -141,13 +160,19 @@ class EzklRunner:
             except subprocess.CalledProcessError as e:
                 error_msg = f"Error: {e}\nSTDOUT: {e.stdout}\nSTDERR: {e.stderr}"
                 raise RuntimeError(error_msg)
-        
-        final_logits = self.process_sliced_witness_output({"witness_paths": witness_paths})
+
+        final_logits = self.process_sliced_witness_output(
+            {"witness_paths": witness_paths}
+        )
         return final_logits
 
-    def generate_witness_whole(self, input_file: str = None, model_path: str = None) -> dict:
+    def generate_witness_whole(
+        self, input_file: str = None, model_path: str = None
+    ) -> dict:
         input_file = input_file or os.path.join(self.model_directory, "input.json")
-        model_path = model_path or os.path.join(self.base_path, "model", "model.compiled")
+        model_path = model_path or os.path.join(
+            self.base_path, "model", "model.compiled"
+        )
         witness_path = os.path.join(self.base_path, "model", "witness.json")
         vk_path = os.path.join(self.base_path, "model", "vk.key")
         parent_dir = self.src_dir
@@ -156,14 +181,18 @@ class EzklRunner:
             [
                 "ezkl",
                 "gen-witness",
-                "--data", input_file,
-                "--compiled-circuit", model_path,
-                "--output", witness_path,
-                "--vk-path", vk_path
+                "--data",
+                input_file,
+                "--compiled-circuit",
+                model_path,
+                "--output",
+                witness_path,
+                "--vk-path",
+                vk_path,
             ],
             env=env,
             cwd=str(parent_dir),
-            check=True
+            check=True,
         )
 
         # return the processed outputs
@@ -173,7 +202,6 @@ class EzklRunner:
 
         return output
 
-
     def prove(self, mode: str = None):
         if mode == "sliced":
             return self.prove_sliced()
@@ -182,8 +210,12 @@ class EzklRunner:
 
     def prove_sliced(self):
         parent_dir = self.src_dir
-        slices_directory = os.path.join(parent_dir, self.model_directory, "ezkl", "slices")
-        metadata_directory = os.path.join(parent_dir, self.model_directory, "model_slices")
+        slices_directory = os.path.join(
+            parent_dir, self.model_directory, "ezkl", "slices"
+        )
+        metadata_directory = os.path.join(
+            parent_dir, self.model_directory, "model_slices"
+        )
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)
@@ -193,10 +225,18 @@ class EzklRunner:
             segment_start_time = time.time()
 
             segment_name = f"segment_{segment_idx}"
-            segment_model_path = os.path.join(slices_directory, segment_name, f"{segment_name}_model.compiled")
-            segment_witness_path = os.path.join(slices_directory, segment_name, f"{segment_name}_witness.json")
-            segment_proof_path = os.path.join(slices_directory, segment_name, f"{segment_name}_proof.json")
-            segment_pk_path = os.path.join(slices_directory, segment_name, f"{segment_name}_pk.key")
+            segment_model_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_model.compiled"
+            )
+            segment_witness_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_witness.json"
+            )
+            segment_proof_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_proof.json"
+            )
+            segment_pk_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_pk.key"
+            )
 
             if not os.path.exists(segment_model_path):
                 print(f"ERROR: Model file not found at {segment_model_path}")
@@ -210,10 +250,14 @@ class EzklRunner:
             cmd = [
                 "ezkl",
                 "prove",
-                "--compiled-circuit", segment_model_path,
-                "--witness", segment_witness_path,
-                "--proof-path", segment_proof_path,
-                "--pk-path", segment_pk_path,
+                "--compiled-circuit",
+                segment_model_path,
+                "--witness",
+                segment_witness_path,
+                "--proof-path",
+                segment_proof_path,
+                "--pk-path",
+                segment_pk_path,
             ]
 
             try:
@@ -222,7 +266,7 @@ class EzklRunner:
                     # capture_output=True,
                     cwd=str(parent_dir),
                     text=True,
-                    check=True
+                    check=True,
                 )
 
                 # Store proof path and timing
@@ -246,15 +290,20 @@ class EzklRunner:
             [
                 "ezkl",
                 "prove",
-                "--check-mode", "unsafe",
-                "--witness", witness_path,
-                "--compiled-circuit", model_path,
-                "--proof-path", proof_path,
-                "--pk-path", pk_path
+                "--check-mode",
+                "unsafe",
+                "--witness",
+                witness_path,
+                "--compiled-circuit",
+                model_path,
+                "--proof-path",
+                proof_path,
+                "--pk-path",
+                pk_path,
             ],
             env=env,
             cwd=str(parent_dir),
-            check=True
+            check=True,
         )
 
         results = proof_path
@@ -268,8 +317,12 @@ class EzklRunner:
 
     def verify_slices(self) -> dict:
         parent_dir = self.src_dir
-        slices_directory = os.path.join(parent_dir, self.model_directory, "ezkl", "slices")
-        metadata_directory = os.path.join(parent_dir, self.model_directory, "model_slices")
+        slices_directory = os.path.join(
+            parent_dir, self.model_directory, "ezkl", "slices"
+        )
+        metadata_directory = os.path.join(
+            parent_dir, self.model_directory, "model_slices"
+        )
 
         segments = RunnerUtils.get_segments(metadata_directory)
         num_segments = len(segments)
@@ -279,18 +332,26 @@ class EzklRunner:
             segment_start_time = time.time()
 
             segment_name = f"segment_{segment_idx}"
-            segment_settings_path = os.path.join(slices_directory, segment_name, f"{segment_name}_settings.json")
-            segment_proof_path = os.path.join(slices_directory, segment_name, f"{segment_name}_proof.json")
-            segment_vk_path = os.path.join(slices_directory, segment_name, f"{segment_name}_vk.key")
-
+            segment_settings_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_settings.json"
+            )
+            segment_proof_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_proof.json"
+            )
+            segment_vk_path = os.path.join(
+                slices_directory, segment_name, f"{segment_name}_vk.key"
+            )
 
             # Run EZKL proof generation command
             cmd = [
                 "ezkl",
                 "verify",
-                "--proof-path", segment_proof_path,
-                "--settings-path", segment_settings_path,
-                "--vk-path", segment_vk_path
+                "--proof-path",
+                segment_proof_path,
+                "--settings-path",
+                segment_settings_path,
+                "--vk-path",
+                segment_vk_path,
             ]
 
             try:
@@ -299,7 +360,7 @@ class EzklRunner:
                     # capture_output=True,
                     cwd=str(parent_dir),
                     text=True,
-                    check=True
+                    check=True,
                 )
 
                 # Store proof path and timing
@@ -323,15 +384,18 @@ class EzklRunner:
                 [
                     "ezkl",
                     "verify",
-                    "--proof-path", proof_path,
-                    "--settings-path", settings_path,
-                    "--vk-path", vk_path
+                    "--proof-path",
+                    proof_path,
+                    "--settings-path",
+                    settings_path,
+                    "--vk-path",
+                    vk_path,
                 ],
                 env=os.environ,  # Use os.environ for environment variables
                 cwd=str(parent_dir),
                 check=True,
                 capture_output=True,
-                text=True
+                text=True,
             )
 
             # print("✓ Proof verified successfully")
@@ -339,8 +403,6 @@ class EzklRunner:
         except subprocess.CalledProcessError as e:
             print(f"Error verifying proof: {e}")
             return False
-
-
 
     def circuitize_model(self, model_path, output_path):
         # TODO: Implement this
@@ -376,7 +438,7 @@ class EzklRunner:
         """
         Process the output from generate_witness_sliced to get prediction results.
         """
-        witness_paths = sliced_witness_result.get('witness_paths', {})
+        witness_paths = sliced_witness_result.get("witness_paths", {})
 
         if not witness_paths:
             print("Error: No witness paths found in the sliced witness result")
@@ -394,18 +456,16 @@ class EzklRunner:
 
         return EzklRunner.process_witness_output(witness_data)
 
+
 if __name__ == "__main__":
     # Choose which model to test
     model_choice = 1  # Change this to test different models
 
-    base_paths = {
-        1: "models/doom",
-        2: "models/net"
-    }
+    base_paths = {1: "models/doom", 2: "models/net"}
 
     model_dir = base_paths[model_choice]
     runner = EzklRunner(model_dir)
 
     # run Test
-    result = runner.generate_witness() # change function and mode when needed
+    result = runner.generate_witness()  # change function and mode when needed
     print(result)

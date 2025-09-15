@@ -20,24 +20,36 @@ Kubz is a toolkit for slicing, analyzing, and running neural network models. It 
 
 ## Installation
 
+### From PyPI
+
+```bash
+pip install kubz
+```
+
+### From Source
+
 1. Clone the repository:
+
    ```bash
    git clone https://github.com/inference-labs-inc/kubz.git
    cd kubz
    ```
 
 2. Create a virtual environment (optional but recommended):
+
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
 4. Install the CLI:
+
    ```bash
    pip install -e .
    ```
@@ -49,7 +61,7 @@ Kubz is a toolkit for slicing, analyzing, and running neural network models. It 
 ### Slicing a PyTorch Model
 
 ```python
-from src.model_slicer import ModelSlicer
+from kubz.model_slicer import ModelSlicer
 
 # Initialize the model slicer with the directory containing your model
 model_slicer = ModelSlicer(model_directory="models/net")
@@ -68,7 +80,7 @@ model_slicer.slice_model(
 ### Slicing an ONNX Model
 
 ```python
-from src.onnx_slicer import OnnxSlicer
+from kubz.onnx_slicer import OnnxSlicer
 
 # Initialize the ONNX slicer with the path to your ONNX model
 onnx_slicer = OnnxSlicer("models/yolov3/model.onnx")
@@ -80,7 +92,7 @@ onnx_slicer.slice_model(mode="single_layer")
 ### Running Inference on a Sliced PyTorch Model
 
 ```python
-from src.runners.model_runner import ModelRunner
+from kubz.runners.model_runner import ModelRunner
 
 # Initialize the model runner with the model directory
 model_runner = ModelRunner(model_directory="models/net")
@@ -97,7 +109,7 @@ print(result)
 ### Running Inference on a Sliced ONNX Model
 
 ```python
-from src.runners.onnx_runner import OnnxRunner
+from kubz.runners.onnx_runner import OnnxRunner
 
 # Initialize the ONNX runner with the model directory
 onnx_runner = OnnxRunner(model_directory="models/yolov3")
@@ -118,7 +130,7 @@ Kubz supports generating zero-knowledge proofs for neural network models using b
 #### Using ezkl
 
 ```python
-from src.runners.ezkl_runner import EzklRunner
+from kubz.runners.ezkl_runner import EzklRunner
 
 # Initialize the ezkl runner with the model directory
 ezkl_runner = EzklRunner(model_directory="models/net")
@@ -151,7 +163,7 @@ print(result)
 #### Using jstProve
 
 ```python
-from src.runners.jstprove_runner import JSTProveRunner
+from kubz.runners.jstprove_runner import JSTProveRunner
 
 # Initialize the jstProve runner with the model directory
 jstprove_runner = JSTProveRunner(model_directory="models/net")
@@ -202,6 +214,7 @@ kubz [command] [options]
 ```
 
 Available commands:
+
 - `slice`: Slice a model into segments
 - `infer`: Run inference on a model
 - `prove`: Generate a proof for a model
@@ -290,7 +303,8 @@ Or just run any command - you might get lucky and see an easter egg 20% of the t
 
 ## Project Structure
 
-- `src/`: Main source code
+- `kubz/`: Main source code
+  - `main.py`: CLI interface for running workflows
   - `model_slicer.py`: Slices PyTorch models
   - `onnx_slicer.py`: Slices ONNX models
   - `runners/`: Code for running inference on models
@@ -298,8 +312,8 @@ Or just run any command - you might get lucky and see an easter egg 20% of the t
     - `onnx_runner.py`: Runs inference on ONNX models
   - `utils/`: Utility functions
   - `models/`: Example models
-- `main.py`: CLI interface for running workflows
 - `requirements.txt`: Project dependencies
+- `pyproject.toml`: Project metadata and build configuration
 
 ## Advanced Usage
 

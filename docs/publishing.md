@@ -10,19 +10,17 @@ This guide documents the release process using GitHub Actions (tag-based publish
 Needs to be done only once. To enable automated publishing from GitHub Actions,
 the repository owner must configure Trusted Publishing on the PyPI side:
 
-1. **Log in to PyPI** as an Owner or Maintainer of the project at https://pypi.org/manage/account/publishing/
+1. **Log in to PyPI** as an Owner or Maintainer of the project and go to https://pypi.org/manage/account/publishing/
 2. **Scroll to the "Add a new pending publisher" section.**
 3. **Click "GutHub" tab**.
 4. **Fill in the following:**
-   - **Owner**: `inference-labs-inc` (your GitHub organization or username)
-   - **Repository name**: `dsperse` (your repo name)
+   - **Owner**: `inference-labs-inc` (the GitHub organization or username)
+   - **Repository name**: `dsperse` (the repo name)
    - **Workflow name**: (optional, leave blank to allow any workflow)
 5. **Save the publisher.**
 6. **Verify the publisher is listed and active.**
 
-No PyPI API token is needed when using Trusted Publishing. The GitHub Actions workflow must use the `pypa/gh-action-pypi-publish` action, which will authenticate automatically.
-
-For more details, see: https://docs.pypi.org/trusted-publishers/adding-a-publisher/
+No PyPI API token is needed when using Trusted Publishing. For more details, see: https://docs.pypi.org/trusted-publishers/adding-a-publisher/
 
 </details>
 

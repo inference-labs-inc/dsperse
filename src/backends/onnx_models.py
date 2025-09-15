@@ -8,6 +8,7 @@ import torch
 from src.utils.runner_utils.runner_utils import RunnerUtils
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 class OnnxModels:
     def __init__(self):
@@ -19,8 +20,21 @@ class OnnxModels:
         Run inference with the ONNX model and return the logits, probabilities, and predictions.
         """
         try:
-            # Create an ONNX Runtime session
-            session = ort.InferenceSession(model_path)
+            # Create ONNX Runtime session with all optimizations disabled
+            session_options = ort.SessionOptions()
+            
+            # Disable all optimizations to prevent operation fusion
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+            session_options.enable_profiling = False
+            session_options.enable_mem_pattern = False
+            session_options.enable_cpu_mem_arena = False
+            session_options.enable_mem_reuse = False
+            
+            # Disable execution providers optimizations
+            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            
+            # Create an ONNX Runtime session with disabled optimizations
+            session = ort.InferenceSession(model_path, session_options)
 
             # Convert PyTorch tensor to numpy array for ONNX Runtime
             input_tensor = RunnerUtils.preprocess_input(input_file)
@@ -32,7 +46,7 @@ class OnnxModels:
             raw_output = session.run(None, input_dict)
 
             # Convert the output back to a PyTorch tensor
-            output_tensor = torch.tensor(raw_output[0])
+            output_tensor = torch.tensor(raw_output[0], dtype=torch.float32)
 
             # Process the output
             result = RunnerUtils.process_final_output(output_tensor)
@@ -59,8 +73,17 @@ class OnnxModels:
             Dictionary mapping input names to properly shaped tensors
         """
         try:
+            # Create ONNX Runtime session with all optimizations disabled
+            session_options = ort.SessionOptions()
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+            session_options.enable_profiling = False
+            session_options.enable_mem_pattern = False
+            session_options.enable_cpu_mem_arena = False
+            session_options.enable_mem_reuse = False
+            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            
             # Create an ONNX Runtime session to get model metadata
-            session = ort.InferenceSession(model_path)
+            session = ort.InferenceSession(model_path, session_options)
 
             # Get input details from the model
             model_inputs = session.get_inputs()
@@ -69,11 +92,11 @@ class OnnxModels:
             # Convert input to numpy if it's not already
             if not is_numpy:
                 if isinstance(input_tensor, torch.Tensor):
-                    input_numpy = input_tensor.numpy()
+                    input_numpy = input_tensor.numpy().astype(np.float32)
                 else:
-                    input_numpy = np.array(input_tensor)
+                    input_numpy = np.array(input_tensor, dtype=np.float32)
             else:
-                input_numpy = input_tensor
+                input_numpy = input_tensor.astype(np.float32)
 
             # Handle multiple inputs
             if len(model_inputs) > 1:
@@ -115,11 +138,15 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         if input_portion.size < elements_needed:
-                            padding = np.zeros(elements_needed - input_portion.size)
+                            padding = np.zeros(elements_needed - input_portion.size, dtype=np.float32)
                             input_portion = np.concatenate([input_portion, padding])
 
                     # Reshape to match expected shape
-                    result[input_name] = input_portion.reshape(final_shape)
+                    reshaped = input_portion.reshape(final_shape)
+                    # Ensure float32 for ORT compatibility
+                    if reshaped.dtype != np.float32:
+                        reshaped = reshaped.astype(np.float32)
+                    result[input_name] = reshaped
 
                 return result
             else:
@@ -150,7 +177,7 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         flat = input_numpy.flatten()
-                        padding = np.zeros(elements_needed - flat.size)
+                        padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
                         input_numpy = np.concatenate([flat, padding])
 
                     # Reshape the input
@@ -174,13 +201,16 @@ class OnnxModels:
                         # Flatten and reshape, padding if necessary
                         flat = input_numpy.flatten()
                         if flat.size < elements_needed:
-                            padding = np.zeros(elements_needed - flat.size)
+                            padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
                             flat = np.concatenate([flat, padding])
                         elif flat.size > elements_needed:
                             flat = flat[:elements_needed]
 
                         input_numpy = flat.reshape(expected_shape)
 
+                # Ensure float32 for ORT compatibility
+                if input_numpy.dtype != np.float32:
+                    input_numpy = input_numpy.astype(np.float32)
                 return {input_name: input_numpy}
 
         except Exception as e:

@@ -67,7 +67,7 @@ def full_run(args):
     builtin_roots = {
         'doom': os.path.join(project_root, 'models', 'doom'),
         'net': os.path.join(project_root, 'models', 'net'),
-        'resnet': os.path.join(project_root, 'models', 'resnet'),
+        # 'resnet': os.path.join(project_root, 'models', 'resnet'),
     }
 
     using_builtin = False

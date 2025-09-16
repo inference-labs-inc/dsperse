@@ -30,6 +30,33 @@ class OnnxSlicer:
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)
 
+    @staticmethod
+    def _concretize_symbolic_dims(model: onnx.ModelProto, value: int = 1) -> onnx.ModelProto:
+        """
+        Replace any symbolic tensor dimensions (dim_param) with a concrete dim_value.
+        Defaults to 1, which is safe for non-batched execution and ezkl.
+        """
+        def fix_vi(vi):
+            ttype = vi.type.tensor_type
+            if not ttype.HasField("shape"):
+                return
+            for dim in ttype.shape.dim:
+                # If dim has a symbolic name or unspecified value, set to concrete value
+                if dim.dim_param:
+                    dim.dim_param = ""
+                    dim.dim_value = value
+                elif not dim.HasField("dim_value"):
+                    # Some dims might be neither param nor value; make them concrete
+                    dim.dim_value = value
+        # Fix inputs, outputs, and intermediate value_infos
+        for vi in list(model.graph.input):
+            fix_vi(vi)
+        for vo in list(model.graph.output):
+            fix_vi(vo)
+        for vv in list(model.graph.value_info):
+            fix_vi(vv)
+        return model
+
     def determine_slice_points(self, model_metadata) -> List[int]:
         """
         Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
@@ -371,6 +398,7 @@ class OnnxSlicer:
             # Use extract_model to create the segment
             try:
                 logger.info(f"Extracting segment {segment_idx}: {input_names} -> {output_names}")
+                print(f"Extracting segment {segment_idx}: {input_names} -> {output_names}")
                 # Extract the model directly to final path
                 extract_model(
                     input_path=self.onnx_path,
@@ -383,16 +411,19 @@ class OnnxSlicer:
                 try:
                     extracted_model = onnx.load(file_path)
                     extracted_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(extracted_model)
+                    extracted_model = self._concretize_symbolic_dims(extracted_model, value=1)
                     onnx.save(extracted_model, file_path)
                     logger.info(f"Shape inference applied successfully to extracted segment {segment_idx}")
                 except Exception as e:
                     logger.warning(f"Shape inference failed on extracted segment {segment_idx}: {e}")
+                    print(f"Shape inference failed on extracted segment {segment_idx}: {e}")
 
                 slice_paths.append(file_path)
 
             except Exception as e:
                 try:
                     logger.info(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
+                    print(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
                     segment_graph = onnx.helper.make_graph(
                         segment_nodes,
                         f"segment_{segment_idx}_graph",
@@ -410,7 +441,9 @@ class OnnxSlicer:
                         logger.info(f"Shape inference applied successfully to segment {segment_idx}")
                     except Exception as e:
                         logger.warning(f"Shape inference failed on segment {segment_idx}: {e}")
+                        print(f"Shape inference failed on segment {segment_idx}: {e}")
 
+                    segment_model = self._concretize_symbolic_dims(segment_model, value=1)
                     onnx.save(segment_model, file_path)
                     slice_paths.append(file_path)
 
@@ -438,9 +471,14 @@ class OnnxSlicer:
                     model_with_shapes = shape_inference.infer_shapes(model)
                     model = model_with_shapes
                     logger.info(f"Shape inference successful for {path}")
+                    print(f"Shape inference successful for {path}")
                 except Exception as shape_error:
                     logger.warning(f"Shape inference failed for {path}: {shape_error}")
+                    print(f"Shape inference failed for {path}: {shape_error}")
                     # Continue with original model if shape inference fails
+
+                # Concretize any remaining symbolic dims to batch=1 for ezkl
+                model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
 
                 # Validate the model
                 onnx.checker.check_model(model)

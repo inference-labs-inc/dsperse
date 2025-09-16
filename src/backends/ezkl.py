@@ -511,6 +511,9 @@ class EZKL:
         
         return circuitization_data
 
+    def compilation_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
+        return self.circuitization_pipeline(model_path, output_path, input_file_path=input_file_path, segment_details=segment_details)
+
     @staticmethod
     def process_witness_output(witness_data):
         """

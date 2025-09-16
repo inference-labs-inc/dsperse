@@ -1,5 +1,5 @@
 """
-CLI module for circuitizing models using EZKL.
+CLI module for compiling models using EZKL.
 """
 
 import traceback
@@ -9,7 +9,7 @@ import logging
 
 from colorama import Fore, Style
 
-from src.circuitizer import Circuitizer
+from src.compiler import Compiler
 from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 
 
@@ -19,7 +19,7 @@ def _check_layers(slices_path, layers_str):
     
     Args:
         slices_path (str): Path to the slices directory
-        layers_str (str): String specifying which layers to circuitize (e.g., "3, 20-22")
+        layers_str (str): String specifying which layers to compile (e.g., "3, 20-22")
         
     Returns:
         str: Validated layers string with only existing layers
@@ -80,13 +80,13 @@ def _check_layers(slices_path, layers_str):
         if idx in available_indices:
             valid_indices.append(idx)
         else:
-            logger.warning(f"Layer {idx} not found in metadata.json, skipping circuitization of it")
-            print(f"{Fore.YELLOW}Warning: Layer {idx} not found, skipping circuitization of it{Style.RESET_ALL}")
+            logger.warning(f"Layer {idx} not found in metadata.json, skipping compilation of it")
+            print(f"{Fore.YELLOW}Warning: Layer {idx} not found, skipping compilation of it{Style.RESET_ALL}")
     
     # If no valid indices, return None
     if not valid_indices:
         logger.warning("No valid layers found")
-        print(f"{Fore.YELLOW}Warning: No valid layers found. Will circuitize all layers.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Warning: No valid layers found. Will compile all layers.{Style.RESET_ALL}")
         return None
     
     # Convert valid indices back to a string
@@ -96,7 +96,7 @@ def _check_layers(slices_path, layers_str):
 
 def setup_parser(subparsers):
     """
-    Set up the argument parser for the circuitize command.
+    Set up the argument parser for the compile command.
 
     Args:
         subparsers: The subparsers object from argparse
@@ -104,23 +104,23 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    circuitize_parser = subparsers.add_parser('circuitize', help='Circuitize slices using EZKL')
-    circuitize_parser.add_argument('--slices-path', help='Path to the slices directory')
-    circuitize_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
-    circuitize_parser.add_argument('--layers', help='Specify which layers to circuitize (e.g., "3, 20-22"). If not provided, all layers will be circuitized.')
+    compile_parser = subparsers.add_parser('compile', help='Compile slices using EZKL')
+    compile_parser.add_argument('--slices-path', help='Path to the slices directory')
+    compile_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
+    compile_parser.add_argument('--layers', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
     
-    return circuitize_parser
+    return compile_parser
 
 
-def circuitize_model(args):
+def compile_model(args):
     """
-    Circuitize a model based on the provided arguments.
+    Compile a model based on the provided arguments.
 
     Args:
         args: The parsed command-line arguments
     """
-    print(f"{Fore.CYAN}Circuitizing slices with EZKL...{Style.RESET_ALL}")
-    logger.info("Starting slices circuitization")
+    print(f"{Fore.CYAN}Compiling slices with EZKL...{Style.RESET_ALL}")
+    logger.info("Starting slices compilation")
 
     # Prompt for slices path if not provided
     if not hasattr(args, 'slices_path') or not args.slices_path:
@@ -140,11 +140,11 @@ def circuitize_model(args):
         if not os.path.isdir(args.slices_path):
             msg = (
                 "Please provide a slices directory, not a model file. "
-                "If you have a model, slice it first before circuitizing.\n"
+                "If you have a model, slice it first before compiling.\n"
                 f"Try: dsperse slice --model-dir {args.slices_path}"
             )
             print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
-            logger.error("Circuitize requires a slices directory (with metadata.json).")
+            logger.error("Compile requires a slices directory (with metadata.json).")
             return
         has_metadata = (
             os.path.exists(os.path.join(args.slices_path, "metadata.json")) or
@@ -153,17 +153,17 @@ def circuitize_model(args):
         if not has_metadata:
             msg = (
                 "No slices metadata found at the provided path. "
-                "Please slice the model first before circuitizing slices.\n"
+                "Please slice the model first before compiling slices.\n"
                 f"Try: dsperse slice --model-dir {args.slices_path}"
             )
             print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
-            logger.error("Circuitize requires slices metadata. Prompted user to run slice first.")
+            logger.error("Compile requires slices metadata. Prompted user to run slice first.")
             return
-        # Initialize the Circuitizer
-        circuitizer = Circuitizer.create(args.slices_path)
-        logger.info(f"Circuitizer initialized successfully")
+        # Initialize the Compiler
+        compiler = Compiler.create(args.slices_path)
+        logger.info(f"Compiler initialized successfully")
     except RuntimeError as e:
-        error_msg = f"Failed to initialize Circuitizer: {e}"
+        error_msg = f"Failed to initialize Compiler: {e}"
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return
@@ -174,23 +174,23 @@ def circuitize_model(args):
     else:
         validated_layers = None
     
-    # Run the circuitization
+    # Run the compilation
     ezkl_logger = logging.getLogger('src.backends.ezkl')
     prev_ezkl_level = ezkl_logger.level
     try:
-        # Suppress verbose EZKL INFO logs during circuitization
+        # Suppress verbose EZKL INFO logs during compilation
         ezkl_logger.setLevel(logging.WARNING)
 
-        output_path = circuitizer.circuitize(
+        output_path = compiler.compile(
             model_path=args.slices_path,
             input_file=args.input_file,
             layers=validated_layers
         )
-        success_msg = f"Slices circuitized successfully! Output saved to {os.path.dirname(output_path)}"
+        success_msg = f"Slices compiled successfully! Output saved to {os.path.dirname(output_path)}"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)
     except Exception as e:
-        error_msg = f"Error circuitizing slices: {e}"
+        error_msg = f"Error compiling slices: {e}"
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         logger.debug("Stack trace:", exc_info=True)

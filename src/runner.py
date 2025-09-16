@@ -137,17 +137,32 @@ class Runner:
         model_path = slice_info.get("circuit_path")
         vk_path = slice_info.get("vk_path")
         start_time = time.time()
-        # Attempt EZKL execution
-        success, output_tensor = self.ezkl_runner.generate_witness(input_file=input_tensor_path, model_path=model_path, output_file=output_witness_path, vk_path=vk_path)
+        # Attempt EZKL execution, but ensure we catch any exceptions to allow fallback
+        try:
+            success, output_tensor = self.ezkl_runner.generate_witness(
+                input_file=input_tensor_path,
+                model_path=model_path,
+                output_file=output_witness_path,
+                vk_path=vk_path
+            )
+        except Exception as e:
+            success = False
+            output_tensor = str(e)
 
         end_time = time.time()
-        exec_info = {'success': success, 'method': 'ezkl_gen_witness', 'execution_time': end_time - start_time, 'witness_path': str(output_witness_path), 'attempted_ezkl': True}
+        exec_info = {
+            'success': success,
+            'method': 'ezkl_gen_witness',
+            'execution_time': end_time - start_time,
+            'witness_path': str(output_witness_path),
+            'attempted_ezkl': True
+        }
 
         if success:
             exec_info['input_file'] = str(input_tensor_path.resolve())
             exec_info['output_file'] = str(output_witness_path.resolve())
         else:
-            # When EZKL fails, output_tensor contains the error string per EZKL.generate_witness
+            # When EZKL fails, output_tensor contains the error string or exception message
             exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
 
         return success, output_tensor, exec_info
@@ -299,7 +314,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 3  # Change this to test different models
 
     # Model configurations
     base_paths = {

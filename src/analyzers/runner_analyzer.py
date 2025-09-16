@@ -91,20 +91,24 @@ class RunnerAnalyzer:
             pk_path = ezkl_circuitization.get('pk_key', None)
             vk_path = ezkl_circuitization.get('vk_key', None)
 
-            # Set circuit_exists and keys_exist flags based on whether the paths exist in metadata
-            circuit_exists = compiled_circuit_path is not None and settings_path is not None
-            keys_exist = pk_path is not None and vk_path is not None
+            # Set circuit_exists and keys_exist flags based on actual file existence
+            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
+                             and bool(settings_path) and os.path.exists(settings_path)
+            keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
 
             # Determine circuit size and use_circuit flag
             circuit_size = 0
             if circuit_exists:
                 try:
                     circuit_size = Path(compiled_circuit_path).stat().st_size
-                except:
+                except Exception:
                     # If there's any error, just use 0 as the size
                     circuit_size = 0
 
-            use_circuit = circuit_exists and keys_exist and circuit_size <= self.size_limit
+            # Treat any recorded circuitization error as not ready
+            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
+
+            use_circuit = circuit_exists and keys_exist and (not ezkl_errors) and circuit_size <= self.size_limit
 
             onnx_slice_path = segment.get('path', '')
             if not onnx_slice_path:
@@ -171,9 +175,15 @@ class RunnerAnalyzer:
             # Get ONNX path
             onnx_slice_path = segment.get('path', '')
 
-            # Determine if circuit is usable based purely on metadata presence
-            circuit_exists = compiled_circuit_path is not None
-            use_circuit = circuit_exists and ezkl_circuitization.get('pk_key') is not None
+            # Determine if circuit is usable based on actual files and errors
+            settings_path = ezkl_circuitization.get('settings')
+            pk_path = ezkl_circuitization.get('pk_key')
+            vk_path = ezkl_circuitization.get('vk_key')
+            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
+                              and bool(settings_path) and os.path.exists(settings_path)
+            keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
+            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
+            use_circuit = circuit_exists and keys_exist and (not ezkl_errors)
 
             # Set up the execution chain node
             next_slice = f"segment_{segment_idx + 1}" if segment_idx < len(segments) - 1 else None

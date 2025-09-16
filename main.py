@@ -80,7 +80,7 @@ def main():
         verify_proof(args)
     elif args.command == 'compile':
         compile_model(args)
-    elif args.command in ('full-run', 'full_run'):
+    elif args.command =='full-run':
         full_run(args)
     else:
         # If no command is provided, show help

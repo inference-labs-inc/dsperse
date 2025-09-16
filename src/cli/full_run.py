@@ -25,7 +25,7 @@ def setup_parser(subparsers):
         The created parser
     """
     # Provide both kebab-case and snake_case forms via aliases
-    full_run_parser = subparsers.add_parser('full-run', aliases=['full_run'], help='Run the full pipeline (slice, compile, run, prove, verify)')
+    full_run_parser = subparsers.add_parser('full-run', help='Run the full pipeline (slice, compile, run, prove, verify)')
     full_run_parser.add_argument('--model-dir', help='Path to the model file (.onnx) or directory containing the model')
     full_run_parser.add_argument('--input-file', help='Path to input file for inference and compilation calibration (e.g., input.json)')
     full_run_parser.add_argument('--slices-dir', help='Optional: Pre-existing slices directory to reuse (skips slicing step)')

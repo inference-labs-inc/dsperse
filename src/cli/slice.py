@@ -116,6 +116,10 @@ def slice_model(args):
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)
+        # If a save path for model analysis/metadata was provided, inform the user where it was saved
+        if 'save_path' in locals() and save_path:
+            print(f"{Fore.GREEN}Model analysis saved to {normalize_path(save_path)}{Style.RESET_ALL}")
+            logger.info(f"Model analysis saved to {normalize_path(save_path)}")
 
     except Exception as e:
         error_msg = f"Error slicing model: {e}"

@@ -250,14 +250,14 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 3  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
-        1: "models/doom",
-        2: "models/net",
-        3: "models/resnet",
-        4: "models/yolov3",
-        5: "models/age",
+        1: "../models/doom",
+        2: "../models/net",
+        3: "../models/resnet",
+        4: "../models/age",
+        5: "../models/version"
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path

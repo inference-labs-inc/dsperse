@@ -148,6 +148,8 @@ def run_inference(args):
             try:
                 args.output_file = normalize_path(args.output_file)
                 save_result(result, args.output_file)
+                # Explicitly inform user where the inference results were saved (in addition to save_result's checkmark)
+                print(f"{Fore.GREEN}Results saved to {args.output_file}{Style.RESET_ALL}")
                 logger.info(f"Results saved to {args.output_file}")
             except Exception as e:
                 error_msg = f"Error saving output file: {e}"

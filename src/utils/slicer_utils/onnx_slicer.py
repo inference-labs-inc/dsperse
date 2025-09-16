@@ -520,10 +520,10 @@ if __name__ == "__main__":
     model_choice = 1 # Change this to test different models
 
     base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/yolov3"
+        1: "../../../models/doom",
+        2: "../../../models/net",
+        3: "../../../models/resnet",
+        4: "../../../models/yolov3"
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = os.path.join(abs_path, "model.onnx")

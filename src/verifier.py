@@ -116,9 +116,9 @@ if __name__ == "__main__":
 
     # Model configurations
     base_paths = {
-        1: "models/doom",
-        2: "models/net",
-        3: "models/resnet"
+        1: "../models/doom",
+        2: "../models/net",
+        3: "../models/resnet"
     }
 
     # Get model directory

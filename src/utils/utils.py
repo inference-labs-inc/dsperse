@@ -107,7 +107,40 @@ class Utils:
 
     @staticmethod
     def read_input(file_path) -> torch.Tensor:
-        """Read tensor from input.json format."""
+        """Read tensor from a flexible input.json format.
+        Supported keys: "input_data" (preferred), "input", "data", "inputs".
+        If a batch (dim0 > 1) is provided, only the first item is used with a warning.
+        """
         with open(file_path, 'r') as f:
             data = json.load(f)
-        return torch.tensor(data["input_data"])
+
+        # Try a set of candidate keys to locate the input tensor data
+        candidate_keys = ["input_data", "input", "data", "inputs"]
+        found_key = None
+        array_like = None
+
+        # Direct key lookup
+        for k in candidate_keys:
+            if k in data:
+                found_key = k
+                array_like = data[k]
+                break
+
+        # If not found, try common nested pattern {"inputs": [{"data": [...]}]}
+        if array_like is None and isinstance(data, dict) and "inputs" in data and isinstance(data["inputs"], list) and data["inputs"]:
+            first = data["inputs"][0]
+            if isinstance(first, dict) and "data" in first:
+                found_key = "inputs[0].data"
+                array_like = first["data"]
+
+        if array_like is None:
+            raise KeyError("Could not find input tensor data in JSON. Expected one of keys: " + ", ".join(candidate_keys))
+
+        tensor = torch.tensor(array_like)
+
+        # If batch dimension is present and > 1, take only the first item
+        if tensor.dim() >= 1 and tensor.size(0) > 1:
+            logger.warning(f"Input JSON appears to contain a batch of size {tensor.size(0)}; using only the first item. To run batches, call the runner per item.")
+            tensor = tensor[0]
+
+        return tensor

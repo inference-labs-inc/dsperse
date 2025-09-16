@@ -3,8 +3,11 @@ import json
 from pathlib import Path
 
 import onnx
+import logging
 from src.utils.utils import Utils
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 class OnnxAnalyzer:
     """
@@ -52,6 +55,29 @@ class OnnxAnalyzer:
             node_key = node.name if node.name else f"{node.op_type}_{i}"
             node_metadata[node_key] = node_info
 
+        # Determine opset information
+        opset_imports_list = []
+        default_opset_version = None
+        try:
+            for opset in self.onnx_model.opset_import:
+                domain = opset.domain
+                version = int(opset.version)
+                opset_imports_list.append({"domain": domain if domain else "ai.onnx", "version": version})
+                # Prefer default domain ""; fallback to explicit "ai.onnx"
+                if default_opset_version is None and (domain == "" or domain == "ai.onnx"):
+                    default_opset_version = version
+        except Exception:
+            default_opset_version = None
+
+        # Warn (but continue) if default opset is below 18
+        if default_opset_version is not None and default_opset_version < 18:
+            msg = (
+                f"ONNX opset {default_opset_version} detected for model {self.onnx_path}. "
+                "Opset < 18 is not officially supported; continuing anyway."
+            )
+            logger.warning(msg)
+            print(f"WARNING: {msg}")
+
         # Create model metadata
         model_metadata = {
             "original_model": self.onnx_path,
@@ -60,6 +86,8 @@ class OnnxAnalyzer:
             "initializer_count": len(graph.initializer),
             "input_shape": model_input_shape,
             "output_shapes": model_output_shape,
+            "opset_version": default_opset_version,
+            "opset_imports": opset_imports_list,
             "nodes": node_metadata
         }
 

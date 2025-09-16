@@ -48,11 +48,9 @@ class OnnxAnalyzer:
         for i, node in enumerate(graph.node):
             # Analyze the node and store metadata
             node_info = self.analyze_node(node, i, initializer_map)
-            # Preserve original node name (may be empty or non-unique in ONNX)
-            node_info["original_name"] = node.name
-            # Use a unique, deterministic key for nodes metadata
-            key = node_info["segment_name"]  # e.g., "Conv_12"
-            node_metadata[key] = node_info
+            # Use index-based key to handle empty node names
+            node_key = node.name if node.name else f"{node.op_type}_{i}"
+            node_metadata[node_key] = node_info
 
         # Create model metadata
         model_metadata = {
@@ -178,8 +176,8 @@ class OnnxAnalyzer:
         parameters = 0
         parameter_details = {}
 
-        # For Conv and Gemm nodes, we can extract parameter information from initializers
-        if node.op_type == "Conv" or node.op_type == "Gemm":
+        # For Conv, Gemm, and MatMul nodes, we can extract parameter information from initializers
+        if node.op_type in ["Conv", "Gemm", "MatMul"]:
             for inp in node_inputs:
                 if inp in initializer_map:
                     init = initializer_map[inp]
@@ -438,11 +436,7 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
-        # Fix: Use output_dir directly instead of dirname to properly handle external directories
-        if output_dir:
-            output_dir = os.path.join(output_dir, "segment_{}".format(segment_idx))
-        else:
-            output_dir = os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
+        output_dir = os.path.join(os.path.dirname(output_dir), "slices", "segment_{}".format(segment_idx)) if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
         os.makedirs(output_dir, exist_ok=True)
         segment_path = os.path.abspath(os.path.join(output_dir, f"segment_{segment_idx}.onnx"))
 

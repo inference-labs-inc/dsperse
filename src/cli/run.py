@@ -22,11 +22,18 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    run_parser = subparsers.add_parser('run', help='Run inference on a model')
-    run_parser.add_argument('--slices-dir', help='Directory containing the slices')
+    run_parser = subparsers.add_parser('run', aliases=['r'], help='Run inference on a model')
+    # Ensure canonical command name even when alias is used
+    run_parser.set_defaults(command='run')
+
+    # Arguments with aliases/shorthands
+    run_parser.add_argument('--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_dir',
+                            help='Directory containing the slices')
     run_parser.add_argument('--run-metadata-path', help='Path to run metadata.json (auto-generated if not provided)')
-    run_parser.add_argument('--input-file', help='Path to input file (default: parent_of_slices/input.json)')
-    run_parser.add_argument('--output-file', help='Path to save output results (default: parent_of_slices/output.json)')
+    run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
+                            help='Path to input file (default: parent_of_slices/input.json)')
+    run_parser.add_argument('--output-file', '-o', dest='output_file',
+                            help='Path to save output results (default: parent_of_slices/output.json)')
 
     return run_parser
 

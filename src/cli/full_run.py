@@ -24,12 +24,18 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    # Provide both kebab-case and snake_case forms via aliases
-    full_run_parser = subparsers.add_parser('full-run', help='Run the full pipeline (slice, compile, run, prove, verify)')
-    full_run_parser.add_argument('--model-dir', help='Path to the model file (.onnx) or directory containing the model')
-    full_run_parser.add_argument('--input-file', help='Path to input file for inference and compilation calibration (e.g., input.json)')
-    full_run_parser.add_argument('--slices-dir', help='Optional: Pre-existing slices directory to reuse (skips slicing step)')
-    full_run_parser.add_argument('--layers', help='Optional: Layers to compile (e.g., "3, 20-22") passed through to compile')
+    full_run_parser = subparsers.add_parser('full-run', aliases=['fr'], help='Run the full pipeline (slice, compile, run, prove, verify)')
+    # Ensure canonical command even when alias is used
+    full_run_parser.set_defaults(command='full-run')
+
+    # Arguments with aliases/shorthands
+    full_run_parser.add_argument('--model-dir', '--model-path', '--mp', '-m', dest='model_dir',
+                                 help='Path to the model file (.onnx) or directory containing the model')
+    full_run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
+                                 help='Path to input file for inference and compilation calibration (e.g., input.json)')
+    full_run_parser.add_argument('--slices-dir', '--slices-directory', '--slices-directroy', '--sd', '-s', dest='slices_dir',
+                                 help='Optional: Pre-existing slices directory to reuse (skips slicing step)')
+    full_run_parser.add_argument('--layers', '-l', help='Optional: Layers to compile (e.g., "3, 20-22") passed through to compile')
     # Optional: allow non-interactive mode later if desired; kept interactive by default
     return full_run_parser
 

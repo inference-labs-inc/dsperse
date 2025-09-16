@@ -21,10 +21,17 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    slice_parser = subparsers.add_parser('slice', help='Slice a model into segments')
-    slice_parser.add_argument('--model-dir', help='Path to the model file or directory containing the model')
-    slice_parser.add_argument('--output-dir', help='Directory to save the sliced model (default: model_dir/slices)')
-    slice_parser.add_argument('--save-file', nargs='?', const='default', help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
+    slice_parser = subparsers.add_parser('slice', aliases=['s'], help='Slice a model into segments')
+    # Ensure canonical command name even when alias is used
+    slice_parser.set_defaults(command='slice')
+
+    # Arguments with aliases/shorthands
+    slice_parser.add_argument('--model-dir', '--model-path', '--mp', '-m', dest='model_dir',
+                              help='Path to the model file or directory containing the model')
+    slice_parser.add_argument('--output-dir', '-o',
+                              help='Directory to save the sliced model (default: model_dir/slices)')
+    slice_parser.add_argument('--save-file', '--save', '-S', nargs='?', const='default',
+                              help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
 
     return slice_parser
 

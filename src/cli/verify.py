@@ -21,9 +21,12 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    verify_parser = subparsers.add_parser('verify', help='Verify a proof for a run')
-    verify_parser.add_argument('--run-dir', help='Specific run directory to verify')
-    verify_parser.add_argument('--output-file', help='Path to save output results')
+    verify_parser = subparsers.add_parser('verify', aliases=['v'], help='Verify a proof for a run')
+    # Ensure canonical command even when alias is used
+    verify_parser.set_defaults(command='verify')
+
+    verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to verify')
+    verify_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
 
     return verify_parser
 

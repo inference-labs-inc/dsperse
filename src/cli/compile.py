@@ -104,10 +104,16 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    compile_parser = subparsers.add_parser('compile', help='Compile slices using EZKL')
-    compile_parser.add_argument('--slices-path', help='Path to the slices directory')
-    compile_parser.add_argument('--input-file', help='Path to input file for calibration (optional)')
-    compile_parser.add_argument('--layers', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
+    compile_parser = subparsers.add_parser('compile', aliases=['c'], help='Compile slices using EZKL')
+    # Ensure canonical command even when alias is used
+    compile_parser.set_defaults(command='compile')
+
+    # Arguments with aliases/shorthands
+    compile_parser.add_argument('--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_path',
+                                help='Path to the slices directory')
+    compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
+                                help='Path to input file for calibration (optional)')
+    compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
     
     return compile_parser
 

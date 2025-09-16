@@ -21,9 +21,12 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    prove_parser = subparsers.add_parser('prove', help='Generate a proof for a run')
-    prove_parser.add_argument('--run-dir', help='Specific run directory to prove')
-    prove_parser.add_argument('--output-file', help='Path to save output results')
+    prove_parser = subparsers.add_parser('prove', aliases=['p'], help='Generate a proof for a run')
+    # Ensure canonical command even when alias is used
+    prove_parser.set_defaults(command='prove')
+
+    prove_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to prove')
+    prove_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
 
     return prove_parser
 

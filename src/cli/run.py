@@ -131,7 +131,7 @@ def run_inference(args):
 
         # Prompt for output file if not provided
         if not hasattr(args, 'output_file') or not args.output_file:
-            save_output = prompt_for_value('save-output', 'Save output to file?', default='y', required=False).lower()
+            save_output = prompt_for_value('save-output', 'Save output to file?', default='n', required=False).lower()
             if save_output.startswith('y'):
                 default_output_file = os.path.join(model_dir, "output.json")
                 args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)

@@ -278,3 +278,45 @@ Contributions are welcome! Please feel free to open issues and PRs.
 License
 
 See the LICENSE file for details.
+
+
+## End-to-end: full-run
+
+Run the entire pipeline (slice → compile → run → prove → verify) with a single interactive command.
+
+Usage:
+```bash
+# Kebab-case (preferred)
+dsperse full-run --model-dir path/to/model_or_dir --input-file path/to/input.json
+
+# Snake_case alias also works
+dsperse full_run --model-dir path/to/model_or_dir --input-file path/to/input.json
+```
+
+Notes:
+- You can pass a model directory that contains model.onnx or a direct path to model.onnx.
+- The command is interactive; if an argument is missing, it will prompt you (consistent with other subcommands).
+- Slices will be created under <model_dir>/slices unless you provide an existing one.
+- Proofs and verification use the latest run under <model_dir>/run by default.
+
+Optional flags:
+- --slices-dir: Reuse a pre-existing slices directory to skip the slicing step.
+- --layers: Restrict which layers to compile (same format as compile, e.g., "3, 20-22").
+
+Examples:
+```bash
+# One-shot end-to-end on the sample model
+cd src/models/net
+# if you have an input.json in this directory
+dsperse full-run --model-dir . --input-file ./input.json
+
+# From repo root, specifying paths explicitly
+dsperse full-run --model-dir src/models/resnet --input-file src/models/resnet/input.json
+
+# Reuse pre-sliced directory and only compile select layers
+dsperse full-run \
+  --model-dir src/models/net \
+  --slices-dir src/models/net/slices \
+  --input-file src/models/net/input.json \
+  --layers "1, 3-5"
+```

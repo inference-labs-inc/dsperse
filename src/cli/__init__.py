@@ -9,6 +9,7 @@ from src.cli.run import setup_parser as setup_run_parser, run_inference
 from src.cli.prove import setup_parser as setup_prove_parser, run_proof
 from src.cli.verify import setup_parser as setup_verify_parser, verify_proof
 from src.cli.compile import setup_parser as setup_compile_parser, compile_model
+from src.cli.full_run import setup_parser as setup_full_run_parser, full_run
 
 __all__ = [
     'DsperseArgumentParser',
@@ -25,5 +26,7 @@ __all__ = [
     'setup_verify_parser',
     'verify_proof',
     'setup_compile_parser',
-    'compile_model'
+    'compile_model',
+    'setup_full_run_parser',
+    'full_run'
 ]

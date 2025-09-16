@@ -21,7 +21,7 @@ class RunnerAnalyzer:
         self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
         self.slices_metadata_path = self.slices_dir / "metadata.json"
 
-        self.size_limit = 100 * 1024 * 1024  # 100MB
+        self.size_limit = 1000 * 1024 * 1024  # 1000MB
 
         if not self.slices_dir.exists():
             raise FileNotFoundError(f"Slice output directory not found: {self.slices_dir}")

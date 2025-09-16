@@ -46,6 +46,8 @@ models/*/slices
 src/models/*/slices/
 models/*/model_metadata.json
 src/models/*/model_metadata.json
+models/*/analysis/model_metadata.json
+src/models/*/analysis/model_metadata.json
 models/*/run
 src/models/*/run/
 

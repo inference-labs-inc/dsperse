@@ -22,7 +22,45 @@ Dsperse is a toolkit for slicing, analyzing, and running neural network models. 
 For more detailed information about the project, please refer to the following documentation:
 
 - [Overview](docs/overview.md): A high-level overview of the project, its goals, and features
-- [Architecture](docs/arc42.md): Detailed architecture documentation following the arc42 template
+- [Architecture](docs/arc42.md): Up-to-date architecture summary (arc42-style) reflecting the current CLI and ONNX-only support
+
+## CLI shorthands and aliases
+
+Commands (subcommands):
+- slice (alias: s)
+- compile (alias: c)
+- run (alias: r)
+- prove (alias: p)
+- verify (alias: v)
+- full-run (alias: fr)
+
+Common short flags:
+- Model path: -m, --mp, --model-dir, --model-path
+- Slices path/dir: -s, --sd, --slices, --slices-dir, --slices-directory, --slices-path (compile uses --slices-path; run uses --slices-dir)
+- Input file: -i, --if, --input, --input-file
+- Output file: -o, --output-file
+- Layers: -l, --layers (compile, full-run)
+- Run directory: --rd, --run-dir (prove, verify)
+- Save analysis (slice only): -S, --save, --save-file
+
+Examples:
+```bash
+# Slice (short form of command and flags)
+dsperse s -m models/net -o models/net/slices -S
+
+# Compile selected layers with calibration input
+dsperse c -s models/net/slices -i models/net/input.json -l 0-2
+
+# Run inference over slices with input and output paths
+dsperse r -s models/net/slices -i models/net/input.json -o models/net/output.json
+
+# Prove and verify a specific run
+dsperse p --rd models/net/run/run_YYYYMMDD_HHMMSS
+dsperse v --rd models/net/run/run_YYYYMMDD_HHMMSS
+
+# Full pipeline (alias fr)
+dsperse fr -m models/net -i models/net/input.json
+```
 
 ## Installation
 
@@ -122,7 +160,7 @@ Dsperse creates different types of metadata files for different purposes:
 - **Location**: Always created in the output directory (e.g., `models/net/slices/metadata.json`)
 - **Purpose**: Contains segment information, paths, and parameters needed for circuitization and proving
 - **Created**: Automatically during slicing
-- **Used by**: circuitize, prove, verify commands
+- **Used by**: compile, prove, verify commands
 
 **Analysis Metadata** (`model_metadata.json`):
 - **Location**: Created in `model_dir/analysis/` when using `--save-file` flag
@@ -137,28 +175,28 @@ Dsperse creates different types of metadata files for different purposes:
 - Both files contain similar top-level information but different levels of detail
 - **This behavior is intended** but can be confusing due to similar names and purposes
 
-2) Circuitize with EZKL
-- Circuitize either the whole model.onnx or the sliced segments (recommended for incremental proofs):
+2) Compile with EZKL
+- Compile either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 
-Whole model:
+Slices directory:
 ```bash
-dsperse circuitize --slices-path models/net/slices
+dsperse compile --slices-path models/net/slices
 ```
 
 Sliced model directory (auto-detects slices metadata):
 ```bash
-dsperse circuitize --slices-path models/net/slices
+dsperse compile --slices-path models/net/slices
 ```
 
 Optional calibration input to improve settings:
 ```bash
-dsperse circuitize --slices-path models/net/slices --input-file models/net/input.json
+dsperse compile --slices-path models/net/slices --input-file models/net/input.json
 ```
 
 Optional layer selection (sliced models only):
 ```bash
-dsperse circuitize --slices-path models/net/slices --layers 2,3,4
-dsperse circuitize --slices-path models/net/slices --layers 0-2
+dsperse compile --slices-path models/net/slices --layers 2,3,4
+dsperse compile --slices-path models/net/slices --layers 0-2
 ```
 
 What happens:
@@ -175,15 +213,15 @@ Note on missing slices:
 
 Common examples:
 ```bash
-dsperse run --model-dir models/net
-dsperse run --model-dir models/net/slices  # you can point to slices directly
+dsperse run --slices-dir models/net         # points to model dir (auto-detects slices)
+dsperse run --slices-dir models/net/slices  # or point directly to slices
 ```
 
 You will be prompted for an input file if not provided (default: model_dir/input.json).
 
 To save the final output:
 ```bash
-dsperse run --model-dir models/net --input-file models/net/input.json --output-file models/net/output.json
+dsperse run --slices-dir models/net/slices --input-file models/net/input.json --output-file models/net/output.json
 ```
 
 What happens:
@@ -246,7 +284,7 @@ Tips and troubleshooting
   - Ensure ezkl is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
 - SRS files missing/slow downloads:
   - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
-- Circuitize says “slice first”:
+- Compile says “slice first”:
   - Run dsperse slice --model-dir <model_dir> to produce slices and metadata.json
 - Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
 
@@ -254,7 +292,7 @@ Project structure (updated)
 
 - src/
   - slicer.py: orchestrator for slicing (uses OnnxSlicer)
-  - circuitizer.py: orchestrator for circuitization (uses EZKL backend pipeline)
+  - compiler.py: orchestrator for compilation (uses EZKL backend pipeline)
   - runner.py: chained execution across segments (EZKL or ONNX fallback)
   - backends/
     - onnx_models.py: ONNX inference utilities
@@ -262,7 +300,7 @@ Project structure (updated)
   - cli/
     - base.py: shared CLI helpers
     - slice.py: slice command
-    - circuitize.py: circuitize command
+    - compile.py: compile command
     - run.py: run command
     - prove.py: prove command
     - verify.py: verify command
@@ -289,8 +327,8 @@ Usage:
 # Kebab-case (preferred)
 dsperse full-run --model-dir path/to/model_or_dir --input-file path/to/input.json
 
-# Snake_case alias also works
-dsperse full_run --model-dir path/to/model_or_dir --input-file path/to/input.json
+# Short alias also works
+dsperse fr --model-dir path/to/model_or_dir --input-file path/to/input.json
 ```
 
 Notes:

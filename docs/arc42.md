@@ -1,213 +1,137 @@
-# Dsperse: Distributed zkML Architecture Document
+# Dsperse Architecture (arc42)
 
-This document outlines the high-level architecture for the "dsperse" project—a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing users to break down complex models into smaller segments for detailed analysis, optimization, and verification. The project includes capabilities for distributed zkML proof computation, which splits machine learning models into manageable segments to reduce compute and RAM constraints.
-
----
-
-## 1. Introduction and Goals
-
-- **Purpose:**  
-  The dsperse project provides a toolkit for slicing, analyzing, and running neural network models. It introduces methods for model segmentation and distributed computation, including zkML proofs, enabling more granular control over compute, RAM usage, and overall efficiency.
-
-- **Scope:**  
-  - Support for ONNX models for slicing and analysis
-  - Implement distributed zkML proofs for large neural nets
-  - Provide comprehensive CLI interface for model operations
-  - Leverage existing tools such as ONNX and ezkl (which uses Halo 2 underneath)
-  - Expose parameters for fine-tuning model slicing and computation
-
-- **Goals and Objectives:**  
-  - **Model Slicing:** Split neural network models into individual layers or custom segments for detailed analysis
-  - **Distributed Compute:** Break down ML models into manageable pieces to distribute computation across multiple machines
-  - **Optimize Resource Usage:** Minimize RAM usage through model splitting and efficient inference pipelines
-  - **Increase Flexibility:** Support different model types and provide configurable slicing strategies
-  - **Enable Zero-Knowledge Proofs:** Generate and verify proofs for model execution via ezkl integration
-  - **Improve Performance:** Enhance overall processing time by balancing segment size and distributed computation
+This document describes the software architecture of Dsperse as it exists in this repository today. It follows the spirit of the arc42 template while focusing on what is implemented: an ONNX-only, CLI-driven pipeline integrating EZKL for circuit generation, proving, and verification.
 
 ---
 
-## 2. Architecture Constraints
+## 1. Goals and Quality Objectives
 
-- **Technical Constraints:**  
-  - Must integrate with existing pipelines using ezkl and Halo 2.
-  - Must operate within the resource limits (compute and RAM) of miners on the Bittensor network.
-  - Circuitization should work on the underlying weight and bias matrices, irrespective of high-level model types.
+- Provide a simple, local-first workflow to slice ONNX models into segments and run chained inference.
+- Enable zkML workflows by compiling (EZKL), proving, and verifying per-segment execution.
+- Keep the UX approachable via an interactive CLI with sensible defaults.
+- Be explicit about support scope: ONNX models only (no .pth / TorchScript models).
 
-- **Regulatory Constraints:**  
-  - No specific regulatory constraints have been identified at this stage.
-
-- **Business Constraints:**  
-  - Changes to the incentive mechanism on the Bittensor network will be required.
-  - The design should be flexible to support various miner capabilities, from lower-end machines to high-performance nodes.
+Primary quality goals
+- Reliability of the pipeline and artifacts (deterministic file layout, resumable steps).
+- Operability: clear CLI, helpful prompts, actionable errors/logging.
+- Extensibility: new backends or steps can be added behind well-defined interfaces.
 
 ---
 
-## 3. System Scope and Context
+## 2. Constraints
 
-### 3.1. System Scope
+- Model format: ONNX only.
+- Cryptographic backend: EZKL CLI (Halo2-based) for circuit compilation, setup, proving, verifying.
+- Runtime environment: Python 3.9+, local file system; interactive CLI by default.
+- Artifacts are JSON and file-based to allow inspection and reuse between steps.
 
-- **Dsperse** is designed to enable distributed zkML proof computation by splitting a neural network’s weight matrix into vertical layers. 
-- It is the first implementation aiming for distributed zkML proof generation, targeting use cases where large neural networks require distribution of workload.
+---
 
-### 3.2. External Interfaces and Context Diagram
+## 3. Context and Scope
 
-- **External Systems:**
-  - **ezkl/Halo 2:** Used for generating circuits and proofs. Dsperse will adapt these tools to support vertical layer circuitization.
-  - **Bittensor Network:** Provides the infrastructure for miners and validators; handles proof submission, scoring, and incentive distribution.
+Dsperse is a single-node CLI application. It does not require a network, message bus, or external database. The CLI reads/writes files under a chosen model directory and orchestrates the EZKL command-line tool.
+
+External interfaces
+- EZKL CLI: invoked to generate settings, compile circuits, setup, prove, and verify.
+- ONNX Runtime: used for non-zk per-segment inference and shape handling.
+
+Inputs/outputs (high-level)
+- Input: model.onnx, input.json.
+- Outputs: slices/ (segment_*/ with ONNX segments and EZKL artifacts), analysis/model_metadata.json (optional), run/run_*/ (run_result.json, intermediate tensors, proofs).
 
 ---
 
 ## 4. Solution Strategy
 
-- **Overview:**  
-  Dsperse proposes to circuitize the neural network at the level of its vertical layers. In a typical neural network, regardless of whether it is fully connected or uses other structures (such as in modern LLMs like LLAMA), the underlying computations rely on dense weight matrices (with weights and biases). Even though LLMs often use transformers—with feed-forward networks (which are fully connected layers)—the core idea is that each layer (or a group of layers) can be split into smaller circuits.
-
-- **Neural Net Clarification:**  
-  - **Fully Connected Layers in Modern LLMs:**  
-    Fully connected (dense) layers are still common as part of the feed-forward networks in transformer architectures. For example, LLAMA uses transformer blocks that include dense layers for intermediate processing.  
-    Even if a neural net isn’t “fully connected” in a classical sense (as in convolutional layers), the fundamental representation is still a matrix of weights and biases. These matrices rarely contain "nulls" unless sparsity is explicitly introduced, meaning each entry is a meaningful weight. This makes vertical splitting applicable.
-
-- **Key Technology Decisions:**
-  - **Circuitization Approach:**  
-    Start by treating each vertical layer (i.e., a row or column of the weight matrix) as a circuit. Allow for dynamic adjustment so that multiple layers can be combined based on miner capability.
-  - **Resource Allocation:**
-    Expose CLI parameters so that miners can specify the amount of compute (number of layers and nodes) they can handle.
+- Slice the original ONNX graph into smaller ONNX segments with explicit I/O tensors.
+- For each segment, compile EZKL circuits (settings, compiled model, proving/verification keys).
+- Execute chained inference over segments; where EZKL witnesses are produced, later steps can generate proofs.
+- Store everything as files to enable step-by-step inspection and reproducibility.
 
 ---
 
 ## 5. Building Block View
 
-- **High-Level Decomposition:**  
-  The system consists of the following major components:
-  1. **Circuit Generator:**  
-     Interfaces with ezkl/Halo 2 to generate circuits for vertical layers.
-  2. **Proof Distribution Engine:**  
-     Allocates vertical layers to miners based on computed resource capacity (RAM and compute).
-  3. **Validator Module:**
-     Assembles proofs from miners to produce the final inference proof.
-  4. **CLI Parameter Interface:**
-     Exposes knobs for miners to specify compute capacity (number of layers, nodes, etc.).
+Top-level components
+- CLI layer (src/cli/*): subcommands slice, compile, run, prove, verify, full-run (orchestration).
+- Slicer (src/slicer.py): builds per-segment ONNX files and slices/metadata.json.
+- Compiler (src/compiler.py + src/backends/ezkl.py): creates EZKL artifacts for selected segments.
+- Runner (src/runner.py): chained execution across segments, producing run/run_*/ outputs and run_result.json.
+- Prover (src/prover.py): generates proofs for segments with valid witnesses.
+- Verifier (src/verifier.py): verifies produced proofs and records results.
+- ONNX execution (src/backends/onnx_models.py): utility to run ONNXRuntime for segments.
 
-- **Component Descriptions:**
-  - **Circuit Generator:**  
-    Splits the neural net's weight matrix vertically. By default, 1 layer = 1 circuit; configurable to group 2 or more layers.
-  - **Proof Distribution Engine:**  
-    Scores miners based on available compute and RAM, then assigns vertical layer circuits accordingly.
-  - **Validator Module:**
-    Collects proofs from miners. If a miner fails or is too slow, falls back to more granular circuit assignments.
-  - **CLI Parameter Interface:**
-    Allows miners to set their preferred circuit size and compute allocation.
+Key data structures and files
+- slices/metadata.json: operational metadata about segments and EZKL artifacts.
+- analysis/model_metadata.json: optional analysis dump for human inspection.
+- run/run_*/run_result.json: per-run execution summary and per-segment results.
 
-
-  ![Vertical Layers Circuitization](images/vertical_layers.jpg)  
-  *Note: In the diagram above, each colored node represents a vertical layer of the neural network, circuitized
-  independently for distributed proof computation.*
 ---
 
 ## 6. Runtime View
 
-- **Dynamic Behavior:**  
-  - **Input Flow:**  
-    The neural network’s input witness is processed, and as the inference flows through each vertical layer, a circuit and corresponding proof are generated.
-  - **Distributed Proof Computation:**  
-    Validators send circuit segments (vertical layers) to miners based on their available resources. Miners compute proofs for these segments individually.
-  - **Proof Assembly:**  
-    Validators collect all partial proofs, and if any segment fails or is too slow, the system retries or assigns to another miner.
+Typical full run (local)
+1) slice: create slices/segment_*/segment_i.onnx and slices/metadata.json.
+2) compile: for chosen layers, create EZKL settings/compiled circuit/keys under each segment.
+3) run: execute segments in order; produce inputs/outputs (and witnesses if EZKL path is used) under run/run_*/ and write run_result.json.
+4) prove: for segments with witnesses, call ezkl prove; update run_result.json with proof_execution info.
+5) verify: call ezkl verify per segment; update run_result.json with verification_execution info and overall counts.
 
-
-  ![Circuit Design Overview](images/circuit_design_overview.jpg)
-  *The neural network’s input witness is processed, and as the inference flows through each vertical layer, a circuit and
-  corresponding proof are generated. Each circuitized vertical layer will have its own input witness, allowing
-  computations to be performed independently on separate machines with smaller lookup tables. credit: @HudsonGraeme for image*
+The full-run command orchestrates the above and handles prompting/paths for a one-shot UX.
 
 ---
 
 ## 7. Deployment View
 
-- **Infrastructure Overview:**  
-  - **Compute Nodes:**  
-    Miners and validators on the Bittensor network, with varying compute and RAM capacities.
-  - **External Services:**  
-    Integration with Redis for caching, and ezkl/Halo 2 for circuit generation.
+- Single machine execution; no daemon or server component.
+- Requirements: Python, EZKL CLI installed and (optionally) EZKL SRS downloaded locally.
+- Artifacts are stored next to the model so the workflow can be resumed or audited easily.
 
 ---
 
 ## 8. Crosscutting Concepts
 
-- **Shared Design Principles:**
-  - **Modularity:**  
-    Circuitize each vertical layer as an independent unit to allow flexible assignment.
-  - **Scalability:**  
-    Distribute proofs across multiple nodes to balance load and reduce proof time.
-  - **Resource Optimization:**  
-    Use caching and configurable circuit sizes to optimize RAM and compute usage.
-
-- **Quality Aspects:**
-  - **Security and Soundness:**  
-    Adjust statistical conversational time and zk iteration counts as knobs to maintain overall proof security.
-  - **Performance:**  
-    Balance circuit size with proof time to incentivize optimal resource usage on the Bittensor network.
+- Logging and UX: colorized terminal output, interactive prompts with defaults, centralized logging utilities in src/cli/base.py.
+- File layout contracts: stable directory structure for slices and runs; tools search for metadata.json to auto-detect context.
+- Backend abstraction: EZKL integration is encapsulated; ONNXRuntime used for non-zk inference.
 
 ---
 
-## 9. Architecture Decisions
+## 9. Architecture Decisions (selected)
 
-- **Decision Records:**
-  - **Vertical Circuitization:**  
-    _Decision:_ Split neural net circuits vertically instead of as a whole model.  
-    _Rationale:_ Reduces compute and RAM constraints, allows distributed proof computation, and provides finer control over resource allocation.  
-    _Alternatives:_ Circuitizing the entire model; however, this is less flexible and resource-intensive.
-
-  - **Dynamic Grouping of Layers:**
-    _Decision:_ Expose CLI parameters to allow grouping of multiple vertical layers into one circuit.
-    _Rationale:_ Enables adaptation based on miner capacity, optimizing proof time and resource usage.
-
-- **Impact:**  
-  These decisions directly affect the design of the Circuit Generator and Proof Distribution Engine, and will influence incentive mechanisms on the Bittensor network.
+- ONNX-only support: simplifies graph handling and avoids maintaining multiple model loaders.
+- EZKL as ZK backend: leverage mature Halo2-based CLI and ecosystem.
+- File-first orchestration: favor transparent artifacts over opaque state to aid debugging and reproducibility.
+- Segmented execution: break models into smaller units to improve tractability and incremental zk workflows.
 
 ---
 
 ## 10. Quality Requirements
 
-- **Metrics and Targets:**  
-  We will use our incentive mechanism to reward the fastest miners, and the miners will need to optimize for speed of proof generation and inference.
+- Correctness: segmented I/O shape checks and validation before/after each step.
+- Usability: commands prompt for missing inputs and suggest defaults; errors include recovery hints.
+- Performance: compile/prove/verify only selected layers; reuse artifacts across runs.
 
 ---
 
-## 11. Risks and Technical Debts
+## 11. Risks and Technical Debt
 
-- **Identified Risks:**
-  - **Miner Overload:**  
-    Risk of miners being assigned circuits that exceed their compute/RAM capabilities.
-  - **Proof Assembly Failure:**
-    Potential failures in assembling partial proofs due to communication or computation delays.
-
-- **Mitigation Strategies:**
-  - Implement fallback mechanisms to assign smaller circuits.
-  - Penalty mechanisms for miners that consistently fail or are slow.
-
-- **Technical Debts:**  
-  - Initial testing and benchmarking required for optimal CLI parameter defaults.
-  - Further refinement of incentive mechanisms on the Bittensor network.
+- Mismatch between docs and CLI options if commands evolve; mitigated by keeping README in sync with parsers.
+- EZKL version drift impacting CLI flags or artifact formats; mitigated by pinning versions and testing common flows.
+- Large models and memory pressure during slicing or runtime; mitigated by segment size selection and ONNX-only scope.
 
 ---
 
 ## 12. Glossary
 
-- **Circuit:** A unit derived from a vertical slice of the neural net’s weight matrix.
-- **Miner:** A node on the Bittensor network that computes proofs for assigned circuits.
-- **Validator:** A node that collects and assembles proofs from miners.
-- **Vertical Layer:** A subset of a neural net’s weight matrix representing a segment of the overall model.
-- **zkML:** Zero-knowledge machine learning proof systems.
-- **CLI Parameter:** Command-line arguments that allow miners to configure their compute allocation.
+- Segment: a sliced subgraph of the original ONNX model with explicit inputs/outputs.
+- Slices metadata: operational JSON describing segments and their artifacts (settings, keys, etc.).
+- Run: a single chained inference over segments, stored under run/run_*/.
+- Witness: EZKL-generated data enabling proof creation for a segment execution.
 
 ---
 
-*This document is a living reference for the Dsperse project and will be updated as more testing is completed and further details emerge.*
-
----
-
-### Next Steps / Follow-Up Questions
+This arc42 summary reflects the current repository (as of 2025-09-16).
 
 1. **Layer Splitting in Different Model Types:**  
    - For convolutional layers, would you consider the unfolding operation (im2col) to convert them into a matrix form for circuitization, or is the initial focus solely on fully connected layers?

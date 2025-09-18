@@ -159,7 +159,15 @@ def run_inference(args):
         # Print the result
         print(f"\n{Fore.YELLOW}Results:{Style.RESET_ALL}")
         print(f"Prediction: {result.get('prediction', 'N/A')}")
-        print(f"Probabilities: {result.get('probabilities', 'N/A')}")
+        print(f"Final Probabilities: {result.get('probabilities')[0] if result.get('probabilities') else 'N/A'}")
+
+        # Print method information for each segment
+        slice_results = result.get('slice_results', {})
+        if slice_results:
+            print("\nSegment Methods:")
+            for segment_name, segment_info in slice_results.items():
+                print(f"{segment_name}: {segment_info.get('method', 'N/A')}")
+
 
     except Exception as e:
         error_msg = f"Error during inference: {e}"

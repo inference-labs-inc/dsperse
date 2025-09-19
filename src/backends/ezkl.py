@@ -4,6 +4,8 @@ import random
 import subprocess
 import torch
 import logging
+import traceback
+import re
 from pathlib import Path
 import onnx
 from src.utils.utils import Utils
@@ -157,15 +159,16 @@ class EZKL:
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
         try:
+            cmd = [
+                "ezkl",
+                "gen-witness",
+                "--data", input_file,
+                "--compiled-circuit", model_path,
+                "--output", output_file,
+                "--vk-path", vk_path
+            ]
             process = subprocess.run(
-                [
-                    "ezkl",
-                    "gen-witness",
-                    "--data", input_file,
-                    "--compiled-circuit", model_path,
-                    "--output", output_file,
-                    "--vk-path", vk_path
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
@@ -173,12 +176,20 @@ class EZKL:
             )
 
             if process.returncode != 0:
+                # Print the full Python stack and the process stderr
+                traceback.print_stack()
+                if process.stderr:
+                    print(process.stderr)
                 error_msg = f"Witness generation failed with return code {process.returncode}"
                 if process.stderr:
                     error_msg += f"\nError: {process.stderr}"
                 return False, error_msg
 
         except subprocess.CalledProcessError as e:
+            # Print the full stack trace from the exception and the process stderr
+            traceback.print_exc()
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             error_msg = f"Witness generation failed: {e}"
             if e.stderr:
                 error_msg += f"\nError output: {e.stderr}"
@@ -223,16 +234,17 @@ class EZKL:
         os.makedirs(os.path.dirname(proof_path), exist_ok=True)
 
         try:
+            cmd = [
+                "ezkl",
+                "prove",
+                "--check-mode", check_mode,
+                "--witness", witness_path,
+                "--compiled-circuit", model_path,
+                "--proof-path", proof_path,
+                "--pk-path", pk_path
+            ]
             process = _run_ezkl_command_with_srs_check(
-                [
-                    "ezkl",
-                    "prove",
-                    "--check-mode", check_mode,
-                    "--witness", witness_path,
-                    "--compiled-circuit", model_path,
-                    "--proof-path", proof_path,
-                    "--pk-path", pk_path
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
@@ -240,6 +252,10 @@ class EZKL:
             )
 
             if process.returncode != 0:
+                # Print the full Python stack and the process stderr
+                traceback.print_stack()
+                if process.stderr:
+                    print(process.stderr)
                 error_msg = f"Proof generation failed with return code {process.returncode}"
                 if process.stderr:
                     error_msg += f"\nError: {process.stderr}"
@@ -247,9 +263,13 @@ class EZKL:
 
         except subprocess.CalledProcessError as e:
             print(f"Error during proof generation: {e}")
+            traceback.print_exc()
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False, e.stderr
         except RuntimeError as e:
             # SRS error detected and bubbled up
+            traceback.print_exc()
             return False, str(e)
 
         results = proof_path
@@ -281,14 +301,15 @@ class EZKL:
             raise FileNotFoundError(f"Verification key file not found: {vk_path}")
 
         try:
+            cmd = [
+                "ezkl",
+                "verify",
+                "--proof-path", proof_path,
+                "--settings-path", settings_path,
+                "--vk-path", vk_path
+            ]
             process = subprocess.run(
-                [
-                    "ezkl",
-                    "verify",
-                    "--proof-path", proof_path,
-                    "--settings-path", settings_path,
-                    "--vk-path", vk_path
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
@@ -296,6 +317,10 @@ class EZKL:
             )
 
             if process.returncode != 0:
+                # Print the full Python stack and the process stderr
+                traceback.print_stack()
+                if process.stderr:
+                    print(process.stderr)
                 error_msg = f"Verification generation failed with return code {process.returncode}"
                 if process.stderr:
                     error_msg += f"\nError: {process.stderr}"
@@ -303,6 +328,9 @@ class EZKL:
             return True
         except subprocess.CalledProcessError as e:
             print(f"Error verifying proof: {e}")
+            traceback.print_exc()
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False
 
 
@@ -315,24 +343,31 @@ class EZKL:
             raise FileNotFoundError(f"Model file not found: {model_path}")
         os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
         try:
+            cmd = [
+                "ezkl",
+                "gen-settings",
+                "--param-visibility", param_visibility,
+                "--input-visibility", input_visibility,
+                "--model", model_path,
+                "--settings-path", settings_path,
+            ]
             process = subprocess.run(
-                [
-                    "ezkl",
-                    "gen-settings",
-                    "--param-visibility", param_visibility,
-                    "--input-visibility", input_visibility,
-                    "--model", model_path,
-                    "--settings-path", settings_path,
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
             if process.returncode != 0:
+                # Print the error stack from the process itself
+                if process.stderr:
+                    print(process.stderr)
                 return False, process.stderr or "gen-settings failed"
             return True, None
         except subprocess.CalledProcessError as e:
+            # Print the error stack from the exception
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
     def calibrate_settings(self, model_path: str, settings_path: str, data_path: str, target: str = None):
@@ -364,9 +399,17 @@ class EZKL:
                 text=True,
             )
             if process.returncode != 0:
+                # Print the full Python stack and the process stderr
+                traceback.print_stack()
+                if process.stderr:
+                    print(process.stderr)
                 return False, process.stderr or "calibrate-settings failed"
             return True, None
         except subprocess.CalledProcessError as e:
+            # Print the full stack trace from the exception and the process stderr
+            traceback.print_exc()
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
     def compile_circuit(self, model_path: str, settings_path: str, compiled_path: str):
@@ -380,23 +423,30 @@ class EZKL:
             raise FileNotFoundError(f"Settings file not found: {settings_path}")
         os.makedirs(os.path.dirname(compiled_path) or ".", exist_ok=True)
         try:
+            cmd = [
+                "ezkl",
+                "compile-circuit",
+                "--model", model_path,
+                "--settings-path", settings_path,
+                "--compiled-circuit", compiled_path,
+            ]
             process = subprocess.run(
-                [
-                    "ezkl",
-                    "compile-circuit",
-                    "--model", model_path,
-                    "--settings-path", settings_path,
-                    "--compiled-circuit", compiled_path,
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
             if process.returncode != 0:
+                # Print the error stack from the process itself
+                if process.stderr:
+                    print(process.stderr)
                 return False, process.stderr or "compile-circuit failed"
             return True, None
         except subprocess.CalledProcessError as e:
+            # Print the error stack from the exception
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
     def setup(self, compiled_path: str, vk_path: str, pk_path: str):
@@ -409,27 +459,116 @@ class EZKL:
         os.makedirs(os.path.dirname(vk_path) or ".", exist_ok=True)
         os.makedirs(os.path.dirname(pk_path) or ".", exist_ok=True)
         try:
+            cmd = [
+                "ezkl",
+                "setup",
+                "--compiled-circuit", compiled_path,
+                "--vk-path", vk_path,
+                "--pk-path", pk_path,
+            ]
             process = _run_ezkl_command_with_srs_check(
-                [
-                    "ezkl",
-                    "setup",
-                    "--compiled-circuit", compiled_path,
-                    "--vk-path", vk_path,
-                    "--pk-path", pk_path,
-                ],
+                cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
             if process.returncode != 0:
+                # Print the error stack from the process itself
+                if process.stderr:
+                    print(process.stderr)
                 return False, process.stderr or "setup failed"
             return True, None
         except subprocess.CalledProcessError as e:
+            # Print the error stack from the exception
+            if getattr(e, "stderr", None):
+                print(e.stderr)
             return False, getattr(e, "stderr", str(e))
         except RuntimeError as e:
             # SRS error detected and bubbled up
             return False, str(e)
+
+    def check_environment(self, min_version: str = "22.0.0"):
+        """
+        Preflight check for EZKL before running the pipeline.
+        - Ensures EZKL CLI is installed (prefers `ezkl --v`, falls back to `--version`).
+        - Warns if version is below the required minimum.
+        - Checks for presence of SRS tables under ~/.ezkl/srs and warns if any are missing.
+
+        Raises:
+            RuntimeError: If EZKL is not installed or the command is unrecognized.
+        """
+        # 1) Check EZKL binary and version
+        version_output = ""
+        version_tuple = None
+
+        def _extract_version_tuple(text: str):
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
+            if m:
+                return tuple(int(x) for x in m.groups())
+            return None
+
+        # Prefer `--v` as requested, then fall back to `--version` for compatibility
+        tried = []
+        for args in (["-V"], ["--version"]):
+            try:
+                cmd = ["ezkl", *args]
+                proc = subprocess.run(cmd, env=self.env, capture_output=True, text=True)
+                tried.append((cmd, proc.returncode, proc.stdout, proc.stderr))
+                if proc.returncode == 0:
+                    version_output = (proc.stdout or proc.stderr or "").strip()
+                    version_tuple = _extract_version_tuple(version_output)
+                    break
+            except FileNotFoundError:
+                # ezkl not installed or not on PATH
+                raise RuntimeError("EZKL CLI not found. Please install via ./install.sh or from the official EZKL sources.")
+
+        if version_tuple is None:
+            # Command exists but did not return a parsable version or returned non-zero
+            details = []
+            for cmd, rc, out, err in tried:
+                details.append(f"cmd={' '.join(cmd)} rc={rc} out={out!r} err={err!r}")
+            msg = (
+                "Unable to determine EZKL version from CLI. "
+                "Please ensure EZKL is correctly installed via ./install.sh or the official EZKL installation instructions.\n"
+                + "\n".join(details)
+            )
+            raise RuntimeError(msg)
+
+        # Compare with minimum version
+        def _cmp_versions(a, b):
+            return (a > b) - (a < b)
+
+        min_tuple = _extract_version_tuple(min_version) or (22, 0, 0)
+        if _cmp_versions(version_tuple, min_tuple) < 0:
+            warn_msg = (
+                f"Warning: Detected EZKL version {version_tuple[0]}.{version_tuple[1]}.{version_tuple[2]} "
+                f"which is below the recommended minimum {min_version}. Please update EZKL."
+            )
+            print(warn_msg)
+            logger.warning(warn_msg)
+
+        # 2) Check SRS tables under ~/.ezkl/srs
+        srs_dir = os.path.expanduser("~/.ezkl/srs")
+        expected = [f"kzg{n}.srs" for n in range(2, 25)]  # 2..24 inclusive
+        missing = []
+        if not os.path.isdir(srs_dir):
+            missing = expected[:]  # directory missing implies all missing
+        else:
+            for name in expected:
+                if not os.path.isfile(os.path.join(srs_dir, name)):
+                    missing.append(name)
+
+        if missing:
+            warn_msg = (
+                "Warning: Some EZKL SRS tables are missing under ~/.ezkl/srs: "
+                + ", ".join(missing)
+                + ". Please run the ./install.sh script to download SRS tables (or use 'ezkl get-srs')."
+            )
+            print(warn_msg)
+            logger.warning(warn_msg)
+
+        return True
 
     def circuitization_pipeline(self, model_path, output_path, input_file_path=None, segment_details=None):
         """
@@ -469,6 +608,15 @@ class EZKL:
         }
 
         try:
+            # Preflight: ensure EZKL installed, proper version, and SRS presence
+            try:
+                self.check_environment()
+            except RuntimeError as precheck_err:
+                err_msg = str(precheck_err)
+                logger.error(err_msg)
+                circuitization_data["error"] = err_msg
+                return circuitization_data
+
             # Step 1: Generate settings
             logger.info(f"Generating settings for {model_name}")
             ok, err = self.gen_settings(model_path=model_path, settings_path=settings_path)
@@ -505,6 +653,8 @@ class EZKL:
             logger.info(f"Circuitization pipeline completed for {model_path}")
         
         except Exception as e:
+            # Print the full stack trace for any unexpected pipeline error
+            traceback.print_exc()
             error_msg = f"Error during circuitization: {str(e)}"
             logger.error(error_msg)
             circuitization_data["error"] = error_msg

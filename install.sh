@@ -12,6 +12,7 @@ INTERACTIVE=true
 FORCE_REINSTALL=false
 PYTHON_BIN="python3"
 PIP_BIN=""
+MIN_EZKL_VERSION="${MIN_EZKL_VERSION:-22.0.0}"
 
 print_usage() {
   cat <<EOF
@@ -266,6 +267,90 @@ ensure_srs() {
   fi
 }
 
+# ----------------------
+# Final verification helpers
+# ----------------------
+ver_ge() {
+  # Return success (0) if $1 >= $2 using version sort
+  [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]
+}
+
+get_ezkl_version() {
+  local out
+  out="$(ezkl -V 2>/dev/null || ezkl --version 2>/dev/null || true)"
+  echo "$out" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1
+}
+
+check_srs_missing() {
+  local SRS_DIR="$HOME/.ezkl/srs"
+  local MIN_LOGROWS="${MIN_LOGROWS:-2}"
+  local MAX_LOGROWS="${MAX_LOGROWS:-24}"
+  local missing=()
+  local n
+  for (( n=$MIN_LOGROWS; n<=$MAX_LOGROWS; n++ )); do
+    if [[ ! -f "$SRS_DIR/kzg${n}.srs" ]]; then
+      missing+=("kzg${n}.srs")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    printf "%s " "${missing[@]}"
+  fi
+}
+
+verify_environment_post_install() {
+  info "Running final verification for EZKL and SRS ..."
+
+  if ! command -v ezkl >/dev/null 2>&1; then
+    err "EZKL CLI not detected after installation attempts."
+    say "Please install EZKL from the official source:"
+    say "  https://github.com/zkonduit/ezkl#installation"
+    say "Or run the official installer script:"
+    say "  curl -fsSL https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash"
+    return 0
+  fi
+
+  local detected_ver
+  detected_ver="$(get_ezkl_version)"
+  if [[ -n "$detected_ver" ]]; then
+    info "Detected EZKL version: $detected_ver (minimum recommended: $MIN_EZKL_VERSION)"
+    if ! ver_ge "$detected_ver" "$MIN_EZKL_VERSION"; then
+      warn "Your EZKL version ($detected_ver) is older than the recommended minimum ($MIN_EZKL_VERSION). Please update EZKL from the official source."
+    fi
+  else
+    warn "Could not determine EZKL version via 'ezkl -V/--version'. Consider updating/reinstalling from the official source."
+  fi
+
+  # Verify SRS presence and offer a second download attempt if missing
+  local srs_dir="$HOME/.ezkl/srs"
+  mkdir -p "$srs_dir"
+  local missing_files
+  missing_files="$(check_srs_missing)"
+  if [[ -n "$missing_files" ]]; then
+    warn "SRS files missing under $srs_dir: $missing_files"
+    if [[ "$INTERACTIVE" == true ]]; then
+      if confirm "Attempt to download the missing SRS files again now?"; then
+        ensure_srs
+        # Re-check
+        missing_files="$(check_srs_missing)"
+      fi
+    else
+      warn "Non-interactive mode: skipping second SRS download attempt."
+    fi
+
+    if [[ -n "$missing_files" ]]; then
+      err "SRS files are still missing after our attempts."
+      say "Please download them manually using EZKL (example for N=20):"
+      say "  ezkl get-srs --logrows 20 --commitment kzg"
+      say "Place the resulting kzgN.srs files under: $srs_dir"
+      say "Still missing: $missing_files"
+    else
+      info "✓ SRS files verified."
+    fi
+  else
+    info "✓ SRS files verified."
+  fi
+}
+
 main() {
   info "Installing dependencies for Dsperse ..."
   resolve_pip
@@ -284,6 +369,9 @@ main() {
 
   # Lookup tables (for some ezkl versions)
   install_lookup_tables
+
+  # Final verification step for EZKL and SRS
+  verify_environment_post_install
 
   say ""
   if command -v dsperse >/dev/null 2>&1; then

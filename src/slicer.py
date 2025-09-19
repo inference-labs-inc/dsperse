@@ -123,7 +123,7 @@ if __name__ == "__main__":
         if isinstance(slices, list):
             print(f"Created {len(slices)} segments.")
             # Optionally display first few slice paths
-            preview = slices[:5]
+            preview = slices[:]
             if preview:
                 print("Sample slice files:")
                 for p in preview:

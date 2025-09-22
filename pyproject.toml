@@ -34,4 +34,4 @@ include = ["src*", "models*"]
 py-modules = ["main", "__init__"]
 
 [tool.setuptools.package-data]
-models = ["*.onnx", "*.json"]
+models = ["doom*", "net*"]

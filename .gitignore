@@ -42,14 +42,14 @@ develop-eggs/
 .installed.cfg
 
 # ignore the models we test with
-models/*/slices
-src/models/*/slices/
-models/*/model_metadata.json
-src/models/*/model_metadata.json
-models/*/analysis/model_metadata.json
-src/models/*/analysis/model_metadata.json
-models/*/run
-src/models/*/run/
+*/models/*/slices
+*/src/models/*/slices/
+*/models/*/model_metadata.json
+*/src/models/*/model_metadata.json
+*/models/*/analysis/model_metadata.json
+*/src/models/*/analysis/model_metadata.json
+*/models/*/run
+*/src/models/*/run/
 
 
 # Local virtual envs

@@ -24,14 +24,11 @@ dependencies = [
 ]
 
 [project.scripts]
-dsperse = "main:main"
+dsperse = "dsperse.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dsperse*"]
-
-[tool.setuptools]
-py-modules = ["main"]
 
 [tool.setuptools.package-data]
 "dsperse.models" = ["doom*", "net*"]

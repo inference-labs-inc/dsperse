@@ -32,3 +32,6 @@ include = ["src*", "models*"]
 
 [tool.setuptools]
 py-modules = ["main", "__init__"]
+
+[tool.setuptools.package-data]
+models = ["*.onnx", "*.json"]

@@ -28,10 +28,10 @@ dsperse = "main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*", "models*"]
+include = ["dsperse*"]
 
 [tool.setuptools]
-py-modules = ["main", "__init__"]
+py-modules = ["main"]
 
 [tool.setuptools.package-data]
-models = ["doom*", "net*"]
+"dsperse.models" = ["doom*", "net*"]

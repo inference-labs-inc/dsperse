@@ -1,9 +1,14 @@
 from setuptools import setup, find_packages
 import os
 
-here = os.path.abspath(os.path.dirname(__file__))
-with open(os.path.join(here, "requirements.txt")) as f:
-    requirements = f.read().splitlines()
+# Get the directory where setup.py is located
+base_dir = os.path.dirname(os.path.abspath(__file__))
+# Read requirements from the requirements.txt file, handling the case if it doesn't exist
+requirements = []
+requirements_path = os.path.join(base_dir, 'requirements.txt')
+if os.path.exists(requirements_path):
+    with open(requirements_path, 'r') as f:
+        requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
 
 setup(
     name="dsperse",

@@ -235,7 +235,7 @@ What happens:
 
 Typical usage:
 ```bash
-dsperse prove --model-dir models/net
+dsperse prove --run-dir models/net/run
 # You will be prompted to choose among existing runs under models/net/run/
 ```
 
@@ -246,7 +246,7 @@ dsperse prove --run-dir models/net/run/run_YYYYMMDD_HHMMSS
 
 Optionally save the updated run results to a separate file:
 ```bash
-dsperse prove --model-dir models/net --output-file models/net/proof_results.json
+dsperse prove --run-dir models/net/run --output-file models/net/proof_results.json
 ```
 
 What happens:
@@ -259,7 +259,7 @@ What happens:
 
 Typical usage:
 ```bash
-dsperse verify --model-dir models/net
+dsperse verify --run-dir models/net/run
 # You will be prompted to choose the run (same as in prove)
 ```
 
@@ -270,7 +270,7 @@ dsperse verify --run-dir models/net/run/run_YYYYMMDD_HHMMSS
 
 Optionally save verification results to a separate file:
 ```bash
-dsperse verify --model-dir models/net --output-file models/net/verification_results.json
+dsperse verify --run-dir models/net/run --output-file models/net/verification_results.json
 ```
 
 What happens:

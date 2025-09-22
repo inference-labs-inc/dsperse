@@ -78,7 +78,7 @@ def full_run(args):
         # Special prompt that accepts either a filesystem location or a built-in token
         choice = prompt_for_value(
             'selection',
-            'Enter model location OR choose built-in: doom, net, resnet',
+            'Enter model location OR choose built-in: doom, net',
             required=True
         )
         # Do not normalize in prompt; handle here explicitly

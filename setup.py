@@ -4,7 +4,7 @@ with open("requirements.txt") as f:
     requirements = f.read().splitlines()
 
 setup(
-    name="kubz",
+    name="dsperse",
     version="1.0.0",
     description="Distributed zkML Toolkit",
     author="Inference Labs",
@@ -15,7 +15,7 @@ setup(
     install_requires=requirements,
     entry_points={
         "console_scripts": [
-            "kubz=main:main",
+            "dsperse=main:main",
         ],
     },
 )

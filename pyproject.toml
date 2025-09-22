@@ -31,4 +31,4 @@ where = ["."]
 include = ["dsperse*"]
 
 [tool.setuptools.package-data]
-"dsperse.models" = ["doom*", "net*"]
+"dsperse.models" = ["doom/*.json", "doom/*.onnx", "net/*.json", "net/*.onnx"]

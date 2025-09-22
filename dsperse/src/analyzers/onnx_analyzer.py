@@ -4,7 +4,7 @@ from pathlib import Path
 
 import onnx
 import logging
-from src.utils.utils import Utils
+from dsperse.src.utils.utils import Utils
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)

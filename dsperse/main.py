@@ -13,7 +13,7 @@ import importlib.metadata
 from colorama import Fore, Style
 
 # Import CLI modules
-from src.cli import (
+from dsperse.src.cli import (
     DsperseArgumentParser,
     print_header,
     print_easter_egg,

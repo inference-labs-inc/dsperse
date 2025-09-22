@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 
-from src.utils.utils import Utils
+from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 

@@ -2,11 +2,11 @@ import os
 
 import torch
 
-from src.models.doom.model import DoomAgent, Conv1Segment as doomConv1, Conv2Segment as doomConv2, \
+from dsperse.src.models.doom.model import DoomAgent, Conv1Segment as doomConv1, Conv2Segment as doomConv2, \
     Conv3Segment as doomConv3, FC1Segment as doomFC1, FC2Segment as doomFC2
-from src.models.net.model import Net, Conv1Segment as netConv1, Conv2Segment as netConv2, FC1Segment as netFC1, \
+from dsperse.src.models.net.model import Net, Conv1Segment as netConv1, Conv2Segment as netConv2, FC1Segment as netFC1, \
     FC2Segment as netFC2, FC3Segment as netFC3
-from src.utils.runner_utils.runner_utils import RunnerUtils
+from dsperse.src.utils.runner_utils.runner_utils import RunnerUtils
 
 env = os.environ
 

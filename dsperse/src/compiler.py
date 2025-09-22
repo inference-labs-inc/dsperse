@@ -12,9 +12,9 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from src.backends.ezkl import EZKL
-from src.utils.utils import Utils
-from src.runner import Runner
+from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.utils.utils import Utils
+from dsperse.src.runner import Runner
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ import os
 import torch
 import torch.nn.functional as F
 
-from src.utils.model_utils import ModelUtils
+from dsperse.src.utils.model_utils import ModelUtils
 
 logger = logging.getLogger(__name__)
 

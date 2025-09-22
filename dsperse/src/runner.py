@@ -9,10 +9,10 @@ import time
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-from src.backends.onnx_models import OnnxModels
-from src.backends.ezkl import EZKL
-from src.analyzers.runner_analyzer import RunnerAnalyzer
-from src.utils.utils import Utils
+from dsperse.src.backends.onnx_models import OnnxModels
+from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
+from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 

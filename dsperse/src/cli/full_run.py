@@ -6,12 +6,12 @@ import os
 from argparse import Namespace
 from colorama import Fore, Style
 
-from src.cli.base import prompt_for_value, normalize_path, logger
-from src.cli.slice import slice_model
-from src.cli.compile import compile_model
-from src.cli.run import run_inference
-from src.cli.prove import run_proof, get_latest_run
-from src.cli.verify import verify_proof
+from dsperse.src.cli.base import prompt_for_value, normalize_path, logger
+from dsperse.src.cli.slice import slice_model
+from dsperse.src.cli.compile import compile_model
+from dsperse.src.cli.run import run_inference
+from dsperse.src.cli.prove import run_proof, get_latest_run
+from dsperse.src.cli.verify import verify_proof
 
 
 def setup_parser(subparsers):

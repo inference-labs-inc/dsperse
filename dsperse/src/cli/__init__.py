@@ -3,13 +3,13 @@ Dsperse CLI package.
 Contains modules for the Dsperse command-line interface.
 """
 
-from src.cli.base import DsperseArgumentParser, print_header, print_easter_egg, configure_logging, logger
-from src.cli.slice import setup_parser as setup_slice_parser, slice_model
-from src.cli.run import setup_parser as setup_run_parser, run_inference
-from src.cli.prove import setup_parser as setup_prove_parser, run_proof
-from src.cli.verify import setup_parser as setup_verify_parser, verify_proof
-from src.cli.compile import setup_parser as setup_compile_parser, compile_model
-from src.cli.full_run import setup_parser as setup_full_run_parser, full_run
+from dsperse.src.cli.base import DsperseArgumentParser, print_header, print_easter_egg, configure_logging, logger
+from dsperse.src.cli.slice import setup_parser as setup_slice_parser, slice_model
+from dsperse.src.cli.run import setup_parser as setup_run_parser, run_inference
+from dsperse.src.cli.prove import setup_parser as setup_prove_parser, run_proof
+from dsperse.src.cli.verify import setup_parser as setup_verify_parser, verify_proof
+from dsperse.src.cli.compile import setup_parser as setup_compile_parser, compile_model
+from dsperse.src.cli.full_run import setup_parser as setup_full_run_parser, full_run
 
 __all__ = [
     'DsperseArgumentParser',

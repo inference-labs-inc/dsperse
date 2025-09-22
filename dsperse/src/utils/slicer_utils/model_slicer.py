@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import enum
 
-from src.utils.model_utils import ModelUtils
+from dsperse.src.utils.model_utils import ModelUtils
 
 
 class ModelSlicer:

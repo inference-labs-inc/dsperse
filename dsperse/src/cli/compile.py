@@ -9,8 +9,8 @@ import logging
 
 from colorama import Fore, Style
 
-from src.compiler import Compiler
-from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
+from dsperse.src.compiler import Compiler
+from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 
 
 def _check_layers(slices_path, layers_str):

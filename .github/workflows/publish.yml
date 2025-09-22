@@ -38,6 +38,30 @@ jobs:
             echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Update pyproject.toml with tag version
+        run: |
+          set -euo pipefail
+          echo "Updating pyproject.toml version to: ${{ steps.version.outputs.version }}"
+          python -c "
+          import re
+
+          version = '${{ steps.version.outputs.version }}'
+
+          with open('pyproject.toml', 'r') as f:
+              content = f.read()
+
+          # Update version in pyproject.toml
+          updated_content = re.sub(
+              r'^version\s*=\s*[\"\'](.*?)[\"\']',
+              f'version = \"{version}\"',
+              content,
+              flags=re.MULTILINE
+          )
+
+          with open('pyproject.toml', 'w') as f:
+              f.write(updated_content)
+          "
+
       - name: Build distributions
         run: uv build
         env:

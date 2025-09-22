@@ -9,42 +9,63 @@ automatically determining the appropriate backend (EZKL or ONNX) for each slice.
 import sys
 import random
 import logging
+import importlib.metadata
 from colorama import Fore, Style
 
 # Import CLI modules
 from src.cli import (
-    DsperseArgumentParser, print_header, print_easter_egg, configure_logging, logger,
-    setup_slice_parser, slice_model,
-    setup_run_parser, run_inference,
-    setup_prove_parser, run_proof,
-    setup_verify_parser, verify_proof,
-    setup_compile_parser, compile_model,
-    setup_full_run_parser, full_run
+    DsperseArgumentParser,
+    print_header,
+    print_easter_egg,
+    configure_logging,
+    logger,
+    setup_slice_parser,
+    slice_model,
+    setup_run_parser,
+    run_inference,
+    setup_prove_parser,
+    run_proof,
+    setup_verify_parser,
+    verify_proof,
+    setup_compile_parser,
+    compile_model,
+    setup_full_run_parser,
+    full_run,
 )
+
 
 def main():
     """Main entry point for the Dsperse CLI."""
     # Create the main parser
     parser = DsperseArgumentParser(
         description="Dsperse - Distributed zkML Toolkit",
-        formatter_class=sys.modules['argparse'].RawDescriptionHelpFormatter,
-        epilog=f"Made with {Fore.RED}❤️{Style.RESET_ALL}  by the Inference Labs team"
+        formatter_class=sys.modules["argparse"].RawDescriptionHelpFormatter,
+        epilog=f"Made with {Fore.RED}❤️{Style.RESET_ALL}  by the Inference Labs team",
     )
 
-    # Add version argument
-    parser.add_argument('--version', action='version', version='Dsperse CLI v1.0.0')
+    try:
+        version = importlib.metadata.version("dsperse")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+    parser.add_argument(
+        "--version", action="version", version=f"Dsperse CLI v{version}"
+    )
 
     # Add logging level argument
-    parser.add_argument('--log-level', 
-                      choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                      default='WARNING',
-                      help='Set the logging level (default: WARNING)')
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="WARNING",
+        help="Set the logging level (default: WARNING)",
+    )
 
     # Add easter egg argument
-    parser.add_argument('--easter-egg', action='store_true', help=sys.modules['argparse'].SUPPRESS)
+    parser.add_argument(
+        "--easter-egg", action="store_true", help=sys.modules["argparse"].SUPPRESS
+    )
 
     # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest='command', help='Command to execute')
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     # Set up parsers for each command
     setup_slice_parser(subparsers)
@@ -70,17 +91,17 @@ def main():
         return
 
     # Handle commands
-    if args.command == 'slice':
+    if args.command == "slice":
         slice_model(args)
-    elif args.command == 'run':
+    elif args.command == "run":
         run_inference(args)
-    elif args.command == 'prove':
+    elif args.command == "prove":
         run_proof(args)
-    elif args.command == 'verify':
+    elif args.command == "verify":
         verify_proof(args)
-    elif args.command == 'compile':
+    elif args.command == "compile":
         compile_model(args)
-    elif args.command =='full-run':
+    elif args.command == "full-run":
         full_run(args)
     else:
         # If no command is provided, show help
@@ -88,6 +109,7 @@ def main():
         # Show an easter egg 20% of the time
         if random.random() < 0.2:
             print_easter_egg()
+
 
 if __name__ == "__main__":
     try:
@@ -98,5 +120,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n{Fore.RED}An unexpected error occurred: {e}{Style.RESET_ALL}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

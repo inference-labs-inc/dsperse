@@ -10,7 +10,7 @@ import os
 import logging
 from typing import Optional
 
-from src.utils.slicer_utils.onnx_slicer import OnnxSlicer
+from dsperse.src.utils.slicer_utils.onnx_slicer import OnnxSlicer
 # Import ModelSlicer for future use
 # from src.slicers.model_slicer import ModelSlicer
 

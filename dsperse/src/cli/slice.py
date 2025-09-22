@@ -7,8 +7,8 @@ import traceback
 
 from colorama import Fore, Style
 
-from src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
-from src.slicer import Slicer
+from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
+from dsperse.src.slicer import Slicer
 
 
 def setup_parser(subparsers):

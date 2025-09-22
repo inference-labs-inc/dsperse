@@ -8,8 +8,8 @@ import traceback
 import glob
 from colorama import Fore, Style
 
-from src.verifier import Verifier
-from src.cli.base import save_result, prompt_for_value, normalize_path
+from dsperse.src.verifier import Verifier
+from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path
 
 def setup_parser(subparsers):
     """

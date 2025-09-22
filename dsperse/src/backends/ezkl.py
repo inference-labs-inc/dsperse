@@ -8,8 +8,8 @@ import traceback
 import re
 from pathlib import Path
 import onnx
-from src.utils.utils import Utils
-from src.utils.runner_utils.runner_utils import RunnerUtils
+from dsperse.src.utils.utils import Utils
+from dsperse.src.utils.runner_utils.runner_utils import RunnerUtils
 
 # Configure logger
 logger = logging.getLogger(__name__)

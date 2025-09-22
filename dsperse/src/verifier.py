@@ -6,7 +6,7 @@ import os
 import json
 import time
 from pathlib import Path
-from src.backends.ezkl import EZKL
+from dsperse.src.backends.ezkl import EZKL
 
 class Verifier:
     """

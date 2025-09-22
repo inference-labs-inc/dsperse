@@ -5,7 +5,7 @@ import numpy as np
 import onnxruntime as ort
 import torch
 
-from src.utils.runner_utils.runner_utils import RunnerUtils
+from dsperse.src.utils.runner_utils.runner_utils import RunnerUtils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

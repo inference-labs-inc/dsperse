@@ -2,9 +2,9 @@ import os.path
 import onnx
 from onnx import shape_inference
 import logging
-from src.analyzers.onnx_analyzer import OnnxAnalyzer
+from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
-from src.utils.utils import Utils
+from dsperse.src.utils.utils import Utils
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 

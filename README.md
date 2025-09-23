@@ -64,6 +64,22 @@ dsperse fr -m models/net -i models/net/input.json
 
 ## Installation
 
+### Install from PyPI
+
+The simplest way to install Dsperse is via PyPI:
+
+```bash
+# Using pip
+pip install dsperse
+
+# Using uv (recommended)
+uv tool install dsperse
+```
+
+When installed via PyPI, all dependencies are automatically installed when you run a command for the first time, eliminating any manual setup.
+
+### Install from source
+
 Preferred: one-step installer script
 
 - Unix/macOS:

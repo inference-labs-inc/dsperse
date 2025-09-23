@@ -12,10 +12,14 @@ import tempfile
 import asyncio
 import ezkl
 from packaging import version
+from dsperse.src.constants import (
+    SRS_LOGROWS_MIN,
+    SRS_LOGROWS_MAX,
+    SRS_LOGROWS_RANGE,
+    EZKL_PATH,
+)
 
 MIN_EZKL_VERSION = "22.0.0"
-MIN_LOGROWS = 2
-MAX_LOGROWS = 24
 
 
 def info(msg):
@@ -47,21 +51,20 @@ def check_ezkl():
     """Check if EZKL is installed and get version"""
     ezkl_path = shutil.which("ezkl")
     if not ezkl_path:
-        ezkl_bin = Path.home() / ".ezkl" / "ezkl"
-        if ezkl_bin.exists():
-            ezkl_path = str(ezkl_bin)
+        if EZKL_PATH.exists():
+            ezkl_path = str(EZKL_PATH)
         else:
             return None, None
 
     try:
         result = run_command([ezkl_path, "--version"], check=False)
         version_output = result.stdout or result.stderr or ""
-        # Extract version number (e.g., "22.0.1")
-        import re
 
-        version_match = re.search(r"\d+\.\d+\.\d+", version_output)
-        if version_match:
-            return ezkl_path, version_match.group()
+        parts = version_output.strip().split()
+        if parts:
+            return ezkl_path, parts[-1]
+
+        return ezkl_path, version_output.strip()
     except Exception:
         pass
 
@@ -80,9 +83,8 @@ def install_ezkl_official():
 
     if result.returncode == 0:
         info("✓ EZKL installed via official script")
-        ezkl_bin_dir = Path.home() / ".ezkl"
-        if ezkl_bin_dir.exists():
-            os.environ["PATH"] = f"{ezkl_bin_dir}:{os.environ.get('PATH', '')}"
+        if EZKL_PATH.parent.exists():
+            os.environ["PATH"] = f"{EZKL_PATH.parent}:{os.environ.get('PATH', '')}"
         return True
     else:
         error("Failed to install EZKL via the official script")
@@ -93,12 +95,12 @@ def check_srs_files():
     """Check which SRS files are present"""
     srs_dir = Path.home() / ".ezkl" / "srs"
     if not srs_dir.exists():
-        return [], list(range(MIN_LOGROWS, MAX_LOGROWS + 1))
+        return [], list(SRS_LOGROWS_RANGE)
 
     present = []
     missing = []
 
-    for logrows in range(MIN_LOGROWS, MAX_LOGROWS + 1):
+    for logrows in SRS_LOGROWS_RANGE:
         srs_file = srs_dir / f"kzg{logrows}.srs"
         if srs_file.exists():
             present.append(logrows)
@@ -126,7 +128,7 @@ def download_srs(logrows, interactive=False):
         return False
 
 
-def ensure_srs_files(interactive=False, critical_only=False):
+def ensure_srs_files(interactive=False):
     """Ensure SRS files are present"""
     present, missing = check_srs_files()
 
@@ -134,21 +136,9 @@ def ensure_srs_files(interactive=False, critical_only=False):
         info(f"✓ All required SRS files already present ({len(present)} files)")
         return True
 
-    if critical_only:
-        critical_sizes = [16, 18, 20, 22]
-        to_download = [s for s in critical_sizes if s in missing]
-        info(f"Downloading critical SRS files: {to_download}")
-    else:
-        to_download = missing
-        info(f"SRS files missing for logrows: {missing}")
-
-    if not interactive:
-        warn(
-            "Non-interactive mode: downloading only critical SRS files to avoid long install times"
-        )
-        warn(
-            f"You can download more later with: ezkl get-srs --logrows <N> --commitment kzg"
-        )
+    to_download = missing
+    info(f"SRS files missing for logrows: {missing}")
+    info(f"Installing all missing SRS files...")
 
     success_count = 0
     fail_count = 0
@@ -195,7 +185,7 @@ def install_deps(skip_pip=True, interactive=False, force=False):
             info("  https://github.com/zkonduit/ezkl#installation")
             return False
 
-    ensure_srs_files(interactive=interactive, critical_only=not interactive)
+    ensure_srs_files(interactive=interactive)
 
     ezkl_path, ezkl_version = check_ezkl()
 

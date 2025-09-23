@@ -7,18 +7,15 @@ def ensure_dependencies():
     ezkl_path, ezkl_version = check_ezkl()
     present_srs, missing_srs = check_srs_files()
 
-    critical_sizes = [16, 18, 20, 22]
-    critical_missing = [s for s in critical_sizes if s in missing_srs]
-
-    if ezkl_path and not critical_missing:
+    if ezkl_path and not missing_srs:
         return True
 
     if not ezkl_path:
         print("[INFO] EZKL not found. Installing dependencies...", file=sys.stderr)
 
-    if critical_missing:
+    if missing_srs:
         print(
-            f"[INFO] Critical SRS files missing for sizes: {critical_missing}",
+            f"[INFO] SRS files missing for sizes: {missing_srs}",
             file=sys.stderr,
         )
 

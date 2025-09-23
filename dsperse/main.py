@@ -12,6 +12,9 @@ import logging
 import importlib.metadata
 from colorama import Fore, Style
 
+# Check dependencies before importing main modules
+from dsperse.deps_checker import ensure_dependencies
+
 # Import CLI modules
 from dsperse.src.cli import (
     DsperseArgumentParser,
@@ -36,6 +39,12 @@ from dsperse.src.cli import (
 
 def main():
     """Main entry point for the Dsperse CLI."""
+    # Check and install dependencies if needed (except for help/version)
+    if len(sys.argv) > 1 and sys.argv[1] not in ["--help", "-h", "--version"]:
+        if not ensure_dependencies():
+            print(f"{Fore.RED}Failed to ensure dependencies. Some features may not work.{Style.RESET_ALL}", file=sys.stderr)
+            print(f"{Fore.YELLOW}Proceeding anyway...{Style.RESET_ALL}", file=sys.stderr)
+
     # Create the main parser
     parser = DsperseArgumentParser(
         description="Dsperse - Distributed zkML Toolkit",

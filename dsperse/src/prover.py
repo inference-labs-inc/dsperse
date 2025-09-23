@@ -78,6 +78,7 @@ class Prover:
         witness_path = witness_execution.get("output_file")
         model_path = segment_metadata.get("circuit_path")
         pk_path = segment_metadata.get("pk_path")
+        settings_path = segment_metadata.get("settings_path")
 
         # Validate circuit path
         if model_path is None:
@@ -110,6 +111,7 @@ class Prover:
             model_path=model_path,
             proof_path=proof_path,
             pk_path=pk_path,
+            settings_path=settings_path
         )
         prove_time = time.time() - start_time
 

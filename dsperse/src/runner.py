@@ -136,6 +136,7 @@ class Runner:
         """Run EZKL inference for a segment with fallback to ONNX."""
         model_path = slice_info.get("circuit_path")
         vk_path = slice_info.get("vk_path")
+        settings_path = slice_info.get("settings_path")
         start_time = time.time()
         # Attempt EZKL execution, but ensure we catch any exceptions to allow fallback
         try:
@@ -143,7 +144,8 @@ class Runner:
                 input_file=input_tensor_path,
                 model_path=model_path,
                 output_file=output_witness_path,
-                vk_path=vk_path
+                vk_path=vk_path,
+                settings_path=settings_path
             )
         except Exception as e:
             success = False

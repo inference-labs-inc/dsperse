@@ -10,28 +10,14 @@ from pathlib import Path
 import urllib.request
 import tempfile
 import asyncio
+import logging
 import ezkl
 from packaging import version
-from dsperse.src.constants import (
-    SRS_LOGROWS_MIN,
-    SRS_LOGROWS_MAX,
-    SRS_LOGROWS_RANGE,
-    EZKL_PATH,
-)
+from dsperse.src.constants import EZKL_PATH
+
+logger = logging.getLogger(__name__)
 
 MIN_EZKL_VERSION = "22.0.0"
-
-
-def info(msg):
-    print(f"[INFO] {msg}", file=sys.stderr)
-
-
-def warn(msg):
-    print(f"[WARN] {msg}", file=sys.stderr)
-
-
-def error(msg):
-    print(f"[ERROR] {msg}", file=sys.stderr)
 
 
 def run_command(cmd, shell=False, capture_output=True, check=True):
@@ -73,7 +59,7 @@ def check_ezkl():
 
 def install_ezkl_official():
     """Install EZKL using the official installer script"""
-    info("Installing EZKL from the official source...")
+    logger.info("Installing EZKL from the official source...")
 
     result = run_command(
         "curl -fsSL https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash",
@@ -82,80 +68,13 @@ def install_ezkl_official():
     )
 
     if result.returncode == 0:
-        info("✓ EZKL installed via official script")
+        logger.info("✓ EZKL installed via official script")
         if EZKL_PATH.parent.exists():
             os.environ["PATH"] = f"{EZKL_PATH.parent}:{os.environ.get('PATH', '')}"
         return True
     else:
-        error("Failed to install EZKL via the official script")
+        logger.error("Failed to install EZKL via the official script")
         return False
-
-
-def check_srs_files():
-    """Check which SRS files are present"""
-    srs_dir = Path.home() / ".ezkl" / "srs"
-    if not srs_dir.exists():
-        return [], list(SRS_LOGROWS_RANGE)
-
-    present = []
-    missing = []
-
-    for logrows in SRS_LOGROWS_RANGE:
-        srs_file = srs_dir / f"kzg{logrows}.srs"
-        if srs_file.exists():
-            present.append(logrows)
-        else:
-            missing.append(logrows)
-
-    return present, missing
-
-
-async def download_srs_async(logrows):
-    """Download SRS file using Python API"""
-    await ezkl.get_srs(logrows=logrows, commitment=ezkl.PyCommitments.KZG)
-
-
-def download_srs(logrows, interactive=False):
-    """Download SRS file for given logrows"""
-    info(f"Downloading SRS for logrows={logrows} (kzg)...")
-
-    try:
-        asyncio.run(download_srs_async(logrows))
-        info(f"✓ Downloaded kzg{logrows}.srs")
-        return True
-    except Exception as e:
-        warn(f"Failed to download SRS for logrows={logrows}: {e}")
-        return False
-
-
-def ensure_srs_files(interactive=False):
-    """Ensure SRS files are present"""
-    present, missing = check_srs_files()
-
-    if not missing:
-        info(f"✓ All required SRS files already present ({len(present)} files)")
-        return True
-
-    to_download = missing
-    info(f"SRS files missing for logrows: {missing}")
-    info(f"Installing all missing SRS files...")
-
-    success_count = 0
-    fail_count = 0
-
-    for logrows in to_download:
-        if download_srs(logrows, interactive):
-            success_count += 1
-        else:
-            fail_count += 1
-
-    info(f"SRS download summary: success={success_count}, failed={fail_count}")
-
-    if fail_count > 0:
-        warn("Some SRS downloads failed. You can retry manually:")
-        warn("ezkl get-srs --logrows <N> --commitment kzg")
-
-    return fail_count == 0
 
 
 version_ge = lambda v1, v2: version.parse(v1) >= version.parse(v2)
@@ -167,11 +86,11 @@ def install_deps(skip_pip=True, interactive=False, force=False):
     ezkl_path, ezkl_version = check_ezkl()
 
     if ezkl_path:
-        info(f"EZKL already installed: {ezkl_path}")
+        logger.info(f"EZKL already installed: {ezkl_path}")
         if ezkl_version:
-            info(f"EZKL version: {ezkl_version}")
+            logger.info(f"EZKL version: {ezkl_version}")
             if not version_ge(ezkl_version, MIN_EZKL_VERSION):
-                warn(
+                logger.warning(
                     f"EZKL version {ezkl_version} is older than recommended {MIN_EZKL_VERSION}"
                 )
                 if interactive:
@@ -180,18 +99,16 @@ def install_deps(skip_pip=True, interactive=False, force=False):
                         install_ezkl_official()
     else:
         if not install_ezkl_official():
-            error("Failed to install EZKL")
-            info("Please install EZKL manually from:")
-            info("  https://github.com/zkonduit/ezkl#installation")
+            logger.error("Failed to install EZKL")
+            logger.info("Please install EZKL manually from:")
+            logger.info("  https://github.com/zkonduit/ezkl#installation")
             return False
-
-    ensure_srs_files(interactive=interactive)
 
     ezkl_path, ezkl_version = check_ezkl()
 
     if ezkl_path:
-        info("✓ EZKL is ready")
+        logger.info("✓ EZKL is ready")
         return True
     else:
-        error("EZKL not found after installation")
+        logger.error("EZKL not found after installation")
         return False

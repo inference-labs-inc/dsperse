@@ -5,6 +5,7 @@ from pathlib import Path
 
 MIN_EZKL_VERSION = "22.0.0"
 EZKL_PATH = Path.home() / ".ezkl" / "ezkl"
+SRS_DIR = Path.home() / ".ezkl" / "srs"
 
 SRS_LOGROWS_MIN = 2
 SRS_LOGROWS_MAX = 24

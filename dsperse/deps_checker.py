@@ -1,31 +1,26 @@
-import sys
-from dsperse.install import install_deps, check_ezkl, check_srs_files
+import logging
+from dsperse.install import install_deps, check_ezkl
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_dependencies():
     """Check and install dependencies"""
     ezkl_path, ezkl_version = check_ezkl()
-    present_srs, missing_srs = check_srs_files()
 
-    if ezkl_path and not missing_srs:
+    if ezkl_path:
         return True
 
     if not ezkl_path:
-        print("[INFO] EZKL not found. Installing dependencies...", file=sys.stderr)
+        logger.info("EZKL not found. Installing dependencies...")
 
-    if missing_srs:
-        print(
-            f"[INFO] SRS files missing for sizes: {missing_srs}",
-            file=sys.stderr,
-        )
-
-    print("[INFO] Running dependency installer...", file=sys.stderr)
+    logger.info("Running dependency installer...")
 
     if install_deps(skip_pip=True, interactive=False):
-        print("[INFO] Dependencies installed successfully!", file=sys.stderr)
+        logger.info("Dependencies installed successfully!")
         return True
     else:
-        print("[ERROR] Failed to install dependencies automatically.", file=sys.stderr)
-        print("[INFO] Please install EZKL manually from:", file=sys.stderr)
-        print("https://github.com/zkonduit/ezkl#installation", file=sys.stderr)
+        logger.error("Failed to install dependencies automatically.")
+        logger.info("Please install EZKL manually from:")
+        logger.info("https://github.com/zkonduit/ezkl#installation")
         return False

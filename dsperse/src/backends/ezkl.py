@@ -11,6 +11,7 @@ import onnx
 from dsperse.src.utils.utils import Utils
 from dsperse.src.utils.runner_utils.runner_utils import RunnerUtils
 from dsperse.src.constants import SRS_FILES, MIN_EZKL_VERSION, EZKL_PATH
+from dsperse.src.utils.srs_manager import ensure_srs, get_logrows_from_settings
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ class EZKL:
     #
 
     def generate_witness(
-        self, input_file: str, model_path: str, output_file: str, vk_path: str
+        self, input_file: str, model_path: str, output_file: str, vk_path: str, settings_path: str = None
     ):
         """
         Generate a witness for the given model and input.
@@ -171,6 +172,12 @@ class EZKL:
 
         # Create output directory if it doesn't exist
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        if settings_path and os.path.exists(settings_path):
+            logrows = get_logrows_from_settings(settings_path)
+            if logrows:
+                if not ensure_srs(logrows):
+                    return False, f"Failed to ensure SRS for logrows={logrows}"
 
         try:
             cmd = [
@@ -225,6 +232,7 @@ class EZKL:
         proof_path: str,
         pk_path: str,
         check_mode: str = "unsafe",
+        settings_path: str = None
     ):
         """
         Generate a proof for the given witness and model.
@@ -255,6 +263,12 @@ class EZKL:
 
         # Create output directory if it doesn't exist
         os.makedirs(os.path.dirname(proof_path), exist_ok=True)
+
+        if settings_path and os.path.exists(settings_path):
+            logrows = get_logrows_from_settings(settings_path)
+            if logrows:
+                if not ensure_srs(logrows):
+                    return False, f"Failed to ensure SRS for logrows={logrows}"
 
         try:
             cmd = [
@@ -325,6 +339,11 @@ class EZKL:
             raise FileNotFoundError(f"Settings file not found: {settings_path}")
         if not os.path.exists(vk_path):
             raise FileNotFoundError(f"Verification key file not found: {vk_path}")
+
+        logrows = get_logrows_from_settings(settings_path)
+        if logrows:
+            if not ensure_srs(logrows):
+                return False
 
         try:
             cmd = [
@@ -491,7 +510,7 @@ class EZKL:
                 print(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
-    def setup(self, compiled_path: str, vk_path: str, pk_path: str):
+    def setup(self, compiled_path: str, vk_path: str, pk_path: str, settings_path: str = None):
         """
         Generate proving and verification keys (setup).
         Returns (success: bool, error: str|None)
@@ -500,6 +519,13 @@ class EZKL:
             raise FileNotFoundError(f"Compiled circuit file not found: {compiled_path}")
         os.makedirs(os.path.dirname(vk_path) or ".", exist_ok=True)
         os.makedirs(os.path.dirname(pk_path) or ".", exist_ok=True)
+
+        if settings_path and os.path.exists(settings_path):
+            logrows = get_logrows_from_settings(settings_path)
+            if logrows:
+                if not ensure_srs(logrows):
+                    return False, f"Failed to ensure SRS for logrows={logrows}"
+
         try:
             cmd = [
                 str(EZKL_PATH),
@@ -613,7 +639,7 @@ class EZKL:
             # Step 5: Setup (generate verification and proving keys)
             logger.info("Setting up verification and proving keys")
             ok, err = self.setup(
-                compiled_path=compiled_path, vk_path=vk_path, pk_path=pk_path
+                compiled_path=compiled_path, vk_path=vk_path, pk_path=pk_path, settings_path=settings_path
             )
             if not ok:
                 logger.warning("Failed to setup (generate keys)")

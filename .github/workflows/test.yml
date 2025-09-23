@@ -1,0 +1,49 @@
+name: Unit / Integration Tests
+
+on:
+  push:
+    branches: ["dan/release"]
+  pull_request:
+    branches: ["dan/release"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.10" #Should we specify more versions?
+      - name: Install EZKL CLI
+        run: |
+          curl https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash
+      - name: Add ezkl to PATH
+        run: echo "$HOME/.config/.ezkl" >> $GITHUB_PATH
+      - name: Install dependencies
+        run: ./install.sh
+      - name: Run tests
+        run: pytest testing/core/e2e_tests/test_e2e.py
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v3
+        with:
+          python-version: "3.10"
+
+      - name: Install the latest version of ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "latest"
+
+      - uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check --diff"

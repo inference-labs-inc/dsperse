@@ -267,5 +267,5 @@ if __name__ == "__main__":
     # Compile via orchestrator
     model_path = os.path.abspath(model_dir)
     compiler = Compiler.create(model_path=model_path)
-    result_dir = compiler.compile(model_path=model_path, input_file=input_file)
+    result_dir = compiler.compile(model_path=model_path, input_file=input_file, layers="3, 4")
     print(f"Compilation finished.")

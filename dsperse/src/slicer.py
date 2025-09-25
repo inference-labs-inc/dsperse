@@ -102,7 +102,8 @@ if __name__ == "__main__":
         2: "../models/net",
         3: "../models/resnet",
         4: "../models/age",
-        5: "../models/version"
+        5: "../models/version",
+        6: "../models/bert"
     }
 
     # Resolve paths

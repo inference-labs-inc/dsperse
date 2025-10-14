@@ -13,11 +13,12 @@ from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
+from dsperse.src.utils.backend_manager import BackendManager
 
 logger = logging.getLogger(__name__)
 
 class Runner:
-    def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None):
+    def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None, backend=None):
         if not model_path:
             raise ValueError("Please provide a model_path (parent of slices dir) to initialize the runner.")
         self.model_path = model_path
@@ -27,16 +28,19 @@ class Runner:
         if not self.metadata_path.exists():
             raise FileNotFoundError(f"metadata.json not found at {self.metadata_path}. Please run slicing first.")
 
+        # Initialize the backend for proof generation
+        self.backend = BackendManager.get_backend(backend_name=backend, model_directory=model_path)
+
         if self.run_metadata_path is None or not self.run_metadata_path.exists():
             logger.info("run metadata not found. Generating...")
             print(f"Generating run metadata at {self.run_metadata_path}")
-            runner_metadata = RunnerAnalyzer(self.model_path)
+            # Get backend name dynamically from the initialized backend
+            backend_name = type(self.backend).__name__.lower()
+            runner_metadata = RunnerAnalyzer(self.model_path, backend_name=backend_name)
             self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
-        
+
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
-
-        self.ezkl_runner = EZKL()
 
     def run(self, input_json_path) -> dict:
         """Run inference through the chain of segments."""
@@ -76,21 +80,25 @@ class Runner:
                 slice_results[current_slice_id] = ezkl_exec_info
 
                 if not success:
-                    ezkl_error = ezkl_exec_info.get("error")
+                    # Get backend name for fallback labeling
+                    backend_name = type(self.backend).__name__.lower()
+                    backend_error = ezkl_exec_info.get("error")
                     success, tensor, onnx_exec_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
-                    # mark as fallback and that EZKL was attempted
-                    onnx_exec_info["method"] = "ezkl_fallback_onnx"
-                    onnx_exec_info["attempted_ezkl"] = True
-                    if ezkl_error and not onnx_exec_info.get("error"):
-                        onnx_exec_info["error"] = ezkl_error
+                    # mark as fallback and that backend was attempted
+                    onnx_exec_info["method"] = f"{backend_name}_fallback_onnx"
+                    onnx_exec_info[f"attempted_{backend_name}"] = True
+                    if backend_error and not onnx_exec_info.get("error"):
+                        onnx_exec_info["error"] = backend_error
                     slice_results[current_slice_id] = onnx_exec_info
 
                     if not success:
-                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
+                        raise Exception(f"{backend_name.upper()} fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
 
             else:
+                # Get backend name for consistent labeling
+                backend_name = type(self.backend).__name__.lower()
                 success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
-                execution_info["attempted_ezkl"] = False
+                execution_info[f"attempted_{backend_name}"] = False
                 slice_results[current_slice_id] = execution_info
 
                 if not success:
@@ -138,34 +146,42 @@ class Runner:
         vk_path = slice_info.get("vk_path")
         settings_path = slice_info.get("settings_path")
         start_time = time.time()
-        # Attempt EZKL execution, but ensure we catch any exceptions to allow fallback
+        # Attempt backend execution, but ensure we catch any exceptions to allow fallback
         try:
-            success, output_tensor = self.ezkl_runner.generate_witness(
+            logger.debug(f"Attempting witness generation with backend: {type(self.backend).__name__}")
+            success, output_tensor = self.backend.generate_witness(
                 input_file=input_tensor_path,
                 model_path=model_path,
                 output_file=output_witness_path,
                 vk_path=vk_path,
                 settings_path=settings_path
             )
+            logger.debug(f"Backend witness generation {'succeeded' if success else 'failed'}")
         except Exception as e:
+            logger.warning(f"Backend witness generation failed with exception: {e}")
+            logger.warning(f"Backend type: {type(self.backend).__name__}")
             success = False
             output_tensor = str(e)
 
         end_time = time.time()
+        
+        # Determine backend name dynamically
+        backend_name = type(self.backend).__name__.lower()
+        
         exec_info = {
             'success': success,
-            'method': 'ezkl_gen_witness',
+            'method': f'{backend_name}_gen_witness',
             'execution_time': end_time - start_time,
             'witness_path': str(output_witness_path),
-            'attempted_ezkl': True
+            f'attempted_{backend_name}': True
         }
 
         if success:
             exec_info['input_file'] = str(input_tensor_path.resolve())
             exec_info['output_file'] = str(output_witness_path.resolve())
         else:
-            # When EZKL fails, output_tensor contains the error string or exception message
-            exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
+            # When backend fails, output_tensor contains the error string or exception message
+            exec_info['error'] = output_tensor if isinstance(output_tensor, str) else f"Unknown {backend_name} error"
 
         return success, output_tensor, exec_info
     
@@ -231,8 +247,6 @@ class Runner:
     def _filter_tensor(current_slice_metadata, tensor):
         # take the tensor object, and extract the output that is relevant to the next segment
         logits = tensor["logits"]
-        probabilities = tensor["probabilities"]
-        predicted_action = tensor["predicted_action"]
 
         # Check the shape using our new function
         expected_shape = current_slice_metadata["output_shape"]

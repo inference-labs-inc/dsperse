@@ -7,6 +7,7 @@ import json
 import time
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.utils.backend_manager import BackendManager
 
 
 class Prover:
@@ -14,11 +15,14 @@ class Prover:
     Orchestrator for proving model execution segments.
     """
 
-    def __init__(self):
+    def __init__(self, backend=None):
         """
         Initialize the prover.
+
+        Args:
+            backend: Backend name to use for proving ('ezkl' or 'jstprove')
         """
-        self.ezkl_runner = EZKL()
+        self.backend = BackendManager.get_backend(backend_name=backend)
 
     # ------------------------
     # Internal helpers
@@ -106,7 +110,7 @@ class Prover:
         # Generate proof
         print(f"Generating proof for {segment_id}...")
         start_time = time.time()
-        prove_success, prove_result = self.ezkl_runner.prove(
+        prove_success, prove_result = self.backend.prove(
             witness_path=witness_path,
             model_path=model_path,
             proof_path=proof_path,

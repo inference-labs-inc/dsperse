@@ -8,7 +8,7 @@ import traceback
 
 from colorama import Fore, Style
 
-from dsperse.src.cli.base import check_model_dir, save_result, prompt_for_value, logger, normalize_path
+from dsperse.src.cli.base import check_model_dir, save_result, prompt_for_value, logger, normalize_path, add_backend_argument
 from dsperse.src.runner import Runner
 
 
@@ -34,6 +34,9 @@ def setup_parser(subparsers):
                             help='Path to input file (default: parent_of_slices/input.json)')
     run_parser.add_argument('--output-file', '-o', dest='output_file',
                             help='Path to save output results (default: parent_of_slices/output.json)')
+
+    # Add backend selection argument
+    add_backend_argument(run_parser)
 
     return run_parser
 
@@ -128,7 +131,8 @@ def run_inference(args):
         runner = Runner(
             model_path=model_dir,
             slices_path=slices_dir_effective,
-            run_metadata_path=run_metadata_path
+            run_metadata_path=run_metadata_path,
+            backend=getattr(args, 'backend', None)
         )
         result = runner.run(args.input_file)
         elapsed_time = time.time() - start_time

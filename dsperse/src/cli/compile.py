@@ -10,7 +10,7 @@ import logging
 from colorama import Fore, Style
 
 from dsperse.src.compiler import Compiler
-from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
+from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path, add_backend_argument
 
 
 def _check_layers(slices_path, layers_str):
@@ -114,7 +114,10 @@ def setup_parser(subparsers):
     compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                 help='Path to input file for calibration (optional)')
     compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
-    
+
+    # Add backend selection argument
+    add_backend_argument(compile_parser)
+
     return compile_parser
 
 
@@ -125,7 +128,11 @@ def compile_model(args):
     Args:
         args: The parsed command-line arguments
     """
-    print(f"{Fore.CYAN}Compiling slices with EZKL...{Style.RESET_ALL}")
+    backend_name = getattr(args, 'backend', None)
+    if backend_name is None:
+        backend_name = os.environ.get('DSPERSE_BACKEND', 'ezkl')
+    backend_name = backend_name.upper()
+    print(f"{Fore.CYAN}Compiling slices with {backend_name}...{Style.RESET_ALL}")
     logger.info("Starting slices compilation")
 
     # Prompt for slices path if not provided
@@ -165,8 +172,8 @@ def compile_model(args):
             print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
             logger.error("Compile requires slices metadata. Prompted user to run slice first.")
             return
-        # Initialize the Compiler
-        compiler = Compiler.create(args.slices_path)
+        # Initialize the Compiler with selected backend
+        compiler = Compiler.create(args.slices_path, backend=getattr(args, 'backend', None))
         logger.info(f"Compiler initialized successfully")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Compiler: {e}"

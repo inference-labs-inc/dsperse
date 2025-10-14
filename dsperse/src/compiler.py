@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.utils.utils import Utils
+from dsperse.src.utils.backend_manager import BackendManager
 from dsperse.src.runner import Runner
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ class Compiler:
     """
     
     @staticmethod
-    def create(model_path: str) -> 'Compiler':
+    def create(model_path: str, backend: Optional[str] = None) -> 'Compiler':
         """
         Factory method to create a Compiler instance based on the model type.
         
@@ -67,20 +68,25 @@ class Compiler:
         # Create appropriate compiler
         if is_onnx:
             logger.info(f"Creating ONNX compiler for model: {model_path}")
-            return Compiler(EZKL())
+            backend_impl = BackendManager.get_backend(backend_name=backend)
+            # Determine backend name for directory naming
+            backend_name = backend if backend else os.environ.get('DSPERSE_BACKEND', 'ezkl')
+            return Compiler(backend_impl, backend_name)
         else:
             # For now, we only support ONNX models as per requirements
             # In the future, this can be extended to support other model types
             raise ValueError(f"Unsupported model type at path: {model_path}")
     
-    def __init__(self, compiler_impl):
+    def __init__(self, compiler_impl, backend_name=None):
         """
         Initialize the Compiler with a specific implementation.
-        
+
         Args:
             compiler_impl: The compiler implementation to use
+            backend_name: Name of the backend (ezkl, jstprove, etc.)
         """
         self.compiler_impl = compiler_impl
+        self.backend_name = backend_name or 'ezkl'
         
     def compile(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -176,7 +182,7 @@ class Compiler:
                     logger.warning(f"Segment file not found for index {idx}: {segment_path}")
                     continue
 
-                segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
+                segment_output_path = os.path.join(os.path.dirname(segment_path), f"{self.backend_name}_circuitization")
                 os.makedirs(segment_output_path, exist_ok=True)
 
                 # Run ONNX inference to generate calibration data
@@ -216,12 +222,12 @@ class Compiler:
                 logger.info(f"Compiling segment {idx}: {input_names} -> {output_names}")
             except Exception:
                 logger.info(f"Compiling segment {idx}")
-            segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl_circuitization")
+            segment_output_path = os.path.join(os.path.dirname(segment_path), f"{self.backend_name}_circuitization")
             os.makedirs(segment_output_path, exist_ok=True)
 
             calibration_input = input_file_path if idx == 0 else os.path.join(
                 os.path.dirname(segments[idx-1].get('path')),
-                "ezkl_circuitization",
+                f"{self.backend_name}_circuitization",
                 f"segment_{idx-1}_calibration.json"
             )
 
@@ -233,7 +239,7 @@ class Compiler:
                 input_file_path=calibration_input,
                 segment_details=segment
             )
-            segment['ezkl_circuitization'] = compilation_data
+            segment[f'{self.backend_name}_circuitization'] = compilation_data
             compiled_count += 1
             logger.info(f"Completed segment {idx}")
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))

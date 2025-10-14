@@ -20,12 +20,12 @@ class OnnxSlicer:
         self.slice_points = None
 
         # Apply shape inference to the original model
-        print("🔧 Applying shape inference to original model for better slicing...")
+        print("Applying shape inference to original model for better slicing...")
         try:
             self.onnx_model = shape_inference.infer_shapes(self.onnx_model)
-            print("✅ Shape inference applied successfully to original model")
+            print("Shape inference applied successfully to original model")
         except Exception as e:
-            print(f"⚠️  Shape inference failed on original model: {e}, continuing with original model")
+            print(f"Warning: Shape inference failed on original model: {e}, continuing with original model")
 
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)

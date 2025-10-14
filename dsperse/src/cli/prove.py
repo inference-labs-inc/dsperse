@@ -9,7 +9,7 @@ import glob
 from colorama import Fore, Style
 
 from dsperse.src.prover import Prover
-from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path
+from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path, add_backend_argument
 
 def setup_parser(subparsers):
     """
@@ -27,6 +27,9 @@ def setup_parser(subparsers):
 
     prove_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to prove')
     prove_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
+
+    # Add backend selection argument
+    add_backend_argument(prove_parser)
 
     return prove_parser
 
@@ -233,7 +236,7 @@ def run_proof(args):
     print("proving...")
 
     try:
-        prover = Prover()
+        prover = Prover(backend=getattr(args, 'backend', None))
         start_time = time.time()
         result = prover.prove_run(run_result_path, metadata_path)
         elapsed_time = time.time() - start_time

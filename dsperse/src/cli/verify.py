@@ -9,7 +9,7 @@ import glob
 from colorama import Fore, Style
 
 from dsperse.src.verifier import Verifier
-from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path
+from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path, add_backend_argument
 
 def setup_parser(subparsers):
     """
@@ -27,6 +27,9 @@ def setup_parser(subparsers):
 
     verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to verify')
     verify_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
+
+    # Add backend selection argument
+    add_backend_argument(verify_parser)
 
     return verify_parser
 
@@ -148,7 +151,7 @@ def verify_proof(args):
     print("verifying...")
 
     try:
-        verifier = Verifier()
+        verifier = Verifier(backend=getattr(args, 'backend', None))
         start_time = time.time()
         result = verifier.verify_run(run_result_path, metadata_path)
         elapsed_time = time.time() - start_time

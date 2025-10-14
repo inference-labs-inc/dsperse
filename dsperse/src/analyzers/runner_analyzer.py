@@ -12,12 +12,14 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 class RunnerAnalyzer:
-    def __init__(self, model_directory):
+    def __init__(self, model_directory, backend_name=None):
         """
         Args:
             model_directory: Path to the model directory.
+            backend_name: Name of the backend (ezkl, jstprove, etc.)
         """
         self.model_directory = model_directory
+        self.backend_name = backend_name or 'ezkl'
         self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
         self.slices_metadata_path = self.slices_dir / "metadata.json"
 
@@ -82,19 +84,38 @@ class RunnerAnalyzer:
             segment_idx = segment['index']
             segment_key = f"segment_{segment_idx}"
 
-            # Get EZKL paths directly from metadata
-            ezkl_circuitization = segment.get('ezkl_circuitization', {})
+            # Get backend circuitization paths from metadata
+            backend_circuitization = segment.get(f'{self.backend_name}_circuitization', {})
 
             # Use paths from metadata or set to None if not present
-            compiled_circuit_path = ezkl_circuitization.get('compiled', None)
-            settings_path = ezkl_circuitization.get('settings', None)
-            pk_path = ezkl_circuitization.get('pk_key', None)
-            vk_path = ezkl_circuitization.get('vk_key', None)
+            compiled_circuit_path = backend_circuitization.get('compiled', None)
+            settings_path = backend_circuitization.get('settings', None)
+            pk_path = backend_circuitization.get('pk_key', None)
+            vk_path = backend_circuitization.get('vk_key', None)
+
+            # Check if this is a JSTprove circuit (different requirements)
+            is_jstprove = False
+            if settings_path and os.path.exists(settings_path):
+                try:
+                    with open(settings_path, 'r') as f:
+                        settings_data = json.load(f)
+                        is_jstprove = settings_data.get('backend') == 'jstprove'
+                except (json.JSONDecodeError, FileNotFoundError):
+                    pass
 
             # Set circuit_exists and keys_exist flags based on actual file existence
-            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
-                             and bool(settings_path) and os.path.exists(settings_path)
-            keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
+            # For JSTprove, we use the ONNX model path since JSTprove can compile it directly
+            if is_jstprove:
+                # Use the segment ONNX path for JSTprove (it will compile it)
+                compiled_circuit_path = segment.get('path')  # This is the ONNX file
+                circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path)
+            else:
+                # For EZKL, use the compiled circuit path
+                circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
+                                 and bool(settings_path) and os.path.exists(settings_path)
+
+            # For JSTprove, keys are not required; for EZKL, keys are required
+            keys_exist = is_jstprove or (bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path))
 
             # Determine circuit size and use_circuit flag
             circuit_size = 0
@@ -106,9 +127,9 @@ class RunnerAnalyzer:
                     circuit_size = 0
 
             # Treat any recorded circuitization error as not ready
-            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
+            backend_errors = any(k.endswith("_error") for k in backend_circuitization.keys()) or ("error" in backend_circuitization)
 
-            use_circuit = circuit_exists and keys_exist and (not ezkl_errors) and circuit_size <= self.size_limit
+            use_circuit = circuit_exists and keys_exist and (not backend_errors) and circuit_size <= self.size_limit
 
             onnx_slice_path = segment.get('path', '')
             if not onnx_slice_path:
@@ -153,8 +174,7 @@ class RunnerAnalyzer:
 
         return slices
 
-    @staticmethod
-    def _build_execution_chain(segments):
+    def _build_execution_chain(self, segments):
         """
         Build the execution chain with proper node connections and fallback mapping.
         """
@@ -168,22 +188,34 @@ class RunnerAnalyzer:
             segment_idx = segment['index']
             segment_key = f"segment_{segment_idx}"
 
-            # Get EZKL paths from metadata
-            ezkl_circuitization = segment.get('ezkl_circuitization', {})
-            compiled_circuit_path = ezkl_circuitization.get('compiled', None)
+            # Get backend circuitization paths from metadata
+            backend_circuitization = segment.get(f'{self.backend_name}_circuitization', {})
+            compiled_circuit_path = backend_circuitization.get('compiled', None)
 
             # Get ONNX path
             onnx_slice_path = segment.get('path', '')
 
             # Determine if circuit is usable based on actual files and errors
-            settings_path = ezkl_circuitization.get('settings')
-            pk_path = ezkl_circuitization.get('pk_key')
-            vk_path = ezkl_circuitization.get('vk_key')
+            settings_path = backend_circuitization.get('settings')
+            pk_path = backend_circuitization.get('pk_key')
+            vk_path = backend_circuitization.get('vk_key')
+
+            # Check if this is a JSTprove circuit
+            is_jstprove = False
+            if settings_path and os.path.exists(settings_path):
+                try:
+                    with open(settings_path, 'r') as f:
+                        settings_data = json.load(f)
+                        is_jstprove = settings_data.get('backend') == 'jstprove'
+                except (json.JSONDecodeError, FileNotFoundError):
+                    pass
+
             circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
                               and bool(settings_path) and os.path.exists(settings_path)
-            keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
-            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
-            use_circuit = circuit_exists and keys_exist and (not ezkl_errors)
+            # For JSTprove, keys are not required; for EZKL, keys are required
+            keys_exist = is_jstprove or (bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path))
+            backend_errors = any(k.endswith("_error") for k in backend_circuitization.keys()) or ("error" in backend_circuitization)
+            use_circuit = circuit_exists and keys_exist and (not backend_errors)
 
             # Set up the execution chain node
             next_slice = f"segment_{segment_idx + 1}" if segment_idx < len(segments) - 1 else None

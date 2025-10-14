@@ -300,3 +300,24 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return default if not required else None
+
+
+# --- Backend selection helpers ---
+
+def add_backend_argument(parser: argparse.ArgumentParser) -> None:
+    """
+    Add the --backend argument to an ArgumentParser.
+
+    This function adds a standardized --backend argument that allows users
+    to select between different proof system backends (ezkl, jstprove, etc.).
+
+    Args:
+        parser: The ArgumentParser to add the argument to
+    """
+    parser.add_argument(
+        '--backend', '-b',
+        choices=['ezkl', 'jstprove'],
+        default=None,
+        help='Backend to use for proof generation (ezkl or jstprove). '
+             'Defaults to DSPERSE_BACKEND environment variable or ezkl'
+    )

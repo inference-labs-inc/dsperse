@@ -7,17 +7,21 @@ import json
 import time
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.utils.backend_manager import BackendManager
 
 class Verifier:
     """
     Orchestrator for verifying model execution proofs.
     """
     
-    def __init__(self):
+    def __init__(self, backend=None):
         """
         Initialize the verifier.
+
+        Args:
+            backend: Backend name to use for verification ('ezkl' or 'jstprove')
         """
-        self.ezkl_runner = EZKL()
+        self.backend = BackendManager.get_backend(backend_name=backend)
     
     def verify_run(self, run_results_path, metadata_path):
         """
@@ -74,7 +78,7 @@ class Verifier:
             # Verify the proof
             print(f"Verifying proof for {segment_id}...")
             start_time = time.time()
-            verify_success = self.ezkl_runner.verify(
+            verify_success = self.backend.verify(
                 proof_path=proof_path,
                 settings_path=settings_path,
                 vk_path=vk_path

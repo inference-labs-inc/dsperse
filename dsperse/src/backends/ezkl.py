@@ -7,11 +7,13 @@ import logging
 import traceback
 import re
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple, Union
 import onnx
 from dsperse.src.utils.utils import Utils
 from dsperse.src.utils.runner_utils.runner_utils import RunnerUtils
 from dsperse.src.constants import SRS_FILES, MIN_EZKL_VERSION, EZKL_PATH
 from dsperse.src.utils.srs_manager import ensure_srs, get_logrows_from_settings
+from dsperse.src.backends.base_backend import BaseBackend
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -108,7 +110,7 @@ def _run_ezkl_command_with_srs_check(
         raise
 
 
-class EZKL:
+class EZKL(BaseBackend):
     def __init__(self, model_directory=None):
         """
         Initialize the EZKL backend.

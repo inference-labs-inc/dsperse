@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 
 from dsperse.src.utils.slicer_utils.onnx_slicer import OnnxSlicer
+from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 # Import ModelSlicer for future use
 # from src.slicers.model_slicer import ModelSlicer
 
@@ -77,19 +78,31 @@ class Slicer:
         """
         self.slicer_impl = slicer_impl
         
-    def slice_model(self, output_path: Optional[str] = None, **kwargs):
+    def slice_model(self, output_path: Optional[str] = None, package_dslice: bool = False, **kwargs):
         """
         Slice the model using the appropriate slicer implementation.
         
         Args:
             output_path: Directory to save the sliced model
+            package_dslice: If True, package each generated slice into a .dslice archive
             **kwargs: Additional arguments to pass to the slicer implementation
             
         Returns:
             The result of the slicing operation
         """
         logger.info(f"Slicing model to output path: {output_path}")
-        return self.slicer_impl.slice_model(output_path=output_path)
+        result = self.slicer_impl.slice_model(output_path=output_path)
+
+        if package_dslice:
+            try:
+                OnnxAnalyzer._package_slices(output_path)
+                logger.info("Packaged slices into .dslice archives.")
+            except Exception as e:
+                logger.exception("Failed to package .dslice archives: %s", e)
+                raise
+
+        return result
+
 
 
 if __name__ == "__main__":
@@ -103,7 +116,8 @@ if __name__ == "__main__":
         3: "../models/resnet",
         4: "../models/age",
         5: "../models/version",
-        6: "../models/bert"
+        6: "../models/bert",
+        7: "../models/roberta"
     }
 
     # Resolve paths
@@ -117,7 +131,7 @@ if __name__ == "__main__":
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")
-        slices = slicer.slice_model(output_path=output_dir)
+        slices = slicer.slice_model(output_path=output_dir, package_dslice=True)
 
         # Display results
         print("\nSlicing completed!")

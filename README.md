@@ -165,8 +165,8 @@ dsperse slice --model-dir models/net --save-file models/net/analysis/model_metad
 ```
 
 What happens:
-- Slices are written to models/net/slices/segment_<i>/segment_<i>.onnx
-- A slices metadata.json is created at models/net/slices/metadata.json
+- Slices are written to models/net/slices/slice_<i>/payload/slice_<i>.onnx
+- A model-level metadata.json is created at models/net/slices/metadata.json
 
 ### Metadata Files Behavior
 
@@ -217,8 +217,8 @@ dsperse compile --slices-path models/net/slices --layers 0-2
 
 What happens:
 - For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
-- Circuit artifacts are saved under each segment: models/net/slices/segment_<i>/ezkl_circuitization/
-  - segment_i_settings.json, segment_i_model.compiled, segment_i_vk.key, segment_i_pk.key
+- Circuit artifacts are saved under each slice: models/net/slices/slice_<i>/ezkl_circuitization/
+- slice_i_settings.json, slice_i_model.compiled, slice_i_vk.key, slice_i_pk.key
 - Slices metadata is updated with ezkl_circuitization info per segment
 
 Note on missing slices:
@@ -378,29 +378,27 @@ dsperse full-run \
 
 ## Slicing outputs and flags
 
-By default, `dsperse slice` now produces a single portable bundle file, `model.dsperse`, in your output directory. This archive contains:
+By default, `dsperse slice` produces a single portable bundle named after your slices folder, e.g. `slices.dsperse`. When you pass `--output-dir models/net/slices`, the slicer stages files under `models/net/slices/` and then the converter creates `models/net/slices.dsperse` and cleans up the staging directory.
+
+What the `.dsperse` contains:
 - A top-level `metadata.json` describing the model and slices
-- All per-slice `.dslice` archives under `slices/`
+- All per-slice `.dslice` archives (one per slice)
 
-Default behavior (no extra flags):
-- Creates `model.dsperse`
-- Does not persist standalone `.dslice` files to disk (they are included inside the `.dsperse`)
-- Removes per-segment `segment_#` directories after bundling
-
-You can change this behavior with the following flags:
-- `--dslices` (alias: `--persist-dslices`): keep the per-slice `.dslice` files in the slices directory
-- `--keep-segments`: keep the legacy `segment_#` directories (containing `segment_#.onnx`)
+Choose the output format with `--output-type` (default: `dsperse`):
+- `--output-type dsperse` (default): creates `models/net/slices.dsperse` and removes `models/net/slices/`
+- `--output-type dslice`: creates `.dslice` files under `models/net/slices/` (and keeps `metadata.json`); removes intermediate `slice_#/` directories
+- `--output-type dirs`: keeps raw `slice_#/` directories with `payload/` and per-slice `metadata.json`
 
 Examples:
 ```bash
-# Default: produce only model.dsperse (no .dslices on disk, no segment_# dirs)
+# Default: produce only slices.dsperse (staging dir cleaned up)
 dsperse slice -m models/net/model.onnx -o models/net/slices
 
-# Keep per-slice .dslice files on disk in addition to model.dsperse
-dsperse slice -m models/net/model.onnx -o models/net/slices --dslices
+# Produce per-slice .dslice files in a directory (keeps metadata.json)
+dsperse slice -m models/net/model.onnx -o models/net/slices --output-type dslice
 
-# Keep per-slice .dslice files and also keep the segment_# directories
-dsperse slice -m models/net/model.onnx -o models/net/slices --dslices --keep-segments
+# Keep unpacked slice_# directories
+ dsperse slice -m models/net/model.onnx -o models/net/slices --output-type dirs
 ```
 
 Notes:
@@ -410,33 +408,37 @@ Notes:
 
 ## Convert between formats
 
-The `dsperse slice convert` sub-command lets you go back and forth between single-file bundles and directory layouts.
+Use `dsperse slice convert` (or the top-level `dsperse convert`) to go back and forth between single-file bundles and directory layouts. The converter auto-detects the input type; you specify the target with `--to {dirs, dslice, dsperse}`.
 
-Supported conversions (auto-detected from input path):
-- model.dsperse -> directory
-- directory (with dsperse-style metadata.json + slices/) -> model.dsperse
-- slice_X.dslice -> directory
-- directory (slice dir with metadata.json + payload/) -> slice_X.dslice
+Supported conversions:
+- slices.dsperse -> directory (contains `*.dslice` + `metadata.json`; add `--expand-slices` to also create `slice_#/` folders)
+- directory (with `slice_#/` or `*.dslice` + `metadata.json`) -> slices.dsperse
+- slice_X.dslice -> directory (extracts to `slice_X/` with `payload/` and `metadata.json`)
+- directory (a single `slice_X/` folder with `payload/` + `metadata.json`) -> slice_X.dslice
 
 Usage examples:
 ```bash
-# 1) Unpack a model bundle to a directory (next to the file)
-dsperse slice convert -i models/net/model.dsperse
+# 1) Unpack a bundle next to the file (default: keeps .dslice files, does not expand slices)
+dsperse slice convert -i models/net/slices.dsperse --to dirs
 
-# 1b) Unpack and also extract each embedded .dslice to a subfolder
-dsperse slice convert -i models/net/model.dsperse -o models/net/slices_dir --expand-slices
+# 1b) Unpack and also expand each embedded .dslice into slice_# folders
+dsperse slice convert -i models/net/slices.dsperse --to dirs --expand-slices
 
-# 2) Create a .dsperse from a directory that already mirrors the bundle layout
-# (expects metadata.json at the root and a slices/ subfolder containing .dslice files)
-dsperse slice convert -i models/net/slices -o models/net/model.dsperse
+# 1c) Preserve the input bundle instead of deleting it after a successful conversion
+ dsperse slice convert -i models/net/slices.dsperse --to dirs --no-cleanup
+
+# 2) Create a .dsperse from a directory
+# If the input is a slices/ directory with slice_#/ subfolders, the converter will package and name it `<dirname>.dsperse`.
+ dsperse slice convert -i models/net/slices --to dsperse
 
 # 3) Unpack a single .dslice to a directory
-dsperse slice convert -i models/net/slices/slice_1.dslice -o models/net/slices/slice_1
+ dsperse slice convert -i models/net/slices/slice_1.dslice --to dirs -o models/net/slices/slice_1
 
 # 4) Create a .dslice from a slice directory (must contain metadata.json and payload/)
-dsperse slice convert -i models/net/slices/slice_1 -o models/net/slices/slice_1.dslice
+ dsperse slice convert -i models/net/slices/slice_1 --to dslice -o models/net/slices/slice_1.dslice
 ```
 
 Notes:
-- If you omit --output, sensible defaults are chosen (e.g., extracting next to the input file with the same stem).
-- The converter uses the same internal helpers as the slicer, ensuring directory layouts are zip-equivalent to their file formats.
+- If you omit --output, sensible defaults are chosen (e.g., extracting next to the input file with the same stem, or naming `<dirname>.dsperse`).
+- Use `--cleanup/--no-cleanup` to control whether the source artifact is deleted after a successful conversion (default: cleanup enabled for `.dsperse` sources).
+- The converter is the single source of truth for formats; CLI commands delegate to it to ensure consistent behavior and cleanup.

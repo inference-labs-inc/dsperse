@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.utils.utils import Utils
-from dsperse.src.runner import Runner
+from dsperse.src.run.runner import Runner
 
 logger = logging.getLogger(__name__)
 

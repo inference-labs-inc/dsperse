@@ -1,4 +1,4 @@
-# Dsperse: Distributed zkML
+# DSperse: Distributed zkML
 
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/inference-labs-inc/dsperse)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289DA?style=flat-square&logo=discord)](https://discord.gg/GBxBCWJs)
@@ -7,7 +7,7 @@
 [![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.com)
 [![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](http://arxiv.org/abs/2508.06972)
 
-Dsperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
+DSperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
 ## Features
 
@@ -66,7 +66,7 @@ dsperse fr -m models/net -i models/net/input.json
 
 ### Install from PyPI
 
-The simplest way to install Dsperse is via PyPI:
+The simplest way to install DSperse is via PyPI:
 
 ```bash
 # Using pip
@@ -89,7 +89,7 @@ Preferred: one-step installer script
 ./install.sh
 ```
   - The script will:
-    - Install the Dsperse CLI in editable mode so the dsperse command is available
+    - Install the DSperse CLI in editable mode so the dsperse command is available
     - Install EZKL (prompting for cargo or pip method if needed)
     - Check EZKL SRS files (~/.ezkl/srs). It will offer to download them interactively (downloads can take a while) because having them locally speeds up circuitization/proving.
 
@@ -109,7 +109,7 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 ```
 
-2) Install the Dsperse CLI
+2) Install the DSperse CLI
 
 ```bash
 pip install -e .
@@ -170,7 +170,7 @@ What happens:
 
 ### Metadata Files Behavior
 
-Dsperse creates different types of metadata files for different purposes:
+DSperse creates different types of metadata files for different purposes:
 
 **Operational Metadata** (`metadata.json`):
 - **Location**: Always created in the output directory (e.g., `models/net/slices/metadata.json`)
@@ -374,3 +374,69 @@ dsperse full-run \
   --input-file src/models/net/input.json \
   --layers "1, 3-5"
 ```
+
+
+## Slicing outputs and flags
+
+By default, `dsperse slice` now produces a single portable bundle file, `model.dsperse`, in your output directory. This archive contains:
+- A top-level `metadata.json` describing the model and slices
+- All per-slice `.dslice` archives under `slices/`
+
+Default behavior (no extra flags):
+- Creates `model.dsperse`
+- Does not persist standalone `.dslice` files to disk (they are included inside the `.dsperse`)
+- Removes per-segment `segment_#` directories after bundling
+
+You can change this behavior with the following flags:
+- `--dslices` (alias: `--persist-dslices`): keep the per-slice `.dslice` files in the slices directory
+- `--keep-segments`: keep the legacy `segment_#` directories (containing `segment_#.onnx`)
+
+Examples:
+```bash
+# Default: produce only model.dsperse (no .dslices on disk, no segment_# dirs)
+dsperse slice -m models/net/model.onnx -o models/net/slices
+
+# Keep per-slice .dslice files on disk in addition to model.dsperse
+dsperse slice -m models/net/model.onnx -o models/net/slices --dslices
+
+# Keep per-slice .dslice files and also keep the segment_# directories
+dsperse slice -m models/net/model.onnx -o models/net/slices --dslices --keep-segments
+```
+
+Notes:
+- The `.dsperse` bundle is a ZIP file; you can inspect it with any unzip tool.
+- Each `.dslice` inside the bundle is also a ZIP with its own `metadata.json` and `payload/model.onnx`.
+
+
+## Convert between formats
+
+The `dsperse slice convert` sub-command lets you go back and forth between single-file bundles and directory layouts.
+
+Supported conversions (auto-detected from input path):
+- model.dsperse -> directory
+- directory (with dsperse-style metadata.json + slices/) -> model.dsperse
+- slice_X.dslice -> directory
+- directory (slice dir with metadata.json + payload/) -> slice_X.dslice
+
+Usage examples:
+```bash
+# 1) Unpack a model bundle to a directory (next to the file)
+dsperse slice convert -i models/net/model.dsperse
+
+# 1b) Unpack and also extract each embedded .dslice to a subfolder
+dsperse slice convert -i models/net/model.dsperse -o models/net/slices_dir --expand-slices
+
+# 2) Create a .dsperse from a directory that already mirrors the bundle layout
+# (expects metadata.json at the root and a slices/ subfolder containing .dslice files)
+dsperse slice convert -i models/net/slices -o models/net/model.dsperse
+
+# 3) Unpack a single .dslice to a directory
+dsperse slice convert -i models/net/slices/slice_1.dslice -o models/net/slices/slice_1
+
+# 4) Create a .dslice from a slice directory (must contain metadata.json and payload/)
+dsperse slice convert -i models/net/slices/slice_1 -o models/net/slices/slice_1.dslice
+```
+
+Notes:
+- If you omit --output, sensible defaults are chosen (e.g., extracting next to the input file with the same stem).
+- The converter uses the same internal helpers as the slicer, ensuring directory layouts are zip-equivalent to their file formats.

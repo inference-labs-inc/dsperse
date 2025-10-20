@@ -1,14 +1,12 @@
+import logging
 import os
-import json
 from pathlib import Path
+from typing import Dict, Any
 
 import onnx
-import logging
-import zipfile
-import time
-import hashlib
+
+from dsperse.src.slice.utils.onnx_utils import OnnxUtils
 from dsperse.src.utils.utils import Utils
-from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -387,125 +385,9 @@ class OnnxAnalyzer:
 
         # Save metadata if output_dir is provided
         Utils.save_metadata_file(model_overview, output_path=output_dir)
+        OnnxUtils.write_slice_dirs_metadata(output_dir)
 
         return model_overview
-
-    @staticmethod
-    def _package_slices(slices_root: str):
-        """
-        Package each segment ONNX into a portable .dslice at the slices root.
-        Adds rich metadata (backend, entry, io, deps, opset_version, model_type, original_model, checksum),
-        and updates slices/metadata.json with onnx_dslice paths.
-        """
-        if not slices_root:
-            raise ValueError("slices_root (output_path) must be provided to package dslice artifacts")
-
-        slices_root_path = Path(slices_root)
-
-        # Locate metadata.json either at provided root or under a nested 'slices' dir
-        metadata_path = slices_root_path / "metadata.json"
-        if not metadata_path.exists():
-            alt = slices_root_path / "slices" / "metadata.json"
-            if alt.exists():
-                metadata_path = alt
-        if not metadata_path.exists():
-            raise FileNotFoundError(f"metadata.json not found near {slices_root_path}")
-
-        # Load global slices metadata
-        with open(metadata_path, "r") as f:
-            meta = json.load(f)
-
-        # Determine opset_version and model_type/origin if available
-        original_model = meta.get("original_model")
-        model_type = meta.get("model_type", "ONNX")
-        opset_version = None
-        try:
-            if original_model and os.path.exists(original_model):
-                mdl = onnx.load(original_model)
-                for ops in mdl.opset_import:
-                    if ops.domain in ("", "ai.onnx"):
-                        opset_version = int(ops.version)
-                        break
-                if opset_version is None and mdl.opset_import:
-                    # fallback to first
-                    opset_version = int(mdl.opset_import[0].version)
-        except Exception:
-            opset_version = None
-
-        segments = meta.get("segments", [])
-        if not isinstance(segments, list) or not segments:
-            logger.warning("No segments found in slices metadata.json; skipping dslice packaging")
-            return
-
-        for idx, seg in enumerate(segments):
-            seg_path = seg.get("path")
-            if not seg_path:
-                logger.warning(f"Segment {idx} has no 'path'; skipping .dslice packaging")
-                continue
-
-            seg_path = Path(seg_path)
-            if not seg_path.exists():
-                logger.warning(f"Segment {idx} path not found: {seg_path}; skipping")
-                continue
-
-            # Compute checksum for integrity
-            sha256_hex = None
-            try:
-                h = hashlib.sha256()
-                with open(seg_path, "rb") as rf:
-                    for chunk in iter(lambda: rf.read(8192), b""):
-                        h.update(chunk)
-                sha256_hex = h.hexdigest()
-            except Exception:
-                sha256_hex = None
-
-            # Name slices as slice_1.dslice, slice_2.dslice, ... at the parent directory of metadata.json
-            segment_id = f"slice_{idx + 1}"
-            dslice_name = f"{segment_id}.dslice"
-            dslice_path = metadata_path.parent / dslice_name
-
-            # Prepare IO and deps metadata (robust extraction)
-            deps = seg.get("dependencies", {}) if isinstance(seg, dict) else {}
-            tensor_shape = (seg.get("shape", {}) or {}).get("tensor_shape", {}) if isinstance(seg, dict) else {}
-            input_shapes = tensor_shape.get("input") or seg.get("input_shape") or seg.get("input_shapes") or []
-            output_shapes = tensor_shape.get("output") or seg.get("output_shape") or seg.get("output_shapes") or []
-            input_names = deps.get("filtered_inputs") or deps.get("input") or []
-            output_names = deps.get("output") or []
-
-            io_meta = {
-                "input_shape": input_shapes,
-                "output_shape": output_shapes,
-                "input_names": input_names,
-                "output_names": output_names,
-            }
-
-            # Build per-slice metadata
-            dslice_meta = {
-                "schema": "dslice/1.0",
-                "slice_id": segment_id,
-                "backend": "onnx",
-                "entry": {"model": "payload/model.onnx"},
-                "io": io_meta,
-                "deps": deps,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "model_type": model_type,
-                "original_model": original_model,
-            }
-            if opset_version is not None:
-                dslice_meta["opset_version"] = opset_version
-            if sha256_hex:
-                dslice_meta["checksum"] = {"algorithm": "sha256", "value": sha256_hex, "file": "payload/model.onnx"}
-
-            # Write the .dslice archive
-            with zipfile.ZipFile(dslice_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("metadata.json", json.dumps(dslice_meta, indent=2))
-                zf.write(seg_path, arcname="payload/model.onnx")
-
-            # Update global metadata with path for convenience in later stages
-            seg["onnx_dslice"] = str(dslice_path)
-
-        # Persist updated global metadata
-        Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)
 
     def _get_model_metadata(self, model_metadata, slice_points):
         """
@@ -584,14 +466,17 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
-        output_dir = os.path.join(os.path.dirname(output_dir), "slices", "segment_{}".format(segment_idx)) if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
-        os.makedirs(output_dir, exist_ok=True)
-        segment_path = os.path.abspath(os.path.join(output_dir, f"segment_{segment_idx}.onnx"))
+        output_dir = os.path.join(os.path.dirname(output_dir), "slices", f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
+        # Ensure dslice-style payload directory exists
+        payload_dir = os.path.join(output_dir, "payload")
+        os.makedirs(payload_dir, exist_ok=True)
+        segment_filename = f"slice_{segment_idx}.onnx"
+        segment_path = os.path.abspath(os.path.join(payload_dir, segment_filename))
 
         # Create segment info
         segment_info = {
             "index": segment_idx,
-            "filename": f"segment_{segment_idx}.onnx",
+            "filename": segment_filename,
             "path": segment_path,
             "parameters": segment_parameters,
             "shape": segment_shape,

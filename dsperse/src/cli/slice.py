@@ -4,11 +4,14 @@ CLI module for slicing models.
 
 import os
 import traceback
+import json
+from pathlib import Path
 
 from colorama import Fore, Style
 
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
-from dsperse.src.slicer import Slicer
+from dsperse.src.slice.slicer import Slicer
+from dsperse.src.slice.onnx_slicer import OnnxSlicer
 
 
 def setup_parser(subparsers):
@@ -33,7 +36,108 @@ def setup_parser(subparsers):
     slice_parser.add_argument('--save-file', '--save', '-S', nargs='?', const='default',
                               help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
 
+    # Output type selection
+    slice_parser.add_argument('--output-type', '--ot', choices=['dsperse', 'dslice', 'dirs'], default='dsperse',
+                              help='Select output format: dsperse (single bundle), dslice (one .dslice per slice), or dirs (unpacked directories). Default: dsperse')
+
+    # Sub-commands under slice
+    sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
+    convert_parser = sub.add_parser('convert', help='Convert between .dsperse/.dslice and directory layouts')
+    convert_parser.set_defaults(slice_subcommand='convert')
+    convert_parser.add_argument('--input', '-i', dest='input_path', help='Input path (.dsperse/.dslice or directory)')
+    convert_parser.add_argument('--output', '-o', dest='output_path', help='Output path (directory or archive)')
+    convert_parser.add_argument('--expand-slices', action='store_true', help='When converting .dsperse -> dir, also extract embedded .dslice files')
+
     return slice_parser
+
+def _is_slice_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    meta = path / "metadata.json"
+    payload = path / "payload"
+    # Accept either model.onnx or slice_*.onnx under payload
+    has_model = (payload / "model.onnx").exists() or any(payload.glob("slice_*.onnx"))
+    return meta.exists() and payload.exists() and has_model
+
+
+def _is_dsperse_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    meta = path / "metadata.json"
+    slices_dir = path / "slices"
+    if not meta.exists() or not slices_dir.exists():
+        return False
+    try:
+        with open(meta, "r") as f:
+            data = json.load(f)
+        return (data.get("schema") == "dsperse/1.0")
+    except Exception:
+        return False
+
+
+def slice_convert(args):
+    """Convert between dsperse/dslice and directories (sub-command under slice)."""
+    # Prompt if not provided
+    if not getattr(args, "input_path", None):
+        args.input_path = prompt_for_value("input", "Enter input path (.dsperse/.dslice or directory)")
+    else:
+        args.input_path = normalize_path(args.input_path)
+
+    input_path = Path(args.input_path)
+    output_path = Path(normalize_path(args.output_path)) if getattr(args, "output_path", None) else None
+
+    if not input_path.exists():
+        print(f"{Fore.RED}Input path does not exist: {input_path}{Style.RESET_ALL}")
+        logger.error(f"Input path does not exist: {input_path}")
+        return
+
+    # .dsperse -> dir
+    if input_path.is_file() and input_path.suffix == ".dsperse":
+        if output_path is None:
+            output_path = input_path.parent / input_path.stem
+        output_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Extracting dsperse to {output_path} (expand_slices={getattr(args, 'expand_slices', False)})")
+        res = OnnxSlicer.unzip_dsperse(str(input_path), str(output_path), expand_slices=bool(getattr(args, "expand_slices", False)))
+        print(f"{Fore.GREEN}✓ Extracted dsperse to: {res}{Style.RESET_ALL}")
+        return
+
+    # .dslice -> dir
+    if input_path.is_file() and input_path.suffix == ".dslice":
+        if output_path is None:
+            output_path = input_path.parent / input_path.stem
+        output_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Extracting dslice to {output_path}")
+        res = OnnxSlicer.unzip_dslice(str(input_path), str(output_path))
+        print(f"{Fore.GREEN}✓ Extracted dslice to: {res}{Style.RESET_ALL}")
+        return
+
+    # dir -> .dsperse or .dslice
+    if input_path.is_dir():
+        if _is_dsperse_dir(input_path):
+            if output_path is None:
+                output_path = input_path / "model.dsperse"
+            if output_path.suffix != ".dsperse":
+                output_path = output_path.with_suffix(".dsperse")
+            logger.info(f"Creating dsperse archive: {output_path}")
+            res = OnnxSlicer.zip_slices_dir_to_dsperse(str(input_path), str(output_path))
+            print(f"{Fore.GREEN}✓ Created dsperse: {res}{Style.RESET_ALL}")
+            return
+        if _is_slice_dir(input_path):
+            if output_path is None:
+                output_path = input_path.with_suffix(".dslice")
+            if output_path.suffix != ".dslice":
+                output_path = output_path.with_suffix(".dslice")
+            logger.info(f"Creating dslice archive: {output_path}")
+            res = OnnxSlicer.zip_slice_dir_to_dslice(str(input_path), str(output_path))
+            print(f"{Fore.GREEN}✓ Created dslice: {res}{Style.RESET_ALL}")
+            return
+        print(f"{Fore.RED}Input directory is neither a dsperse directory nor a slice directory.\nExpected either: metadata.json + slices/ (for dsperse) or metadata.json + payload/ (for a slice).{Style.RESET_ALL}")
+        logger.error("Unsupported input directory structure for conversion")
+        return
+
+    print(f"{Fore.RED}Unsupported input. Please provide a .dsperse/.dslice file or a compatible directory.{Style.RESET_ALL}")
+    logger.error("Unsupported input for slice convert")
+
 
 def slice_model(args):
     """
@@ -112,7 +216,13 @@ def slice_model(args):
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
         logger.info(f"Slicing ONNX model to output path: {output_dir}")
-        slicer.slice_model(output_path=output_dir)
+        # Default behavior: produce model.dsperse; do not persist .dslices; remove segment_* dirs unless overridden
+        persist_dslices = getattr(args, 'persist_dslices', False)
+        keep_segment_dirs = getattr(args, 'keep_segment_dirs', False)
+        slicer.slice_model(
+            output_path=output_dir,
+            output_type=getattr(args, 'output_type', 'dsperse'),
+        )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)

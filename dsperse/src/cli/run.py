@@ -9,7 +9,7 @@ import traceback
 from colorama import Fore, Style
 
 from dsperse.src.cli.base import check_model_dir, save_result, prompt_for_value, logger, normalize_path
-from dsperse.src.runner import Runner
+from dsperse.src.run.runner import Runner
 
 
 def setup_parser(subparsers):

@@ -1,3 +1,4 @@
+import os
 import os.path
 import onnx
 from onnx import shape_inference
@@ -386,19 +387,21 @@ class OnnxSlicer:
             segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
                 segment_nodes, graph, initializer_map)
 
-            # Save the segment model
-            save_path = os.path.join(output_path, f"segment_{segment_idx}")
+            # Save the segment model in dslice-style folder layout: slice_X/payload/slice_X.onnx (zero-based)
+            save_path = os.path.join(output_path, f"slice_{segment_idx}")
             if not os.path.exists(save_path):
                 os.makedirs(save_path, exist_ok=True)
-            file_path = os.path.join(save_path, f"segment_{segment_idx}.onnx")
+            payload_dir = os.path.join(save_path, "payload")
+            os.makedirs(payload_dir, exist_ok=True)
+            file_path = os.path.join(payload_dir, f"slice_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
 
             # Use extract_model to create the segment
             try:
-                logger.info(f"Extracting segment {segment_idx}: {input_names} -> {output_names}")
-                print(f"Extracting segment {segment_idx}: {input_names} -> {output_names}")
+                logger.info(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
+                print(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
                 # Extract the model directly to final path
                 extract_model(
                     input_path=self.onnx_path,
@@ -413,17 +416,17 @@ class OnnxSlicer:
                     extracted_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(extracted_model)
                     extracted_model = self._concretize_symbolic_dims(extracted_model, value=1)
                     onnx.save(extracted_model, file_path)
-                    logger.info(f"Shape inference applied successfully to extracted segment {segment_idx}")
+                    logger.info(f"Shape inference applied successfully to extracted slice {segment_idx}")
                 except Exception as e:
-                    logger.warning(f"Shape inference failed on extracted segment {segment_idx}: {e}")
-                    print(f"Shape inference failed on extracted segment {segment_idx}: {e}")
+                    logger.warning(f"Shape inference failed on extracted slice {segment_idx}: {e}")
+                    print(f"Shape inference failed on extracted slice {segment_idx}: {e}")
 
                 slice_paths.append(file_path)
 
             except Exception as e:
                 try:
-                    logger.info(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
-                    print(f"Error extracting segment, trying to create it instead {segment_idx}: {e}")
+                    logger.info(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
+                    print(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
                     segment_graph = onnx.helper.make_graph(
                         segment_nodes,
                         f"segment_{segment_idx}_graph",
@@ -514,6 +517,7 @@ class OnnxSlicer:
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path)
 
         return slices_paths
+
 
 if __name__ == "__main__":
 

@@ -1,6 +1,6 @@
-# Dsperse Architecture (arc42)
+# DSperse Architecture (arc42)
 
-This document describes the software architecture of Dsperse as it exists in this repository today. It follows the spirit of the arc42 template while focusing on what is implemented: an ONNX-only, CLI-driven pipeline integrating EZKL for circuit generation, proving, and verification.
+This document describes the software architecture of DSperse as it exists in this repository today. It follows the spirit of the arc42 template while focusing on what is implemented: an ONNX-only, CLI-driven pipeline integrating EZKL for circuit generation, proving, and verification.
 
 ---
 
@@ -29,7 +29,7 @@ Primary quality goals
 
 ## 3. Context and Scope
 
-Dsperse is a single-node CLI application. It does not require a network, message bus, or external database. The CLI reads/writes files under a chosen model directory and orchestrates the EZKL command-line tool.
+DSperse is a single-node CLI application. It does not require a network, message bus, or external database. The CLI reads/writes files under a chosen model directory and orchestrates the EZKL command-line tool.
 
 External interfaces
 - EZKL CLI: invoked to generate settings, compile circuits, setup, prove, and verify.
@@ -139,12 +139,12 @@ This arc42 summary reflects the current repository (as of 2025-09-16).
 
 2. **Resource Scoring and CLI Parameters:**  
    - What parameters (e.g., maximum layers per circuit, maximum nodes per circuit) should be exposed by default?  
-     - To tailor workloads to individual miners' capabilities, we propose exposing parameters such as the maximum number of nodes (weights and biases) a miner’s machine can handle. Given the variability in miners' hardware configurations, these parameters should be configurable by the miners themselves. For example, the command-line interface might include options like: `Dsperse-miner --max-nodes 1000 --max-layers 1` In this example: `--max-nodes` sets the maximum number of nodes (individual weight and bias pairs) that the miner is willing to process. `--max-layers` specifies the default grouping of vertical layers per circuit. These parameters will be refined over time through discussions with the network’s miners.
+     - To tailor workloads to individual miners' capabilities, we propose exposing parameters such as the maximum number of nodes (weights and biases) a miner’s machine can handle. Given the variability in miners' hardware configurations, these parameters should be configurable by the miners themselves. For example, the command-line interface might include options like: `DSperse-miner --max-nodes 1000 --max-layers 1` In this example: `--max-nodes` sets the maximum number of nodes (individual weight and bias pairs) that the miner is willing to process. `--max-layers` specifies the default grouping of vertical layers per circuit. These parameters will be refined over time through discussions with the network’s miners.
 
 3. **Proof Assembly Flow:**  
    - Can you add more details on the fallback mechanism when a miner’s assigned circuit fails, such as retry logic or threshold limits?
      - The proof assembly process begins when validators receive computed proofs for each assigned vertical layer from miners. Validators are aware of the number of proofs required to complete a full inference. If a miner's assigned circuit fails to produce a valid proof within a preset threshold time, the system initiates a fallback mechanism. This may involve reducing the circuit size by splitting it into smaller segments—potentially down to a single vertical layer—and reassigning that workload to the same or a different miner. Additionally, if a miner experiences repeated failures (e.g., failing three consecutive assignments), the incentive mechanism on the subnet could automatically reduce that miner’s allocation or temporarily exclude them from receiving assignments. This dynamic retry and threshold-based approach ensures robust proof assembly, maintaining the system's overall efficiency and reliability.
 
 4. **Integration with External Tools:**  
-   - Are there any modifications or wrappers needed for ezkl/Halo 2, or will Dsperse rely on their native support for circuit chaining?
-     - Dsperse is designed to leverage existing CLI-based workflows provided by tools like ezkl and Halo 2 for circuit generation. We plan to rely on their native support for circuit chaining without significant modifications. Additionally, we are evaluating the "Expander Compiler Collection," a Rust-based zkML library, for potential integration via CLI commands. Our goal is to keep the integration straightforward, allowing Dsperse to utilize these tools without extensive custom wrappers.
+   - Are there any modifications or wrappers needed for ezkl/Halo 2, or will DSperse rely on their native support for circuit chaining?
+     - DSperse is designed to leverage existing CLI-based workflows provided by tools like ezkl and Halo 2 for circuit generation. We plan to rely on their native support for circuit chaining without significant modifications. Additionally, we are evaluating the "Expander Compiler Collection," a Rust-based zkML library, for potential integration via CLI commands. Our goal is to keep the integration straightforward, allowing DSperse to utilize these tools without extensive custom wrappers.

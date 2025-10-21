@@ -77,7 +77,7 @@ class Runner:
 
                 if not success:
                     ezkl_error = ezkl_exec_info.get("error")
-                    success, tensor, onnx_exec_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                    success, tensor, onnx_exec_info = self.run_onnx_segment(current_slice_metadata, input_file, output_file)
                     # mark as fallback and that EZKL was attempted
                     onnx_exec_info["method"] = "ezkl_fallback_onnx"
                     onnx_exec_info["attempted_ezkl"] = True
@@ -89,7 +89,7 @@ class Runner:
                         raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
 
             else:
-                success, tensor, execution_info = self._run_onnx_segment(current_slice_metadata, input_file, output_file)
+                success, tensor, execution_info = self.run_onnx_segment(current_slice_metadata, input_file, output_file)
                 execution_info["attempted_ezkl"] = False
                 slice_results[current_slice_id] = execution_info
 
@@ -117,7 +117,7 @@ class Runner:
         return results
 
     @staticmethod
-    def _run_onnx_segment(slice_info: dict, input_tensor_path, output_tensor_path):
+    def run_onnx_segment(slice_info: dict, input_tensor_path, output_tensor_path):
         """Run ONNX inference for a segment."""
         onnx_path = slice_info.get("path")
         start_time = time.time()

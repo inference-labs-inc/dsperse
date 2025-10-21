@@ -110,7 +110,7 @@ def setup_parser(subparsers):
 
     # Arguments with aliases/shorthands
     compile_parser.add_argument('--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_path',
-                                help='Path to the slices directory')
+                                help='Path to the dsperse file or the slices directory')
     compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                 help='Path to input file for calibration (optional)')
     compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')

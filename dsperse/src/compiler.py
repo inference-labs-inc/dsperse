@@ -140,6 +140,62 @@ class Compiler:
 
         return False, None
 
+
+    @staticmethod
+    def _update_slice_metadata(slice_metadata_path: str, compilation_data: Dict[str, Any],
+                               compilation_successful: bool, calibration_path: Optional[str] = None):
+        """
+        Update the per-slice metadata.json file with compilation results.
+
+        Args:
+            slice_metadata_path: Path to the slice's metadata.json file
+            compilation_data: Dictionary containing compilation results from EZKL
+            compilation_successful: Boolean indicating if compilation was successful
+            calibration_path: Optional path to the calibration file used
+        """
+        # Load existing slice metadata or create new
+        if os.path.exists(slice_metadata_path):
+            with open(slice_metadata_path, 'r') as f:
+                slice_metadata = json.load(f)
+        else:
+            slice_metadata = {}
+
+        # Get EZKL version
+        ezkl_version = EZKL.get_version()
+
+        # Create compilation info nested under 'ezkl'
+        ezkl_compilation_info = {
+            "compiled": compilation_successful,
+            "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
+            "ezkl_version": ezkl_version,
+            "files": {
+                "settings": compilation_data.get('settings'),
+                "compiled_circuit": compilation_data.get('compiled'),
+                "vk_key": compilation_data.get('vk_key'),
+                "pk_key": compilation_data.get('pk_key'),
+                "calibration": calibration_path
+            }
+        }
+
+        # Add any errors if present
+        errors = {k: v for k, v in compilation_data.items() if k.endswith('_error')}
+        if errors:
+            ezkl_compilation_info["errors"] = errors
+
+        # Ensure compilation section exists
+        if 'compilation' not in slice_metadata:
+            slice_metadata['compilation'] = {}
+
+        # Update slice metadata with ezkl nested under compilation
+        slice_metadata['compilation']['ezkl'] = ezkl_compilation_info
+
+        # Save updated slice metadata
+        with open(slice_metadata_path, 'w') as f:
+            json.dump(slice_metadata, f, indent=2)
+
+        logger.debug(f"Updated slice metadata at {slice_metadata_path}")
+
+
     @staticmethod
     def _run_onnx_inference_chain(segments: list, input_file_path: Optional[str] = None):
         """
@@ -162,23 +218,22 @@ class Compiler:
                 os.makedirs(segment_output_path, exist_ok=True)
 
                 # Run ONNX inference to generate calibration data
-                output_tensor_path = os.path.join(segment_output_path, f"segment_{idx}_calibration.json")
-                logger.info(f"Running ONNX inference for segment {idx} with input file {current_input}")
-                success, tensor, exec_info = Runner._run_onnx_segment(
+                output_tensor_path = os.path.join(segment_output_path, f"slice_{idx}_calibration.json")
+                logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
+                success, tensor, exec_info = Runner.run_onnx_segment(
                     slice_info={"path": segment_path},
                     input_tensor_path=Path(current_input),
                     output_tensor_path=Path(output_tensor_path)
                 )
 
                 if not success:
-                    logger.error(f"ONNX inference failed for segment {idx}: {exec_info.get('error', 'Unknown error')}")
+                    logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
                     return
 
                 current_input = output_tensor_path
                 logger.info(f"Generated calibration file: {output_tensor_path}")
         else:
             logger.warning("No input file provided, skipping ONNX inference chain")
-
 
     def _compile_selected_layers(self, segments: list, metadata: Dict[str, Any], metadata_path: str,
                                  input_file_path: Optional[str] = None, layer_indices=None):
@@ -209,6 +264,7 @@ class Compiler:
             if not segment_path or not os.path.exists(segment_path):
                 logger.warning(f"Slice file not found for index {idx}: {segment_path}")
                 continue
+
             # Prepare concise progress information similar to slicer output
             deps = segment.get('dependencies', {}) if isinstance(segment, dict) else {}
             input_names = deps.get('filtered_inputs') or deps.get('input') or []
@@ -217,27 +273,50 @@ class Compiler:
                 logger.info(f"Compiling segment {idx}: {input_names} -> {output_names}")
             except Exception:
                 logger.info(f"Compiling segment {idx}")
+
             segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl")
             os.makedirs(segment_output_path, exist_ok=True)
 
-            # see if calibration file exists for this slice
+            # See if calibration file exists for this slice
             calibration_input = input_file_path if idx == 0 else os.path.join(
                 os.path.dirname(segments[idx - 1].get('path')),
                 "ezkl",
-                f"slice{idx - 1}_calibration.json"
+                f"segment_{idx}_calibration.json"
             )
-            if calibration_input and os.path.exists(calibration_input):
-                logger.info(f"Compiling slice {idx} with calibration input file {calibration_input}")
 
+            # Run compilation
             compilation_data = self.compiler_impl.compilation_pipeline(
                 segment_path,
                 segment_output_path,
                 input_file_path=calibration_input,
                 segment_details=segment
             )
+
+            # Update model-level metadata (changed from 'ezkl_circuitization' to 'ezkl')
             segment['ezkl'] = compilation_data
+
+            # Determine if compilation was successful
+            compilation_successful = all([
+                compilation_data.get('compiled') and os.path.exists(compilation_data['compiled']),
+                compilation_data.get('vk_key') and os.path.exists(compilation_data['vk_key']),
+                compilation_data.get('pk_key') and os.path.exists(compilation_data['pk_key']),
+                not any(k.endswith('_error') for k in compilation_data.keys())
+            ])
+
+            # Update per-slice metadata (at slice level, not payload level)
+            slice_dir = os.path.dirname(os.path.dirname(segment_path))  # Go up two levels from payload/slice_X.onnx
+            slice_metadata_path = os.path.join(slice_dir, "metadata.json")
+            self._update_slice_metadata(
+                slice_metadata_path,
+                compilation_data,
+                compilation_successful,
+                calibration_input if calibration_input and os.path.exists(calibration_input) else None
+            )
+
             compiled_count += 1
             logger.info(f"Completed segment {idx}")
+
+            # Save model-level metadata
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
 
         return compiled_count, skipped_count, segment_output_path
@@ -347,5 +426,5 @@ if __name__ == "__main__":
     # Compile via orchestrator
     model_path = os.path.abspath(model_dir)
     compiler = Compiler.create(model_path=model_path)
-    result_dir = compiler.compile(model_path=model_path, input_file=input_file)#, layers="3, 4")
+    result_dir = compiler.compile(model_path=model_path, input_file=input_file, layers="3, 4")
     print(f"Compilation finished.")

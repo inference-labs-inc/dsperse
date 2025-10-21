@@ -133,9 +133,29 @@ class EZKL:
         except FileNotFoundError:
             raise RuntimeError("EZKL CLI not found. Please install EZKL first.")
 
-    #
-    # High-level methods that dispatch to specific implementations
-    #
+    @staticmethod
+    def get_version():
+        """
+        Get the EZKL version.
+
+        Returns:
+            str: EZKL version string, or None if version cannot be determined
+        """
+        try:
+            result = subprocess.run(
+                [str(EZKL_PATH), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                # Parse version from output (e.g., "ezkl 1.2.3" -> "ezkl 1.2.3")
+                version_output = result.stdout.strip() or result.stderr.strip()
+                return version_output
+        except Exception as e:
+            logger.debug(f"Could not get EZKL version: {e}")
+
+        return None
 
     def generate_witness(
         self, input_file: str, model_path: str, output_file: str, vk_path: str, settings_path: str = None
@@ -652,15 +672,6 @@ class EZKL:
 
         return compilation_data
 
-    # def compilation_pipeline(
-    #     self, model_path, output_path, input_file_path=None, segment_details=None
-    # ):
-    #     return self.circuitization_pipeline(
-    #         model_path,
-    #         output_path,
-    #         input_file_path=input_file_path,
-    #         segment_details=segment_details,
-    #     )
 
     @staticmethod
     def process_witness_output(witness_data):

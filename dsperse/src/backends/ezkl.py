@@ -555,11 +555,11 @@ class EZKL:
             # SRS error detected and bubbled up
             return False, str(e)
 
-    def circuitization_pipeline(
+    def compilation_pipeline(
         self, model_path, output_path, input_file_path=None, segment_details=None
     ):
         """
-        Run the EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
+        Run the full EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
 
         Args:
             model_path (str): Path to the ONNX model file.
@@ -586,7 +586,7 @@ class EZKL:
         pk_path = os.path.join(output_path, f"{model_name}_pk.key")
 
         # Initialize circuitization data dictionary
-        circuitization_data = {
+        compilation_data = {
             "settings": settings_path,
             "compiled": compiled_path,
             "vk_key": vk_path,
@@ -602,7 +602,7 @@ class EZKL:
             )
             if not ok:
                 logger.warning("Failed to generate settings")
-                circuitization_data["gen-settings_error"] = err
+                compilation_data["gen-settings_error"] = err
 
             # Step 2/3: Calibrate settings
             if input_file_path and os.path.exists(input_file_path):
@@ -613,10 +613,10 @@ class EZKL:
                     data_path=input_file_path,
                     target="accuracy",
                 )
-                circuitization_data["calibration"] = input_file_path
+                compilation_data["calibration"] = input_file_path
                 if not ok:
                     logger.warning("Failed to calibrate settings")
-                    circuitization_data["calibrate-settings_error"] = err
+                    compilation_data["calibrate-settings_error"] = err
             else:
                 # If no input file, log and skip calibration
                 logger.info("No input file provided, skipping calibration step")
@@ -630,7 +630,7 @@ class EZKL:
             )
             if not ok:
                 logger.warning("Failed to compile circuit")
-                circuitization_data["compile-circuit_error"] = err
+                compilation_data["compile-circuit_error"] = err
 
             # Step 5: Setup (generate verification and proving keys)
             logger.info("Setting up verification and proving keys")
@@ -639,7 +639,7 @@ class EZKL:
             )
             if not ok:
                 logger.warning("Failed to setup (generate keys)")
-                circuitization_data["setup_error"] = err
+                compilation_data["setup_error"] = err
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
 
@@ -648,19 +648,19 @@ class EZKL:
             traceback.print_exc()
             error_msg = f"Error during circuitization: {str(e)}"
             logger.error(error_msg)
-            circuitization_data["error"] = error_msg
+            compilation_data["error"] = error_msg
 
-        return circuitization_data
+        return compilation_data
 
-    def compilation_pipeline(
-        self, model_path, output_path, input_file_path=None, segment_details=None
-    ):
-        return self.circuitization_pipeline(
-            model_path,
-            output_path,
-            input_file_path=input_file_path,
-            segment_details=segment_details,
-        )
+    # def compilation_pipeline(
+    #     self, model_path, output_path, input_file_path=None, segment_details=None
+    # ):
+    #     return self.circuitization_pipeline(
+    #         model_path,
+    #         output_path,
+    #         input_file_path=input_file_path,
+    #         segment_details=segment_details,
+    #     )
 
     @staticmethod
     def process_witness_output(witness_data):
@@ -700,7 +700,7 @@ if __name__ == "__main__":
 
     # Circuitize
     model_path = os.path.abspath(model_dir)
-    EZKL().circuitize(model_path=abs_path)
+    EZKL().compile(model_path=abs_path)
 
     # # Generate witness
     # input_file = os.path.join(model_dir, "input.json")

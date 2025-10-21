@@ -38,7 +38,7 @@ class Converter:
 
         # Determine current type based on path analysis
         path_obj = Path(path)
-        current_type = Converter._detect_type(path_obj)
+        current_type = Converter.detect_type(path_obj)
 
         # If already in desired format, return
         if current_type == output_type:
@@ -90,7 +90,7 @@ class Converter:
                 return temp_dirs
 
     @staticmethod
-    def _detect_type(path: Path) -> str:
+    def detect_type(path: Path) -> str:
         """Detect the type of the given path."""
         if path.is_file():
             if path.suffix == '.dsperse':
@@ -379,8 +379,8 @@ if __name__ == "__main__":
         print(f"Selected model root: {abs_path}")
 
         # DSPERSE -> DIRS
-        # out_path = Converter.convert(dsperse_file, output_type="dirs")
-        # print(f"Extracted dsperse to dirs: {out_path}")
+        out_path = Converter.convert(dsperse_file, output_type="dirs")
+        print(f"Extracted dsperse to dirs: {out_path}")
 
         # DSPERSE -> DSLICE
         # out_path = Converter.convert(dsperse_file, output_type="dslice")
@@ -391,8 +391,8 @@ if __name__ == "__main__":
         # print(f"Converted dirs to dsperse: {out_path}")
 
         # DIRS -> DSLICE
-        out_path = Converter.convert(slices_dir, output_type="dslice")
-        print(f"Converted dirs to dslice: {out_path}")
+        # out_path = Converter.convert(slices_dir, output_type="dslice")
+        # print(f"Converted dirs to dslice: {out_path}")
 
         # DSLICE -> DIRS
         # out_path = Converter.convert(slices_dir, output_type="dirs")

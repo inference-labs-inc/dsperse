@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 import torch
 
@@ -38,6 +39,29 @@ class Utils:
         # Write metadata to the file
         with file_path.open('w') as f:
             json.dump(metadata, f, indent=4)
+
+    @staticmethod
+    def find_metadata_path(dir_path: str) -> str:
+        """
+        Find the metadata.json file in the given directory or its slices subdirectory.
+
+        Args:
+            dir_path: Directory path to search for metadata.json
+
+        Returns:
+            str: Path to the metadata.json file
+
+        Raises:
+            FileNotFoundError: If metadata.json is not found in the directory or its slices subdirectory
+        """
+        metadata_path = os.path.join(dir_path, "metadata.json")
+        if not os.path.exists(metadata_path):
+            alt = os.path.join(dir_path, "slices", "metadata.json")
+            if os.path.exists(alt):
+                metadata_path = alt
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"metadata.json not found in {dir_path} or its slices subdirectory")
+        return metadata_path
 
 
     @staticmethod

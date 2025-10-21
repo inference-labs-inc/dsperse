@@ -36,8 +36,8 @@ def setup_parser(subparsers):
                               help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
 
     # Output type selection
-    slice_parser.add_argument('--output-type', '--ot', choices=['dsperse', 'dslice', 'dirs'], default='dsperse',
-                              help='Select output format: dsperse (single bundle), dslice (one .dslice per slice), or dirs (unpacked directories). Default: dsperse')
+    slice_parser.add_argument('--output-type', '--ot', choices=['dsperse', 'dslice', 'dirs'], default='dirs',
+                              help='Select output format: dsperse (single bundle), dslice (one .dslice per slice), or dirs (unpacked directories). Default: dirs')
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')

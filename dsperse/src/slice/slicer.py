@@ -55,7 +55,7 @@ class Slicer:
         return Slicer(OnnxSlicer(model_path, save_path))
 
 
-    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dsperse"):
+    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs"):
         """
         Slice the model using the appropriate slicer implementation, then optionally convert output.
 

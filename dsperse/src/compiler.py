@@ -279,9 +279,9 @@ class Compiler:
 
             # See if calibration file exists for this slice
             calibration_input = input_file_path if idx == 0 else os.path.join(
-                os.path.dirname(segments[idx - 1].get('path')),
+                os.path.dirname(segments[idx].get('path')),
                 "ezkl",
-                f"segment_{idx}_calibration.json"
+                f"slice_{idx}_calibration.json"
             )
 
             # Run compilation
@@ -292,7 +292,7 @@ class Compiler:
                 segment_details=segment
             )
 
-            # Update model-level metadata (changed from 'ezkl_circuitization' to 'ezkl')
+            # Update model-level metadata
             segment['ezkl'] = compilation_data
 
             # Determine if compilation was successful
@@ -300,7 +300,7 @@ class Compiler:
                 compilation_data.get('compiled') and os.path.exists(compilation_data['compiled']),
                 compilation_data.get('vk_key') and os.path.exists(compilation_data['vk_key']),
                 compilation_data.get('pk_key') and os.path.exists(compilation_data['pk_key']),
-                not any(k.endswith('_error') for k in compilation_data.keys())
+                compilation_data.get('settings') and os.path.exists(compilation_data['settings'])
             ])
 
             # Update per-slice metadata (at slice level, not payload level)

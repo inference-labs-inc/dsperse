@@ -61,7 +61,7 @@ class RunnerAnalyzer:
     def _generate_metadata(self, slices_metadata):
         segments = slices_metadata.get('segments', [])
         slices = self._process_slices(segments)
-        execution_chain = self._build_execution_chain(segments)
+        execution_chain = self._build_execution_chain(slices)
         circuit_slices = self._build_circuit_slices(slices)
         overall_security = self._calculate_security(slices)
         return {
@@ -74,134 +74,140 @@ class RunnerAnalyzer:
 
     def _process_slices(self, segments):
         """
-        Build the slices dictionary with metadata for each segment.
+        Build the slices dictionary with metadata for each slice.
+        Reads per-slice metadata from slice_#/metadata.json and adapts to new layout.
         """
 
         slices = {}
         for segment in segments:
-            segment_idx = segment['index']
-            segment_key = f"segment_{segment_idx}"
+            segment_idx = segment.get('index')
+            slice_key = f"slice_{segment_idx}"
 
-            # Get EZKL paths directly from metadata
-            ezkl_circuitization = segment.get('ezkl_circuitization', {})
+            onnx_slice_path = segment.get('path', '')
+            if not onnx_slice_path:
+                logger.warning(f"No ONNX slice path for slice {segment_idx}")
 
-            # Use paths from metadata or set to None if not present
-            compiled_circuit_path = ezkl_circuitization.get('compiled', None)
-            settings_path = ezkl_circuitization.get('settings', None)
-            pk_path = ezkl_circuitization.get('pk_key', None)
-            vk_path = ezkl_circuitization.get('vk_key', None)
+            # Resolve per-slice metadata path
+            slice_meta_path = segment.get('slice_metadata')
+            if not slice_meta_path and onnx_slice_path:
+                try:
+                    p = Path(onnx_slice_path)
+                    # Expecting .../slice_#/payload/slice_#.onnx -> slice dir is parent of payload
+                    slice_dir = p.parent.parent if p.parent.name == 'payload' else p.parent
+                    candidate = slice_dir / 'metadata.json'
+                    if candidate.exists():
+                        slice_meta_path = str(candidate.resolve())
+                except Exception:
+                    slice_meta_path = None
 
-            # Set circuit_exists and keys_exist flags based on actual file existence
-            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
-                             and bool(settings_path) and os.path.exists(settings_path)
+            # Load slice-level metadata if available
+            slice_level_meta = {}
+            if slice_meta_path and os.path.exists(slice_meta_path):
+                try:
+                    with open(slice_meta_path, 'r') as sf:
+                        slice_level_meta = json.load(sf)
+                except Exception as e:
+                    logger.warning(f"Failed to read slice metadata at {slice_meta_path}: {e}")
+
+            # Extract IO shapes and deps
+            io_meta = slice_level_meta.get('io', {}) if isinstance(slice_level_meta, dict) else {}
+            deps_meta = slice_level_meta.get('deps', {}) if isinstance(slice_level_meta, dict) else {}
+            input_shape = io_meta.get('input_shape') or segment.get('shape', {}).get('tensor_shape', {}).get('input', ["batch_size", "unknown"])
+            output_shape = io_meta.get('output_shape') or segment.get('shape', {}).get('tensor_shape', {}).get('output', ["batch_size", "unknown"])
+
+            # Extract EZKL compilation paths
+            comp = slice_level_meta.get('compilation', {}).get('ezkl', {}) if isinstance(slice_level_meta, dict) else {}
+            files = comp.get('files', {}) if isinstance(comp, dict) else {}
+            compiled_flag = comp.get('compiled', False)
+            compiled_circuit_path = files.get('compiled_circuit')
+            settings_path = files.get('settings')
+            pk_path = files.get('pk_key')
+            vk_path = files.get('vk_key')
+
+            # Check existence
+            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) and bool(settings_path) and os.path.exists(settings_path)
             keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
 
-            # Determine circuit size and use_circuit flag
+            # Determine circuit size
             circuit_size = 0
             if circuit_exists:
                 try:
                     circuit_size = Path(compiled_circuit_path).stat().st_size
                 except Exception:
-                    # If there's any error, just use 0 as the size
                     circuit_size = 0
 
-            # Treat any recorded circuitization error as not ready
-            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
-
-            use_circuit = circuit_exists and keys_exist and (not ezkl_errors) and circuit_size <= self.size_limit
-
-            onnx_slice_path = segment.get('path', '')
-            if not onnx_slice_path:
-                logger.warning(f"No ONNX slice path for segment {segment_idx}")
+            use_circuit = compiled_flag and circuit_exists and keys_exist and circuit_size <= self.size_limit
 
             # Build slice metadata
             slice_metadata = {
                 "path": onnx_slice_path,
-                "input_shape": segment.get('shape', {}).get('tensor_shape', {}).get('input', ["batch_size", "unknown"]),
-                "output_shape": segment.get('shape', {}).get('tensor_shape', {}).get('output',
-                                                                                     ["batch_size", "unknown"]),
+                "input_shape": input_shape,
+                "output_shape": output_shape,
                 "ezkl_compatible": True,
                 "ezkl": use_circuit,
                 "circuit_size": circuit_size,
-                "dependencies": segment.get('dependencies', {}),
+                "dependencies": segment.get('dependencies') or deps_meta,
                 "parameters": segment.get('parameters', 0)
             }
 
-            # Add circuit paths to metadata if they exist in the segment metadata
+            # Add circuit paths
             if circuit_exists:
-                # Get the parent directory for the circuit to derive proof and witness paths
-                circuit_dir = str(Path(compiled_circuit_path).parent)
-
-                # Use standard naming convention for proof and witness paths
-                # proof_path = f"{circuit_dir}/segment_{segment_idx}_proof.json"
-                # witness_path = f"{circuit_dir}/segment_{segment_idx}_witness.json"
-
                 slice_metadata.update({
                     "circuit_path": compiled_circuit_path,
-                    # "proof_path": proof_path,
-                    # "witness_path": witness_path,
                     "settings_path": settings_path
                 })
-
                 if keys_exist:
                     slice_metadata.update({
                         "vk_path": vk_path,
                         "pk_path": pk_path
                     })
 
-            slices[segment_key] = slice_metadata
+            # For diagnostics, include slice metadata path
+            if slice_meta_path:
+                slice_metadata["slice_metadata_path"] = slice_meta_path
+
+            slices[slice_key] = slice_metadata
 
         return slices
 
     @staticmethod
-    def _build_execution_chain(segments):
+    def _build_execution_chain(slices: dict):
         """
-        Build the execution chain with proper node connections and fallback mapping.
+        Build the execution chain with proper node connections and fallback mapping,
+        using new slice_* ids and per-slice metadata.
         """
+        # Order slices by numeric index extracted from key 'slice_#'
+        ordered_keys = sorted(slices.keys(), key=lambda k: int(str(k).split('_')[-1])) if slices else []
+
         execution_chain = {
-            "head": "segment_0" if segments else None,
+            "head": ordered_keys[0] if ordered_keys else None,
             "nodes": {},
             "fallback_map": {}
         }
 
-        for segment in segments:
-            segment_idx = segment['index']
-            segment_key = f"segment_{segment_idx}"
+        for i, slice_key in enumerate(ordered_keys):
+            meta = slices.get(slice_key, {})
+            circuit_path = meta.get('circuit_path')
+            onnx_path = meta.get('path')
+            has_circuit = bool(circuit_path) and os.path.exists(circuit_path)
+            has_keys = bool(meta.get('pk_path')) and os.path.exists(meta.get('pk_path')) and bool(meta.get('vk_path')) and os.path.exists(meta.get('vk_path'))
+            use_circuit = bool(meta.get('ezkl')) and has_circuit and has_keys
 
-            # Get EZKL paths from metadata
-            ezkl_circuitization = segment.get('ezkl_circuitization', {})
-            compiled_circuit_path = ezkl_circuitization.get('compiled', None)
-
-            # Get ONNX path
-            onnx_slice_path = segment.get('path', '')
-
-            # Determine if circuit is usable based on actual files and errors
-            settings_path = ezkl_circuitization.get('settings')
-            pk_path = ezkl_circuitization.get('pk_key')
-            vk_path = ezkl_circuitization.get('vk_key')
-            circuit_exists = bool(compiled_circuit_path) and os.path.exists(compiled_circuit_path) \
-                              and bool(settings_path) and os.path.exists(settings_path)
-            keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
-            ezkl_errors = any(k.endswith("_error") for k in ezkl_circuitization.keys()) or ("error" in ezkl_circuitization)
-            use_circuit = circuit_exists and keys_exist and (not ezkl_errors)
-
-            # Set up the execution chain node
-            next_slice = f"segment_{segment_idx + 1}" if segment_idx < len(segments) - 1 else None
-            execution_chain["nodes"][segment_key] = {
-                "segment_id": segment_key,
-                "primary": compiled_circuit_path if use_circuit else onnx_slice_path,
-                "fallback": onnx_slice_path,
+            next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
+            execution_chain["nodes"][slice_key] = {
+                "segment_id": slice_key,
+                "primary": circuit_path if use_circuit else onnx_path,
+                "fallback": onnx_path,
                 "use_circuit": use_circuit,
                 "next": next_slice,
-                "circuit_path": compiled_circuit_path if circuit_exists else None,
-                "onnx_path": onnx_slice_path
+                "circuit_path": circuit_path if has_circuit else None,
+                "onnx_path": onnx_path
             }
 
-            # Set up the fallback map
-            if circuit_exists and onnx_slice_path:
-                execution_chain["fallback_map"][compiled_circuit_path] = onnx_slice_path
-            elif onnx_slice_path:
-                execution_chain["fallback_map"][segment_key] = onnx_slice_path
+            if has_circuit and onnx_path:
+                execution_chain["fallback_map"][circuit_path] = onnx_path
+            elif onnx_path:
+                execution_chain["fallback_map"][slice_key] = onnx_path
 
         return execution_chain
 

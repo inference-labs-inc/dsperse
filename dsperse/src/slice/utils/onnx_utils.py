@@ -187,14 +187,16 @@ class OnnxUtils:
                 dslice_meta["opset_version"] = opset_version
 
             # Write metadata.json inside slice dir
+            slice_metadata_path = segment_dir / "metadata.json"
             try:
-                with open(segment_dir / "metadata.json", "w") as mf:
+                with open(slice_metadata_path, "w") as mf:
                     json.dump(dslice_meta, mf, indent=2)
             except Exception as e:
                 logger.warning(f"Failed to write slice metadata for {segment_dir}: {e}")
 
-            # Update global metadata path to normalized payload file
+            # Update global metadata with normalized payload path and slice metadata path
             seg["path"] = str(desired_path)
+            seg["slice_metadata"] = str(slice_metadata_path.resolve())
 
         # Save updated global metadata (legacy model-level)
         Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)

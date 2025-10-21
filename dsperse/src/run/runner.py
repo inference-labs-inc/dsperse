@@ -13,6 +13,7 @@ from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
+from dsperse.src.slice.utils.converter import Converter
 
 logger = logging.getLogger(__name__)
 
@@ -20,23 +21,93 @@ class Runner:
     def __init__(self, model_path, slices_path=None, metadata_path=None, run_metadata_path=None):
         if not model_path:
             raise ValueError("Please provide a model_path (parent of slices dir) to initialize the runner.")
-        self.model_path = model_path
-        self.slices_path = Path(slices_path) if slices_path else Path(model_path) / "slices"
-        self.metadata_path = Path(metadata_path) if metadata_path else self.slices_path / "metadata.json"
-        self.run_metadata_path = Path(run_metadata_path) if run_metadata_path else None
-        if not self.metadata_path.exists():
-            raise FileNotFoundError(f"metadata.json not found at {self.metadata_path}. Please run slicing first.")
+        # Normalize input packaging (dirs/dslice/dsperse) and resolve paths
+        self._original_format = None
+        self._converted_dir = None
+        self.model_path, self.slices_path, self.metadata_path, self.run_metadata_path = self._prepare_init(
+            model_path, slices_path, metadata_path, run_metadata_path
+        )
 
-        if self.run_metadata_path is None or not self.run_metadata_path.exists():
+        # Generate run metadata if missing
+        if self.run_metadata_path is None or not Path(self.run_metadata_path).exists():
             logger.info("run metadata not found. Generating...")
             print(f"Generating run metadata at {self.run_metadata_path}")
             runner_metadata = RunnerAnalyzer(self.model_path)
             self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
-        
+
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
 
         self.ezkl_runner = EZKL()
+
+    def _prepare_init(self, model_path, slices_path, metadata_path, run_metadata_path):
+        """Prepare normalized paths for running and runner metadata.
+        - Detect dsperse/dslice inputs and convert to dirs.
+        - Resolve model_path (parent of slices), slices_path, metadata_path, and run_metadata_path.
+        Returns a tuple: (model_path_str, slices_path_Path, metadata_path_Path, run_metadata_path_Path_or_None)
+        """
+        model_path_p = Path(model_path)
+        slices_path_p = Path(slices_path) if slices_path else None
+        run_meta_p = Path(run_metadata_path) if run_metadata_path else None
+
+        # Choose a source to inspect: prefer explicit slices_path if it exists, otherwise model_path
+        source = slices_path_p if (slices_path_p is not None and slices_path_p.exists()) else model_path_p
+
+        detected = None
+        try:
+            detected = Converter.detect_type(source)
+        except Exception:
+            detected = None
+
+        # If a directory was provided (e.g., model root) that contains a .dsperse file, use that file
+        if (detected is None) and source.is_dir():
+            try:
+                dsperse_files = [f for f in source.iterdir() if f.is_file() and f.suffix == '.dsperse']
+                if dsperse_files:
+                    source = dsperse_files[0]
+                    detected = 'dsperse'
+            except Exception:
+                pass
+
+        if detected in ("dsperse", "dslice"):
+            self._original_format = detected
+            extracted = Converter.convert(str(source), output_type="dirs", cleanup=False)
+            self._converted_dir = Path(extracted)
+
+            # If extracted path looks like a slices dir (has metadata.json and slice_* subdirs)
+            if (self._converted_dir / "metadata.json").exists() and any(
+                d.is_dir() and d.name.startswith("slice_") for d in self._converted_dir.iterdir()
+            ):
+                slices_dir = self._converted_dir
+                model_dir = slices_dir.parent
+            else:
+                # Fallback: treat converted dir as slices dir
+                slices_dir = self._converted_dir
+                model_dir = slices_dir.parent
+
+            # Locate model-level slices metadata
+            meta_path = Path(Utils.find_metadata_path(str(slices_dir)))
+
+            # Honor explicit override if provided
+            if metadata_path:
+                meta_path = Path(metadata_path)
+
+            return str(model_dir), Path(slices_dir), meta_path, run_meta_p
+
+        # No conversion required. Resolve dirs layout
+        if slices_path_p and slices_path_p.exists():
+            slices_dir = slices_path_p
+            model_dir = model_path_p if slices_dir.parent == model_path_p else slices_dir.parent
+        else:
+            model_dir = model_path_p
+            slices_dir = model_dir / "slices"
+
+        # Ensure metadata path can be found (either at slices/metadata.json or <model>/slices/metadata.json)
+        meta_path = Path(Utils.find_metadata_path(str(slices_dir if slices_dir.exists() else model_dir)))
+        if metadata_path:
+            meta_path = Path(metadata_path)
+
+        return str(model_dir), Path(slices_dir), meta_path, run_meta_p
 
     def run(self, input_json_path) -> dict:
         """Run inference through the chain of segments."""
@@ -113,6 +184,13 @@ class Runner:
         
         # Save inference output
         self._save_inference_output(results, run_dir / "run_result.json" )
+
+        # If we extracted compressed input (dsperse/dslice), repackage back and cleanup
+        try:
+            if getattr(self, "_original_format", None):
+                Converter.convert(str(self.slices_path), output_type=self._original_format, cleanup=True)
+        except Exception as e:
+            logger.warning(f"Failed to repackage slices back to {getattr(self, '_original_format', None)}: {e}")
         
         return results
 
@@ -320,11 +398,11 @@ if __name__ == "__main__":
 
     # Model configurations
     base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet",
-        4: "../models/yolov3",
-        5: "../models/age",
+        1: "../../models/doom",
+        2: "../../models/net",
+        3: "../../models/resnet",
+        4: "../../models/yolov3",
+        5: "../../models/age",
     }
 
     # Get model directory

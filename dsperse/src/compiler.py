@@ -360,17 +360,29 @@ class Compiler:
         )
 
         # Convert back to original format if needed
+        final_path = None
         if original_format:
             logger.info(f"Converting back to {original_format} format")
-            dir_path = Converter.convert(dir_path, output_type=original_format, cleanup=True)
+            final_path = Converter.convert(dir_path, output_type=original_format, cleanup=True)
 
-        if segment_output_path:
-            output_dir = os.path.dirname(segment_output_path)
-        else:
-            output_dir = os.path.dirname(metadata_path)
+        # Determine default output if not packaged
+        if not final_path:
+            if segment_output_path:
+                output_dir = os.path.dirname(segment_output_path)
+            else:
+                output_dir = os.path.dirname(metadata_path)
+            final_path = output_dir
+
         logger.info(f"Compilation of slices completed. Compiled {compiled_count} segments, skipped {skipped_count} segments.")
-        logger.info(f"Output saved to {os.path.dirname(output_dir)}")
-        return output_dir
+        try:
+            p = Path(final_path)
+            if p.is_file():
+                logger.info(f"Output packaged at {final_path}")
+            else:
+                logger.info(f"Output saved under {final_path}")
+        except Exception:
+            logger.info(f"Output location: {final_path}")
+        return final_path
 
 
     def compile(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None):

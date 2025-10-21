@@ -24,6 +24,9 @@ class Runner:
         # Normalize input packaging (dirs/dslice/dsperse) and resolve paths
         self._original_format = None
         self._converted_dir = None
+        # Single-slice mode flags
+        self._single_slice_mode = False
+        self._single_slice_id = None
         self.model_path, self.slices_path, self.metadata_path, self.run_metadata_path = self._prepare_init(
             model_path, slices_path, metadata_path, run_metadata_path
         )
@@ -32,8 +35,14 @@ class Runner:
         if self.run_metadata_path is None or not Path(self.run_metadata_path).exists():
             logger.info("run metadata not found. Generating...")
             print(f"Generating run metadata at {self.run_metadata_path}")
-            runner_metadata = RunnerAnalyzer(self.model_path)
-            self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
+            if self._single_slice_mode:
+                # Build minimal run metadata for a single-slice directory extracted from .dslice
+                default_path = Path(self.model_path) / "run" / "metadata.json"
+                target_path = Path(self.run_metadata_path) if self.run_metadata_path else default_path
+                self.run_metadata_path = self._generate_single_slice_run_metadata(target_path)
+            else:
+                runner_metadata = RunnerAnalyzer(self.model_path)
+                self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
 
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
@@ -74,18 +83,39 @@ class Runner:
             extracted = Converter.convert(str(source), output_type="dirs", cleanup=False)
             self._converted_dir = Path(extracted)
 
-            # If extracted path looks like a slices dir (has metadata.json and slice_* subdirs)
+            # Determine slices_dir and model_dir
             if (self._converted_dir / "metadata.json").exists() and any(
                 d.is_dir() and d.name.startswith("slice_") for d in self._converted_dir.iterdir()
             ):
+                # Directory containing multiple slice_* subdirectories
                 slices_dir = self._converted_dir
                 model_dir = slices_dir.parent
             else:
-                # Fallback: treat converted dir as slices dir
+                # Could be a single slice directory (from a .dslice) or a generic folder
                 slices_dir = self._converted_dir
                 model_dir = slices_dir.parent
 
-            # Locate model-level slices metadata
+            # Detect single-slice mode: a directory that itself is a slice (has metadata.json + payload) and no slice_* children
+            try:
+                has_slice_children = any(d.is_dir() and d.name.startswith("slice_") for d in slices_dir.iterdir())
+            except Exception:
+                has_slice_children = False
+            if Converter._is_slice_dir(slices_dir) and not has_slice_children:
+                # Single .dslice extracted
+                self._single_slice_mode = True
+                # Load per-slice metadata to get slice_id if available
+                try:
+                    with open(slices_dir / "metadata.json", "r") as sf:
+                        smeta = json.load(sf)
+                        sid = smeta.get("slice_id")
+                        # Normalize to string like 'slice_#'
+                        if isinstance(sid, (int, float)):
+                            sid = f"slice_{int(sid)}"
+                        self._single_slice_id = sid or "slice_0"
+                except Exception:
+                    self._single_slice_id = "slice_0"
+
+            # Locate metadata: this may be per-slice metadata in single-slice mode
             meta_path = Path(Utils.find_metadata_path(str(slices_dir)))
 
             # Honor explicit override if provided
@@ -109,6 +139,100 @@ class Runner:
 
         return str(model_dir), Path(slices_dir), meta_path, run_meta_p
 
+    def _generate_single_slice_run_metadata(self, save_path: Path) -> Path:
+        """Generate minimal runner metadata for a single-slice directory extracted from a .dslice file."""
+        # Load per-slice metadata
+        slice_dir = self.slices_path
+        slice_meta_path = slice_dir / "metadata.json"
+        with open(slice_meta_path, "r") as f:
+            smeta = json.load(f)
+
+        # Slice ID
+        sid = self._single_slice_id or smeta.get("slice_id") or "slice_0"
+        if isinstance(sid, (int, float)):
+            sid = f"slice_{int(sid)}"
+        slice_id = str(sid)
+
+        # Resolve ONNX model path from entry
+        entry = smeta.get("entry", {}) or {}
+        model_rel = entry.get("model") or entry.get("onnx") or "payload/model.onnx"
+        onnx_path = str((slice_dir / model_rel).resolve())
+        if not os.path.exists(onnx_path):
+            try:
+                payload_dir = slice_dir / "payload"
+                cand = next((p for p in payload_dir.glob("*.onnx")), None)
+                if cand:
+                    onnx_path = str(cand.resolve())
+            except Exception:
+                pass
+
+        # IO and dependencies
+        io_meta = smeta.get("io", {}) or {}
+        deps_meta = smeta.get("deps", {}) or {}
+
+        # EZKL compilation info (optional)
+        comp = smeta.get("compilation", {}).get("ezkl", {}) if isinstance(smeta, dict) else {}
+        files = comp.get("files", {}) if isinstance(comp, dict) else {}
+        compiled_flag = comp.get("compiled", False)
+        circuit_path = files.get("compiled_circuit")
+        settings_path = files.get("settings")
+        vk_path = files.get("vk_key")
+        pk_path = files.get("pk_key")
+        circuit_exists = bool(circuit_path) and os.path.exists(circuit_path) and bool(settings_path) and os.path.exists(settings_path)
+        keys_exist = bool(pk_path) and os.path.exists(pk_path) and bool(vk_path) and os.path.exists(vk_path)
+        circuit_size = 0
+        if circuit_exists:
+            try:
+                circuit_size = Path(circuit_path).stat().st_size
+            except Exception:
+                circuit_size = 0
+        size_limit = 1000 * 1024 * 1024
+        use_circuit = bool(compiled_flag and circuit_exists and keys_exist and circuit_size <= size_limit)
+
+        # Build single-slice metadata entry
+        slice_metadata = {
+            "path": onnx_path,
+            "input_shape": io_meta.get("input_shape"),
+            "output_shape": io_meta.get("output_shape"),
+            "ezkl_compatible": True,
+            "ezkl": use_circuit,
+            "circuit_size": circuit_size,
+            "dependencies": deps_meta,
+            "parameters": 0,
+            "slice_metadata_path": str(slice_meta_path.resolve())
+        }
+        if circuit_exists:
+            slice_metadata.update({
+                "circuit_path": circuit_path,
+                "settings_path": settings_path
+            })
+            if keys_exist:
+                slice_metadata.update({
+                    "vk_path": vk_path,
+                    "pk_path": pk_path
+                })
+
+        slices = {slice_id: slice_metadata}
+
+        # Build execution chain and other aggregates using analyzer statics
+        execution_chain = RunnerAnalyzer._build_execution_chain(slices)
+        circuit_slices = RunnerAnalyzer._build_circuit_slices(slices)
+        overall_security = RunnerAnalyzer._calculate_security(slices)
+
+        # Save
+        save_path = Path(save_path).resolve()
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        runner_metadata = {
+            "model_path": str(self.model_path),
+            "overall_security": overall_security,
+            "slices": slices,
+            "execution_chain": execution_chain,
+            "circuit_slices": circuit_slices,
+            "run_directory": str(save_path.parent)
+        }
+        Utils.save_metadata_file(runner_metadata, save_path)
+        return save_path
+
     def run(self, input_json_path) -> dict:
         """Run inference through the chain of segments."""
         # input_tensor = Utils.read_input(str(input_json_path))
@@ -127,8 +251,8 @@ class Runner:
         # Chain execution
         while current_slice_id:
             slice_node = execution_chain["nodes"][current_slice_id]
-            segment_dir = self.slices_path / current_slice_id
-            segment_dir.mkdir(exist_ok=True)
+            segment_dir = self.slices_path if getattr(self, "_single_slice_mode", False) else (self.slices_path / current_slice_id)
+            segment_dir.mkdir(parents=True, exist_ok=True)
 
             seg_run_dir = run_dir / current_slice_id
             seg_run_dir.mkdir(parents=True, exist_ok=True)

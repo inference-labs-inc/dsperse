@@ -27,13 +27,13 @@ def setup_parser(subparsers):
     run_parser.set_defaults(command='run')
 
     # Arguments with aliases/shorthands
-    run_parser.add_argument('--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_dir',
-                            help='Directory containing the slices')
+    run_parser.add_argument('--path', '-p', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='path',
+                            help='Path to the slices directory or a .dsperse/.dslice file')
     run_parser.add_argument('--run-metadata-path', help='Path to run metadata.json (auto-generated if not provided)')
     run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
-                            help='Path to input file (default: parent_of_slices/input.json)')
+                            help='Path to input file (default: parent_dir/input.json)')
     run_parser.add_argument('--output-file', '-o', dest='output_file',
-                            help='Path to save output results (default: parent_of_slices/output.json)')
+                            help='Path to save output results (default: parent_dir/output.json)')
 
     return run_parser
 
@@ -41,8 +41,8 @@ def run_inference(args):
     """
     Run inference on a model based on the provided arguments.
     
-    This command requires a slices directory. The parent directory of the slices
-    is treated as the model directory, which is used for defaults like input/output paths.
+    Accepts a slices directory or a .dsperse/.dslice file. The parent directory
+    of the slices (or the file) is treated as the model directory for default IO paths.
 
     Args:
         args: The parsed command-line arguments
@@ -50,34 +50,39 @@ def run_inference(args):
     print(f"{Fore.CYAN}Running inference...{Style.RESET_ALL}")
     logger.info("Starting model inference")
 
-    # Require slices directory
-    if not hasattr(args, 'slices_dir') or not args.slices_dir:
-        args.slices_dir = prompt_for_value('slices-dir', 'Enter the slices directory')
-    else:
-        args.slices_dir = normalize_path(args.slices_dir)
+    # Resolve target path (slices dir or .dsperse/.dslice file)
+    target_path = getattr(args, 'path', None) or getattr(args, 'slices_dir', None)
+    if not target_path:
+        target_path = prompt_for_value('path', 'Enter the path to the slices directory or .dsperse file')
+    target_path = normalize_path(target_path)
 
-    if not check_model_dir(args.slices_dir):
+    if not check_model_dir(target_path):
         return
 
-    # Validate slices directory has metadata and normalize to the actual slices directory
-    meta_in_dir = os.path.exists(os.path.join(args.slices_dir, 'metadata.json'))
-    meta_in_sub = os.path.exists(os.path.join(args.slices_dir, 'slices', 'metadata.json'))
-
-    if not (meta_in_dir or meta_in_sub):
-        print(f"{Fore.YELLOW}Warning: No slices metadata found at the provided path. Please slice the model first.{Style.RESET_ALL}")
-        logger.error("Run requires a valid slices directory with metadata.json")
-        return
-
-    if meta_in_dir:
-        slices_dir_effective = args.slices_dir
-        model_dir = os.path.dirname(args.slices_dir.rstrip('/')) or '.'
+    # Derive model_dir and slices hint for Runner
+    slices_dir_effective = None
+    if os.path.isfile(target_path):
+        # File input (e.g., slices.dsperse or slice_0.dslice)
+        model_dir = os.path.dirname(target_path) or '.'
+        slices_dir_effective = target_path
     else:
-        # metadata inside a 'slices' subfolder; treat provided path as model_dir
-        slices_dir_effective = os.path.join(args.slices_dir, 'slices')
-        model_dir = args.slices_dir
+        # Directory input
+        meta_in_dir = os.path.exists(os.path.join(target_path, 'metadata.json'))
+        meta_in_sub = os.path.exists(os.path.join(target_path, 'slices', 'metadata.json'))
+        if meta_in_dir:
+            slices_dir_effective = target_path
+            model_dir = os.path.dirname(target_path.rstrip('/')) or '.'
+        elif meta_in_sub:
+            slices_dir_effective = os.path.join(target_path, 'slices')
+            model_dir = target_path
+        else:
+            # No immediate metadata found; Runner will attempt to detect dsperse inside the directory
+            slices_dir_effective = None
+            model_dir = target_path
 
     # Normalize derived paths
-    slices_dir_effective = normalize_path(slices_dir_effective)
+    if slices_dir_effective:
+        slices_dir_effective = normalize_path(slices_dir_effective)
     model_dir = normalize_path(model_dir)
 
     # Get run metadata path if provided, otherwise None (Runner will auto-generate)

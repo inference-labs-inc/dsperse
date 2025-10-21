@@ -109,8 +109,8 @@ def setup_parser(subparsers):
     compile_parser.set_defaults(command='compile')
 
     # Arguments with aliases/shorthands
-    compile_parser.add_argument('--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_path',
-                                help='Path to the dsperse file or the slices directory')
+    compile_parser.add_argument('--path', '-p', '--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='path',
+                                help='Path to the slices directory or a .dsperse/.dslice file')
     compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                 help='Path to input file for calibration (optional)')
     compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
@@ -128,45 +128,22 @@ def compile_model(args):
     print(f"{Fore.CYAN}Compiling slices with EZKL...{Style.RESET_ALL}")
     logger.info("Starting slices compilation")
 
-    # Prompt for slices path if not provided
-    if not hasattr(args, 'slices_path') or not args.slices_path:
-        args.slices_path = prompt_for_value('slices-path', 'Enter the path to the slices directory')
-    else:
-        args.slices_path = normalize_path(args.slices_path)
+    # Resolve path (slices dir or .dsperse/.dslice file)
+    target_path = getattr(args, 'path', None) or getattr(args, 'slices_path', None)
+    if not target_path:
+        target_path = prompt_for_value('path', 'Enter the path to the slices directory or .dsperse file')
+    target_path = normalize_path(target_path)
 
-    if not check_model_dir(args.slices_path):
+    if not check_model_dir(target_path):
         return
 
     # Normalize input file if provided via flag
     if hasattr(args, 'input_file') and args.input_file:
         args.input_file = normalize_path(args.input_file)
 
-    # Ensure the provided path looks like a slices directory; otherwise guide user to slice first.
+    # Initialize the Compiler (it supports dirs, .dsperse, .dslice, or model.onnx)
     try:
-        if not os.path.isdir(args.slices_path):
-            msg = (
-                "Please provide a slices directory, not a model file. "
-                "If you have a model, slice it first before compiling.\n"
-                f"Try: dsperse slice --model-dir {args.slices_path}"
-            )
-            print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
-            logger.error("Compile requires a slices directory (with metadata.json).")
-            return
-        has_metadata = (
-            os.path.exists(os.path.join(args.slices_path, "metadata.json")) or
-            os.path.exists(os.path.join(args.slices_path, "slices", "metadata.json"))
-        )
-        if not has_metadata:
-            msg = (
-                "No slices metadata found at the provided path. "
-                "Please slice the model first before compiling slices.\n"
-                f"Try: dsperse slice --model-dir {args.slices_path}"
-            )
-            print(f"{Fore.YELLOW}Warning: {msg}{Style.RESET_ALL}")
-            logger.error("Compile requires slices metadata. Prompted user to run slice first.")
-            return
-        # Initialize the Compiler
-        compiler = Compiler.create(args.slices_path)
+        compiler = Compiler.create(target_path)
         logger.info(f"Compiler initialized successfully")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Compiler: {e}"
@@ -174,9 +151,12 @@ def compile_model(args):
         logger.error(error_msg)
         return
 
-    # Check if the layers exist in the metadata
+    # Check if the layers exist in the metadata when a directory is provided
     if hasattr(args, 'layers') and args.layers:
-        validated_layers = _check_layers(args.slices_path, args.layers)
+        if os.path.isdir(target_path):
+            validated_layers = _check_layers(target_path, args.layers)
+        else:
+            validated_layers = args.layers  # pass through for non-dirs; Compiler will parse
     else:
         validated_layers = None
     
@@ -188,11 +168,17 @@ def compile_model(args):
         ezkl_logger.setLevel(logging.WARNING)
 
         output_path = compiler.compile(
-            model_path=args.slices_path,
+            model_path=target_path,
             input_file=args.input_file,
             layers=validated_layers
         )
-        success_msg = f"Slices compiled successfully! Output saved to {os.path.dirname(output_path)}"
+        # Tailored success message based on returned path
+        if os.path.isfile(output_path):
+            success_msg = f"Slices compiled successfully! Output packaged at {output_path}"
+        elif os.path.isdir(output_path):
+            success_msg = f"Slices compiled successfully! Output saved under {output_path}"
+        else:
+            success_msg = "Slices compiled successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)
     except Exception as e:

@@ -132,13 +132,40 @@ class Converter:
         """Convert directory format to dslice files.
 
         Zips each slice_* directory (containing payload/ and metadata.json) into a .dslice file.
+        Also supports zipping a single slice directory (metadata.json + payload/) into <dir>.dslice.
         """
         # Find all slice_* directories
-        slice_dirs = sorted([d for d in path.iterdir() if d.is_dir() and d.name.startswith('slice_')])
+        slice_dirs = sorted([d for d in path.iterdir() if d.is_dir() and d.name.startswith('slice_')]) if path.is_dir() else []
 
+        # If no slice_* subdirectories, but the provided path itself is a slice directory, zip it directly
         if not slice_dirs:
-            raise ValueError(f"No slice_* directories found in {path}")
+            if Converter._is_slice_dir(path):
+                # Determine destination .dslice path
+                if output_path:
+                    dslice_out = Path(output_path)
+                    if dslice_out.is_dir() or not dslice_out.suffix:
+                        dslice_out = dslice_out / f"{path.name}.dslice"
+                else:
+                    dslice_out = path.parent / f"{path.name}.dslice"
+                dslice_out.parent.mkdir(parents=True, exist_ok=True)
 
+                # Zip the slice directory into a single .dslice
+                Converter._zip_directory(path, dslice_out)
+                logger.info(f"Created {dslice_out}")
+
+                # If converting in place, remove the original slice directory
+                if output_path is None or Path(output_path) == path:
+                    try:
+                        shutil.rmtree(path)
+                        logger.info(f"Removed {path}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove source slice directory {path}: {e}")
+
+                return str(dslice_out)
+            else:
+                raise ValueError(f"No slice_* directories found in {path}")
+
+        # Normal case: zip each slice_* directory into a .dslice at the root
         output_dir = Path(output_path) if output_path else path
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -379,16 +406,16 @@ if __name__ == "__main__":
         print(f"Selected model root: {abs_path}")
 
         # DSPERSE -> DIRS
-        out_path = Converter.convert(dsperse_file, output_type="dirs")
-        print(f"Extracted dsperse to dirs: {out_path}")
+        # out_path = Converter.convert(dsperse_file, output_type="dirs")
+        # print(f"Extracted dsperse to dirs: {out_path}")
 
         # DSPERSE -> DSLICE
         # out_path = Converter.convert(dsperse_file, output_type="dslice")
         # print(f"Extracted dsperse to dslice: {out_path}")
 
         # DIRS -> DSPERSE 
-        # out_path = Converter.convert(slices_dir, output_type="dsperse")
-        # print(f"Converted dirs to dsperse: {out_path}")
+        out_path = Converter.convert(slices_dir, output_type="dsperse")
+        print(f"Converted dirs to dsperse: {out_path}")
 
         # DIRS -> DSLICE
         # out_path = Converter.convert(slices_dir, output_type="dslice")

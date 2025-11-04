@@ -118,7 +118,7 @@ class OnnxSlicer:
         index_to_segment_name = {}
         for node_name, node_info in model_metadata["nodes"].items():
             index_to_node_name[node_info["index"]] = node_name
-            index_to_segment_name[node_info["index"]] = node_info["segment_name"]
+            index_to_segment_name[node_info["index"]] = node_info["slice_name"]
 
         return (graph, node_map, node_type_index_map, initializer_map, value_info_map,
                 index_to_node_name, index_to_segment_name, output_path)

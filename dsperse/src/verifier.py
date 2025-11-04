@@ -38,41 +38,42 @@ class Verifier:
             metadata = json.load(f)
         
         # Initialize counters
-        verified_segments = 0
-        total_ezkl_segments = 0
+        verified_slices = 0
+        total_ezkl_slices = 0
         
-        # Process each segment in the execution results
-        for segment in run_results["execution_chain"]["execution_results"]:
-            segment_id = segment["segment_id"]
+        # Process each slice in the execution results
+        for slice_result in run_results["execution_chain"]["execution_results"]:
+            # Support both slice_id and segment_id for backward compatibility
+            slice_id = slice_result.get("slice_id") or slice_result.get("segment_id")
             
-            # Skip segments that don't have proof_execution
-            if "proof_execution" not in segment:
+            # Skip slices that don't have proof_execution
+            if "proof_execution" not in slice_result:
                 continue
             
-            # Skip segments where proof generation was not successful
-            if not segment["proof_execution"]["success"]:
+            # Skip slices where proof generation was not successful
+            if not slice_result["proof_execution"]["success"]:
                 continue
             
             # Get the proof file path
-            proof_path = segment["proof_execution"]["proof_file"]
+            proof_path = slice_result["proof_execution"]["proof_file"]
             if not os.path.exists(proof_path):
-                print(f"Warning: Proof file not found for {segment_id}: {proof_path}")
+                print(f"Warning: Proof file not found for {slice_id}: {proof_path}")
                 continue
             
-            total_ezkl_segments += 1
+            total_ezkl_slices += 1
             
-            # Get the segment metadata
-            segment_metadata = metadata["slices"].get(segment_id)
-            if not segment_metadata:
-                print(f"Warning: Metadata for segment {segment_id} not found")
+            # Get the slice metadata
+            slice_metadata = metadata["slices"].get(slice_id)
+            if not slice_metadata:
+                print(f"Warning: Metadata for slice {slice_id} not found")
                 continue
             
             # Get the paths for verification
-            settings_path = segment_metadata["settings_path"]
-            vk_path = segment_metadata["vk_path"]
+            settings_path = slice_metadata["settings_path"]
+            vk_path = slice_metadata["vk_path"]
             
             # Verify the proof
-            print(f"Verifying proof for {segment_id}...")
+            print(f"Verifying proof for {slice_id}...")
             start_time = time.time()
             verify_success = self.ezkl_runner.verify(
                 proof_path=proof_path,
@@ -89,19 +90,19 @@ class Verifier:
             }
             
             if verify_success:
-                verified_segments += 1
-                print(f"Successfully verified {segment_id}")
-                # Display individual segment verification time immediately
-                print(f"  {segment_id}: {verify_time:.2f}s")
+                verified_slices += 1
+                print(f"Successfully verified {slice_id}")
+                # Display individual slice verification time immediately
+                print(f"  {slice_id}: {verify_time:.2f}s")
             else:
-                print(f"Failed to verify {segment_id}")
+                print(f"Failed to verify {slice_id}")
             
-            # Update the segment with the verification information
-            segment["verification_execution"] = verification_execution
+            # Update the slice with the verification information
+            slice_result["verification_execution"] = verification_execution
         
         # Update the execution_chain with the new counters
         # Keep the existing ezkl_witness_slices and ezkl_proved_slices
-        run_results["execution_chain"]["ezkl_verified_slices"] = verified_segments
+        run_results["execution_chain"]["ezkl_verified_slices"] = verified_slices
         
         # Save the updated run results
         with open(run_results_path, 'w') as f:
@@ -160,14 +161,14 @@ if __name__ == "__main__":
     
     # Display results
     print(f"\nVerification completed!")
-    print(f"Verified segments: {results['execution_chain']['ezkl_verified_slices']} of {results['execution_chain']['ezkl_proved_slices']}")
+    print(f"Verified slices: {results['execution_chain']['ezkl_verified_slices']} of {results['execution_chain']['ezkl_proved_slices']}")
     
-    # Print details for each segment
-    print("\nSegment details:")
-    for segment in results["execution_chain"]["execution_results"]:
-        segment_id = segment["segment_id"]
-        if "verification_execution" in segment:
-            verified = segment["verification_execution"]["verified"]
+    # Print details for each slice
+    print("\nSlice details:")
+    for slice_result in results["execution_chain"]["execution_results"]:
+        slice_id = slice_result["slice_id"]
+        if "verification_execution" in slice_result:
+            verified = slice_result["verification_execution"]["verified"]
             status = "Success" if verified else "Failed"
-            time_taken = segment["verification_execution"]["verification_time"]
-            print(f"  {segment_id}: {status} (Time: {time_taken:.2f}s)")
+            time_taken = slice_result["verification_execution"]["verification_time"]
+            print(f"  {slice_id}: {status} (Time: {time_taken:.2f}s)")

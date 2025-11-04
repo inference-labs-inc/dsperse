@@ -11,6 +11,8 @@ from colorama import Fore, Style
 
 from dsperse.src.compiler import Compiler
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
+from dsperse.src.slice.utils.converter import Converter
+from pathlib import Path
 
 
 def _check_layers(slices_path, layers_str):
@@ -70,9 +72,9 @@ def _check_layers(slices_path, layers_str):
         print(f"{Fore.YELLOW}Warning: Failed to load metadata.json. Cannot validate layers.{Style.RESET_ALL}")
         return layers_str
     
-    # Get available segments
-    segments = metadata.get('segments', [])
-    available_indices = [segment.get('index') for segment in segments]
+    # Get available slices
+    slices = metadata.get('slices', [])
+    available_indices = [slice_item.get('index') for slice_item in slices]
     
     # Check if each layer exists
     valid_indices = []
@@ -134,6 +136,37 @@ def compile_model(args):
         target_path = prompt_for_value('path', 'Enter the path to the slices directory or .dsperse file')
     target_path = normalize_path(target_path)
 
+    # Auto-unpack dsperse/dslice files if needed
+    unpacked_dir = None
+    cleanup_unpacked = False
+    target_path_obj = Path(target_path)
+    
+    if target_path_obj.is_file():
+        if target_path_obj.suffix == '.dsperse':
+            # Unpack dsperse with expand_slices=True to the same directory as the archive
+            print(f"{Fore.CYAN}Detected .dsperse file, unpacking and expanding slices...{Style.RESET_ALL}")
+            # Unpack to same directory as archive (e.g., slices.dsperse -> slices/)
+            unpacked_dir = Converter._dsperse_to_dirs(target_path_obj, target_path_obj.parent / target_path_obj.stem, expand_slices=True)
+            target_path = unpacked_dir
+            cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
+        elif target_path_obj.suffix == '.dslice':
+            # Unpack single dslice file to same directory
+            print(f"{Fore.CYAN}Detected .dslice file, unpacking...{Style.RESET_ALL}")
+            unpacked_dir = Converter.convert(str(target_path), output_type='dirs', output_path=str(target_path_obj.parent / target_path_obj.stem), cleanup=False)
+            target_path = unpacked_dir
+            cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
+    elif target_path_obj.is_dir():
+        # Check if directory contains dslice files (from unpacking dsperse)
+        dslice_files = list(target_path_obj.glob("*.dslice"))
+        if dslice_files and not any(target_path_obj.glob("slice_*")):
+            # Directory has dslice files but no slice directories - unpack them
+            print(f"{Fore.CYAN}Detected .dslice files in directory, unpacking {len(dslice_files)} files...{Style.RESET_ALL}")
+            for dslice_file in dslice_files:
+                slice_dir = target_path_obj / dslice_file.stem
+                if not slice_dir.exists():
+                    Converter.convert(str(dslice_file), output_type='dirs', output_path=str(slice_dir), cleanup=False)
+                dslice_file.unlink()  # Remove dslice file after unpacking
+
     if not check_model_dir(target_path):
         return
 
@@ -141,7 +174,7 @@ def compile_model(args):
     if hasattr(args, 'input_file') and args.input_file:
         args.input_file = normalize_path(args.input_file)
 
-    # Initialize the Compiler (it supports dirs, .dsperse, .dslice, or model.onnx)
+    # Initialize the Compiler (it supports dirs or model.onnx)
     try:
         compiler = Compiler.create(target_path)
         logger.info(f"Compiler initialized successfully")
@@ -190,3 +223,5 @@ def compile_model(args):
     finally:
         # Restore previous EZKL logger level
         ezkl_logger.setLevel(prev_ezkl_level)
+        # Note: We don't cleanup unpacked directories - they're unpacked to the same location as the archive
+        # This ensures paths remain consistent and files are accessible

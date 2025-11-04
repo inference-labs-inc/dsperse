@@ -41,7 +41,10 @@ class Runner:
                 target_path = Path(self.run_metadata_path) if self.run_metadata_path else default_path
                 self.run_metadata_path = self._generate_single_slice_run_metadata(target_path)
             else:
-                runner_metadata = RunnerAnalyzer(self.model_path)
+                # Pass slices directory to RunnerAnalyzer
+                # Get slices_path from the _prepare_init result
+                slices_dir_for_analyzer = Path(self.slices_path).resolve() if self.slices_path else None
+                runner_metadata = RunnerAnalyzer(self.model_path, slices_dir=slices_dir_for_analyzer)
                 self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
 
         with open(self.run_metadata_path, 'r') as f:
@@ -234,7 +237,7 @@ class Runner:
         return save_path
 
     def run(self, input_json_path) -> dict:
-        """Run inference through the chain of segments."""
+        """Run inference through the chain of slices."""
         # input_tensor = Utils.read_input(str(input_json_path))
         execution_chain = self.metadata.get("execution_chain", {})
         current_slice_id = execution_chain.get("head")
@@ -251,28 +254,28 @@ class Runner:
         # Chain execution
         while current_slice_id:
             slice_node = execution_chain["nodes"][current_slice_id]
-            segment_dir = self.slices_path if getattr(self, "_single_slice_mode", False) else (self.slices_path / current_slice_id)
-            segment_dir.mkdir(parents=True, exist_ok=True)
+            slice_dir = self.slices_path if getattr(self, "_single_slice_mode", False) else (self.slices_path / current_slice_id)
+            slice_dir.mkdir(parents=True, exist_ok=True)
 
-            seg_run_dir = run_dir / current_slice_id
-            seg_run_dir.mkdir(parents=True, exist_ok=True)
+            slice_run_dir = run_dir / current_slice_id
+            slice_run_dir.mkdir(parents=True, exist_ok=True)
             
-            # Write input for this segment
-            input_file = seg_run_dir / "input.json"
-            output_file = seg_run_dir / "output.json"
+            # Write input for this slice
+            input_file = slice_run_dir / "input.json"
+            output_file = slice_run_dir / "output.json"
             Utils.write_input(current_tensor, str(input_file))
 
             current_slice_metadata = self.metadata["slices"][current_slice_id]
-            # Execute segment based on circuit availability
+            # Execute slice based on circuit availability
             if slice_node.get("use_circuit"):
-                success, tensor, ezkl_exec_info = self._run_ezkl_segment(
+                success, tensor, ezkl_exec_info = self._run_ezkl_slice(
                     current_slice_metadata, input_file, output_file
                 )
                 slice_results[current_slice_id] = ezkl_exec_info
 
                 if not success:
                     ezkl_error = ezkl_exec_info.get("error")
-                    success, tensor, onnx_exec_info = self.run_onnx_segment(current_slice_metadata, input_file, output_file)
+                    success, tensor, onnx_exec_info = self.run_onnx_slice(current_slice_metadata, input_file, output_file)
                     # mark as fallback and that EZKL was attempted
                     onnx_exec_info["method"] = "ezkl_fallback_onnx"
                     onnx_exec_info["attempted_ezkl"] = True
@@ -281,15 +284,15 @@ class Runner:
                     slice_results[current_slice_id] = onnx_exec_info
 
                     if not success:
-                        raise Exception("EzKL fallback to ONNX failed for segment: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
+                        raise Exception("EzKL fallback to ONNX failed for slice: " + current_slice_id + " with error: " + onnx_exec_info.get("error", "Unknown error. Check logs for details."))
 
             else:
-                success, tensor, execution_info = self.run_onnx_segment(current_slice_metadata, input_file, output_file)
+                success, tensor, execution_info = self.run_onnx_slice(current_slice_metadata, input_file, output_file)
                 execution_info["attempted_ezkl"] = False
                 slice_results[current_slice_id] = execution_info
 
                 if not success:
-                    raise Exception("ONNX inference failed for segment: " + current_slice_id)
+                    raise Exception("ONNX inference failed for slice: " + current_slice_id)
 
             # filter tensor and make tensor next input.json file
             current_tensor = self._filter_tensor(current_slice_metadata, tensor)
@@ -319,8 +322,8 @@ class Runner:
         return results
 
     @staticmethod
-    def run_onnx_segment(slice_info: dict, input_tensor_path, output_tensor_path):
-        """Run ONNX inference for a segment."""
+    def run_onnx_slice(slice_info: dict, input_tensor_path, output_tensor_path):
+        """Run ONNX inference for a slice."""
         onnx_path = slice_info.get("path")
         start_time = time.time()
         success, result =  OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
@@ -334,8 +337,8 @@ class Runner:
 
         return success, result, exec_info
 
-    def _run_ezkl_segment(self, slice_info: dict, input_tensor_path, output_witness_path):
-        """Run EZKL inference for a segment with fallback to ONNX."""
+    def _run_ezkl_slice(self, slice_info: dict, input_tensor_path, output_witness_path):
+        """Run EZKL inference for a slice with fallback to ONNX."""
         model_path = slice_info.get("circuit_path")
         vk_path = slice_info.get("vk_path")
         settings_path = slice_info.get("settings_path")
@@ -399,7 +402,7 @@ class Runner:
             
             # Create result_entry with segment_id and witness_execution
             result_entry = {
-                "segment_id": slice_id,
+                "slice_id": slice_id,
                 "witness_execution": witness_execution
             }
             
@@ -425,13 +428,15 @@ class Runner:
         }
         
         # Save to file
+        # Ensure output directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w') as f:
             json.dump(inference_output, f, indent=2)
 
 
     @staticmethod
     def _filter_tensor(current_slice_metadata, tensor):
-        # take the tensor object, and extract the output that is relevant to the next segment
+        # take the tensor object, and extract the output that is relevant to the next slice
         logits = tensor["logits"]
         probabilities = tensor["probabilities"]
         predicted_action = tensor["predicted_action"]

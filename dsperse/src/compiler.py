@@ -132,7 +132,7 @@ class Compiler:
 
             # Check using Converter's detect_type
             try:
-                detected_type = Converter._detect_type(path_obj)
+                detected_type = Converter.detect_type(path_obj)
                 if detected_type in ['dirs', 'dslice', 'dsperse']:
                     return True, str(path_obj)
             except ValueError:
@@ -197,31 +197,31 @@ class Compiler:
 
 
     @staticmethod
-    def _run_onnx_inference_chain(segments: list, input_file_path: Optional[str] = None):
+    def _run_onnx_inference_chain(slices_data: list, input_file_path: Optional[str] = None):
         """
         Phase 1: Run ONNX inference chain to generate calibration files.
 
         Args:
-            segments: List of segment metadata
+            slices_data: List of slice metadata
             input_file_path: Path to the initial input file
         """
         current_input = input_file_path
         if current_input and os.path.exists(current_input):
             logger.info("Running ONNX inference chain to generate calibration files")
-            for idx, segment in enumerate(segments):
-                segment_path = segment.get('path')
-                if not segment_path or not os.path.exists(segment_path):
-                    logger.warning(f"Segment file not found for index {idx}: {segment_path}")
+            for idx, slice_data in enumerate(slices_data):
+                slice_path = slice_data.get('path')
+                if not slice_path or not os.path.exists(slice_path):
+                    logger.warning(f"Slice file not found for index {idx}: {slice_path}")
                     continue
 
-                segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl")
-                os.makedirs(segment_output_path, exist_ok=True)
+                slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
+                os.makedirs(slice_output_path, exist_ok=True)
 
                 # Run ONNX inference to generate calibration data
-                output_tensor_path = os.path.join(segment_output_path, f"slice_{idx}_calibration.json")
+                output_tensor_path = os.path.join(slice_output_path, f"slice_{idx}_calibration.json")
                 logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
-                success, tensor, exec_info = Runner.run_onnx_segment(
-                    slice_info={"path": segment_path},
+                success, tensor, exec_info = Runner.run_onnx_slice(
+                    slice_info={"path": slice_path},
                     input_tensor_path=Path(current_input),
                     output_tensor_path=Path(output_tensor_path)
                 )
@@ -235,65 +235,65 @@ class Compiler:
         else:
             logger.warning("No input file provided, skipping ONNX inference chain")
 
-    def _compile_selected_layers(self, segments: list, metadata: Dict[str, Any], metadata_path: str,
+    def _compile_selected_layers(self, slices_data: list, metadata: Dict[str, Any], metadata_path: str,
                                  input_file_path: Optional[str] = None, layer_indices=None):
         """
-        Phase 2: Compile the selected layers/segments.
+        Phase 2: Compile the selected layers/slices.
 
         Args:
-            segments: List of segment metadata
+            slices_data: List of slice metadata
             metadata: Full metadata dictionary
             metadata_path: Path to metadata.json file
             input_file_path: Path to the initial input file
             layer_indices: List of layer indices to compile (None means compile all)
 
         Returns:
-            Tuple of (compiled_count, skipped_count, segment_output_path)
+            Tuple of (compiled_count, skipped_count, slice_output_path)
         """
         compiled_count = 0
         skipped_count = 0
-        segment_output_path = None
+        slice_output_path = None
 
-        for idx, segment in enumerate(segments):
+        for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
-                logger.info(f"Skipping compilation for segment {idx} as it's not in the specified layers")
+                logger.info(f"Skipping compilation for slice {idx} as it's not in the specified layers")
                 skipped_count += 1
                 continue
 
-            segment_path = segment.get('path')
-            if not segment_path or not os.path.exists(segment_path):
-                logger.warning(f"Slice file not found for index {idx}: {segment_path}")
+            slice_path = slice_data.get('path')
+            if not slice_path or not os.path.exists(slice_path):
+                logger.warning(f"Slice file not found for index {idx}: {slice_path}")
                 continue
 
             # Prepare concise progress information similar to slicer output
-            deps = segment.get('dependencies', {}) if isinstance(segment, dict) else {}
+            deps = slice_data.get('dependencies', {}) if isinstance(slice_data, dict) else {}
             input_names = deps.get('filtered_inputs') or deps.get('input') or []
             output_names = deps.get('output') or []
             try:
-                logger.info(f"Compiling segment {idx}: {input_names} -> {output_names}")
+                logger.info(f"Compiling slice {idx}: {input_names} -> {output_names}")
             except Exception:
-                logger.info(f"Compiling segment {idx}")
+                logger.info(f"Compiling slice {idx}")
 
-            segment_output_path = os.path.join(os.path.dirname(segment_path), "ezkl")
-            os.makedirs(segment_output_path, exist_ok=True)
+            slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
+            os.makedirs(slice_output_path, exist_ok=True)
 
             # See if calibration file exists for this slice
             calibration_input = input_file_path if idx == 0 else os.path.join(
-                os.path.dirname(segments[idx].get('path')),
+                os.path.dirname(slices_data[idx].get('path')),
                 "ezkl",
                 f"slice_{idx}_calibration.json"
             )
 
             # Run compilation
             compilation_data = self.compiler_impl.compilation_pipeline(
-                segment_path,
-                segment_output_path,
+                slice_path,
+                slice_output_path,
                 input_file_path=calibration_input,
-                segment_details=segment
+                slice_details=slice_data
             )
 
             # Update model-level metadata
-            segment['ezkl'] = compilation_data
+            slice_data['ezkl'] = compilation_data
 
             # Determine if compilation was successful
             compilation_successful = all([
@@ -304,7 +304,7 @@ class Compiler:
             ])
 
             # Update per-slice metadata (at slice level, not payload level)
-            slice_dir = os.path.dirname(os.path.dirname(segment_path))  # Go up two levels from payload/slice_X.onnx
+            slice_dir = os.path.dirname(os.path.dirname(slice_path))  # Go up two levels from payload/slice_X.onnx
             slice_metadata_path = os.path.join(slice_dir, "metadata.json")
             self._update_slice_metadata(
                 slice_metadata_path,
@@ -314,12 +314,12 @@ class Compiler:
             )
 
             compiled_count += 1
-            logger.info(f"Completed segment {idx}")
+            logger.info(f"Completed slice {idx}")
 
             # Save model-level metadata
             Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
 
-        return compiled_count, skipped_count, segment_output_path
+        return compiled_count, skipped_count, slice_output_path
 
 
     def _compile_model(self, model_file_path: str, input_file_path: Optional[str] = None) -> str:
@@ -348,15 +348,15 @@ class Compiler:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        segments = metadata.get('segments', [])
+        slices_data = metadata.get('slices', [])
 
         # Phase 1: Run ONNX inference chain for setting calibration (if input file exists)
         if input_file_path:
-            self._run_onnx_inference_chain(segments, input_file_path)
+            self._run_onnx_inference_chain(slices_data, input_file_path)
 
         # Phase 2: Compile selected layers
-        compiled_count, skipped_count, segment_output_path = self._compile_selected_layers(
-            segments, metadata, metadata_path, input_file_path, layer_indices
+        compiled_count, skipped_count, slice_output_path = self._compile_selected_layers(
+            slices_data, metadata, metadata_path, input_file_path, layer_indices
         )
 
         # Convert back to original format if needed
@@ -367,13 +367,13 @@ class Compiler:
 
         # Determine default output if not packaged
         if not final_path:
-            if segment_output_path:
-                output_dir = os.path.dirname(segment_output_path)
+            if slice_output_path:
+                output_dir = os.path.dirname(slice_output_path)
             else:
                 output_dir = os.path.dirname(metadata_path)
             final_path = output_dir
 
-        logger.info(f"Compilation of slices completed. Compiled {compiled_count} segments, skipped {skipped_count} segments.")
+        logger.info(f"Compilation of slices completed. Compiled {compiled_count} slices, skipped {skipped_count} slices.")
         try:
             p = Path(final_path)
             if p.is_file():

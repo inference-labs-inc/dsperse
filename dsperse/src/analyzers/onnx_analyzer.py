@@ -131,7 +131,7 @@ class OnnxAnalyzer:
         # Return node metadata
         return {
             "index": index,
-            "segment_name": f"{node_type}_{index}",
+            "slice_name": f"{node_type}_{index}",
             "parameters": parameters,
             "node_type": node_type,
             "in_features": in_features,
@@ -381,7 +381,7 @@ class OnnxAnalyzer:
                 segments.append(segment_metadata)
 
         # Add segments to metadata
-        model_overview["segments"] = segments
+        model_overview["slices"] = segments
 
         # Save metadata if output_dir is provided
         Utils.save_metadata_file(model_overview, output_path=output_dir)

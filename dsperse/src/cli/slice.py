@@ -23,7 +23,7 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    slice_parser = subparsers.add_parser('slice', aliases=['s'], help='Slice a model into segments')
+    slice_parser = subparsers.add_parser('slice', aliases=['s'], help='Slice a model into slices')
     # Ensure canonical command name even when alias is used
     slice_parser.set_defaults(command='slice')
 
@@ -52,6 +52,8 @@ def setup_parser(subparsers):
     convert_parser.add_argument('--cleanup', dest='cleanup', action='store_true', default=True,
                                 help='Remove source artifact after successful conversion (default: True)')
     convert_parser.add_argument('--no-cleanup', dest='cleanup', action='store_false', help='Keep source artifact')
+    convert_parser.add_argument('--exclude-pk', action='store_true',
+                                help='Exclude proving key (*pk*) files when packing (use for verification)')
 
     return slice_parser
 
@@ -101,7 +103,10 @@ def slice_convert(args):
             return
 
         # All other cases use the public convert API
-        result = Converter.convert(input_path, output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None), output_path=output_path, cleanup=bool(getattr(args, 'cleanup', True)))
+        exclude_patterns = []
+        if getattr(args, 'exclude_pk', False):
+            exclude_patterns.append('*pk*')
+        result = Converter.convert(input_path, output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None), output_path=output_path, cleanup=bool(getattr(args, 'cleanup', True)), exclude_patterns=exclude_patterns if exclude_patterns else None)
         print(f"{Fore.GREEN}✓ Converted to: {result}{Style.RESET_ALL}")
         logger.info(f"Converted to: {result}")
     except Exception as e:

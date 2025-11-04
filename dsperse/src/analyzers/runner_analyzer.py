@@ -12,13 +12,17 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 class RunnerAnalyzer:
-    def __init__(self, model_directory):
+    def __init__(self, model_directory, slices_dir=None):
         """
         Args:
             model_directory: Path to the model directory.
+            slices_dir: Optional path to slices directory. If not provided, assumes model_directory/slices.
         """
         self.model_directory = model_directory
-        self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
+        if slices_dir:
+            self.slices_dir = Path(slices_dir).resolve()
+        else:
+            self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
         self.slices_metadata_path = self.slices_dir / "metadata.json"
 
         self.size_limit = 1000 * 1024 * 1024  # 1000MB
@@ -59,8 +63,8 @@ class RunnerAnalyzer:
             raise
 
     def _generate_metadata(self, slices_metadata):
-        segments = slices_metadata.get('segments', [])
-        slices = self._process_slices(segments)
+        slices_data = slices_metadata.get('slices', [])
+        slices = self._process_slices(slices_data)
         execution_chain = self._build_execution_chain(slices)
         circuit_slices = self._build_circuit_slices(slices)
         overall_security = self._calculate_security(slices)
@@ -72,23 +76,23 @@ class RunnerAnalyzer:
             "circuit_slices": circuit_slices,
         }
 
-    def _process_slices(self, segments):
+    def _process_slices(self, slices_data):
         """
         Build the slices dictionary with metadata for each slice.
         Reads per-slice metadata from slice_#/metadata.json and adapts to new layout.
         """
 
         slices = {}
-        for segment in segments:
-            segment_idx = segment.get('index')
-            slice_key = f"slice_{segment_idx}"
+        for slice_data in slices_data:
+            slice_idx = slice_data.get('index')
+            slice_key = f"slice_{slice_idx}"
 
-            onnx_slice_path = segment.get('path', '')
+            onnx_slice_path = slice_data.get('path', '')
             if not onnx_slice_path:
-                logger.warning(f"No ONNX slice path for slice {segment_idx}")
+                logger.warning(f"No ONNX slice path for slice {slice_idx}")
 
             # Resolve per-slice metadata path
-            slice_meta_path = segment.get('slice_metadata')
+            slice_meta_path = slice_data.get('slice_metadata')
             if not slice_meta_path and onnx_slice_path:
                 try:
                     p = Path(onnx_slice_path)
@@ -112,8 +116,8 @@ class RunnerAnalyzer:
             # Extract IO shapes and deps
             io_meta = slice_level_meta.get('io', {}) if isinstance(slice_level_meta, dict) else {}
             deps_meta = slice_level_meta.get('deps', {}) if isinstance(slice_level_meta, dict) else {}
-            input_shape = io_meta.get('input_shape') or segment.get('shape', {}).get('tensor_shape', {}).get('input', ["batch_size", "unknown"])
-            output_shape = io_meta.get('output_shape') or segment.get('shape', {}).get('tensor_shape', {}).get('output', ["batch_size", "unknown"])
+            input_shape = io_meta.get('input_shape') or slice_data.get('shape', {}).get('tensor_shape', {}).get('input', ["batch_size", "unknown"])
+            output_shape = io_meta.get('output_shape') or slice_data.get('shape', {}).get('tensor_shape', {}).get('output', ["batch_size", "unknown"])
 
             # Extract EZKL compilation paths
             comp = slice_level_meta.get('compilation', {}).get('ezkl', {}) if isinstance(slice_level_meta, dict) else {}
@@ -146,8 +150,8 @@ class RunnerAnalyzer:
                 "ezkl_compatible": True,
                 "ezkl": use_circuit,
                 "circuit_size": circuit_size,
-                "dependencies": segment.get('dependencies') or deps_meta,
-                "parameters": segment.get('parameters', 0)
+                "dependencies": slice_data.get('dependencies') or deps_meta,
+                "parameters": slice_data.get('parameters', 0)
             }
 
             # Add circuit paths
@@ -195,7 +199,7 @@ class RunnerAnalyzer:
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
             execution_chain["nodes"][slice_key] = {
-                "segment_id": slice_key,
+                "slice_id": slice_key,
                 "primary": circuit_path if use_circuit else onnx_path,
                 "fallback": onnx_path,
                 "use_circuit": use_circuit,

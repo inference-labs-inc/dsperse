@@ -84,7 +84,7 @@ class RunnerUtils:
         if metadata is None:
             return None
 
-        segments = metadata.get('segments', [])
+        segments = metadata.get('slices', [])
         if not segments:
             print("No segments found in metadata.json")
             return None

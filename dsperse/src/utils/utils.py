@@ -65,29 +65,29 @@ class Utils:
 
 
     @staticmethod
-    def filter_inputs(segment_inputs, graph):
-        # Filter input names from segment details
-        segment_filtered_inputs = []
-        for input_info in segment_inputs:
+    def filter_inputs(slice_inputs, graph):
+        # Filter input names from slice details
+        slice_filtered_inputs = []
+        for input_info in slice_inputs:
             # Only include actual inputs that are not weights or biases
             # Typically, weights and biases have names containing "weight" or "bias"
             if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
                     input_info.name in [inp.name for inp in graph.input]):
-                segment_filtered_inputs.append(input_info.name)
+                slice_filtered_inputs.append(input_info.name)
             # Also include intermediate tensors from previous layers
             elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                segment_filtered_inputs.append(input_info.name)
+                slice_filtered_inputs.append(input_info.name)
         # If there are no inputs after filtering, include the first non-weight/bias input
-        if not segment_filtered_inputs:
-            for input_info in segment_inputs:
+        if not slice_filtered_inputs:
+            for input_info in slice_inputs:
                 if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    segment_filtered_inputs.append(input_info.name)
+                    slice_filtered_inputs.append(input_info.name)
                     break
 
             # If still no inputs, use the first input as a fallback
-            if not segment_filtered_inputs and segment_inputs:
-                segment_filtered_inputs.append(segment_inputs[0].name)
-        return segment_filtered_inputs
+            if not slice_filtered_inputs and slice_inputs:
+                slice_filtered_inputs.append(slice_inputs[0].name)
+        return slice_filtered_inputs
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):

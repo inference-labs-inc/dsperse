@@ -101,7 +101,7 @@ class OnnxUtils:
         except Exception:
             opset_version = None
 
-        segments = meta.get("segments", []) or []
+        segments = meta.get("slices", []) or []
         for idx, seg in enumerate(segments):
             seg_path_val = seg.get("path")
             if not seg_path_val:

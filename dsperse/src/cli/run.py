@@ -166,12 +166,12 @@ def run_inference(args):
         print(f"Prediction: {result.get('prediction', 'N/A')}")
         print(f"Final Probabilities: {result.get('probabilities')[0] if result.get('probabilities') else 'N/A'}")
 
-        # Print method information for each segment
+        # Print method information for each slice
         slice_results = result.get('slice_results', {})
         if slice_results:
-            print("\nSegment Methods:")
-            for segment_name, segment_info in slice_results.items():
-                print(f"{segment_name}: {segment_info.get('method', 'N/A')}")
+            print("\nSlice Methods:")
+            for slice_name, slice_info in slice_results.items():
+                print(f"{slice_name}: {slice_info.get('method', 'N/A')}")
 
 
     except Exception as e:

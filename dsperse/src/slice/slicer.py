@@ -81,7 +81,7 @@ class Slicer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1 # Change this to test different models
+    model_choice = 2 # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -105,7 +105,7 @@ if __name__ == "__main__":
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")
-        slices = slicer.slice_model(output_path=output_dir, output_type="dirs")
+        slices = slicer.slice_model(output_path=output_dir, output_type="dslice")
 
         # Display results
         print("\nSlicing completed!")

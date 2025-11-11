@@ -1,9 +1,14 @@
 import json
 import logging
 import os
+from pathlib import Path
+from typing import Optional
+import time
+
 import torch
 import torch.nn.functional as F
 
+from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.torch_utils import ModelUtils
 
 logger = logging.getLogger(__name__)
@@ -11,6 +16,84 @@ logger = logging.getLogger(__name__)
 class RunnerUtils:
     def __init__(self):
         pass
+
+    # ----- Runtime helpers to keep Runner.run concise -----
+    @staticmethod
+    def normalize_for_runtime(run_metadata: dict, slices_path: Path) -> tuple[Path, str | None, Path]:
+        packaging_type = (run_metadata or {}).get("packaging_type", "dirs")
+        source_path = (run_metadata or {}).get("source_path") or str(slices_path)
+        model_path = Path((run_metadata or {}).get("model_path", Path(slices_path).parent)).resolve()
+
+        # Correct accidental model_path pointing to the slices folder
+        if model_path.name == "slices":
+            model_path = model_path.parent
+
+        # Handle packaged inputs
+        if packaging_type == "dsperse":
+            try:
+                converted = Converter.convert(source_path, output_type="dirs", cleanup=False)
+                return Path(converted), "dsperse", model_path
+            except Exception:
+                return (model_path / "slices").resolve(), None, model_path
+
+        if packaging_type == "dslice":
+            try:
+                sp = Path(source_path)
+                if sp.is_file():
+                    # Extract single .dslice file to a slice_* directory; use its parent as slices root
+                    slice_dir = Path(Converter.convert(str(sp), output_type="dirs", cleanup=False))
+                    slices_root = slice_dir.parent
+                else:
+                    # Directory containing .dslice files; expand into slice_* directories in place
+                    expanded_dir = Path(Converter.convert(str(sp), output_type="dirs", cleanup=False))
+                    slices_root = expanded_dir
+                return slices_root, "dslice", model_path
+            except Exception:
+                return (model_path / "slices").resolve(), None, model_path
+
+        # Default: dirs layout
+        root = (model_path / "slices").resolve()
+        if not root.exists():
+            root = Path(slices_path)
+        return root, None, model_path
+
+    @staticmethod
+    def make_run_dir(run_metadata: dict, output_path: str | None, model_path: Path) -> Path:
+        base_run_dir = Path((run_metadata or {}).get("run_directory") or (model_path / "run"))
+        return Path(output_path) if output_path else base_run_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+
+    @staticmethod
+    def prepare_slice_io(run_dir: Path, slice_id: str) -> tuple[Path, Path, Path]:
+        slice_run_dir = run_dir / slice_id
+        slice_run_dir.mkdir(parents=True, exist_ok=True)
+        in_file = slice_run_dir / "input.json"
+        out_file = slice_run_dir / "output.json"
+        return slice_run_dir, in_file, out_file
+
+    @staticmethod
+    def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
+        if node.get("use_circuit"):
+            ok, tensor, ezkl_info = runner._run_ezkl_slice(slice_info, in_file, out_file, slice_dir)
+            result_info = ezkl_info
+            if not ok:
+                ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                onnx_info["method"] = "ezkl_fallback_onnx"
+                onnx_info["attempted_ezkl"] = True
+                if ezkl_info.get("error") and not onnx_info.get("error"):
+                    onnx_info["error"] = ezkl_info.get("error")
+                result_info = onnx_info
+            return ok, tensor, result_info
+        ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+        onnx_info["attempted_ezkl"] = False
+        return ok, tensor, onnx_info
+
+    @staticmethod
+    def repackage_if_needed(original_format: str | None, slices_root: Path):
+        if original_format:
+            try:
+                Converter.convert(str(slices_root), output_type=original_format, cleanup=True)
+            except Exception as e:
+                logger.warning(f"Failed to repackage to {original_format}: {e}")
 
     @staticmethod
     def _get_file_path() -> str:
@@ -123,6 +206,130 @@ class RunnerUtils:
 
         with open(file_path, 'w') as f:
             json.dump(data, f)
+
+
+    @staticmethod
+    def _is_sliced_model(model_path: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if the path is a sliced model (dirs, dslice, or dsperse format).
+
+        Returns:
+            Tuple of (is_sliced, slice_path) where slice_path is the actual path to the slices
+        """
+        path_obj = Path(model_path)
+
+        # Check for compressed slice formats (direct file)
+        if path_obj.is_file() and path_obj.suffix in ['.dsperse', '.dslice']:
+            return True, str(path_obj)
+
+        # Check for directory formats
+        if path_obj.is_dir():
+            # Check if directory contains a .dsperse file
+            dsperse_files = [f for f in path_obj.iterdir() if f.is_file() and f.suffix == '.dsperse']
+            if dsperse_files:
+                return True, str(dsperse_files[0])
+
+            # Check if directory contains a 'slices' subdirectory
+            slices_subdir = path_obj / 'slices'
+            if slices_subdir.is_dir():
+                return True, str(slices_subdir)
+
+            # Check using Converter's detect_type
+            try:
+                detected_type = Converter.detect_type(path_obj)
+                if detected_type in ['dirs', 'dslice', 'dsperse']:
+                    return True, str(path_obj)
+            except ValueError:
+                pass
+
+        return False, None
+
+    @staticmethod
+    def filter_tensor(current_slice_metadata, tensor):
+        # take the tensor object, and extract the output that is relevant to the next slice
+        logits = tensor["logits"]
+        probabilities = tensor["probabilities"]
+        predicted_action = tensor["predicted_action"]
+
+        # Check the shape using our new function
+        expected_shape = current_slice_metadata["output_shape"]
+        RunnerUtils.check_expected_shape(logits, expected_shape, tensor_name="logits")
+
+        return logits
+
+    @staticmethod
+    def check_expected_shape(tensor, expected_shape_data, tensor_name="tensor"):
+        """
+        Check if the tensor shape matches the expected shape from metadata.
+
+        Args:
+            tensor: The PyTorch tensor to check
+            expected_shape_data: The shape data from metadata (usually a nested list with possible string placeholders)
+            tensor_name: Name of the tensor for logging purposes
+
+        Returns:
+            bool: True if shapes match, False otherwise
+        """
+        # Handle the case where output_shape is a nested list
+        if isinstance(expected_shape_data, list) and len(expected_shape_data) > 0:
+            # Extract the inner shape list - the first element of output_shape
+            shape_values = expected_shape_data[0]
+
+            # Replace string placeholders with actual values from tensor
+            expected_elements = 1
+            shape_dict = {
+                "batch_size": tensor.shape[0] if tensor.dim() > 0 else 1,
+                "unk__0": tensor.shape[0] if tensor.dim() > 0 else 1
+            }
+
+            # Build the expected shape with placeholders replaced
+            expected_shape = []
+            for dim in shape_values:
+                if isinstance(dim, str):
+                    if dim in shape_dict:
+                        expected_shape.append(shape_dict[dim])
+                        expected_elements *= shape_dict[dim]
+                    else:
+                        logger.warning(f"Unknown dimension placeholder: {dim}")
+                        # Default to using 1 for unknown dimensions
+                        expected_shape.append(1)
+                        expected_elements *= 1
+                else:
+                    expected_shape.append(dim)
+                    expected_elements *= dim
+
+            # Check total elements
+            tensor_elements = torch.numel(tensor)
+            if tensor_elements != expected_elements:
+                logger.warning(
+                    f"{tensor_name} shape {list(tensor.shape)} has {tensor_elements} elements, "
+                    f"but expected shape {expected_shape} has {expected_elements} elements"
+                )
+                return False
+
+            # If the tensor is flattened but should be multidimensional
+            if len(tensor.shape) == 1 and len(expected_shape) > 1:
+                logger.info(
+                    f"{tensor_name} is flattened ({tensor.shape[0]} elements), "
+                    f"but expected shape is {expected_shape}"
+                )
+                return True
+
+            # Check actual dimensions if tensor is not flattened
+            if len(tensor.shape) == len(expected_shape):
+                for i, (actual, expected) in enumerate(zip(tensor.shape, expected_shape)):
+                    if actual != expected:
+                        logger.warning(
+                            f"Dimension mismatch at index {i}: {tensor_name} has size {actual}, "
+                            f"expected {expected}"
+                        )
+                        return False
+                return True
+
+        # If we can't determine expected shape, just return True
+        logger.debug(f"Could not determine precise expected shape for {tensor_name}")
+        return True
+
 
 
 if __name__ == "__main__":

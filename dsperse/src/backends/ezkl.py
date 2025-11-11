@@ -576,7 +576,7 @@ class EZKL:
             return False, str(e)
 
     def compilation_pipeline(
-        self, model_path, output_path, input_file_path=None, segment_details=None
+        self, model_path, output_path, input_file_path=None, slice_details=None
     ):
         """
         Run the full EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
@@ -585,7 +585,7 @@ class EZKL:
             model_path (str): Path to the ONNX model file.
             output_path (str): Base path for output files (without extension).
             input_file_path (str, optional): Path to input data file for calibration.
-            segment_details (dict, optional): Details about the segment being processed.
+            slice_details (dict, optional): Details about the segment being processed.
 
         Returns:
             dict: Dictionary containing paths to generated files and any error information.
@@ -600,10 +600,10 @@ class EZKL:
         model_name = Path(model_path).stem
 
         # Define file paths
-        settings_path = os.path.join(output_path, f"{model_name}_settings.json")
-        compiled_path = os.path.join(output_path, f"{model_name}_model.compiled")
-        vk_path = os.path.join(output_path, f"{model_name}_vk.key")
-        pk_path = os.path.join(output_path, f"{model_name}_pk.key")
+        settings_path = os.path.join(output_path, f"settings.json")
+        compiled_path = os.path.join(output_path, f"model.compiled")
+        vk_path = os.path.join(output_path, f"vk.key")
+        pk_path = os.path.join(output_path, f"pk.key")
 
         # Initialize circuitization data dictionary
         compilation_data = {

@@ -344,7 +344,7 @@ def run_proof(args):
     try:
         prover = Prover()
         start_time = time.time()
-        result = prover.prove_run(run_result_path, metadata_path)
+        result = prover.prove(run_result_path, metadata_path)
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Proof generation completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")

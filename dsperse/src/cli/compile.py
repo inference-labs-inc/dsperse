@@ -9,7 +9,7 @@ import logging
 
 from colorama import Fore, Style
 
-from dsperse.src.compiler import Compiler
+from dsperse.src.compile.compiler import Compiler
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 from dsperse.src.slice.utils.converter import Converter
 from pathlib import Path

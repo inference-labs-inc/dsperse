@@ -9,13 +9,14 @@ based on the model type.
 import os
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.compile.utils.compiler_utils import CompilerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
-from dsperse.src.run.runner import Runner
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,16 @@ class Compiler:
     This class provides a unified interface for compiling models by delegating
     to the appropriate compiler implementation based on the model type.
     """
-    
+
+    def __init__(self, compiler_impl):
+        """
+        Initialize the Compiler with a specific implementation.
+
+        Args:
+            compiler_impl: The compiler implementation to use
+        """
+        self.compiler_impl = compiler_impl
+
     @staticmethod
     def create(model_path: str) -> 'Compiler':
         """
@@ -46,7 +56,7 @@ class Compiler:
             model_file = model_path
             model_dir = os.path.dirname(model_path)
             if not model_dir:  # If the directory is empty (e.g., just "model.onnx")
-                model_dir = "."
+                model_dir = ".."
         else:
             model_dir = model_path
             model_file = None
@@ -73,167 +83,6 @@ class Compiler:
             # For now, we only support ONNX models as per requirements
             # In the future, this can be extended to support other model types
             raise ValueError(f"Unsupported model type at path: {model_path}")
-    
-    def __init__(self, compiler_impl):
-        """
-        Initialize the Compiler with a specific implementation.
-        
-        Args:
-            compiler_impl: The compiler implementation to use
-        """
-        self.compiler_impl = compiler_impl
-
-
-    @staticmethod
-    def _parse_layers(layers_str: Optional[str]):
-        if not layers_str:
-            return None
-        layer_indices = []
-        parts = [p.strip() for p in layers_str.split(',')]
-        for part in parts:
-            if '-' in part:
-                try:
-                    start, end = map(int, part.split('-'))
-                    layer_indices.extend(range(start, end + 1))
-                except ValueError:
-                    logger.warning(f"Invalid layer range: {part}. Skipping.")
-            else:
-                try:
-                    layer_indices.append(int(part))
-                except ValueError:
-                    logger.warning(f"Invalid layer index: {part}. Skipping.")
-        return sorted(set(layer_indices)) if layer_indices else None
-
-    @staticmethod
-    def _is_sliced_model(model_path: str) -> tuple[bool, Optional[str]]:
-        """
-        Check if the path is a sliced model (dirs, dslice, or dsperse format).
-
-        Returns:
-            Tuple of (is_sliced, slice_path) where slice_path is the actual path to the slices
-        """
-        path_obj = Path(model_path)
-
-        # Check for compressed slice formats (direct file)
-        if path_obj.is_file() and path_obj.suffix in ['.dsperse', '.dslice']:
-            return True, str(path_obj)
-
-        # Check for directory formats
-        if path_obj.is_dir():
-            # Check if directory contains a .dsperse file
-            dsperse_files = [f for f in path_obj.iterdir() if f.is_file() and f.suffix == '.dsperse']
-            if dsperse_files:
-                return True, str(dsperse_files[0])
-
-            # Check if directory contains a 'slices' subdirectory
-            slices_subdir = path_obj / 'slices'
-            if slices_subdir.is_dir():
-                return True, str(slices_subdir)
-
-            # Check using Converter's detect_type
-            try:
-                detected_type = Converter.detect_type(path_obj)
-                if detected_type in ['dirs', 'dslice', 'dsperse']:
-                    return True, str(path_obj)
-            except ValueError:
-                pass
-
-        return False, None
-
-
-    @staticmethod
-    def _update_slice_metadata(slice_metadata_path: str, compilation_data: Dict[str, Any],
-                               compilation_successful: bool, calibration_path: Optional[str] = None):
-        """
-        Update the per-slice metadata.json file with compilation results.
-
-        Args:
-            slice_metadata_path: Path to the slice's metadata.json file
-            compilation_data: Dictionary containing compilation results from EZKL
-            compilation_successful: Boolean indicating if compilation was successful
-            calibration_path: Optional path to the calibration file used
-        """
-        # Load existing slice metadata or create new
-        if os.path.exists(slice_metadata_path):
-            with open(slice_metadata_path, 'r') as f:
-                slice_metadata = json.load(f)
-        else:
-            slice_metadata = {}
-
-        # Get EZKL version
-        ezkl_version = EZKL.get_version()
-
-        # Create compilation info nested under 'ezkl'
-        ezkl_compilation_info = {
-            "compiled": compilation_successful,
-            "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
-            "ezkl_version": ezkl_version,
-            "files": {
-                "settings": compilation_data.get('settings'),
-                "compiled_circuit": compilation_data.get('compiled'),
-                "vk_key": compilation_data.get('vk_key'),
-                "pk_key": compilation_data.get('pk_key'),
-                "calibration": calibration_path
-            }
-        }
-
-        # Add any errors if present
-        errors = {k: v for k, v in compilation_data.items() if k.endswith('_error')}
-        if errors:
-            ezkl_compilation_info["errors"] = errors
-
-        # Ensure compilation section exists
-        if 'compilation' not in slice_metadata:
-            slice_metadata['compilation'] = {}
-
-        # Update slice metadata with ezkl nested under compilation
-        slice_metadata['compilation']['ezkl'] = ezkl_compilation_info
-
-        # Save updated slice metadata
-        with open(slice_metadata_path, 'w') as f:
-            json.dump(slice_metadata, f, indent=2)
-
-        logger.debug(f"Updated slice metadata at {slice_metadata_path}")
-
-
-    @staticmethod
-    def _run_onnx_inference_chain(slices_data: list, input_file_path: Optional[str] = None):
-        """
-        Phase 1: Run ONNX inference chain to generate calibration files.
-
-        Args:
-            slices_data: List of slice metadata
-            input_file_path: Path to the initial input file
-        """
-        current_input = input_file_path
-        if current_input and os.path.exists(current_input):
-            logger.info("Running ONNX inference chain to generate calibration files")
-            for idx, slice_data in enumerate(slices_data):
-                slice_path = slice_data.get('path')
-                if not slice_path or not os.path.exists(slice_path):
-                    logger.warning(f"Slice file not found for index {idx}: {slice_path}")
-                    continue
-
-                slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
-                os.makedirs(slice_output_path, exist_ok=True)
-
-                # Run ONNX inference to generate calibration data
-                output_tensor_path = os.path.join(slice_output_path, f"slice_{idx}_calibration.json")
-                logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
-                success, tensor, exec_info = Runner.run_onnx_slice(
-                    slice_info={"path": slice_path},
-                    input_tensor_path=Path(current_input),
-                    output_tensor_path=Path(output_tensor_path)
-                )
-
-                if not success:
-                    logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
-                    return
-
-                current_input = output_tensor_path
-                logger.info(f"Generated calibration file: {output_tensor_path}")
-        else:
-            logger.warning("No input file provided, skipping ONNX inference chain")
 
     def _compile_selected_layers(self, slices_data: list, metadata: Dict[str, Any], metadata_path: str,
                                  input_file_path: Optional[str] = None, layer_indices=None):
@@ -281,7 +130,7 @@ class Compiler:
             calibration_input = input_file_path if idx == 0 else os.path.join(
                 os.path.dirname(slices_data[idx].get('path')),
                 "ezkl",
-                f"slice_{idx}_calibration.json"
+                f"calibration.json"
             )
 
             # Run compilation
@@ -292,26 +141,54 @@ class Compiler:
                 slice_details=slice_data
             )
 
-            # Update model-level metadata
-            slice_data['ezkl'] = compilation_data
+            # Determine if compilation was successful (based on absolute paths)
+            compilation_successful = CompilerUtils.is_compilation_successful(compilation_data)
 
-            # Determine if compilation was successful
-            compilation_successful = all([
-                compilation_data.get('compiled') and os.path.exists(compilation_data['compiled']),
-                compilation_data.get('vk_key') and os.path.exists(compilation_data['vk_key']),
-                compilation_data.get('pk_key') and os.path.exists(compilation_data['pk_key']),
-                compilation_data.get('settings') and os.path.exists(compilation_data['settings'])
-            ])
+            # Compute payload-relative paths and calibration
+            payload_rel, calibration_rel = CompilerUtils.compute_payload_and_calibration_rel(compilation_data, calibration_input)
+
+            # Prepare slice-level compilation data (payload-relative paths)
+            slice_level_comp_data = CompilerUtils.apply_payload_rel_to_comp_data(compilation_data, payload_rel)
 
             # Update per-slice metadata (at slice level, not payload level)
-            slice_dir = os.path.dirname(os.path.dirname(slice_path))  # Go up two levels from payload/slice_X.onnx
-            slice_metadata_path = os.path.join(slice_dir, "metadata.json")
-            self._update_slice_metadata(
+            slice_dir, slice_metadata_path = CompilerUtils.get_slice_dirs(slice_path)
+            CompilerUtils.update_slice_metadata(
                 slice_metadata_path,
-                compilation_data,
+                slice_level_comp_data,
                 compilation_successful,
-                calibration_input if calibration_input and os.path.exists(calibration_input) else None
+                calibration_rel
             )
+
+            # Build model-level metadata with 'slice_#/' prefix
+            slice_dirname = os.path.basename(slice_dir)  # e.g., 'slice_4'
+            model_level_ezkl = CompilerUtils.build_model_level_ezkl(payload_rel, calibration_rel, slice_dirname, compilation_data)
+
+            # Update model-level metadata for this slice entry (flat ezkl with paths)
+            # slice_data['ezkl'] = model_level_ezkl
+
+            # Also mirror per-slice compilation schema at model level for consistency
+            try:
+                files = {
+                    "settings": model_level_ezkl.get('settings'),
+                    "compiled_circuit": model_level_ezkl.get('compiled') or model_level_ezkl.get('compiled_circuit'),
+                    "vk_key": model_level_ezkl.get('vk_key'),
+                    "pk_key": model_level_ezkl.get('pk_key'),
+                    "calibration": model_level_ezkl.get('calibration')
+                }
+                ezkl_version = EZKL.get_version()
+                comp_block = {
+                    "compiled": bool(compilation_successful),
+                    "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "ezkl_version": ezkl_version,
+                    "files": files
+                }
+                # Attach under 'compilation.ezkl'
+                if isinstance(slice_data, dict):
+                    if 'compilation' not in slice_data or not isinstance(slice_data.get('compilation'), dict):
+                        slice_data['compilation'] = {}
+                    slice_data['compilation']['ezkl'] = comp_block
+            except Exception as e:
+                logger.warning(f"Failed to add model-level compilation block for slice {idx}: {e}")
 
             compiled_count += 1
             logger.info(f"Completed slice {idx}")
@@ -352,7 +229,7 @@ class Compiler:
 
         # Phase 1: Run ONNX inference chain for setting calibration (if input file exists)
         if input_file_path:
-            self._run_onnx_inference_chain(slices_data, input_file_path)
+            CompilerUtils.run_onnx_inference_chain(slices_data, input_file_path)
 
         # Phase 2: Compile selected layers
         compiled_count, skipped_count, slice_output_path = self._compile_selected_layers(
@@ -402,13 +279,13 @@ class Compiler:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Path does not exist: {model_path}")
 
-        layer_indices = self._parse_layers(layers) if layers else None
+        layer_indices = CompilerUtils.parse_layers(layers) if layers else None
         if layer_indices:
             logger.info(f"Will compile only layers with indices: {layer_indices}")
         elif layers:
             logger.info("No valid layer indices parsed. Will compile all layers.")
 
-        is_sliced, slice_path = self._is_sliced_model(model_path)
+        is_sliced, slice_path = CompilerUtils.is_sliced_model(model_path)
         if is_sliced:
             return self._compile_slices(slice_path, input_file_path=input_file, layer_indices=layer_indices)
         elif os.path.isfile(model_path) and model_path.lower().endswith('.onnx'):
@@ -421,7 +298,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "../models/doom",

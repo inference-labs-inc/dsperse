@@ -1,13 +1,16 @@
 """
 Orchestration for various provers.
 """
-
+import logging
 import os
 import json
 import time
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.slice.utils.converter import Converter
+from dsperse.src.utils.utils import Utils
 
+logger = logging.getLogger(__name__)
 
 class Prover:
     """
@@ -20,9 +23,6 @@ class Prover:
         """
         self.ezkl_runner = EZKL()
 
-    # ------------------------
-    # Internal helpers
-    # ------------------------
     def _load_run_and_metadata(self, run_results_path, metadata_path):
         with open(run_results_path, "r") as f:
             run_results = json.load(f)
@@ -147,10 +147,152 @@ class Prover:
         with open(run_results_path, "w") as f:
             json.dump(run_results, f, indent=2)
 
-    # ------------------------
-    # Public API
-    # ------------------------
-    def prove_run(self, run_results_path, metadata_path):
+    @staticmethod
+    def _resolve_rel_path(p: str, slice_dir: str) -> str:
+        """Resolve a metadata path to an absolute path.
+        - Absolute paths are returned as-is.
+        - `slice_#/...` has the leading slice dir removed and resolved under `slice_dir`.
+        - Any other relative path is resolved relative to `slice_dir`.
+        """
+        if not p:
+            return None
+        p_str = str(p)
+        # Absolute path
+        if os.path.isabs(p_str):
+            return p_str
+        # If starts with this slice directory name, strip it
+        sd_name = os.path.basename(os.path.abspath(slice_dir))
+        parts = p_str.split(os.sep)
+        if parts and parts[0] == sd_name:
+            parts = parts[1:]
+            p_str = os.path.join(*parts) if parts else ''
+        # Resolve relative to slice_dir
+        return os.path.abspath(os.path.join(slice_dir, p_str))
+
+    @staticmethod
+    def _extract_artifacts(meta: dict, slice_dir: str):
+        """Extract compiled circuit, pk, and settings paths from slice metadata.
+        Supports both the new nested compilation schema and legacy flat keys.
+        Returns tuple (model_path, pk_path, settings_path).
+        """
+        model_path = pk_path = settings_path = None
+
+        # Preferred nested schema
+        comp = (meta or {}).get('compilation', {})
+        ezkl_comp = (comp or {}).get('ezkl', {})
+        files = (ezkl_comp or {}).get('files', {})
+        if files:
+            model_path = files.get('compiled_circuit') or files.get('compiled')
+            pk_path = files.get('pk_key')
+            settings_path = files.get('settings')
+
+        # Legacy flat keys fallback
+        model_path = model_path or meta.get('circuit_path') or meta.get('compiled')
+        pk_path = pk_path or meta.get('pk_path')
+        settings_path = settings_path or meta.get('settings_path')
+
+        # Resolve to absolute paths relative to the slice directory
+        model_path = Prover._resolve_rel_path(model_path, slice_dir) if model_path else None
+        pk_path = Prover._resolve_rel_path(pk_path, slice_dir) if pk_path else None
+        settings_path = Prover._resolve_rel_path(settings_path, slice_dir) if settings_path else None
+
+        return model_path, pk_path, settings_path
+
+    def prove_single_slice(self, input_slice, witness_file, output_path=None):
+        """
+        Proves a single slice (dslice file or slice directory) using the specified
+        witness file and saves the proof to the provided output path.
+
+        Behavior:
+        - If `input_slice` is a `.dslice` file, it is converted to a slice directory
+          (without cleanup) before proving.
+        - Slice-level metadata is read to locate the compiled circuit, proving key,
+          and settings. Relative paths like `payload/...` are resolved against the
+          slice directory. Paths like `slice_#/payload/...` are also supported by
+          stripping the slice prefix.
+        - If `output_path` is not provided, the proof is written next to the witness
+          file as `proof.json`.
+
+        Args:
+            input_slice (str): Path to a slice directory or a `.dslice` file.
+            witness_file (str): Path to the witness JSON file required for proving.
+            output_path (str, optional): Path where the proof will be saved. If it is
+                a directory, the proof will be saved as `<dir>/proof.json`.
+
+        Returns:
+            str: Path to the generated proof file.
+        """
+
+        witness_file_path = os.path.abspath(str(witness_file))
+        if not os.path.exists(witness_file_path):
+            raise FileNotFoundError(f"Witness file not found: {witness_file_path}")
+
+        # If output_path points to a directory, write proof.json inside it; if None, next to witness.
+        if output_path is None:
+            proof_path = os.path.join(os.path.dirname(witness_file_path), "proof.json")
+        else:
+            output_path = str(output_path)
+            if os.path.isdir(output_path) or (not os.path.splitext(output_path)[1]):
+                proof_path = os.path.join(output_path, "proof.json")
+            else:
+                proof_path = output_path
+        os.makedirs(os.path.dirname(proof_path), exist_ok=True)
+
+        # If input slice is a dslice, convert to directory
+        dir_path = str(input_slice)
+        original_format = None
+        in_path_obj = Path(dir_path)
+        detected_type = Converter.detect_type(in_path_obj) if in_path_obj.exists() else None
+        if detected_type == 'dslice':
+            original_format = 'dslice'
+            logger.info(f"Converting {in_path_obj} to directory format for proving")
+            dir_path = Converter.convert(str(in_path_obj), output_type="dirs", cleanup=False)
+            in_path_obj = Path(dir_path)
+
+        # At this point, dir_path should be a slice directory
+        # Load slice-level metadata
+        metadata_path = Utils.find_metadata_path(str(dir_path))
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        slice_dir = os.path.dirname(metadata_path)
+        model_path, pk_path, settings_path = Prover._extract_artifacts(metadata, slice_dir)
+
+        # Validate required artifacts
+        if not model_path or not os.path.exists(model_path):
+            raise FileNotFoundError(f"Compiled circuit not found for slice at {slice_dir}. Got: {model_path}")
+        if not pk_path or not os.path.exists(pk_path):
+            raise FileNotFoundError(f"Proving key not found for slice at {slice_dir}. Got: {pk_path}")
+        if settings_path and not os.path.exists(settings_path):
+            # Not fatal, but warn; EZKL.prove uses it for SRS convenience
+            logger.warning(f"Settings file not found at {settings_path}; proceeding without it.")
+            settings_path = None
+
+        logger.info(
+            f"Proving slice at {slice_dir} with witness {witness_file_path}, model {model_path}, pk {pk_path}, proof -> {proof_path}"
+        )
+        start_time = time.time()
+        success, result = self.ezkl_runner.prove(
+            witness_path=witness_file_path,
+            model_path=model_path,
+            proof_path=proof_path,
+            pk_path=pk_path,
+            settings_path=settings_path,
+        )
+        elapsed = time.time() - start_time
+
+        if not success:
+            logger.error(f"Proof generation failed for slice at {slice_dir}: {result}")
+            raise RuntimeError(f"Proof generation failed: {result}")
+
+        logger.info(f"Proof generated for slice at {slice_dir} -> {proof_path} in {elapsed:.2f}s")
+
+        # Note: We do not convert back to the original dslice format automatically.
+        # If needed, the caller can perform conversion after proving.
+        return proof_path
+
+
+    def prove_full_run(self, slices_path, run_path): # TODO: Metadata or slices/dslices/dsperse file path
         """
         Prove the slices in a run.
 
@@ -161,6 +303,13 @@ class Prover:
         Returns:
             dict: Updated run results with proof information
         """
+
+        # TODO: If the input file is a dsperse file, extract metadata and slices
+        file_type = Converter.detect_type(slices_path)
+
+        run_results_path = os.path.join(run_path, "run_results.json")
+        metadata_path = os.path.join(run_path, "metadata.json")
+
         run_results, metadata = self._load_run_and_metadata(
             run_results_path, metadata_path
         )
@@ -188,24 +337,53 @@ class Prover:
             run_results, proved_slices, total_ezkl_slices
         )
         self._save_run_results(run_results_path, run_results)
+
+        # todo: convert to back to original format
+
         return run_results
+
+
+    def prove(self, slices, input_file, output_path=None):
+        """
+        Prove the slices in a run. This function will delegate to the appropriate prover.
+        One for a full run, and one for a single slice, depending on the input.
+
+        Args:
+            slices: can be a single dslice file or a dsperse file or a directory containing slices
+            input_file: either a single generated witness file a run directory containing the whole chain of inputs and outputs
+
+        Returns:
+
+        """
+        # if the input slices is a single dslice file and input file ends in .json
+        if input_file.endswith(".json") and Path(slices).suffix == '.dslice':
+            return self.prove_single_slice(input_slice=slices, witness_file=input_file, output_path=output_path)
+        elif Path(input_file).is_dir() and (Path(slices).is_dir()) or (Path(slices).is_file() and Path(slices).suffix == '.dsperse'):
+            return self.prove_full_run(slices=slices, run_directory=input_file, output_path=output_path)
+        else:
+            raise ValueError("Invalid input. Please provide a single dslice file or a dsperse file or a directory containing slices.")
 
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
-    # Model configurations
-    base_paths = {1: "../models/doom", 2: "../models/net", 3: "../models/resnet"}
+    base_paths = {
+        1: "../models/doom",
+        2: "../models/net",
+        3: "../models/resnet",
+        4: "../models/age",
+        5: "../models/version"
+    }
 
-    # Get model directory
     model_dir = os.path.abspath(base_paths[model_choice])
+    slices_dir = os.path.join(model_dir, "slices") # slices dir, or single slice, or dsperse file
+    input_file = os.path.join(model_dir, "input.json") # Path to input file for this slice, or whole model if not provided
 
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")
     if not os.path.exists(run_dir):
-        print(f"Error: Run directory not found at {run_dir}")
-        exit(1)
+        print(f"Run directory not found at {run_dir}, assuming input file provided.")
 
     # Find the latest run
     run_dirs = sorted([d for d in os.listdir(run_dir) if d.startswith("run_")])
@@ -217,23 +395,17 @@ if __name__ == "__main__":
     run_path = os.path.join(run_dir, latest_run)
 
     # Construct paths for run_results.json and metadata.json
+    # TODO: Change the inputs for a full run.
     run_results_path = os.path.join(run_path, "run_result.json")
-    metadata_path = os.path.join(run_dir, "metadata.json")
-
-    if not os.path.exists(run_results_path):
-        print(f"Error: run_result.json not found at {run_results_path}")
-        exit(1)
-
-    if not os.path.exists(metadata_path):
-        print(f"Error: metadata.json not found at {metadata_path}")
-        exit(1)
+    run_metadata_path = os.path.join(run_dir, "metadata.json")
 
     # Initialize prover
     prover = Prover()
 
+    # TODO: make a function that would prove only one slice
     # Run proving
     print(f"Proving run {latest_run} for model {base_paths[model_choice]}...")
-    results = prover.prove_run(run_results_path, metadata_path)
+    results = prover.prove(slice_path=slices_dir, run_path=run_path)
 
     # Display results
     print(f"\nProving completed!")

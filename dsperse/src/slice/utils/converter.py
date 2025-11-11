@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class Converter:
 
     @staticmethod
-    def convert(path: str, output_type: str = "dirs", output_path: str = None, cleanup: bool = True, exclude_patterns: list = None):
+    def convert(path: str, output_type: str = "dirs", output_path: str = None, cleanup: bool = True):
         """Convert between dslices, dsperse, or directory outputs.
 
         Args:
@@ -26,8 +26,6 @@ class Converter:
             output_path: Optional custom output path. If not provided, converts in place or alongside.
             cleanup: When True, remove the original source artifacts after successful conversion
                 (e.g., delete the .dsperse file after extracting to dirs). Defaults to True.
-            exclude_patterns: List of patterns to exclude when packing (e.g., ['*pk*', 'run']).
-                For verification, use ['*pk*', 'run'] to exclude proving keys.
 
         Returns:
             str: Path to the converted output
@@ -53,9 +51,9 @@ class Converter:
         # Route to appropriate conversion method
         if current_type == "dirs":
             if output_type == "dslice":
-                return Converter._dirs_to_dslice(path_obj, output_path, exclude_patterns=exclude_patterns)
+                return Converter._dirs_to_dslice(path_obj, output_path)
             elif output_type == "dsperse":
-                return Converter._dirs_to_dsperse(path_obj, output_path, exclude_patterns=exclude_patterns)
+                return Converter._dirs_to_dsperse(path_obj, output_path)
 
         elif current_type == "dslice":
             if output_type == "dirs":
@@ -63,7 +61,7 @@ class Converter:
             elif output_type == "dsperse":
                 # Convert dslice -> dirs -> dsperse
                 temp_dirs = Converter._dslice_to_dirs(path_obj, None)
-                result = Converter._dirs_to_dsperse(Path(temp_dirs), output_path, exclude_patterns=exclude_patterns)
+                result = Converter._dirs_to_dsperse(Path(temp_dirs), output_path)
                 # Optionally clean up temp dirs
                 return result
 
@@ -130,7 +128,7 @@ class Converter:
 
     # ===== dirs -> dslice =====
     @staticmethod
-    def _dirs_to_dslice(path: Path, output_path: str = None, exclude_patterns: list = None) -> str:
+    def _dirs_to_dslice(path: Path, output_path: str = None) -> str:
         """Convert directory format to dslice files.
 
         Zips each slice_* directory (containing payload/ and metadata.json) into a .dslice file.
@@ -152,12 +150,7 @@ class Converter:
                 dslice_out.parent.mkdir(parents=True, exist_ok=True)
 
                 # Zip the slice directory into a single .dslice
-                default_excludes = ['run']
-                if exclude_patterns:
-                    combined_excludes = list(set(default_excludes + exclude_patterns))
-                else:
-                    combined_excludes = default_excludes
-                Converter._zip_directory(path, dslice_out, exclude_patterns=combined_excludes)
+                Converter._zip_directory(path, dslice_out)
                 logger.info(f"Created {dslice_out}")
 
                 # If converting in place, remove the original slice directory
@@ -180,13 +173,7 @@ class Converter:
         for slice_dir in slice_dirs:
             # Zip the entire slice_* directory (contains payload/ and metadata.json)
             dslice_path = output_dir / f"{slice_dir.name}.dslice"
-            # Default exclude 'run' folders, but allow additional patterns
-            default_excludes = ['run']
-            if exclude_patterns:
-                combined_excludes = list(set(default_excludes + exclude_patterns))
-            else:
-                combined_excludes = default_excludes
-            Converter._zip_directory(slice_dir, dslice_path, exclude_patterns=combined_excludes)
+            Converter._zip_directory(slice_dir, dslice_path)
             dslice_files.append(dslice_path)
             logger.info(f"Created {dslice_path}")
 
@@ -201,7 +188,7 @@ class Converter:
 
     # ===== dirs -> dsperse =====
     @staticmethod
-    def _dirs_to_dsperse(path: Path, output_path: str = None, exclude_patterns: list = None) -> str:
+    def _dirs_to_dsperse(path: Path, output_path: str = None) -> str:
         """Convert directory format to a single dsperse file.
 
         Zips each slice_* directory into .dslice files at the root level,
@@ -221,17 +208,11 @@ class Converter:
 
         # Zip each slice_* directory directly into the root as slice_X.dslice
         dslice_files = []
-        default_excludes = ['run']
-        exclude_patterns = exclude_patterns or []
-        if exclude_patterns:
-            combined_excludes = list(set(default_excludes + exclude_patterns))
-        else:
-            combined_excludes = default_excludes
         for slice_dir in slice_dirs:
             # Extract the number from slice_X to name the dslice file
             slice_num = slice_dir.name.split('_')[-1]
             dslice_out = path / f"slice_{slice_num}.dslice"
-            Converter._zip_directory(slice_dir, dslice_out, exclude_patterns=combined_excludes)
+            Converter._zip_directory(slice_dir, dslice_out)
             dslice_files.append(dslice_out)
             logger.info(f"Packaged {slice_dir.name} as {dslice_out.name}")
 
@@ -248,24 +229,9 @@ class Converter:
         # Ensure destination directory exists
         dsperse_out.parent.mkdir(parents=True, exist_ok=True)
 
-        # Zip the entire directory: *.dslice + all other files (metadata.json, input.json, etc.) -> <slices_name>.dsperse
+        # Zip the entire directory: *.dslice + metadata.json -> <slices_name>.dsperse
         # Exclude slice_* directories since we already have them as .dslice files
-        # Default exclude 'run' folders, but allow additional patterns (e.g., '*pk*' for verification)
-        default_excludes = ['slice_*', 'run']
-        if exclude_patterns:
-            # Merge with defaults, avoiding duplicates
-            combined_excludes = list(set(default_excludes + exclude_patterns))
-        else:
-            combined_excludes = default_excludes
-        Converter._zip_directory(path, dsperse_out, exclude_patterns=combined_excludes)
-        
-        # Also include input.json from parent directory if it exists (common pattern)
-        parent_input = path.parent / "input.json"
-        if parent_input.exists() and parent_input.is_file():
-            with zipfile.ZipFile(dsperse_out, 'a', zipfile.ZIP_DEFLATED) as zipf:
-                zipf.write(parent_input, "input.json")
-            logger.info(f"Included input.json from parent directory")
-        
+        Converter._zip_directory(path, dsperse_out, exclude_patterns=['slice_*'])
         logger.info(f"Created dsperse archive: {dsperse_out}")
 
         # Cleanup: remove .dslice files and slice_* dirs
@@ -375,16 +341,6 @@ class Converter:
             for root, dirs, files in os.walk(source_dir):
                 root_path = Path(root)
 
-                # Modify dirs in-place to skip excluded directories during traversal
-                if exclude_patterns:
-                    for pattern in exclude_patterns:
-                        if pattern == 'run':
-                            # Remove 'run' directories from dirs list to skip them
-                            dirs[:] = [d for d in dirs if d != 'run']
-                        elif pattern.endswith('*'):
-                            prefix = pattern.replace('*', '')
-                            dirs[:] = [d for d in dirs if not d.startswith(prefix)]
-
                 # Check if we should skip this directory
                 if exclude_patterns:
                     rel_root = root_path.relative_to(source_dir)
@@ -393,47 +349,18 @@ class Converter:
                         if pattern.startswith('*'):
                             # Match file extension patterns
                             pass  # We'll check files individually
-                        elif pattern == 'run':
-                            # Exact match for 'run' directory name (at any level)
-                            if rel_root.parts and 'run' in rel_root.parts:
-                                skip = True
-                                break
                         elif str(rel_root).startswith(pattern.replace('*', '')):
                             skip = True
                             break
                     if skip:
                         continue
 
-                # Filter out files that are in excluded directories
-                files_to_add = files
-                if exclude_patterns:
-                    rel_root = root_path.relative_to(source_dir)
-                    for pattern in exclude_patterns:
-                        if pattern == 'run' and rel_root.parts and 'run' in rel_root.parts:
-                            files_to_add = []
-                            break
-
-                for file in files_to_add:
+                for file in files:
                     # Skip files matching exclude patterns
                     if exclude_patterns:
                         skip_file = False
                         for pattern in exclude_patterns:
-                            # Match file extension patterns (e.g., "*.pk" or "*pk*")
-                            if pattern.startswith('*') and pattern.endswith('*'):
-                                # Pattern like "*pk*" - match anywhere in filename
-                                if pattern[1:-1].lower() in file.lower():
-                                    skip_file = True
-                                    break
-                            elif pattern.startswith('*') and file.endswith(pattern[1:]):
-                                # Pattern like "*.pk" - match file extension
-                                skip_file = True
-                                break
-                            elif pattern.endswith('*') and file.startswith(pattern[:-1]):
-                                # Pattern like "pk*" - match prefix
-                                skip_file = True
-                                break
-                            elif pattern.lower() in file.lower():
-                                # Pattern like "pk" - match anywhere in filename (e.g., "slice_0_pk.key")
+                            if pattern.startswith('*') and file.endswith(pattern[1:]):
                                 skip_file = True
                                 break
                         if skip_file:
@@ -454,7 +381,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations (relative to this file, similar to slicer.py)
     base_paths = {
@@ -486,13 +413,13 @@ if __name__ == "__main__":
         # out_path = Converter.convert(dsperse_file, output_type="dslice")
         # print(f"Extracted dsperse to dslice: {out_path}")
 
-        # DIRS -> DSPERSE 
-        out_path = Converter.convert(slices_dir, output_type="dsperse")
-        print(f"Converted dirs to dsperse: {out_path}")
+        # DIRS -> DSPERSE
+        # out_path = Converter.convert(slices_dir, output_type="dsperse")
+        # print(f"Converted dirs to dsperse: {out_path}")
 
         # DIRS -> DSLICE
-        # out_path = Converter.convert(slices_dir, output_type="dslice")
-        # print(f"Converted dirs to dslice: {out_path}")
+        out_path = Converter.convert(slices_dir, output_type="dslice")
+        print(f"Converted dirs to dslice: {out_path}")
 
         # DSLICE -> DIRS
         # out_path = Converter.convert(slices_dir, output_type="dirs")

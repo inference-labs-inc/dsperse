@@ -244,54 +244,56 @@ What happens:
 - A run metadata file is auto-generated at models/net/run/metadata.json if missing
 - A timestamped run directory is created: models/net/run/run_YYYYMMDD_HHMMSS/
 - Segment-by-segment inputs/outputs are saved under that run directory
-- A run_result.json is written summarizing the chain execution
+- A run_results.json is written summarizing the chain execution
 
 4) Generate proofs
 - Proves the segments that successfully produced EZKL witnesses in the selected run.
 
-Typical usage:
+Typical usage (new positional-args form):
 ```bash
-dsperse prove --run-dir models/net/run
-# You will be prompted to choose among existing runs under models/net/run/
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices
+# data_path can also be a single slice_* dir, a .dslice, or a .dsperse
+# To write proofs under a custom root:
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --proof-output /tmp/my_proofs
 ```
 
-Alternatively, specify a run directly:
+Legacy flags are still accepted for backward compatibility (will prompt for selection):
 ```bash
-dsperse prove --run-dir models/net/run/run_YYYYMMDD_HHMMSS
+dsperse prove --run-dir models/net/run
 ```
 
 Optionally save the updated run results to a separate file:
 ```bash
-dsperse prove --run-dir models/net/run --output-file models/net/proof_results.json
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-file models/net/proof_results.json
 ```
 
 What happens:
 - For each segment with a successful EZKL witness, the CLI calls ezkl prove
 - Proof files are stored under the specific run’s segment folder
-- The run_result.json is updated with proof_execution details
+- The run_results.json is updated with proof_execution details
 
 5) Verify proofs
 - Verifies the proofs generated in step 4 against the stored verification keys and settings.
 
-Typical usage:
+Typical usage (new positional-args form):
 ```bash
-dsperse verify --run-dir models/net/run
-# You will be prompted to choose the run (same as in prove)
+dsperse verify models/net/run/run_YYYYMMDD_HHMMSS models/net/slices
+# data_path can also be a single slice_* dir, a .dslice, or a .dsperse
 ```
 
-Or specify a particular run:
+Legacy flags are still accepted for backward compatibility (will prompt for selection):
 ```bash
-dsperse verify --run-dir models/net/run/run_YYYYMMDD_HHMMSS
+dsperse verify --run-dir models/net/run
 ```
 
 Optionally save verification results to a separate file:
 ```bash
-dsperse verify --run-dir models/net/run --output-file models/net/verification_results.json
+dsperse verify models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-file models/net/verification_results.json
 ```
 
 What happens:
 - For each segment with a proof, the CLI calls ezkl verify
-- The run_result.json is updated with verification_execution details
+- The run_results.json is updated with verification_execution details
 - A summary of verified segments is printed
 
 Tips and troubleshooting

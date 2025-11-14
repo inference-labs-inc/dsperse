@@ -1,0 +1,263 @@
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.run.runner import Runner
+from dsperse.src.slice.utils.converter import Converter
+logger = logging.getLogger(__name__)
+
+class CompilerUtils:
+
+    @staticmethod
+    def is_sliced_model(model_path: str) -> tuple[bool, Optional[str]]:
+        """
+        Check if the path is a sliced model (dirs, dslice, or dsperse format).
+
+        Returns:
+            Tuple of (is_sliced, slice_path) where slice_path is the actual path to the slices
+        """
+        path_obj = Path(model_path)
+
+        # Check for compressed slice formats (direct file)
+        if path_obj.is_file() and path_obj.suffix in ['.dsperse', '.dslice']:
+            return True, str(path_obj)
+
+        # Check for directory formats
+        if path_obj.is_dir():
+            # Check if directory contains a .dsperse file
+            dsperse_files = [f for f in path_obj.iterdir() if f.is_file() and f.suffix == '.dsperse']
+            if dsperse_files:
+                return True, str(dsperse_files[0])
+
+            # Check if directory contains a 'slices' subdirectory
+            slices_subdir = path_obj / 'slices'
+            if slices_subdir.is_dir():
+                return True, str(slices_subdir)
+
+            # Check using Converter's detect_type
+            try:
+                detected_type = Converter.detect_type(path_obj)
+                if detected_type in ['dirs', 'dslice', 'dsperse']:
+                    return True, str(path_obj)
+            except ValueError:
+                pass
+
+        return False, None
+
+
+    @staticmethod
+    def parse_layers(layers_str: Optional[str]):
+        if not layers_str:
+            return None
+        layer_indices = []
+        parts = [p.strip() for p in layers_str.split(',')]
+        for part in parts:
+            if '-' in part:
+                try:
+                    start, end = map(int, part.split('-'))
+                    layer_indices.extend(range(start, end + 1))
+                except ValueError:
+                    logger.warning(f"Invalid layer range: {part}. Skipping.")
+            else:
+                try:
+                    layer_indices.append(int(part))
+                except ValueError:
+                    logger.warning(f"Invalid layer index: {part}. Skipping.")
+        return sorted(set(layer_indices)) if layer_indices else None
+
+
+
+    @staticmethod
+    def _rel_from_payload(path: Optional[str]) -> Optional[str]:
+        """
+        Given an absolute or relative path, return the subpath starting from the
+        'payload' directory (e.g., 'payload/ezkl/...'). If 'payload' is not present,
+        return None.
+        """
+        if not path:
+            return None
+        parts = str(path).split(os.sep)
+        try:
+            i = parts.index('payload')
+            return os.path.join(*parts[i:])
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _with_slice_prefix(rel_path: Optional[str], slice_dirname: str) -> Optional[str]:
+        """
+        Prefix a payload-relative path with the slice directory name
+        (e.g., 'slice_3/payload/ezkl/...'). If rel_path is None, returns None.
+        """
+        if not rel_path:
+            return None
+        return os.path.join(slice_dirname, rel_path)
+
+    @staticmethod
+    def is_compilation_successful(compilation_data: Dict[str, Any]) -> bool:
+        """
+        Determine if compilation was successful based on produced file paths.
+        A path is considered valid if it exists and contains the 'payload' directory.
+        """
+        def _ok(key: str) -> bool:
+            p = compilation_data.get(key)
+            return bool(p) and os.path.exists(p) and ('payload' in str(p).split(os.sep))
+        return all([_ok('compiled'), _ok('vk_key'), _ok('pk_key'), _ok('settings')])
+
+    @staticmethod
+    def compute_payload_and_calibration_rel(compilation_data: Dict[str, Any], calibration_input: Optional[str]) -> tuple[Dict[str, Optional[str]], Optional[str]]:
+        """
+        Compute payload-relative paths for compiled artifacts and the calibration file.
+        Returns a tuple of (payload_rel_dict, calibration_rel_path).
+        """
+        payload_rel = {
+            'settings': CompilerUtils._rel_from_payload(compilation_data.get('settings')),
+            'compiled': CompilerUtils._rel_from_payload(compilation_data.get('compiled')),
+            'vk_key': CompilerUtils._rel_from_payload(compilation_data.get('vk_key')),
+            'pk_key': CompilerUtils._rel_from_payload(compilation_data.get('pk_key')),
+        }
+        calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
+        return payload_rel, calibration_rel
+
+    @staticmethod
+    def apply_payload_rel_to_comp_data(compilation_data: Dict[str, Any], payload_rel: Dict[str, Optional[str]]) -> Dict[str, Any]:
+        """
+        Produce a shallow copy of compilation_data with payload-relative overrides
+        for keys present in payload_rel.
+        """
+        copy = dict(compilation_data)
+        for k, v in payload_rel.items():
+            if v:
+                copy[k] = v
+        return copy
+
+    @staticmethod
+    def get_slice_dirs(slice_path: str) -> tuple[str, str]:
+        """
+        From a slice ONNX path '.../payload/slice_X.onnx', return a tuple of
+        (slice_dir, slice_metadata_path), where slice_dir is the parent directory
+        of 'payload' (i.e., the slice folder), and slice_metadata_path is
+        'slice_dir/metadata.json'.
+        """
+        slice_dir = os.path.dirname(os.path.dirname(slice_path))
+        slice_metadata_path = os.path.join(slice_dir, 'metadata.json')
+        return slice_dir, slice_metadata_path
+
+    @staticmethod
+    def build_model_level_ezkl(payload_rel: Dict[str, Optional[str]], calibration_rel: Optional[str], slice_dirname: str, compilation_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build the model-level 'ezkl' dictionary using slice-prefixed payload-relative paths.
+        Keeps flat keys for backward-compatibility and mirrors names used elsewhere.
+        Includes any '*_error' fields from compilation_data.
+        """
+        compiled_prefixed = CompilerUtils._with_slice_prefix(payload_rel.get('compiled'), slice_dirname)
+        model_level_ezkl = {
+            'settings': CompilerUtils._with_slice_prefix(payload_rel.get('settings'), slice_dirname),
+            'compiled': compiled_prefixed,
+            'compiled_circuit': compiled_prefixed,
+            'vk_key': CompilerUtils._with_slice_prefix(payload_rel.get('vk_key'), slice_dirname),
+            'pk_key': CompilerUtils._with_slice_prefix(payload_rel.get('pk_key'), slice_dirname),
+            'calibration': CompilerUtils._with_slice_prefix(calibration_rel, slice_dirname),
+        }
+        for k, v in compilation_data.items():
+            if isinstance(k, str) and k.endswith('_error'):
+                model_level_ezkl[k] = v
+        return model_level_ezkl
+
+
+    @staticmethod
+    def update_slice_metadata(slice_metadata_path: str, compilation_data: Dict[str, Any],
+                              compilation_successful: bool, calibration_path: Optional[str] = None):
+        """
+        Update the per-slice metadata.json file with compilation results.
+
+        Args:
+            slice_metadata_path: Path to the slice's metadata.json file
+            compilation_data: Dictionary containing compilation results from EZKL
+            compilation_successful: Boolean indicating if compilation was successful
+            calibration_path: Optional path to the calibration file used
+        """
+        # Load existing slice metadata or create new
+        if os.path.exists(slice_metadata_path):
+            with open(slice_metadata_path, 'r') as f:
+                slice_metadata = json.load(f)
+        else:
+            slice_metadata = {}
+
+        # Get EZKL version
+        ezkl_version = EZKL.get_version()
+
+        # Create compilation info nested under 'ezkl'
+        ezkl_compilation_info = {
+            "compiled": compilation_successful,
+            "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
+            "ezkl_version": ezkl_version,
+            "files": {
+                "settings": compilation_data.get('settings'),
+                "compiled_circuit": compilation_data.get('compiled'),
+                "vk_key": compilation_data.get('vk_key'),
+                "pk_key": compilation_data.get('pk_key'),
+                "calibration": calibration_path
+            }
+        }
+
+        # Add any errors if present
+        errors = {k: v for k, v in compilation_data.items() if k.endswith('_error')}
+        if errors:
+            ezkl_compilation_info["errors"] = errors
+
+        # Ensure compilation section exists
+        if 'compilation' not in slice_metadata:
+            slice_metadata['compilation'] = {}
+
+        # Update slice metadata with ezkl nested under compilation
+        slice_metadata['compilation']['ezkl'] = ezkl_compilation_info
+
+        # Save updated slice metadata
+        with open(slice_metadata_path, 'w') as f:
+            json.dump(slice_metadata, f, indent=2)
+
+        logger.debug(f"Updated slice metadata at {slice_metadata_path}")
+
+
+    @staticmethod
+    def run_onnx_inference_chain(slices_data: list, input_file_path: Optional[str] = None):
+        """
+        Phase 1: Run ONNX inference chain to generate calibration files.
+
+        Args:
+            slices_data: List of slice metadata
+            input_file_path: Path to the initial input file
+        """
+        current_input = input_file_path
+        if current_input and os.path.exists(current_input):
+            logger.info("Running ONNX inference chain to generate calibration files")
+            for idx, slice_data in enumerate(slices_data):
+                slice_path = slice_data.get('path')
+                if not slice_path or not os.path.exists(slice_path):
+                    logger.warning(f"Slice file not found for index {idx}: {slice_path}")
+                    continue
+
+                slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
+                os.makedirs(slice_output_path, exist_ok=True)
+
+                # Run ONNX inference to generate calibration data
+                output_tensor_path = os.path.join(slice_output_path, f"calibration.json")
+                logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
+                success, tensor, exec_info = Runner.run_onnx_slice(
+                    slice_info={"path": slice_path},
+                    input_tensor_path=Path(current_input),
+                    output_tensor_path=Path(output_tensor_path)
+                )
+
+                if not success:
+                    logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
+                    return
+
+                current_input = output_tensor_path
+                logger.info(f"Generated calibration file: {output_tensor_path}")
+        else:
+            logger.warning("No input file provided, skipping ONNX inference chain")

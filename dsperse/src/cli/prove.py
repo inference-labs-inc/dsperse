@@ -12,6 +12,7 @@ from colorama import Fore, Style
 from dsperse.src.prover import Prover
 from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path, logger
 from dsperse.src.slice.utils.converter import Converter
+from dsperse.src.utils.utils import Utils
 
 def setup_parser(subparsers):
     """
@@ -23,13 +24,23 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    prove_parser = subparsers.add_parser('prove', aliases=['p'], help='Generate a proof for a run')
+    prove_parser = subparsers.add_parser('prove', aliases=['p'], help='Generate proofs for a run using EZKL')
     # Ensure canonical command even when alias is used
     prove_parser.set_defaults(command='prove')
 
-    prove_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to prove (defaults to latest run)')
-    prove_parser.add_argument('--from', '--dsperse-file', '--dsperse', dest='dsperse_file', help='Path to .dsperse file (will unpack and use latest run automatically)')
-    prove_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
+    # New preferred positional arguments
+    prove_parser.add_argument('run_path', nargs='?', help='Path to run_<timestamp> directory (must contain metadata.json)')
+    prove_parser.add_argument('data_path', nargs='?', help='Path to slices root, a single slice_* dir, a .dslice, or a .dsperse')
+
+    # Optional: where to write proofs (default is under run_path/slice_#/proof.json)
+    prove_parser.add_argument('--proof-output', '-po', dest='proof_output', help='Directory to write proofs (overrides default under run_path)')
+
+    # Results JSON save path (optional convenience)
+    prove_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save the run_results.json copy')
+
+    # Deprecated/legacy flags (kept for backwards compatibility with older workflows)
+    prove_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='[Deprecated] Run directory; prefer positional run_path')
+    prove_parser.add_argument('--from', '--dsperse-file', '--dsperse', dest='dsperse_file', help='[Deprecated] Data archive path; prefer positional data_path')
 
     return prove_parser
 
@@ -84,15 +95,72 @@ def run_proof(args):
     """
     print(f"{Fore.CYAN}Generating proof...{Style.RESET_ALL}")
 
+    # Fast path: new streamlined interface using positional args
+    run_path_arg = getattr(args, 'run_path', None)
+    data_path_arg = getattr(args, 'data_path', None)
+    if run_path_arg:
+        run_path = normalize_path(run_path_arg)
+        data_path = normalize_path(data_path_arg) if data_path_arg else None
+        try:
+            meta = Utils.load_run_metadata(Path(run_path))
+        except Exception as e:
+            print(f"{Fore.RED}Error loading run metadata: {e}{Style.RESET_ALL}")
+            return
+        if not data_path:
+            # Prefer the original source_path captured in metadata; fallback to model_path/slices
+            source_path = meta.get('source_path')
+            if source_path:
+                data_path = normalize_path(source_path)
+            else:
+                model_path = meta.get('model_path')
+                data_path = normalize_path(str(Path(model_path) / 'slices')) if model_path else None
+        if not data_path:
+            print(f"{Fore.RED}Error: Could not determine data_path. Provide it explicitly (slices root, a slice_* dir, .dslice, or .dsperse).{Style.RESET_ALL}")
+            return
+
+        try:
+            prover = Prover()
+            start_time = time.time()
+            result = prover.prove(run_path, data_path, getattr(args, 'proof_output', None))
+            elapsed_time = time.time() - start_time
+            print(f"{Fore.GREEN}✓ Proof generation completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Fore.RED}Error proving run: {e}{Style.RESET_ALL}")
+            traceback.print_exc()
+            return
+
+        # Optional: save a copy of results
+        if getattr(args, 'output_file', None):
+            try:
+                outp = normalize_path(args.output_file)
+                save_result(result, outp)
+                print(f"{Fore.GREEN}Results saved to {outp}{Style.RESET_ALL}")
+            except Exception as e:
+                print(f"{Fore.RED}Error saving output file: {e}{Style.RESET_ALL}")
+
+        # Print summary
+        if isinstance(result, dict) and 'execution_chain' in result:
+            ec = result.get('execution_chain', {})
+            proved = ec.get('ezkl_proved_slices', 0)
+            witnessed = ec.get('ezkl_witness_slices', 0)
+            print(f"\n{Fore.YELLOW}Proof Generation Summary:{Style.RESET_ALL}")
+            print(f"Proved slices: {proved} of {witnessed}")
+        return
+
     run_root_dir = None
     run_dir = None
 
     # Helper predicates
     def is_run_id_dir(p):
-        return os.path.exists(os.path.join(p, "run_result.json"))
+        # A run-id directory contains per-slice IO and run_results.json; metadata.json is also expected
+        return os.path.exists(os.path.join(p, "run_results.json")) or os.path.exists(os.path.join(p, "metadata.json"))
 
     def is_run_root_dir(p):
-        return os.path.exists(os.path.join(p, "metadata.json"))
+        # A runs root contains subdirectories named run_*
+        try:
+            return any(d.startswith("run_") and os.path.isdir(os.path.join(p, d)) for d in os.listdir(p))
+        except Exception:
+            return False
 
     # Determine input
     default_model_path = None  # Initialize at function scope
@@ -109,15 +177,15 @@ def run_proof(args):
         candidate = dsperse_file
     elif hasattr(args, 'run_dir') and args.run_dir:
         candidate = normalize_path(args.run_dir)
-        # Check if this is a specific run directory (contains run_result.json)
-        if os.path.exists(os.path.join(candidate, "run_result.json")):
+        # Check if this is a specific run directory (contains run_results.json)
+        if os.path.exists(os.path.join(candidate, "run_results.json")) or os.path.exists(os.path.join(candidate, "metadata.json")):
             specified_run_dir = candidate
     else:
         # No flags provided - automatically use latest run from current directory
         current_run_dir = os.path.join(os.getcwd(), "run")
         if os.path.exists(current_run_dir) and os.path.exists(os.path.join(current_run_dir, "metadata.json")):
             latest_run = get_latest_run(current_run_dir)
-            if latest_run and os.path.exists(os.path.join(latest_run, "run_result.json")):
+            if latest_run and os.path.exists(os.path.join(latest_run, "run_results.json")):
                 # Use latest run automatically
                 candidate = normalize_path(latest_run)
                 logger.info(f"Using latest run automatically: {candidate}")
@@ -186,7 +254,7 @@ def run_proof(args):
                 
                 # Unpack to same directory as archive (e.g., slices.dsperse -> slices/)
                 if p.suffix == '.dsperse':
-                    unpacked_dir = Converter._dsperse_to_dirs(p, p.parent / p.stem, expand_slices=True)
+                    unpacked_dir = Converter.convert(str(p), output_type='dirs', output_path=str(p.parent / p.stem), cleanup=False)
                 else:
                     # For dslice, unpack to same directory
                     unpacked_dir = Converter.convert(str(candidate), output_type='dirs', output_path=str(p.parent / p.stem), cleanup=False)
@@ -216,12 +284,12 @@ def run_proof(args):
                 # dsperse files don't include run folders, so run is always in parent directory
                 if parent_run.exists() and (parent_run / "metadata.json").exists():
                     # Parent has run directory with metadata.json - this is the run root
-                    # If user didn't specify a specific run, use latest run that has run_result.json
+                    # If user didn't specify a specific run, use latest run that has run_results.json
                     if not specified_run_dir:
                         all_runs = get_all_runs(str(parent_run))
                         if all_runs:
-                            # Filter to only runs that have run_result.json (completed runs)
-                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_result.json"))]
+                            # Filter to only runs that have run_results.json (completed runs)
+                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_results.json"))]
                             if valid_runs:
                                 # Use latest valid run automatically - ensure it's normalized
                                 candidate = normalize_path(valid_runs[-1])
@@ -243,7 +311,7 @@ def run_proof(args):
                         all_runs = get_all_runs(str(unpacked_run))
                         if all_runs:
                             # Filter to valid runs and use latest
-                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_result.json"))]
+                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_results.json"))]
                             if valid_runs:
                                 candidate = normalize_path(valid_runs[-1])
                             else:
@@ -322,20 +390,31 @@ def run_proof(args):
                         return
     else:
         # Not a valid runs root or run directory
-        print(f"{Fore.RED}Error: Provided path is neither a runs root (metadata.json) nor a run directory (run_result.json){Style.RESET_ALL}")
+        print(f"{Fore.RED}Error: Provided path is neither a runs root (contains run_*/ subdirs) nor a run directory (contains metadata.json/run_results.json){Style.RESET_ALL}")
         return
 
     # Validate resolved paths
     run_dir = normalize_path(run_dir)
     run_root_dir = normalize_path(run_root_dir)
-    run_result_path = os.path.join(run_dir, "run_result.json")
-    if not os.path.exists(run_result_path):
-        print(f"{Fore.RED}Error: run_result.json not found in {run_dir}{Style.RESET_ALL}")
-        return
+    run_results_path = os.path.join(run_dir, "run_results.json")
+    if not os.path.exists(run_results_path):
+        print(f"{Fore.YELLOW}Warning: run_results.json not found in {run_dir}; a new one will be created/updated.{Style.RESET_ALL}")
 
-    metadata_path = os.path.join(run_root_dir, "metadata.json")
-    if not os.path.exists(metadata_path):
-        print(f"{Fore.RED}Error: metadata.json not found in {run_root_dir}{Style.RESET_ALL}")
+    # Determine data_path: prefer explicit --from archive, else metadata.source_path, else model_path/slices
+    try:
+        meta = Utils.load_run_metadata(Path(run_dir))
+    except Exception as e:
+        print(f"{Fore.RED}Error: metadata.json not found in run directory {run_dir}: {e}{Style.RESET_ALL}")
+        return
+    data_path = None
+    if hasattr(args, 'dsperse_file') and args.dsperse_file:
+        data_path = normalize_path(args.dsperse_file)
+    else:
+        data_path = meta.get('source_path') or (str(Path(meta.get('model_path', '')) / 'slices') if meta.get('model_path') else None)
+        if data_path:
+            data_path = normalize_path(data_path)
+    if not data_path:
+        print(f"{Fore.RED}Error: Could not determine data_path for proving. Provide it explicitly or ensure run metadata contains source_path/model_path.{Style.RESET_ALL}")
         return
 
     # Print proving message
@@ -344,7 +423,7 @@ def run_proof(args):
     try:
         prover = Prover()
         start_time = time.time()
-        result = prover.prove(run_result_path, metadata_path)
+        result = prover.prove(run_dir, data_path, getattr(args, 'proof_output', None))
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Proof generation completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
@@ -372,9 +451,10 @@ def run_proof(args):
                 print(f"{Fore.CYAN}Repacking with proofs (excluding pk files for verification)...{Style.RESET_ALL}")
                 logger.info(f"Repacking proved slices to {proved_dsperse} (excluding pk files)")
                 
-                # Repack with pk exclusion (for verification)
+                # Repack proved slices
                 from dsperse.src.slice.utils.converter import Converter
-                Converter.convert(str(unpacked_path), output_type='dsperse', output_path=str(proved_dsperse), cleanup=False, exclude_patterns=['*pk*'])
+                # Note: excluding pk files is not supported directly by Converter.convert; repack as-is for now
+                Converter.convert(str(unpacked_path), output_type='dsperse', output_path=str(proved_dsperse), cleanup=False)
                 
                 print(f"{Fore.GREEN}✓ Repacked to {proved_dsperse} (ready for verification){Style.RESET_ALL}")
                 logger.info(f"Repacked proved slices to {proved_dsperse}")

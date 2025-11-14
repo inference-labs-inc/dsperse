@@ -112,7 +112,7 @@ def setup_parser(subparsers):
 
     # Arguments with aliases/shorthands
     compile_parser.add_argument('--path', '-p', '--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='path',
-                                help='Path to the slices directory or a .dsperse/.dslice file')
+                                help='Path to the model or slices directory (or a .dsperse/.dslice file)')
     compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                 help='Path to input file for calibration (optional)')
     compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
@@ -146,7 +146,7 @@ def compile_model(args):
             # Unpack dsperse with expand_slices=True to the same directory as the archive
             print(f"{Fore.CYAN}Detected .dsperse file, unpacking and expanding slices...{Style.RESET_ALL}")
             # Unpack to same directory as archive (e.g., slices.dsperse -> slices/)
-            unpacked_dir = Converter._dsperse_to_dirs(target_path_obj, target_path_obj.parent / target_path_obj.stem, expand_slices=True)
+            unpacked_dir = Converter.convert(str(target_path_obj), output_type='dirs', output_path=str(target_path_obj.parent / target_path_obj.stem), cleanup=False)
             target_path = unpacked_dir
             cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
         elif target_path_obj.suffix == '.dslice':
@@ -166,6 +166,29 @@ def compile_model(args):
                 if not slice_dir.exists():
                     Converter.convert(str(dslice_file), output_type='dirs', output_path=str(slice_dir), cleanup=False)
                 dslice_file.unlink()  # Remove dslice file after unpacking
+
+    # Heuristic: prefer the provided directory if it already contains metadata.json
+    tp_obj = Path(target_path)
+    if tp_obj.is_dir():
+        if (tp_obj / 'metadata.json').exists():
+            # Accept this directory as the compile target; do not override to parent/slices
+            logger.info(f"compile: using provided directory with metadata.json: {tp_obj}")
+        elif tp_obj.name == 'output':
+            # Only try to infer when the provided output dir itself lacks metadata.json
+            parent = tp_obj.parent
+            inferred = None
+            if (parent / 'slices' / 'metadata.json').exists():
+                inferred = parent / 'slices'
+            elif (parent / 'metadata.json').exists():
+                inferred = parent
+            if inferred:
+                print(f"{Fore.YELLOW}Hint: 'output' directory detected without its own metadata.json. Using '{inferred}' as the compile target.{Style.RESET_ALL}")
+                logger.info(f"compile: adjusted target from {tp_obj} to {inferred}")
+                target_path = str(inferred)
+                tp_obj = inferred
+            else:
+                print(f"{Fore.YELLOW}Warning: 'output' directory does not contain metadata.json and no adjacent slices/metadata were found. Provide a model or slices directory instead.{Style.RESET_ALL}")
+                logger.warning("compile: 'output' dir provided without adjacent metadata/slices")
 
     if not check_model_dir(target_path):
         return

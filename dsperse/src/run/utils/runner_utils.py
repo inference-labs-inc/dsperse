@@ -60,7 +60,12 @@ class RunnerUtils:
     @staticmethod
     def make_run_dir(run_metadata: dict, output_path: str | None, model_path: Path) -> Path:
         base_run_dir = Path((run_metadata or {}).get("run_directory") or (model_path / "run"))
-        return Path(output_path) if output_path else base_run_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+        if output_path:
+            return Path(output_path)
+        # If run_metadata already specified a timestamped run dir, reuse it
+        if base_run_dir.name.startswith("run_"):
+            return base_run_dir
+        return base_run_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
 
     @staticmethod
     def prepare_slice_io(run_dir: Path, slice_id: str) -> tuple[Path, Path, Path]:

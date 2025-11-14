@@ -130,9 +130,10 @@ def run_inference(args):
         logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
         
         start_time = time.time()
+        # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
+        slice_path = slices_dir_effective or model_dir
         runner = Runner(
-            model_path=model_dir,
-            slices_path=slices_dir_effective,
+            slice_path=slice_path,
             run_metadata_path=run_metadata_path
         )
         result = runner.run(args.input_file)

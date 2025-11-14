@@ -103,15 +103,91 @@ class Compiler:
         skipped_count = 0
         slice_output_path = None
 
+        # Infer a robust slices_root for resolving relative per-slice paths
+        metadata_dir = os.path.dirname(metadata_path)
+
+        # Try to pick a sample relative path from metadata to validate candidates
+        sample_rel = None
+        for sd in slices_data:
+            rp = sd.get('path') if isinstance(sd, dict) else None
+            if rp and not os.path.isabs(str(rp)):
+                sample_rel = rp
+                break
+
+        candidates = [
+            metadata_dir,
+            os.path.join(metadata_dir, 'slices'),
+            os.path.join(os.path.dirname(metadata_dir), 'slices'),
+            os.path.dirname(metadata_dir),
+        ]
+
+        # If the directory contains .dslice files and no slice_* dirs, expand the requested ones
+        try:
+            has_slice_dirs = any(
+                os.path.isdir(os.path.join(metadata_dir, d)) and d.startswith('slice_')
+                for d in os.listdir(metadata_dir)
+            )
+            dslice_files = [f for f in os.listdir(metadata_dir) if f.endswith('.dslice')]
+        except Exception:
+            has_slice_dirs = False
+            dslice_files = []
+
+        if not has_slice_dirs and dslice_files:
+            # Decide which indices to expand
+            if layer_indices is not None:
+                indices_to_expand = list(layer_indices)
+            else:
+                # Prefer explicit 'index' field; fallback to enumerate position
+                indices_to_expand = []
+                for i, sd in enumerate(slices_data):
+                    try:
+                        indices_to_expand.append(int(sd.get('index', i)))
+                    except Exception:
+                        indices_to_expand.append(i)
+            for i in indices_to_expand:
+                fname = f"slice_{i}.dslice"
+                src = os.path.join(metadata_dir, fname)
+                out_dir = os.path.join(metadata_dir, f"slice_{i}")
+                if os.path.exists(src) and not os.path.exists(out_dir):
+                    try:
+                        Converter.convert(src, output_type='dirs', output_path=out_dir, cleanup=False)
+                        logger.info(f"Expanded {fname} -> {out_dir}")
+                    except Exception as e:
+                        logger.warning(f"Failed to expand {fname}: {e}")
+
+        # Select slices_root by validating candidates against sample_rel
+        slices_root = metadata_dir
+        if sample_rel:
+            chosen = None
+            for cand in candidates:
+                try:
+                    test_path = os.path.normpath(os.path.join(cand, sample_rel))
+                    if os.path.exists(test_path):
+                        chosen = cand
+                        break
+                except Exception:
+                    continue
+            if chosen:
+                slices_root = chosen
+                logger.info(f"compile: using slices_root={slices_root}")
+            else:
+                logger.info(f"compile: defaulting slices_root={slices_root} (no candidate validated for sample path)")
+
         for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
                 logger.info(f"Skipping compilation for slice {idx} as it's not in the specified layers")
                 skipped_count += 1
                 continue
 
-            slice_path = slice_data.get('path')
+            raw_slice_path = slice_data.get('path')
+            # Resolve possibly relative path like 'slice_#/payload/…' under the slices root
+            if raw_slice_path and not os.path.isabs(raw_slice_path):
+                slice_path = os.path.normpath(os.path.join(slices_root, raw_slice_path))
+            else:
+                slice_path = raw_slice_path
+
             if not slice_path or not os.path.exists(slice_path):
-                logger.warning(f"Slice file not found for index {idx}: {slice_path}")
+                logger.warning(f"Slice file not found for index {idx}: {raw_slice_path}")
                 continue
 
             # Prepare concise progress information similar to slicer output
@@ -128,7 +204,7 @@ class Compiler:
 
             # See if calibration file exists for this slice
             calibration_input = input_file_path if idx == 0 else os.path.join(
-                os.path.dirname(slices_data[idx].get('path')),
+                os.path.dirname(slice_path),
                 "ezkl",
                 f"calibration.json"
             )
@@ -285,6 +361,18 @@ class Compiler:
         elif layers:
             logger.info("No valid layer indices parsed. Will compile all layers.")
 
+        # Prefer the provided path if it already contains slices metadata
+        try:
+            if os.path.isdir(model_path):
+                meta_path = Utils.find_metadata_path(model_path)
+                # Use the directory containing this metadata.json as the slices root
+                preferred_slice_path = os.path.dirname(meta_path)
+                logger.info(f"Detected slices metadata at {meta_path}; compiling using {preferred_slice_path}")
+                return self._compile_slices(preferred_slice_path, input_file_path=input_file, layer_indices=layer_indices)
+        except FileNotFoundError:
+            # Fall through to standard detection
+            pass
+
         is_sliced, slice_path = CompilerUtils.is_sliced_model(model_path)
         if is_sliced:
             return self._compile_slices(slice_path, input_file_path=input_file, layer_indices=layer_indices)
@@ -315,5 +403,5 @@ if __name__ == "__main__":
     # Compile via orchestrator
     model_path = os.path.abspath(model_dir)
     compiler = Compiler.create(model_path=model_path)
-    result_dir = compiler.compile(model_path=model_path, input_file=input_file, layers="3, 4")
+    result_dir = compiler.compile(model_path=model_path)#, input_file=input_file, layers="3, 4")
     print(f"Compilation finished.")

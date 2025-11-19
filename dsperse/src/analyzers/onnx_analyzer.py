@@ -466,7 +466,7 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
-        output_dir = os.path.join(os.path.dirname(output_dir), "slices", f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
+        output_dir = os.path.join(output_dir, f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
         # Ensure dslice-style payload directory exists
         payload_dir = os.path.join(output_dir, "payload")
         os.makedirs(payload_dir, exist_ok=True)

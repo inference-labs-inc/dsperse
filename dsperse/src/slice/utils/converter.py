@@ -90,8 +90,12 @@ class Converter:
                 return temp_dirs
 
     @staticmethod
-    def detect_type(path: Path) -> str:
-        """Detect the type of the given path."""
+    def detect_type(path: str | Path) -> str:
+        """Detect the type of the given path.
+        """
+        # Convert string to Path if needed
+        path = Path(path) if isinstance(path, str) else path
+
         if path.is_file():
             if path.suffix == '.dsperse':
                 return 'dsperse'
@@ -269,7 +273,8 @@ class Converter:
             else:
                 output_dir = path.parent / path.stem
 
-            output_dir.mkdir(parents=True, exist_ok=True)
+            if not output_dir.exists():
+                output_dir.mkdir(parents=True, exist_ok=True)
             Converter._unzip_file(path, output_dir)
             logger.info(f"Extracted {path.name} to {output_dir}")
             return str(output_dir)

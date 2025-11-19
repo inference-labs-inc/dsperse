@@ -66,9 +66,9 @@ class OnnxUtils:
     @staticmethod
     def write_slice_dirs_metadata(slices_root: str):
         """
-        Ensure each per-segment directory (segment_#) contains a dslice-style metadata.json
+        Ensure each per-slice directory (slice_#) contains a dslice-style metadata.json
         alongside payload/model.onnx so the folder can be zipped to become a valid .dslice.
-        Also updates the global slices metadata segment 'path' to payload/model.onnx if needed.
+        Also updates the global slices metadata slice 'path' to payload/model.onnx if needed.
         """
         root = Path(slices_root)
         metadata_path = root / "metadata.json"
@@ -101,33 +101,33 @@ class OnnxUtils:
         except Exception:
             opset_version = None
 
-        segments = meta.get("slices", []) or []
-        for idx, seg in enumerate(segments):
+        slices = meta.get("slices", []) or []
+        for idx, seg in enumerate(slices):
             seg_path_val = seg.get("path")
             if not seg_path_val:
                 continue
             seg_path = Path(seg_path_val)
 
-            # Determine current segment and payload dirs
+            # Determine current slice and payload dirs
             if seg_path.suffix == ".onnx":
                 payload_dir = seg_path.parent
-                segment_dir = payload_dir.parent
+                slice_dir = payload_dir.parent
             else:
-                segment_dir = seg_path if seg_path.is_dir() else seg_path.parent
-                payload_dir = segment_dir / "payload"
+                slice_dir = seg_path if seg_path.is_dir() else seg_path.parent
+                payload_dir = slice_dir / "payload"
 
-            # Rename legacy segment_# directory to slice_# if needed
+            # Rename legacy slice_# directory to slice_# if needed
             expected_dir_name = f"slice_{idx}"
-            if segment_dir.name != expected_dir_name:
+            if slice_dir.name != expected_dir_name:
                 try:
-                    target_dir = segment_dir.parent / expected_dir_name
+                    target_dir = slice_dir.parent / expected_dir_name
                     target_dir.parent.mkdir(parents=True, exist_ok=True)
                     if not target_dir.exists():
-                        shutil.move(str(segment_dir), str(target_dir))
-                    segment_dir = target_dir
-                    payload_dir = segment_dir / "payload"
+                        shutil.move(str(slice_dir), str(target_dir))
+                    slice_dir = target_dir
+                    payload_dir = slice_dir / "payload"
                 except Exception as e:
-                    logger.warning(f"Failed to rename segment directory for idx {idx}: {e}")
+                    logger.warning(f"Failed to rename slice directory for idx {idx}: {e}")
 
             # Ensure payload dir exists
             payload_dir.mkdir(parents=True, exist_ok=True)
@@ -156,47 +156,59 @@ class OnnxUtils:
                 logger.warning(f"ONNX payload not found for index {idx} under {payload_dir}")
                 continue
 
-            # Build dslice-style metadata.json with zero-based slice id and correct entry path
-            segment_id = f"slice_{idx}"
-            deps = seg.get("dependencies", {}) if isinstance(seg, dict) else {}
             tensor_shape = (seg.get("shape", {}) or {}).get("tensor_shape", {}) if isinstance(seg, dict) else {}
             input_shapes = tensor_shape.get("input") or seg.get("input_shape") or seg.get("input_shapes") or []
             output_shapes = tensor_shape.get("output") or seg.get("output_shape") or seg.get("output_shapes") or []
-            input_names = deps.get("filtered_inputs") or deps.get("input") or []
-            output_names = deps.get("output") or []
 
-            io_meta = {
-                "input_shape": input_shapes,
-                "output_shape": output_shapes,
-                "input_names": input_names,
-                "output_names": output_names,
-            }
-            dslice_meta = {
-                "schema": "dslice/1.0",
-                "slice_id": segment_id,
-                "backend": "onnx",
-                "entry": {"model": f"payload/{expected_filename}"},
-                "io": io_meta,
-                "deps": deps,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "dsperse_version": dsperse_ver,
-                "model_type": model_type,
+            single_slice_entry = dict(seg)
+            single_slice_entry["index"] = idx
+            single_slice_entry["filename"] = expected_filename
+            single_slice_entry["path"] = str(desired_path)
+            single_slice_entry["relative_path"] = str(desired_path.relative_to(root).relative_to("slice_" + str(idx)))
+            single_slice_entry["dsperse_version"] = dsperse_ver
+            single_slice_entry["opset_version"] = opset_version
+
+
+            if "shape" not in single_slice_entry or not single_slice_entry["shape"]:
+                single_slice_entry["shape"] = {
+                    "weight_shape": {
+                        "input": [],
+                        "output": []
+                    },
+                    "tensor_shape": {
+                        "input": input_shapes,
+                        "output": output_shapes,
+                    },
+                }
+            else:
+                single_slice_entry["shape"].setdefault("tensor_shape", {
+                    "input": input_shapes,
+                    "output": output_shapes,
+                })
+
+            single_meta = {
                 "original_model": original_model,
+                "model_type": model_type,
+                "total_parameters": single_slice_entry.get("parameters", 0),
+                "input_shape": meta.get("input_shape", input_shapes),
+                "output_shapes": meta.get("output_shapes", output_shapes),
+                "slice_points": [single_slice_entry.get("index")] if single_slice_entry.get("index") is not None else [],
+                "slices": [single_slice_entry],
             }
-            if opset_version is not None:
-                dslice_meta["opset_version"] = opset_version
 
-            # Write metadata.json inside slice dir
-            slice_metadata_path = segment_dir / "metadata.json"
+            slice_metadata_path = slice_dir / "metadata.json"
             try:
                 with open(slice_metadata_path, "w") as mf:
-                    json.dump(dslice_meta, mf, indent=2)
+                    json.dump(single_meta, mf, indent=2)
             except Exception as e:
-                logger.warning(f"Failed to write slice metadata for {segment_dir}: {e}")
+                logger.warning(f"Failed to write slice metadata for {slice_dir}: {e}")
 
-            # Update global metadata with normalized payload path and slice metadata path
             seg["path"] = str(desired_path)
+            seg["relative_path"] = str(desired_path.relative_to(root))
             seg["slice_metadata"] = str(slice_metadata_path.resolve())
+            seg["slice_metadata_relative_path"] = str(slice_metadata_path.relative_to(root))
+            seg["dsperse_version"] = dsperse_ver
+            seg["opset_version"] = opset_version
+            
 
-        # Save updated global metadata (legacy model-level)
         Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)

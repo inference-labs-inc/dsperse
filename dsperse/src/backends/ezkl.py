@@ -575,9 +575,7 @@ class EZKL:
             # SRS error detected and bubbled up
             return False, str(e)
 
-    def compilation_pipeline(
-        self, model_path, output_path, input_file_path=None, slice_details=None
-    ):
+    def compilation_pipeline(self, model_path, output_path, input_file_path=None):
         """
         Run the full EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
 
@@ -611,7 +609,7 @@ class EZKL:
             "compiled": compiled_path,
             "vk_key": vk_path,
             "pk_key": pk_path,
-            "calibration": None,
+            "calibration": input_file_path,
         }
 
         try:

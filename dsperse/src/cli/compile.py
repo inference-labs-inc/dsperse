@@ -11,7 +11,6 @@ from colorama import Fore, Style
 
 from dsperse.src.compile.compiler import Compiler
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
-from dsperse.src.slice.utils.converter import Converter
 from pathlib import Path
 
 
@@ -136,36 +135,8 @@ def compile_model(args):
         target_path = prompt_for_value('path', 'Enter the path to the slices directory or .dsperse file')
     target_path = normalize_path(target_path)
 
-    # Auto-unpack dsperse/dslice files if needed
-    unpacked_dir = None
-    cleanup_unpacked = False
+    # Do not auto-unpack archives here; let the Compiler handle .dslice/.dsperse directly
     target_path_obj = Path(target_path)
-    
-    if target_path_obj.is_file():
-        if target_path_obj.suffix == '.dsperse':
-            # Unpack dsperse with expand_slices=True to the same directory as the archive
-            print(f"{Fore.CYAN}Detected .dsperse file, unpacking and expanding slices...{Style.RESET_ALL}")
-            # Unpack to same directory as archive (e.g., slices.dsperse -> slices/)
-            unpacked_dir = Converter.convert(str(target_path_obj), output_type='dirs', output_path=str(target_path_obj.parent / target_path_obj.stem), cleanup=False)
-            target_path = unpacked_dir
-            cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
-        elif target_path_obj.suffix == '.dslice':
-            # Unpack single dslice file to same directory
-            print(f"{Fore.CYAN}Detected .dslice file, unpacking...{Style.RESET_ALL}")
-            unpacked_dir = Converter.convert(str(target_path), output_type='dirs', output_path=str(target_path_obj.parent / target_path_obj.stem), cleanup=False)
-            target_path = unpacked_dir
-            cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
-    elif target_path_obj.is_dir():
-        # Check if directory contains dslice files (from unpacking dsperse)
-        dslice_files = list(target_path_obj.glob("*.dslice"))
-        if dslice_files and not any(target_path_obj.glob("slice_*")):
-            # Directory has dslice files but no slice directories - unpack them
-            print(f"{Fore.CYAN}Detected .dslice files in directory, unpacking {len(dslice_files)} files...{Style.RESET_ALL}")
-            for dslice_file in dslice_files:
-                slice_dir = target_path_obj / dslice_file.stem
-                if not slice_dir.exists():
-                    Converter.convert(str(dslice_file), output_type='dirs', output_path=str(slice_dir), cleanup=False)
-                dslice_file.unlink()  # Remove dslice file after unpacking
 
     # Heuristic: prefer the provided directory if it already contains metadata.json
     tp_obj = Path(target_path)
@@ -190,8 +161,10 @@ def compile_model(args):
                 print(f"{Fore.YELLOW}Warning: 'output' directory does not contain metadata.json and no adjacent slices/metadata were found. Provide a model or slices directory instead.{Style.RESET_ALL}")
                 logger.warning("compile: 'output' dir provided without adjacent metadata/slices")
 
-    if not check_model_dir(target_path):
-        return
+    # Only verify directory structure when a directory is provided; files are handled by Compiler
+    if target_path_obj.is_dir():
+        if not check_model_dir(target_path):
+            return
 
     # Normalize input file if provided via flag
     if hasattr(args, 'input_file') and args.input_file:
@@ -199,7 +172,7 @@ def compile_model(args):
 
     # Initialize the Compiler (it supports dirs or model.onnx)
     try:
-        compiler = Compiler.create(target_path)
+        compiler = Compiler()
         logger.info(f"Compiler initialized successfully")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Compiler: {e}"

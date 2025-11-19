@@ -102,9 +102,12 @@ class RunnerAnalyzer:
             model_files = model_comp.get('files', {}) if isinstance(model_comp, dict) else {}
             flat_model_ezkl = slice_data.get('ezkl', {}) if isinstance(slice_data, dict) else {}
 
+            # Allow both 'compiled_circuit' and legacy 'compiled' keys
             compiled_circuit_path = (
                 files.get('compiled_circuit')
+                or files.get('compiled')
                 or model_files.get('compiled_circuit')
+                or model_files.get('compiled')
                 or flat_model_ezkl.get('compiled')
                 or flat_model_ezkl.get('compiled_circuit')
             )

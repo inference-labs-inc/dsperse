@@ -263,9 +263,9 @@ if __name__ == "__main__":
     # Get model directory
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
-    slices_dir = os.path.join(slices_dir, "slice_0.dslice") # give a single slice to test
+    # slices_dir = os.path.join(slices_dir, "slice_0.dslice") # give a single slice to test
     input_json = os.path.join(abs_path, "input.json")
-    # input_json = "/Volumes/SSD/Users/dan/Projects/dsperse/dsperse/models/net/run/run_20251110_230124/slice_3/input.json"
+
     run_metadata_path = None #os.path.join(abs_path, "run", "metadata.json") if os.path.exists(
        # os.path.join(abs_path, "run", "metadata.json")) else None
 

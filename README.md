@@ -217,9 +217,9 @@ dsperse compile --slices-path models/net/slices --layers 0-2
 
 What happens:
 - For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
-- Circuit artifacts are saved under each slice: models/net/slices/slice_<i>/ezkl_circuitization/
-- slice_i_settings.json, slice_i_model.compiled, slice_i_vk.key, slice_i_pk.key
-- Slices metadata is updated with ezkl_circuitization info per segment
+- Circuit artifacts are saved under each slice: `models/net/slices/slice_<i>/ezkl/`
+- `settings.json`, `model.compiled`, `vk.key`, `pk.key` are the new file names
+- Slices metadata is updated with ezkl compilation info per segment
 
 Note on missing slices:
 - If you pass a model directory without slices metadata present, the CLI will prompt you to slice first.

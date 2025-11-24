@@ -63,10 +63,9 @@ def convert(args):
     # Prompt for output type if missing
     if not getattr(args, 'to_type', None):
         valid = {'dirs', 'dslice', 'dsperse'}
-        from pathlib import Path as _P
         while True:
             chosen_raw = prompt_for_value('to', 'Enter desired output type (dirs, dslice, dsperse)')
-            chosen = _P(str(chosen_raw)).name.strip().lower()
+            chosen = Path(str(chosen_raw)).name.strip().lower()
             if chosen in valid:
                 args.to_type = chosen
                 break
@@ -82,7 +81,15 @@ def convert(args):
                 except Exception:
                     pass
         else:
-            result = Converter.convert(input_path, output_type=getattr(args, 'to_type', None), output_path=output_path, cleanup=bool(getattr(args, 'cleanup', True)))
+            # Extract parameters for conversion
+            output_type = getattr(args, 'to_type', None)
+            cleanup = bool(getattr(args, 'cleanup', True))
+            result = Converter.convert(
+                input_path,
+                output_type=output_type,
+                output_path=output_path,
+                cleanup=cleanup
+            )
 
         print(f"{Fore.GREEN}✓ Converted to: {result}{Style.RESET_ALL}")
         logger.info(f"Converted to: {result}")

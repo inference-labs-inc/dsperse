@@ -11,7 +11,6 @@ from colorama import Fore, Style
 
 from dsperse.src.verifier import Verifier
 from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path, logger
-from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 def setup_parser(subparsers):
@@ -146,9 +145,10 @@ def verify_proof(args):
     run_root_dir = None
     run_dir = None
 
-    def is_run_id_dir(p):
-        # A run-id directory contains per-slice IO and run_results.json; metadata.json is also expected
-        return os.path.exists(os.path.join(p, "run_results.json")) or os.path.exists(os.path.join(p, "metadata.json"))
+    def is_run_id_dir(p: str) -> bool:
+        # Only treat as a per-run directory if it's named like run_* and has run_results.json
+        base = os.path.basename(os.path.abspath(p))
+        return base.startswith("run_") and os.path.exists(os.path.join(p, "run_results.json"))
 
     def is_run_root_dir(p):
         # A runs root contains subdirectories named run_*
@@ -160,24 +160,17 @@ def verify_proof(args):
     # Determine input
     specified_run_dir = None  # Track if user specified a specific run
     
-    # Check if --from/--dsperse-file is provided
-    dsperse_file = None
-    if hasattr(args, 'dsperse_file') and args.dsperse_file:
-        dsperse_file = normalize_path(args.dsperse_file)
-        if not os.path.exists(dsperse_file):
-            print(f"{Fore.RED}Error: Dsperse file not found: {dsperse_file}{Style.RESET_ALL}")
-            return
-        # If dsperse file is provided, use it as candidate (will be unpacked)
-        candidate = dsperse_file
-    elif hasattr(args, 'run_dir') and args.run_dir:
+    # Determine run candidate (legacy flag support)
+    if hasattr(args, 'run_dir') and args.run_dir:
         candidate = normalize_path(args.run_dir)
-        # Check if this is a specific run directory (contains run_results.json)
-        if os.path.exists(os.path.join(candidate, "run_results.json")) or os.path.exists(os.path.join(candidate, "metadata.json")):
+        # Treat as a specific run dir only if it looks like run_* and has run_results.json
+        base = os.path.basename(os.path.abspath(candidate))
+        if base.startswith("run_") and os.path.exists(os.path.join(candidate, "run_results.json")):
             specified_run_dir = candidate
     else:
         # No flags provided - automatically use latest run from current directory
         current_run_dir = os.path.join(os.getcwd(), "run")
-        if os.path.exists(current_run_dir) and os.path.exists(os.path.join(current_run_dir, "metadata.json")):
+        if os.path.exists(current_run_dir):
             latest_run = get_latest_run(current_run_dir)
             if latest_run and os.path.exists(os.path.join(latest_run, "run_results.json")):
                 # Use latest run automatically
@@ -192,116 +185,6 @@ def verify_proof(args):
 
     # Normalize candidate from prompt
     candidate = normalize_path(candidate)
-
-    # Check if candidate is a .dsperse or .dslice file - unpack if needed
-    # Also check if dsperse_file was explicitly provided via --from flag
-    unpacked_dir = None
-    cleanup_unpacked = False
-    if dsperse_file or (os.path.isfile(candidate) and Path(candidate).suffix in ['.dsperse', '.dslice']):
-        p = Path(candidate)
-        if p.suffix in ['.dsperse', '.dslice']:
-            print(f"{Fore.CYAN}Detected archive file: {candidate}{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}Unpacking to same directory...{Style.RESET_ALL}")
-            try:
-                # Import Converter here to avoid circular imports
-                from dsperse.src.slice.utils.converter import Converter
-                
-                # Unpack to same directory as archive (e.g., slices.dsperse -> slices/)
-                if p.suffix == '.dsperse':
-                    unpacked_dir = Converter._dsperse_to_dirs(p, p.parent / p.stem, expand_slices=True)
-                else:
-                    # For dslice, unpack to same directory
-                    unpacked_dir = Converter.convert(str(candidate), output_type='dirs', output_path=str(p.parent / p.stem), cleanup=False)
-                
-                unpacked_path = Path(unpacked_dir)
-                
-                # Look for run directory - prioritize parent directory (where dsperse file is)
-                # The run directory is typically in the parent model directory (e.g., net/run/)
-                parent_run = unpacked_path.parent / "run"
-                
-                # Also check inside unpacked directory
-                unpacked_run = unpacked_path / "run"
-                
-                # Search recursively for run directories in unpacked structure
-                run_candidates = []
-                if unpacked_run.exists():
-                    run_candidates.append(unpacked_run)
-                if parent_run.exists():
-                    run_candidates.append(parent_run)
-                
-                # Walk unpacked directory to find any run directories
-                for root, dirs, files in os.walk(unpacked_path):
-                    if 'run' in dirs:
-                        run_candidates.append(Path(root) / "run")
-                
-                # Find the run directory - prefer parent run directory (most common case)
-                # dsperse files don't include run folders, so run is always in parent directory
-                if parent_run.exists() and (parent_run / "metadata.json").exists():
-                    # Parent has run directory with metadata.json - this is the run root
-                    # If user didn't specify a specific run, use latest run that has run_results.json
-                    if not specified_run_dir:
-                        all_runs = get_all_runs(str(parent_run))
-                        if all_runs:
-                            # Filter to only runs that have run_results.json (completed runs)
-                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_results.json"))]
-                            if valid_runs:
-                                # Use latest valid run automatically - ensure it's normalized
-                                candidate = normalize_path(valid_runs[-1])
-                                logger.info(f"Unpacked archive to {unpacked_dir}, using latest valid run: {candidate}")
-                            else:
-                                # No valid runs yet, use run root and let user choose
-                                candidate = normalize_path(str(parent_run))
-                                logger.info(f"Unpacked archive to {unpacked_dir}, using run root (no valid runs yet): {candidate}")
-                        else:
-                            candidate = normalize_path(str(parent_run))
-                            logger.info(f"Unpacked archive to {unpacked_dir}, using run root: {candidate}")
-                    else:
-                        # User specified a run - normalize it
-                        candidate = normalize_path(specified_run_dir)
-                        logger.info(f"Unpacked archive to {unpacked_dir}, using specified run: {candidate}")
-                elif unpacked_run.exists() and (unpacked_run / "metadata.json").exists():
-                    # Unpacked directory has run directory (unlikely but possible)
-                    if not specified_run_dir:
-                        all_runs = get_all_runs(str(unpacked_run))
-                        if all_runs:
-                            # Filter to valid runs and use latest
-                            valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_results.json"))]
-                            if valid_runs:
-                                candidate = normalize_path(valid_runs[-1])
-                            else:
-                                candidate = normalize_path(all_runs[-1])
-                        else:
-                            candidate = normalize_path(str(unpacked_run))
-                    else:
-                        candidate = normalize_path(specified_run_dir)
-                elif run_candidates:
-                    # Use first valid run candidate
-                    candidate = normalize_path(str(run_candidates[0]))
-                else:
-                    # No run directory found - try parent run directory
-                    if parent_run.exists():
-                        if not specified_run_dir:
-                            all_runs = get_all_runs(str(parent_run))
-                            if all_runs:
-                                # Filter to only runs that have run_results.json (completed runs)
-                                valid_runs = [r for r in all_runs if os.path.exists(os.path.join(r, "run_results.json"))]
-                                if valid_runs:
-                                    candidate = normalize_path(valid_runs[-1])  # Already normalized
-                                else:
-                                    candidate = normalize_path(str(parent_run))
-                            else:
-                                candidate = normalize_path(str(parent_run))
-                        else:
-                            candidate = normalize_path(specified_run_dir)
-                    else:
-                        candidate = normalize_path(unpacked_dir)
-                
-                cleanup_unpacked = False  # Don't cleanup - keep unpacked files in same dir
-                logger.info(f"Unpacked archive to {unpacked_dir}, using run directory: {candidate}")
-            except Exception as e:
-                print(f"{Fore.RED}Error unpacking archive: {e}{Style.RESET_ALL}")
-                logger.error(f"Error unpacking archive: {e}")
-                return
 
     if not os.path.exists(candidate):
         print(f"{Fore.RED}Error: Path {candidate} does not exist{Style.RESET_ALL}")
@@ -319,36 +202,31 @@ def verify_proof(args):
             print(f"{Fore.RED}Error: No runs found in {run_root_dir}{Style.RESET_ALL}")
             return
         
-        # If we unpacked a dsperse and didn't specify a run, use latest automatically
-        if unpacked_dir and not specified_run_dir:
+        # Prompt user to choose run
+        run_names = [os.path.basename(p) for p in all_runs]
+        default_run = run_names[-1]
+        run_list = ", ".join(run_names)
+        print(f"We found {len(all_runs)} runs, {run_list}, enter which run you would like to verify (default {default_run}):")
+        user_input = input().strip()
+        if not user_input:
             run_dir = all_runs[-1]
-            logger.info(f"Using latest run from unpacked dsperse: {run_dir}")
         else:
-            # Prompt user to choose run
-            run_names = [os.path.basename(p) for p in all_runs]
-            default_run = run_names[-1]
-            run_list = ", ".join(run_names)
-            print(f"We found {len(all_runs)} runs, {run_list}, enter which run you would like to verify (default {default_run}):")
-            user_input = input().strip()
-            if not user_input:
-                run_dir = all_runs[-1]
-            else:
-                try:
-                    idx = int(user_input) - 1
-                    if 0 <= idx < len(all_runs):
-                        run_dir = all_runs[idx]
-                    else:
-                        print(f"{Fore.RED}Error: Invalid run index{Style.RESET_ALL}")
-                        return
-                except ValueError:
-                    candidate_run = normalize_path(os.path.join(run_root_dir, user_input))
-                    if os.path.exists(candidate_run) and is_run_id_dir(candidate_run):
-                        run_dir = candidate_run
-                    else:
-                        print(f"{Fore.RED}Error: Run directory {candidate_run} does not exist or is invalid{Style.RESET_ALL}")
-                        return
+            try:
+                idx = int(user_input) - 1
+                if 0 <= idx < len(all_runs):
+                    run_dir = all_runs[idx]
+                else:
+                    print(f"{Fore.RED}Error: Invalid run index{Style.RESET_ALL}")
+                    return
+            except ValueError:
+                candidate_run = normalize_path(os.path.join(run_root_dir, user_input))
+                if os.path.exists(candidate_run) and is_run_id_dir(candidate_run):
+                    run_dir = candidate_run
+                else:
+                    print(f"{Fore.RED}Error: Run directory {candidate_run} does not exist or is invalid{Style.RESET_ALL}")
+                    return
     else:
-        print(f"{Fore.RED}Error: Provided path is neither a runs root (contains run_*/ subdirs) nor a run directory (contains metadata.json/run_results.json){Style.RESET_ALL}")
+        print(f"{Fore.RED}Error: Provided path is neither a runs root (contains run_*/ subdirs) nor a run directory (named run_* with run_results.json){Style.RESET_ALL}")
         return
 
     # Validate and derive inputs
@@ -414,6 +292,4 @@ def verify_proof(args):
         print(f"{Fore.RED}Error verifying run: {e}{Style.RESET_ALL}")
         traceback.print_exc()
     finally:
-        # Note: We don't cleanup unpacked directories - they're unpacked to the same location as the archive
-        # This ensures paths remain consistent and files are accessible
         pass

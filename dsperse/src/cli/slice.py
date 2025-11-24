@@ -10,7 +10,6 @@ from colorama import Fore, Style
 
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
 from dsperse.src.slice.slicer import Slicer
-from dsperse.src.slice.utils.converter import Converter
 
 
 def setup_parser(subparsers):
@@ -35,9 +34,8 @@ def setup_parser(subparsers):
     slice_parser.add_argument('--save-file', '--save', '-S', nargs='?', const='default',
                               help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
 
-    # Output type selection
-    slice_parser.add_argument('--output-type', '--ot', choices=['dsperse', 'dslice', 'dirs'], default='dirs',
-                              help='Select output format: dsperse (single bundle), dslice (one .dslice per slice), or dirs (unpacked directories). Default: dirs')
+    # Output format: slicing now always writes unpacked directories.
+    # Note: Packing to .dsperse/.dslice is available only via `slice convert` or `convert` command.
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
@@ -52,8 +50,6 @@ def setup_parser(subparsers):
     convert_parser.add_argument('--cleanup', dest='cleanup', action='store_true', default=True,
                                 help='Remove source artifact after successful conversion (default: True)')
     convert_parser.add_argument('--no-cleanup', dest='cleanup', action='store_false', help='Keep source artifact')
-    convert_parser.add_argument('--exclude-pk', action='store_true',
-                                help='Exclude proving key (*pk*) files when packing (use for verification)')
 
     return slice_parser
 
@@ -61,6 +57,8 @@ def setup_parser(subparsers):
 
 def slice_convert(args):
     """Convert between dsperse/dslice and directories (sub-command under slice)."""
+    # Lazy import to keep Converter usage confined to explicit conversion command
+    from dsperse.src.slice.utils.converter import Converter
     # Prompt if not provided
     if not getattr(args, 'input_path', None):
         args.input_path = prompt_for_value('input', 'Enter input path (.dsperse/.dslice or directory)')
@@ -103,10 +101,12 @@ def slice_convert(args):
             return
 
         # All other cases use the public convert API
-        exclude_patterns = []
-        if getattr(args, 'exclude_pk', False):
-            exclude_patterns.append('*pk*')
-        result = Converter.convert(input_path, output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None), output_path=output_path, cleanup=bool(getattr(args, 'cleanup', True)), exclude_patterns=exclude_patterns if exclude_patterns else None)
+        result = Converter.convert(
+            input_path,
+            output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None),
+            output_path=output_path,
+            cleanup=bool(getattr(args, 'cleanup', True)),
+        )
         print(f"{Fore.GREEN}✓ Converted to: {result}{Style.RESET_ALL}")
         logger.info(f"Converted to: {result}")
     except Exception as e:
@@ -191,9 +191,11 @@ def slice_model(args):
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
         logger.info(f"Slicing ONNX model to output path: {output_dir}")
+        # Always emit directory layout from the slicer.
+        # For packaging to .dsperse/.dslice, instruct users to run `dsperse slice convert`.
         slicer.slice_model(
             output_path=output_dir,
-            output_type=getattr(args, 'output_type', 'dsperse'),
+            output_type='dirs',
         )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

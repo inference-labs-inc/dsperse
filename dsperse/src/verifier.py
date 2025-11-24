@@ -69,9 +69,9 @@ class Verifier:
             settings_path = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
             vk_path = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
 
-            if settings_path and not os.path.exists(settings_path):
-                logger.warning(f"Settings file not found for {slice_id} at {settings_path}; proceeding without it.")
-                settings_path = None
+            if not settings_path or not os.path.exists(settings_path):
+                logger.warning(f"Skipping {slice_id}: settings file not found ({settings_path})")
+                continue
             if not vk_path or not os.path.exists(vk_path):
                 logger.warning(f"Skipping {slice_id}: verification key not found ({vk_path})")
                 continue

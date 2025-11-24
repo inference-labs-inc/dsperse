@@ -498,7 +498,14 @@ class RunnerAnalyzer:
         run_meta["source_path"] = source_path
 
         # Save
-        save_path = save_path.resolve()
+        if save_path is None:
+            base = Path(slice_path).resolve()
+            # If slice_path is a model root or slices dir, put run/metadata.json next to it
+            base_dir = base if base.is_dir() else base.parent
+            save_path = base_dir / "run" / "metadata.json"
+        else:
+            save_path = Path(save_path).resolve()
+
         save_path.parent.mkdir(parents=True, exist_ok=True)
         run_meta["run_directory"] = str(save_path.parent)
         Utils.save_metadata_file(run_meta, save_path)

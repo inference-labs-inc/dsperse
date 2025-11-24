@@ -128,6 +128,9 @@ class RunnerUtils:
             elif 'input' in input_data:
                 input_data = input_data['input']
 
+        if isinstance(input_data, list) and len(input_data) == 0:
+            raise ValueError("Input data list is empty")
+
         # Convert to tensor
         if isinstance(input_data, list):
             if isinstance(input_data[0], list):
@@ -185,7 +188,9 @@ class RunnerUtils:
         tensor_data = input_tensor.tolist()
 
         # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        file_dir = os.path.dirname(file_path)
+        if file_dir:  # Only create directory if path has a directory component
+            os.makedirs(file_dir, exist_ok=True)
 
         # Save tensor data as JSON
         data = {
@@ -253,12 +258,13 @@ class RunnerUtils:
     def filter_tensor(current_slice_metadata, tensor):
         # take the tensor object, and extract the output that is relevant to the next slice
         logits = tensor["logits"]
-        probabilities = tensor["probabilities"]
-        predicted_action = tensor["predicted_action"]
 
         # Check the shape using our new function
-        expected_shape = current_slice_metadata["output_shape"]
-        RunnerUtils.check_expected_shape(logits, expected_shape, tensor_name="logits")
+        output_shape = current_slice_metadata.get("output_shape")
+        if output_shape is not None:
+            RunnerUtils.check_expected_shape(logits, output_shape, tensor_name="logits")
+        else:
+            logger.debug("Output shape metadata not found for shape check.")
 
         return logits
 
@@ -338,4 +344,4 @@ class RunnerUtils:
 
 
 if __name__ == "__main__":
-    print(f"Parent path: {RunnerUtils.get_file_path()}")
+    print(f"Parent path: {RunnerUtils._get_file_path()}")

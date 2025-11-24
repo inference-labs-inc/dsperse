@@ -195,8 +195,9 @@ if __name__ == "__main__":
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path
     slices_dir = os.path.join(abs_path, "slices")
+    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")
     input_file = os.path.join(model_dir, "input.json")
 
     compiler = Compiler()
-    result = compiler.compile(model_path=slices_dir, input_file=input_file, layers="3, 4")
+    result = compiler.compile(model_path=slices_dir)#, input_file=input_file, layers="3, 4")
     print(f"Compilation finished.")

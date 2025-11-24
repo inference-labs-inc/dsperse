@@ -38,7 +38,11 @@ class CompilerUtils:
             if dsperse_files:
                 return True, str(dsperse_files[0]), 'dsperse'
 
-            detected_type = Converter.detect_type(path_obj)
+            try:
+                detected_type = Converter.detect_type(path_obj)
+            except ValueError:
+                detected_type = None
+
             if detected_type in ['dirs', 'dslice', 'dsperse']:
                 return True, str(path_obj), detected_type
 
@@ -255,9 +259,9 @@ class CompilerUtils:
                 os.makedirs(slice_output_path, exist_ok=True)
 
                 # Run ONNX inference to generate calibration data
-                output_tensor_path = os.path.join(slice_output_path, f"calibration.json")
+                output_tensor_path = os.path.join(slice_output_path, "calibration.json")
                 logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
-                success, tensor, exec_info = Runner.run_onnx_slice(
+                success, _tensor, exec_info = Runner.run_onnx_slice(
                     slice_info={"path": slice_path},
                     input_tensor_path=Path(current_input),
                     output_tensor_path=Path(output_tensor_path)

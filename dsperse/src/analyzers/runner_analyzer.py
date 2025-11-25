@@ -12,13 +12,13 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 class RunnerAnalyzer:
-    def __init__(self, model_directory):
+    def __init__(self, model_directory, slices_dir=None):
         """
         Args:
             model_directory: Path to the model directory.
         """
         self.model_directory = model_directory
-        self.slices_dir = Path(os.path.join(model_directory, "slices")).resolve()
+        self.slices_dir = Path(slices_dir or os.path.join(model_directory, "slices")).resolve()
         self.slices_metadata_path = self.slices_dir / "metadata.json"
 
         self.size_limit = 1000 * 1024 * 1024  # 1000MB

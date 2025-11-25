@@ -30,9 +30,9 @@ class Runner:
         if self.run_metadata_path is None or not self.run_metadata_path.exists():
             logger.info("run metadata not found. Generating...")
             print(f"Generating run metadata at {self.run_metadata_path}")
-            runner_metadata = RunnerAnalyzer(self.model_path)
+            runner_metadata = RunnerAnalyzer(self.model_path, self.slices_path)
             self.run_metadata_path = runner_metadata.generate_metadata(save_path=self.run_metadata_path)
-        
+
         with open(self.run_metadata_path, 'r') as f:
             self.metadata = json.load(f)
 
@@ -61,7 +61,7 @@ class Runner:
 
             seg_run_dir = run_dir / current_slice_id
             seg_run_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Write input for this segment
             input_file = seg_run_dir / "input.json"
             output_file = seg_run_dir / "output.json"
@@ -99,21 +99,21 @@ class Runner:
             # filter tensor and make tensor next input.json file
             current_tensor = self._filter_tensor(current_slice_metadata, tensor)
             current_slice_id = slice_node.get("next")
-        
+
         # Final processing
         probabilities = F.softmax(current_tensor, dim=1)
         prediction = torch.argmax(probabilities, dim=1).item()
-        
+
         results = {
             "prediction": prediction,
             "probabilities": probabilities.tolist(),
             "tensor_shape": list(current_tensor.shape),
             "slice_results": slice_results
         }
-        
+
         # Save inference output
         self._save_inference_output(results, run_dir / "run_result.json" )
-        
+
         return results
 
     @staticmethod
@@ -168,17 +168,17 @@ class Runner:
             exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
 
         return success, output_tensor, exec_info
-    
+
     def _save_inference_output(self, results, output_path):
         """Save inference_output.json with execution details."""
         model_path = self.metadata.get("model_path", "unknown")
         slice_results = results.get("slice_results", {})
-        
+
         # Count execution methods
-        ezkl_complete = sum(1 for r in slice_results.values() 
+        ezkl_complete = sum(1 for r in slice_results.values()
                            if r.get("method") == "ezkl_gen_witness")
         total_slices = len(slice_results)
-        
+
         # Build execution results
         execution_results = []
         for slice_id, exec_info in slice_results.items():
@@ -194,18 +194,18 @@ class Runner:
             # Propagate error message if present (e.g., EZKL failure reason before fallback)
             if "error" in exec_info and exec_info["error"]:
                 witness_execution["error"] = exec_info["error"]
-            
+
             # Create result_entry with segment_id and witness_execution
             result_entry = {
                 "segment_id": slice_id,
                 "witness_execution": witness_execution
             }
-            
+
             execution_results.append(result_entry)
-        
+
         # Calculate security percentage
         security_percent = (ezkl_complete / total_slices * 100) if total_slices > 0 else 0
-        
+
         # Build output structure
         inference_output = {
             "model_path": model_path,
@@ -221,7 +221,7 @@ class Runner:
                 "note": "Full ONNX vs verified chain comparison would require separate pure ONNX run"
             }
         }
-        
+
         # Save to file
         with open(output_path, 'w') as f:
             json.dump(inference_output, f, indent=2)

@@ -36,7 +36,7 @@ def _param_name_suggests_path(name: str) -> bool:
     if not name:
         return False
     name = name.lower()
-    for token in ("path", "dir", "file", "model", "slices", "output", "input", "run"):
+    for token in ("path", "dir", "file", "model", "slices", "run"):
         if token in name:
             return True
     return False
@@ -57,11 +57,9 @@ def _looks_like_path(value: str) -> bool:
     return False
 
 
-def _maybe_normalize_from_prompt(param_name: str, prompt_message: str, value: str) -> str:
+def _maybe_normalize_from_prompt(param_name: str, value: str) -> str:
     try:
-        if _param_name_suggests_path(param_name) or _looks_like_path(value) or (
-            prompt_message and any(t in prompt_message.lower() for t in ["path", "directory", "dir", "file"])  # heuristic
-        ):
+        if _param_name_suggests_path(param_name) or _looks_like_path(value):
             return normalize_path(value)
     except Exception:
         pass
@@ -262,7 +260,7 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
                     logger.debug(f"Using default run name for {param_name}: {default}")
                     return str(default)
                 else:
-                    normalized_default = _maybe_normalize_from_prompt(param_name, prompt_message, str(default))
+                    normalized_default = _maybe_normalize_from_prompt(param_name, str(default))
                     logger.debug(f"Using default value for {param_name}: {normalized_default}")
                     return normalized_default
             value = user_input.strip().strip('\'"')  # Strip surrounding quotes
@@ -271,7 +269,7 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
                 logger.debug(f"User provided run name for {param_name}: {value}")
                 return value
             else:
-                value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
+                value = _maybe_normalize_from_prompt(param_name, value)
                 logger.debug(f"User provided value for {param_name}: {value}")
                 return value
         else:
@@ -280,7 +278,7 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
                 if user_input.strip() or not required:
                     if user_input.strip():
                         value = user_input.strip().strip('\'"')  # Strip surrounding quotes
-                        value = _maybe_normalize_from_prompt(param_name, prompt_message, value)
+                        value = _maybe_normalize_from_prompt(param_name, value)
                         logger.debug(f"User provided value for {param_name}: {value}")
                         return value
                     else:

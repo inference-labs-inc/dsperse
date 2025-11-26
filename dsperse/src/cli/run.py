@@ -27,7 +27,7 @@ def setup_parser(subparsers):
     run_parser.set_defaults(command='run')
 
     # Arguments with aliases/shorthands
-    run_parser.add_argument('--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_dir',
+    run_parser.add_argument('--slices-path', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='slices_dir',
                             help='Directory containing the slices')
     run_parser.add_argument('--run-metadata-path', help='Path to run metadata.json (auto-generated if not provided)')
     run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
@@ -40,7 +40,7 @@ def setup_parser(subparsers):
 def run_inference(args):
     """
     Run inference on a model based on the provided arguments.
-    
+
     This command requires a slices directory. The parent directory of the slices
     is treated as the model directory, which is used for defaults like input/output paths.
 
@@ -60,28 +60,24 @@ def run_inference(args):
         return
 
     # Validate slices directory has metadata and normalize to the actual slices directory
-    meta_in_dir = os.path.exists(os.path.join(args.slices_dir, 'metadata.json'))
-    meta_in_sub = os.path.exists(os.path.join(args.slices_dir, 'slices', 'metadata.json'))
-
-    if not (meta_in_dir or meta_in_sub):
-        print(f"{Fore.YELLOW}Warning: No slices metadata found at the provided path. Please slice the model first.{Style.RESET_ALL}")
-        logger.error("Run requires a valid slices directory with metadata.json")
-        return
-
-    if meta_in_dir:
+    if os.path.exists(os.path.join(args.slices_dir, 'metadata.json')):
         slices_dir_effective = args.slices_dir
         model_dir = os.path.dirname(args.slices_dir.rstrip('/')) or '.'
-    else:
+    elif os.path.exists(os.path.join(args.slices_dir, 'slices', 'metadata.json')):
         # metadata inside a 'slices' subfolder; treat provided path as model_dir
         slices_dir_effective = os.path.join(args.slices_dir, 'slices')
         model_dir = args.slices_dir
+    else:
+        print(f"{Fore.YELLOW}Warning: No slices metadata found at the provided path. Please slice the model first.{Style.RESET_ALL}")
+        logger.error("Run requires a valid slices directory with metadata.json")
+        return
 
     # Normalize derived paths
     slices_dir_effective = normalize_path(slices_dir_effective)
     model_dir = normalize_path(model_dir)
 
     # Get run metadata path if provided, otherwise None (Runner will auto-generate)
-    run_metadata_path = args.run_metadata_path if hasattr(args, 'run_metadata_path') and args.run_metadata_path else None
+    run_metadata_path = getattr(args, 'run_metadata_path', None)
     if run_metadata_path:
         run_metadata_path = normalize_path(run_metadata_path)
 
@@ -123,7 +119,7 @@ def run_inference(args):
         # Use the Runner class for inference
         logger.info("Using Runner class for model inference")
         logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
-        
+
         start_time = time.time()
         runner = Runner(
             model_path=model_dir,
@@ -132,7 +128,7 @@ def run_inference(args):
         )
         result = runner.run(args.input_file)
         elapsed_time = time.time() - start_time
-        
+
         print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         logger.info(f"Inference completed in {elapsed_time:.2f} seconds")
 

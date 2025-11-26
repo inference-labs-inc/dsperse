@@ -109,7 +109,10 @@ EASTER_EGGS = [
     "The answer to life, the universe, and everything is... 42 (but you need a neural network to understand why).",
     "Neural networks don't actually think. They just do math really fast.",
     "If you're reading this, you're awesome! Keep up the great work!",
-    "Dsperse: Making neural networks more transparent, one slice at a time."
+    "Dsperse: Making neural networks more transparent, one slice at a time.",
+    "Remember: With great power comes great responsibility (and large models).",
+    "Keep calm and slice on!",
+    "Why did the neural network go to school? To improve its 'weights'!",
 ]
 
 def print_header():

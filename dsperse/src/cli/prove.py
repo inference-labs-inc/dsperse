@@ -126,18 +126,20 @@ def run_proof(args):
                     default_model_path = os.path.dirname(os.path.dirname(latest_run_path))
 
         # Prompt with default if found
-        if default_run:
-            candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)', default=default_run)
-        else:
-            candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)')
+        candidate = prompt_for_value(
+            'run-or-run-id-dir',
+            'Enter run directory (runs root or a run_* directory)',
+            default=default_run or None
+        )
+
 
     # Handle run names (starts with "run_") - prepend run/ directory BEFORE normalization
-    if candidate and candidate.startswith('run_') and not candidate.startswith('/') and not candidate.startswith('./') and not candidate.startswith('../'):
+    if candidate and candidate.startswith('run_'):
         # Always try current directory's run/ first (for when running from model directory)
         current_run_dir = os.path.join(os.getcwd(), "run")
         if os.path.exists(current_run_dir):
             candidate = os.path.join(current_run_dir, candidate)
-        elif 'default_model_path' in locals() and default_model_path and default_model_path != os.getcwd():
+        elif default_model_path and default_model_path != os.getcwd():
             # Use stored default model path if different from current directory
             model_run_dir = os.path.join(default_model_path, "run")
             candidate = os.path.join(model_run_dir, candidate)
@@ -149,6 +151,8 @@ def run_proof(args):
                     model_path = os.path.join(models_dir, model_name)
                     if os.path.isdir(model_path):
                         model_run_dir = os.path.join(model_path, "run")
+                        # XXX: so we just find any model dir with `run` in it and just use that? Seems brittle.
+                        #      What if multiple models have runs? That would lead to really confusing behavior.
                         if os.path.exists(model_run_dir) and os.path.exists(os.path.join(model_run_dir, candidate)):
                             candidate = os.path.join(model_run_dir, candidate)
                             break
@@ -156,7 +160,6 @@ def run_proof(args):
     elif candidate and candidate.startswith('/') and os.path.basename(candidate).startswith('run_'):
         # Check if this is a run name that was normalized to the wrong directory
         basename = os.path.basename(candidate)
-        dirname = os.path.dirname(candidate)
 
         # If the directory doesn't exist but we have model directories, look there
         if not os.path.exists(candidate):

@@ -33,7 +33,7 @@ def setup_parser(subparsers):
                                  help='Path to the model file (.onnx) or directory containing the model')
     full_run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                  help='Path to input file for inference and compilation calibration (e.g., input.json)')
-    full_run_parser.add_argument('--slices-dir', '--slices-directory', '--slices-directroy', '--sd', '-s', dest='slices_dir',
+    full_run_parser.add_argument('--slices-dir', '--slices-path', '--slices-directory', '--slices-directory', '--sd', '-s', dest='slices_dir',
                                  help='Optional: Pre-existing slices directory to reuse (skips slicing step)')
     full_run_parser.add_argument('--layers', '-l', help='Optional: Layers to compile (e.g., "3, 20-22") passed through to compile')
     # Optional: allow non-interactive mode later if desired; kept interactive by default
@@ -72,9 +72,10 @@ def full_run(args):
 
     using_builtin = False
     builtin_name = None
+    canonical_model_dir = None
 
     # 1) Resolve inputs interactively
-    if (not hasattr(args, 'model_dir') or not args.model_dir) and (not hasattr(args, 'input_file') or not args.input_file):
+    if not getattr(args, 'model_dir', None) and not getattr(args, 'input_file', None):
         # Special prompt that accepts either a filesystem location or a built-in token
         choice = prompt_for_value(
             'selection',
@@ -96,22 +97,22 @@ def full_run(args):
             # Set args to point to sources
             args.model_dir = model_onnx
             args.input_file = input_json
-            # Output root under user's home
-            output_root = os.path.expanduser(os.path.join('~', 'dsperse', builtin_name))
-            os.makedirs(output_root, exist_ok=True)
-            # For downstream steps, canonical model dir should be the output root
-            canonical_model_dir = normalize_path(output_root)
+            # For downstream steps, canonical model dir should be the output root. Make one under user's home
+            canonical_model_dir = normalize_path(os.path.join('~', 'dsperse', builtin_name))
+            os.makedirs(canonical_model_dir, exist_ok=True)
             print(f"{Fore.CYAN}Using built-in model '{builtin_name}'. Outputs will be saved under {canonical_model_dir}{Style.RESET_ALL}")
         else:
             # Treat as a user-provided file or directory path
             args.model_dir = normalize_path(choice)
-            canonical_model_dir = _determine_model_dir(args.model_dir)
+    elif getattr(args, 'model_dir', None):
+        # If model_dir provided - normalize provided values
+        args.model_dir = normalize_path(args.model_dir)
     else:
-        # Normalize provided values
-        if hasattr(args, 'model_dir') and args.model_dir:
-            args.model_dir = normalize_path(args.model_dir)
-        # Determine canonical model directory for downstream steps
-        canonical_model_dir = _determine_model_dir(args.model_dir)
+        # If only input_file provided
+        args.model_dir = os.path.dirname(normalize_path(args.input_file))
+
+    # Determine canonical model directory for downstream steps
+    canonical_model_dir = canonical_model_dir or _determine_model_dir(args.model_dir)
 
     # Input file resolution
     if hasattr(args, 'input_file') and args.input_file:
@@ -122,30 +123,24 @@ def full_run(args):
         args.input_file = prompt_for_value('input-file', 'Enter the input file', default=default_input, required=True)
         args.input_file = normalize_path(args.input_file) if args.input_file else args.input_file
 
-    # If user provided an existing slices directory, skip slicing step
+    # 2) Slice (unless slices-dir provided)
     slices_dir = None
     if hasattr(args, 'slices_dir') and args.slices_dir:
+        # If user provided an existing slices directory, skip slicing step
         slices_dir = normalize_path(args.slices_dir)
-
-    # 2) Slice (unless slices-dir provided)
-    if not slices_dir:
+        print(f"{Fore.YELLOW}Skipping slicing step, using existing slices at: {slices_dir}{Style.RESET_ALL}")
+    else:
         # Default slices dir depends on whether we're using a built-in selection
-        default_slices_dir = os.path.join(canonical_model_dir, 'slices')
+        slices_dir = os.path.join(canonical_model_dir, 'slices')
         analysis_dir = os.path.join(canonical_model_dir, 'analysis')
-        try:
-            os.makedirs(default_slices_dir, exist_ok=True)
-            os.makedirs(analysis_dir, exist_ok=True)
-        except Exception:
-            pass
+        os.makedirs(slices_dir, exist_ok=True)
+        os.makedirs(analysis_dir, exist_ok=True)
         # Call existing slice command; keep its logic and interactivity.
         # For built-ins, we point the slicer to the built-in model file but output to ~/dsperse/{name}/slices
         model_metadata_path = os.path.join(analysis_dir, 'model_metadata.json')
-        slice_args = Namespace(model_dir=args.model_dir, output_dir=default_slices_dir, save_file=model_metadata_path)
+        slice_args = Namespace(model_dir=args.model_dir, output_dir=slices_dir, save_file=model_metadata_path)
         print(f"{Fore.CYAN}Step 1/5: Slicing model...{Style.RESET_ALL}")
         slice_model(slice_args)
-        slices_dir = default_slices_dir
-    else:
-        print(f"{Fore.YELLOW}Skipping slicing step, using existing slices at: {slices_dir}{Style.RESET_ALL}")
 
     # 3) Compile (circuitize) with calibration input
     compile_args = Namespace(slices_path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None))
@@ -154,10 +149,8 @@ def full_run(args):
 
     # 4) Run inference
     run_root_dir = os.path.join(canonical_model_dir, 'run')
-    try:
-        os.makedirs(run_root_dir, exist_ok=True)
-    except Exception:
-        pass
+    os.makedirs(run_root_dir, exist_ok=True)
+
     inference_output_path = os.path.join(run_root_dir, 'inference_results.json')
     run_args = Namespace(slices_dir=slices_dir, run_metadata_path=None, input_file=args.input_file, output_file=inference_output_path)
     print(f"{Fore.CYAN}Step 3/5: Running inference over slices...{Style.RESET_ALL}")

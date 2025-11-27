@@ -15,73 +15,52 @@ from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.run.utils.runner_utils import RunnerUtils
+from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 
 class Runner:
-    def __init__(self, slice_path: str, run_metadata_path: str = None, save_metadata_path: str = None):
-        self.slices_path = Path(slice_path)
+    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, slice_path: str | None = None):
+        """Initialize the Runner.
 
-        if not slice_path or not Path(slice_path).exists():
-            raise Exception("A path of a dslice file or dsperse file is required.")
+        Note: slice_path is now optional here and can be provided later to run(...).
+        We keep run_metadata_path and save_metadata_path at instantiation as requested.
+        """
 
-        # Load or generate run metadata from the new RunnerAnalyzer only
-        if not run_metadata_path:
-            if save_metadata_path:
-                save_path = Path(save_metadata_path)
-            else:
-                ts = time.strftime('%Y%m%d_%H%M%S')
-                # Save metadata inside a unique run_id folder when no explicit path is provided
-                base_dir = Path(slice_path).parent
-                if base_dir.name == "slices":
-                    base_dir = base_dir.parent
-                save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
-            self.run_metadata = RunnerAnalyzer.generate_run_metadata(slice_path, save_path)
-        else:
-            with open(run_metadata_path, 'r') as f:
-                self.run_metadata = json.load(f)
+        self.slices_path = Path(slice_path) if slice_path else None
+        self._provided_run_metadata_path = run_metadata_path
+        self._save_metadata_path = save_metadata_path
+        self.run_metadata = None
 
         self.ezkl_runner = EZKL()
 
 
-    def run(self, input_json_path, output_path: str = None) -> dict:
-        """Run inference through the chain using run/metadata.json."""
-        self.metadata = getattr(self, "run_metadata", {})
-        m = self.metadata or {}
-        slices_root, self._original_format, model_path = RunnerUtils.normalize_for_runtime(m, self.slices_path)
-        self.slices_path = slices_root
-        head, nodes = RunnerAnalyzer.get_execution_chain(m)
-        run_dir = RunnerUtils.make_run_dir(m, output_path, model_path)
+    def run(self, input_json_path, slice_path: str, output_path: str = None) -> dict:
+        """Run inference through the chain using run/metadata.json.
 
-        current_slice_id = head
-        current_tensor = Utils.read_input(input_json_path)
-        slice_results = {}
+        slice_path can be provided here (preferred) or at construction time for backward compatibility.
+        """
+        # Ensure slices path is available and valid
+        if slice_path is None or not Path(slice_path).exists():
+            raise Exception("A valid path must be provided for slices")
+        self.slices_path = Path(slice_path)
 
-        while current_slice_id:
-            slice_dir = self.slices_path / current_slice_id
-            _, in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
-            Utils.write_input(current_tensor, str(in_file))
-            info = m["slices"][current_slice_id]
-            ok, tensor, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)
-            slice_results[current_slice_id] = exec_info
-            if not ok:
-                raise Exception(f"Inference failed for {current_slice_id}: {exec_info.get('error','unknown')}")
-            current_tensor = RunnerUtils.filter_tensor(info, tensor)
-            current_slice_id = nodes[current_slice_id].get("next")
+        # convert to dirs
+        format = Converter.detect_type(self.slices_path)
+        if format != "dirs":
+            slices_path = Converter.convert(str(self.slices_path), output_type="dirs")
+            self.slices_path = Path(slices_path)
 
-        probs = F.softmax(current_tensor, dim=1)
-        pred = torch.argmax(probs, dim=1).item()
-        results = {
-            "prediction": pred,
-            "probabilities": probs.tolist(),
-            "tensor_shape": list(current_tensor.shape),
-            "slice_results": slice_results,
-        }
+        # Generate run metadata if needed
+        self._generate_run_metadata(format)
 
-        run_dir.mkdir(parents=True, exist_ok=True)
-        self._save_inference_output(results, run_dir / "run_results.json")
-        RunnerUtils.repackage_if_needed(self._original_format, self.slices_path)
+        # run inference
+        results = self._run(input_json_path=input_json_path, output_path=output_path)
+
+        if format != "dirs":
+            self.slices_path = Converter.convert(str(self.slices_path), output_type=format, cleanup=True)
+
         return results
 
     @staticmethod
@@ -126,22 +105,10 @@ class Runner:
         under the provided `slice_dir` if necessary.
         """
         def _resolve_rel_path(p: str, base_dir: Path) -> str:
-            if not p:
-                return None
-            p_str = str(p)
-            if os.path.isabs(p_str):
-                return p_str
-            try:
-                sd_name = os.path.basename(os.path.abspath(str(base_dir))) if base_dir else None
-            except Exception:
-                sd_name = None
-            parts = p_str.split(os.sep)
-            if sd_name and parts and parts[0] == sd_name:
-                parts = parts[1:]
-                p_str = os.path.join(*parts) if parts else ''
-            if base_dir:
-                return str((Path(base_dir) / p_str).resolve())
-            return os.path.abspath(p_str)
+            path = str((base_dir / p).resolve())
+            if not Path(path).exists():
+                path = str((Path(base_dir).parent / Path(p)).resolve())
+            return path
 
         model_path = slice_info.get("circuit_path")
         vk_path = slice_info.get("vk_path")
@@ -189,7 +156,7 @@ class Runner:
     
     def _save_inference_output(self, results, output_path):
         """Save inference_output.json with execution details."""
-        model_path = self.metadata.get("model_path", "unknown")
+        model_path = self.run_metadata.get("model_path", "unknown")
         slice_results = results.get("slice_results", {})
         
         # Count execution methods
@@ -239,17 +206,66 @@ class Runner:
                 "note": "Full ONNX vs verified chain comparison would require separate pure ONNX run"
             }
         }
-        
-        # Save to file
-        # Ensure output directory exists
+
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w') as f:
             json.dump(inference_output, f, indent=2)
 
+    def _generate_run_metadata(self, format: str = "dirs"):
+        if self._provided_run_metadata_path:
+            with open(self._provided_run_metadata_path, 'r') as f:
+                self.run_metadata = json.load(f)
+        else:
+            if self._save_metadata_path:
+                save_path = Path(self._save_metadata_path)
+            else:
+                ts = time.strftime('%Y%m%d_%H%M%S')
+                base_dir = self.slices_path.parent
+                if base_dir.name == "slices":
+                    base_dir = base_dir.parent
+                save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
+            self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
+
+
+    def _run(self, output_path=None, input_json_path=None):
+        head, nodes = RunnerAnalyzer.get_execution_chain(self.run_metadata)
+        run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
+
+        current_slice_id = head
+        current_tensor = Utils.read_input(input_json_path)
+        slice_results = {}
+
+        while current_slice_id:
+            info = self.run_metadata["slices"][current_slice_id]
+            slice_dir = self.slices_path
+            in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
+            Utils.write_input(current_tensor, str(in_file))
+            ok, tensor, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file,
+                                                              slice_dir)
+            slice_results[current_slice_id] = exec_info
+            if not ok:
+                raise Exception(f"Inference failed for {current_slice_id}: {exec_info.get('error', 'unknown')}")
+            current_tensor = RunnerUtils.filter_tensor(info, tensor)
+            current_slice_id = nodes[current_slice_id].get("next")
+
+        probs = F.softmax(current_tensor, dim=1)
+        pred = torch.argmax(probs, dim=1).item()
+        results = {
+            "prediction": pred,
+            "probabilities": probs.tolist(),
+            "tensor_shape": list(current_tensor.shape),
+            "slice_results": slice_results,
+        }
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        self._save_inference_output(results, run_dir / "run_results.json")
+
+        return results
+
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -263,22 +279,19 @@ if __name__ == "__main__":
     # Get model directory
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0.dslice") # give a single slice to test
     input_json = os.path.join(abs_path, "input.json")
-    # input_json = "/Volumes/SSD/Users/dan/Projects/dsperse/dsperse/models/net/run/run_20251120_113439/slice_3/input.json"
-    run_metadata_path = None #os.path.join(abs_path, "run", "metadata.json") if os.path.exists(
-       # os.path.join(abs_path, "run", "metadata.json")) else None
+    run_metadata_path = None
 
-    saved_run_metadata_path = None #os.path.join(abs_path, "run", "metadata.json")
+    saved_run_metadata_path = None
 
     print(f"saves run metadata to {saved_run_metadata_path}")
 
-    # Initialize runner (auto-generates run metadata if needed)
-    runner = Runner(slice_path=slices_dir, run_metadata_path=run_metadata_path, save_metadata_path=saved_run_metadata_path)
+    # Initialize runner (auto-generates run metadata if needed). Slices dir is now passed to run(...).
+    runner = Runner(run_metadata_path=run_metadata_path, save_metadata_path=saved_run_metadata_path)
 
     # Run inference
     print(f"Running inference on model {base_paths[model_choice]}...")
-    results = runner.run(input_json)
+    results = runner.run(input_json, slice_path=slices_dir)
 
     # Display results
     print(f"\nPrediction: {results['prediction']}")

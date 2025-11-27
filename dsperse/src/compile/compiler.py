@@ -38,7 +38,7 @@ class Compiler:
         self.ezkl = EZKL()
 
 
-    def _compile_slice(self, slice_data, base_path: str):
+    def _compile_slice(self, idx, slice_data, base_path: str):
         """
         Function for compiling a single slice.
         """
@@ -73,10 +73,10 @@ class Compiler:
 
         if slice_data.get('slice_metadata') and os.path.exists(slice_data.get('slice_metadata')):
             path = Path(slice_data.get('slice_metadata'))
-            CompilerUtils.update_slice_metadata(path, success, file_paths)
+            CompilerUtils.update_slice_metadata(idx, path, success, file_paths)
         elif slice_data.get('slice_metadata_relative_path') and os.path.exists(os.path.join(base_path, slice_data.get('slice_metadata_relative_path'))):
             path = Path(os.path.join(base_path, slice_data.get('slice_metadata_relative_path')))
-            CompilerUtils.update_slice_metadata(path, success, file_paths)
+            CompilerUtils.update_slice_metadata(idx, path, success, file_paths)
 
         return success, file_paths
 
@@ -117,7 +117,7 @@ class Compiler:
 
             logger.info(f"Compiling slice {idx}...")
 
-            success, file_paths = self._compile_slice(slice_data, base_path)
+            success, file_paths = self._compile_slice(idx, slice_data, base_path)
 
             compiled_count += 1
             logger.info(f"Completed slice {idx}")
@@ -183,7 +183,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "../models/doom",

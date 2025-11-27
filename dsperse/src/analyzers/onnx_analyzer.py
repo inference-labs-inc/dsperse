@@ -32,14 +32,13 @@ class OnnxAnalyzer:
         """
         # Extract model metadata
         graph = self.onnx_model.graph
-
         # Create maps for initializers and value info
         initializer_map = {init.name: init for init in graph.initializer}
 
         # Build a comprehensive value_info map from the original full model
-        full_model_value_info_map = {vi.name: vi for vi in graph.value_info}
-        full_model_value_info_map.update({vi.name: vi for vi in graph.input})
-        full_model_value_info_map.update({vi.name: vi for vi in graph.output})
+        # full_model_value_info_map = {vi.name: vi for vi in graph.value_info}
+        # full_model_value_info_map.update({vi.name: vi for vi in graph.input})
+        # full_model_value_info_map.update({vi.name: vi for vi in graph.output})
 
         model_input_shape = self._get_model_input_shapes(graph, initializer_map)
         model_output_shape = self._get_model_output_shapes(graph)

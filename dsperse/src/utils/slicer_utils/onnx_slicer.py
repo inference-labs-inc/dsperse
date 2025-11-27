@@ -1,12 +1,14 @@
+import logging
 import os.path
+from typing import List
+
 import onnx
 from onnx import shape_inference
-import logging
-from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
-from typing import List, Dict
-from dsperse.src.utils.utils import Utils
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
+
+from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
+from dsperse.src.utils.utils import Utils
 
 # Configure logger
 logger = logging.getLogger(__name__)

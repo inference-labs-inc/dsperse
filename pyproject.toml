@@ -7,13 +7,13 @@ name = "dsperse"
 version = "1.0.1"
 description = "Distributed zkML Toolkit"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = "==3.12.*"
 license = { file = "LICENSE" }
 authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
 dependencies = [
   "torch==2.7.1",
   "onnx==1.18.0",
-  "pytest==8.3.5",
+  "pytest>=8.4.1",
   "ezkl==22.2.1",
   "networkx~=3.4.2",
   "matplotlib~=3.10.1",

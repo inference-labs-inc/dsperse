@@ -176,10 +176,16 @@ class RunnerAnalyzer:
             files = (comp.get("files") or {})
             compiled_flag = bool(comp.get("compiled", False))
 
-            circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
-            settings_path = os.path.join(parent_dir, files.get("settings"))
-            pk_path = os.path.join(parent_dir, files.get("pk_key"))
-            vk_path = os.path.join(parent_dir, files.get("vk_key"))
+            if files:
+                circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
+                settings_path = os.path.join(parent_dir, files.get("settings"))
+                pk_path = os.path.join(parent_dir, files.get("pk_key"))
+                vk_path = os.path.join(parent_dir, files.get("vk_key"))
+            else:
+                circuit_path = None
+                settings_path = None
+                pk_path = None
+                vk_path = None
 
             slices[slice_key] = {
                 "path": onnx_path,

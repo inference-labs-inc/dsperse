@@ -40,7 +40,7 @@ def setup_parser(subparsers):
 def run_inference(args):
     """
     Run inference on a model based on the provided arguments.
-    
+
     Accepts a slices directory or a .dsperse/.dslice file. The parent directory
     of the slices (or the file) is treated as the model directory for default IO paths.
 
@@ -128,17 +128,13 @@ def run_inference(args):
         # Use the Runner class for inference
         logger.info("Using Runner class for model inference")
         logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
-        
+
         start_time = time.time()
         # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
-        slice_path = slices_dir_effective or model_dir
-        runner = Runner(
-            slice_path=slice_path,
-            run_metadata_path=run_metadata_path
-        )
-        result = runner.run(args.input_file)
+        runner = Runner(run_metadata_path=run_metadata_path)
+        result = runner.run(args.input_file, slice_path=slices_dir_effective or model_dir)
         elapsed_time = time.time() - start_time
-        
+
         print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         logger.info(f"Inference completed in {elapsed_time:.2f} seconds")
 

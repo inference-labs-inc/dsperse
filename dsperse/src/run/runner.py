@@ -21,14 +21,11 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 class Runner:
-    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, slice_path: str | None = None):
+    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None):
         """Initialize the Runner.
 
-        Note: slice_path is now optional here and can be provided later to run(...).
         We keep run_metadata_path and save_metadata_path at instantiation as requested.
         """
-
-        self.slices_path = Path(slice_path) if slice_path else None
         self._provided_run_metadata_path = run_metadata_path
         self._save_metadata_path = save_metadata_path
         self.run_metadata = None
@@ -153,17 +150,19 @@ class Runner:
             exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
 
         return success, output_tensor, exec_info
-    
+
     def _save_inference_output(self, results, output_path):
         """Save inference_output.json with execution details."""
         model_path = self.run_metadata.get("model_path", "unknown")
         slice_results = results.get("slice_results", {})
-        
+
         # Count execution methods
-        ezkl_complete = sum(1 for r in slice_results.values() 
-                           if r.get("method") == "ezkl_gen_witness")
+        ezkl_complete = sum(
+            1 for r in slice_results.values()
+            if r.get("method") == "ezkl_gen_witness"
+        )
         total_slices = len(slice_results)
-        
+
         # Build execution results
         execution_results = []
         for slice_id, exec_info in slice_results.items():
@@ -179,18 +178,18 @@ class Runner:
             # Propagate error message if present (e.g., EZKL failure reason before fallback)
             if "error" in exec_info and exec_info["error"]:
                 witness_execution["error"] = exec_info["error"]
-            
+
             # Create result_entry with segment_id and witness_execution
             result_entry = {
                 "slice_id": slice_id,
                 "witness_execution": witness_execution
             }
-            
+
             execution_results.append(result_entry)
-        
+
         # Calculate security percentage
         security_percent = (ezkl_complete / total_slices * 100) if total_slices > 0 else 0
-        
+
         # Build output structure
         inference_output = {
             "model_path": model_path,

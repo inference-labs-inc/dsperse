@@ -25,6 +25,7 @@ class RunnerUtils:
         model_path = Path((run_metadata or {}).get("model_path", Path(slices_path).parent)).resolve()
 
         # Correct accidental model_path pointing to the slices folder
+        #TODO: find a better way to do this
         if model_path.name == "slices":
             model_path = model_path.parent
 
@@ -68,12 +69,12 @@ class RunnerUtils:
         return base_run_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
 
     @staticmethod
-    def prepare_slice_io(run_dir: Path, slice_id: str) -> tuple[Path, Path, Path]:
+    def prepare_slice_io(run_dir: Path, slice_id: str) -> tuple[Path, Path]:
         slice_run_dir = run_dir / slice_id
         slice_run_dir.mkdir(parents=True, exist_ok=True)
         in_file = slice_run_dir / "input.json"
         out_file = slice_run_dir / "output.json"
-        return slice_run_dir, in_file, out_file
+        return in_file, out_file
 
     @staticmethod
     def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
@@ -91,14 +92,6 @@ class RunnerUtils:
         ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
         onnx_info["attempted_ezkl"] = False
         return ok, tensor, onnx_info
-
-    @staticmethod
-    def repackage_if_needed(original_format: str | None, slices_root: Path):
-        if original_format:
-            try:
-                Converter.convert(str(slices_root), output_type=original_format, cleanup=True)
-            except Exception as e:
-                logger.warning(f"Failed to repackage to {original_format}: {e}")
 
     @staticmethod
     def _get_file_path() -> str:
@@ -141,11 +134,6 @@ class RunnerUtils:
                 input_tensor = torch.tensor([input_data], dtype=torch.float32)
         else:
             raise ValueError("Expected input data to be a list or nested list")
-
-        # reshape input tensor for the model
-        # input_tensor = RunnerUtils.reshape(input_tensor, model_directory=model_directory)
-        # if save_reshape:
-        #     ModelUtils.save_tensor_to_json(input_tensor, "input_data_reshaped.json", model_directory)
 
         return input_tensor
         

@@ -187,11 +187,12 @@ class CompilerUtils:
 
 
     @staticmethod
-    def update_slice_metadata(filepath: str | Path, success: bool, file_paths: Dict[str, str | None], backend_name: str = "ezkl"):
+    def update_slice_metadata(idx: int, filepath: str | Path, success: bool, file_paths: Dict[str, str | None], backend_name: str = "ezkl"):
         """
         Update the per-slice metadata.json file with compilation results.
 
         Args:
+            idx: Slice index
             filepath: Path to the slice's metadata.json file
             success: Boolean indicating if compilation was successful
             file_paths: Dictionary containing file paths for compilation results
@@ -232,12 +233,23 @@ class CompilerUtils:
         if errors:
             compilation_info["errors"] = errors
 
-        # Ensure compilation section exists
-        if 'compilation' not in slice_metadata:
-            slice_metadata['compilation'] = {}
+        # Find the specific slice by index and update its compilation info
+        updated = False
+        if 'slices' in slice_metadata and isinstance(slice_metadata['slices'], list):
+            for slice_item in slice_metadata['slices']:
+                if slice_item.get('index') == idx:
+                    if 'compilation' not in slice_item:
+                        slice_item['compilation'] = {}
+                    slice_item['compilation'][backend_name] = compilation_info
+                    updated = True
+                    break
 
-        # Update slice metadata with backend info nested under compilation
-        slice_metadata['compilation'][backend_name] = compilation_info
+        if not updated:
+            # Fallback: update at root level if slice not found in list
+            if 'compilation' not in slice_metadata:
+                slice_metadata['compilation'] = {}
+            slice_metadata['compilation'][backend_name] = compilation_info
+            logger.debug(f"Slice with index {idx} not found in slices list. Added compilation info at root level.")
 
         # Save updated slice metadata
         with open(filepath, 'w') as f:

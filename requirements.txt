@@ -9,4 +9,7 @@ tqdm~=4.67.1
 onnxruntime==1.21.0
 colorama~=0.4.6
 
+# JSTprove backend requirements
+# Note: jstprove is installed via 'uv tool install jstprove' (see install.sh)
+# mpi4py requires Open MPI to be installed first: brew install open-mpi
 mpi4py>=3.1.0

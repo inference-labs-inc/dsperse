@@ -133,10 +133,15 @@ class Compiler:
         return self._get_ezkl()
 
 
-    def _compile_slice(self, slice_data, base_path: str, layer_idx: int = 0):
+    def _compile_slice(self, idx: int, slice_data: dict, base_path: str):
         """
         Function for compiling a single slice with fallback support.
         Tries jstprove -> ezkl -> onnx (skip) if fallback is enabled.
+        
+        Args:
+            idx: Slice index
+            slice_data: Dictionary containing slice information
+            base_path: Base path for resolving relative paths
         """
         slice_path = slice_data.get('path')
         if slice_path and os.path.exists(slice_path):
@@ -151,7 +156,7 @@ class Compiler:
             raise FileNotFoundError(f"No valid path found for slice")
 
         # Get the backend for this specific layer
-        backend, backend_name = self._get_backend_for_layer(layer_idx)
+        backend, backend_name = self._get_backend_for_layer(idx)
 
         # Build list of backends to try
         backends_to_try = []
@@ -228,10 +233,10 @@ class Compiler:
 
         if slice_data.get('slice_metadata') and os.path.exists(slice_data.get('slice_metadata')):
             path = Path(slice_data.get('slice_metadata'))
-            CompilerUtils.update_slice_metadata(path, success, file_paths, backend_name=used_backend or "onnx")
+            CompilerUtils.update_slice_metadata(idx, path, success, file_paths, backend_name=used_backend or "onnx")
         elif slice_data.get('slice_metadata_relative_path') and os.path.exists(os.path.join(base_path, slice_data.get('slice_metadata_relative_path'))):
             path = Path(os.path.join(base_path, slice_data.get('slice_metadata_relative_path')))
-            CompilerUtils.update_slice_metadata(path, success, file_paths, backend_name=used_backend or "onnx")
+            CompilerUtils.update_slice_metadata(idx, path, success, file_paths, backend_name=used_backend or "onnx")
 
         return success, file_paths, used_backend
 
@@ -331,7 +336,7 @@ class Compiler:
 
             logger.info(f"Compiling slice {idx}...")
 
-            success, file_paths, used_backend = self._compile_slice(slice_data, base_path, layer_idx=idx)
+            success, file_paths, used_backend = self._compile_slice(idx, slice_data, base_path)
 
             compiled_count += 1
             backend_stats[idx] = used_backend
@@ -415,7 +420,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "../models/doom",

@@ -195,7 +195,7 @@ class Compiler:
         for try_backend, try_backend_name in backends_to_try:
             if try_backend is None:
                 # Skip compilation - will use onnx at runtime
-                logger.info(f"Slice {layer_idx}: Skipping ZK compilation, will use ONNX at runtime")
+                logger.info(f"Slice {idx}: Skipping ZK compilation, will use ONNX at runtime")
                 success = True
                 used_backend = "onnx"
                 compilation_data = {"skipped": True, "reason": "fallback_to_onnx"}
@@ -211,7 +211,7 @@ class Compiler:
             ) if os.path.exists(os.path.join(os.path.dirname(slice_path), backend_dir, "calibration.json")) else None
 
             try:
-                logger.info(f"Slice {layer_idx}: Trying {try_backend_name}...")
+                logger.info(f"Slice {idx}: Trying {try_backend_name}...")
                 compilation_data = try_backend.compilation_pipeline(
                     slice_path,
                     slice_output_path,
@@ -220,12 +220,12 @@ class Compiler:
                 success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
                 if success:
                     used_backend = try_backend_name
-                    logger.info(f"Slice {layer_idx}: {try_backend_name} compilation succeeded")
+                    logger.info(f"Slice {idx}: {try_backend_name} compilation succeeded")
                     break
                 else:
-                    logger.warning(f"Slice {layer_idx}: {try_backend_name} compilation failed, trying fallback...")
+                    logger.warning(f"Slice {idx}: {try_backend_name} compilation failed, trying fallback...")
             except Exception as e:
-                logger.warning(f"Slice {layer_idx}: {try_backend_name} error: {e}, trying fallback...")
+                logger.warning(f"Slice {idx}: {try_backend_name} error: {e}, trying fallback...")
                 if not self.use_fallback:
                     raise
 

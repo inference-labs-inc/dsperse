@@ -105,12 +105,24 @@ class CompilerUtils:
     def is_ezkl_compilation_successful(compilation_data: Dict[str, Any]) -> bool:
         """
         Determine if compilation was successful based on produced file paths.
-        A path is considered valid if it exists and contains the 'payload' directory.
+        EZKL files are in payload subdirectories, JSTprove files are in backend directories.
+        Supports both EZKL and JSTprove backends.
         """
-        def _ok(key: str) -> bool:
+        def _ok_ezkl(key: str) -> bool:
             p = compilation_data.get(key)
             return bool(p) and os.path.exists(p) and ('payload' in str(p).split(os.sep))
-        return all([_ok('compiled'), _ok('vk_key'), _ok('pk_key'), _ok('settings')])
+
+        def _ok_jstprove(key: str) -> bool:
+            p = compilation_data.get(key)
+            return bool(p) and os.path.exists(p)  # JSTprove doesn't use payload subdirs
+
+        # Check if this is a JSTprove compilation (has 'circuit' key, no 'vk_key'/'pk_key')
+        if compilation_data.get('circuit') and not compilation_data.get('vk_key'):
+            # JSTprove requires 'compiled' (circuit) and 'settings'
+            return _ok_jstprove('compiled') and _ok_jstprove('settings')
+
+        # EZKL requires compiled, vk_key, pk_key, settings
+        return all([_ok_ezkl('compiled'), _ok_ezkl('vk_key'), _ok_ezkl('pk_key'), _ok_ezkl('settings')])
 
     @staticmethod
     def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str]) -> dict[str, str | None]:

@@ -187,7 +187,7 @@ class CompilerUtils:
 
 
     @staticmethod
-    def update_slice_metadata(filepath: str | Path, success: bool, file_paths: Dict[str, str | None]):
+    def update_slice_metadata(filepath: str | Path, success: bool, file_paths: Dict[str, str | None], backend_name: str = "ezkl"):
         """
         Update the per-slice metadata.json file with compilation results.
 
@@ -195,6 +195,7 @@ class CompilerUtils:
             filepath: Path to the slice's metadata.json file
             success: Boolean indicating if compilation was successful
             file_paths: Dictionary containing file paths for compilation results
+            backend_name: Name of the backend used (jstprove, ezkl, or onnx)
         """
         # Load existing slice metadata or create new
         if os.path.exists(filepath):
@@ -203,14 +204,20 @@ class CompilerUtils:
         else:
             slice_metadata = {}
 
-        # Get EZKL version
-        ezkl_version = EZKL.get_version()
+        # Get backend version based on which backend was used
+        if backend_name == "jstprove":
+            from dsperse.src.backends.JSTprove import JSTprove
+            backend_version = JSTprove.get_version()
+        elif backend_name == "ezkl":
+            backend_version = EZKL.get_version()
+        else:
+            backend_version = None
 
-        # Create compilation info nested under 'ezkl'
-        ezkl_compilation_info = {
+        # Create compilation info nested under the backend name
+        compilation_info = {
             "compiled": success,
             "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
-            "ezkl_version": ezkl_version,
+            "backend_version": backend_version,
             "files": {
                 "settings": file_paths.get('settings'),
                 "compiled_circuit": file_paths.get('compiled'),
@@ -223,20 +230,20 @@ class CompilerUtils:
         # Add any errors if present
         errors = {k: v for k, v in file_paths.items() if k.endswith('_error')}
         if errors:
-            ezkl_compilation_info["errors"] = errors
+            compilation_info["errors"] = errors
 
         # Ensure compilation section exists
         if 'compilation' not in slice_metadata:
             slice_metadata['compilation'] = {}
 
-        # Update slice metadata with ezkl nested under compilation
-        slice_metadata['compilation']['ezkl'] = ezkl_compilation_info
+        # Update slice metadata with backend info nested under compilation
+        slice_metadata['compilation'][backend_name] = compilation_info
 
         # Save updated slice metadata
         with open(filepath, 'w') as f:
             json.dump(slice_metadata, f, indent=2)
 
-        logger.debug(f"Updated slice metadata at {filepath}")
+        logger.debug(f"Updated slice metadata at {filepath} for backend {backend_name}")
 
 
     @staticmethod

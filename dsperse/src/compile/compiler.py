@@ -228,23 +228,81 @@ class Compiler:
 
         if slice_data.get('slice_metadata') and os.path.exists(slice_data.get('slice_metadata')):
             path = Path(slice_data.get('slice_metadata'))
-            CompilerUtils.update_slice_metadata(path, success, file_paths)
+            CompilerUtils.update_slice_metadata(path, success, file_paths, backend_name=used_backend or "onnx")
         elif slice_data.get('slice_metadata_relative_path') and os.path.exists(os.path.join(base_path, slice_data.get('slice_metadata_relative_path'))):
             path = Path(os.path.join(base_path, slice_data.get('slice_metadata_relative_path')))
-            CompilerUtils.update_slice_metadata(path, success, file_paths)
+            CompilerUtils.update_slice_metadata(path, success, file_paths, backend_name=used_backend or "onnx")
 
         return success, file_paths, used_backend
 
     def _compile_model(self, model_file_path: str, input_file_path: Optional[str] = None) -> str:
+        """
+        Compile a single ONNX model file (not sliced) with backend fallback support.
+        """
         if not os.path.isfile(model_file_path):
             raise ValueError(f"model_path must be a file: {model_file_path}")
         output_path_root = os.path.splitext(model_file_path)[0]
-        circuit_folder = os.path.join(os.path.dirname(output_path_root), "model")
-        os.makedirs(circuit_folder, exist_ok=True)
-        # Call backend pipeline
-        self.backend.compilation_pipeline(model_file_path, circuit_folder, input_file_path=input_file_path)
-        logger.info(f"Compilation completed with {self.backend_name}. Output saved to {circuit_folder}")
-        return circuit_folder
+        
+        # Build list of backends to try (same logic as _compile_slice)
+        backends_to_try = []
+        if self.default_backend:
+            # Specific backend requested
+            if self.default_backend == "jstprove":
+                jst = self._get_jstprove()
+                if jst:
+                    backends_to_try.append((jst, "jstprove"))
+            else:
+                ezkl = self._get_ezkl()
+                if ezkl:
+                    backends_to_try.append((ezkl, "ezkl"))
+            if self.use_fallback:
+                # Add fallback options
+                if self.default_backend == "jstprove":
+                    ezkl = self._get_ezkl()
+                    if ezkl:
+                        backends_to_try.append((ezkl, "ezkl"))
+                else:
+                    jst = self._get_jstprove()
+                    if jst:
+                        backends_to_try.append((jst, "jstprove"))
+        elif self.use_fallback:
+            # Default fallback: jstprove -> ezkl
+            jst = self._get_jstprove()
+            ezkl = self._get_ezkl()
+            if jst:
+                backends_to_try.append((jst, "jstprove"))
+            if ezkl:
+                backends_to_try.append((ezkl, "ezkl"))
+        else:
+            # No backend specified, no fallback - use EZKL as default
+            ezkl = self._get_ezkl()
+            if ezkl:
+                backends_to_try.append((ezkl, "ezkl"))
+
+        if not backends_to_try:
+            raise RuntimeError("No backends available for compilation")
+
+        # Try each backend until one succeeds
+        for try_backend, try_backend_name in backends_to_try:
+            circuit_folder = os.path.join(os.path.dirname(output_path_root), try_backend_name)
+            os.makedirs(circuit_folder, exist_ok=True)
+            try:
+                logger.info(f"Compiling model with {try_backend_name}...")
+                compilation_data = try_backend.compilation_pipeline(
+                    model_file_path, circuit_folder, input_file_path=input_file_path
+                )
+                success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
+                if success:
+                    logger.info(f"Compilation completed with {try_backend_name}. Output saved to {circuit_folder}")
+                    return circuit_folder
+                else:
+                    logger.warning(f"{try_backend_name} compilation failed, trying fallback...")
+            except Exception as e:
+                logger.warning(f"{try_backend_name} error: {e}, trying fallback...")
+                if not self.use_fallback:
+                    raise
+
+        raise RuntimeError("All backends failed to compile the model")
 
 
     def _compile_slices(self, dir_path: str, input_file_path: Optional[str] = None, layer_indices=None):

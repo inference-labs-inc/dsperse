@@ -251,9 +251,12 @@ class Converter:
         if metadata_file.exists():
             metadata_file.unlink()
 
-        # Finally, remove the now-empty slices directory (ignore if not empty)
         try:
-            path.rmdir()
+            # Check if directory is empty before removing
+            if path.exists() and not any(path.iterdir()):
+                path.rmdir()
+            else:
+                shutil.rmtree(path)
         except OSError:
             pass
 

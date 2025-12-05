@@ -33,16 +33,17 @@ def setup_parser(subparsers):
                               help='Directory to save the sliced model (default: model_dir/slices)')
     slice_parser.add_argument('--save-file', '--save', '-S', nargs='?', const='default',
                               help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
-
-    # Output format: slicing now always writes unpacked directories.
-    # Note: Packing to .dsperse/.dslice is available only via `slice convert` or `convert` command.
+    # Output format for slicing
+    slice_parser.add_argument('--output-type', '--ot', '-ot', dest='output_type',
+                              choices=['dirs', 'dslice', 'dsperse'], default='dirs',
+                              help='Output format of the slicing result: dirs (default), dslice, or dsperse')
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
-    convert_parser = sub.add_parser('convert', help='Convert between .dsperse/.dslice and directory layouts')
+    convert_parser = sub.add_parser('convert', aliases=['c'], help='Convert between .dsperse/.dslice and directory layouts')
     convert_parser.set_defaults(slice_subcommand='convert')
     convert_parser.add_argument('--input', '-i', dest='input_path', help='Input path (.dsperse/.dslice or directory)')
-    convert_parser.add_argument('--to', '--output-type', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
+    convert_parser.add_argument('--to', '--output-type', '--type', '-t', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
                                 help='Desired output type')
     convert_parser.add_argument('--output', '-o', dest='output_path', help='Output path (directory or archive)')
     convert_parser.add_argument('--expand-slices', action='store_true',
@@ -88,19 +89,8 @@ def slice_convert(args):
             print(f"{Fore.YELLOW}Invalid choice: '{chosen}'. Please enter one of: dirs, dslice, dsperse{Style.RESET_ALL}")
 
     try:
-        # Special handling: dsperse -> dirs with optional expand toggle
-        if p.is_file() and p.suffix == '.dsperse' and getattr(args, 'to_type', None) == 'dirs':
-            result = Converter._dsperse_to_dirs(p, output_path, expand_slices=bool(getattr(args, 'expand_slices', False)))
-            if bool(getattr(args, 'cleanup', True)):
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-            print(f"{Fore.GREEN}✓ Converted to: {result}{Style.RESET_ALL}")
-            logger.info(f"Converted to: {result}")
-            return
-
-        # All other cases use the public convert API
+        # Delegate all conversions to the central Converter, which handles
+        # the dsperse -> dirs default of fully expanding embedded .dslice files.
         result = Converter.convert(
             input_path,
             output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None),
@@ -190,12 +180,13 @@ def slice_model(args):
 
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
-        logger.info(f"Slicing ONNX model to output path: {output_dir}")
-        # Always emit directory layout from the slicer.
-        # For packaging to .dsperse/.dslice, instruct users to run `dsperse slice convert`.
+        # Determine desired output type (default to 'dirs')
+        output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
+        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}")
+        # Delegate to Slicer which will convert if needed
         slicer.slice_model(
             output_path=output_dir,
-            output_type='dirs',
+            output_type=output_type,
         )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

@@ -60,14 +60,24 @@ class RunnerAnalyzer:
         - per-slice processing when `slices_data` entries contain a path to a per-slice
           metadata.json (i.e., discovered from slice_* directories)
         """
+        # Normalize and detect by explicit keys rather than dict length
+        # Per-slice entries produced by _build_from_per_slice_dirs contain 'slice_metadata'.
+        def _is_per_slice_entry(entry) -> bool:
+            return isinstance(entry, dict) and (
+                'slice_metadata' in entry or 'slice_metadata_path' in entry
+            )
 
-        # Normalize input to a list
-        if len(slices_data[0]) == 3:
-            if isinstance(slices_data, dict):
-                slices_data = [slices_data]
-            return RunnerAnalyzer._process_slices_per_slice(slices_dir, slices_data)
+        # Normalize to list
+        if isinstance(slices_data, dict):
+            slices_list = [slices_data]
         else:
-            return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
+            slices_list = list(slices_data) if slices_data is not None else []
+
+        if slices_list and _is_per_slice_entry(slices_list[0]):
+            return RunnerAnalyzer._process_slices_per_slice(slices_dir, slices_list)
+
+        # Default: treat as model-level slices metadata (entries come from slices/metadata.json)
+        return RunnerAnalyzer._process_slices_model(slices_dir, slices_list)
 
     @staticmethod
     def _process_slices_model(slices_dir: Path, slices_list: list[dict]) -> dict:
@@ -387,13 +397,18 @@ class RunnerAnalyzer:
     def _build_from_per_slice_dirs(slices_dir: Path) -> dict:
         subdirs = [d for d in slices_dir.iterdir() if d.is_dir()] if slices_dir.is_dir() else []
 
-        # If only payload directory found, go up one level
-        if len(subdirs) == 1 and subdirs[0].name == "payload":
-            slices_dir = slices_dir.parent
-            subdirs = [d for d in slices_dir.iterdir() if d.is_dir()]
-
-        if not subdirs and (slices_dir / "metadata.json").exists() and (slices_dir / "payload").exists():
+        # Treat a direct slice directory (contains metadata.json + payload) as a single slice
+        if (slices_dir / "metadata.json").exists() and (slices_dir / "payload").exists():
             subdirs = [slices_dir]
+        else:
+            # If only payload directory found, go up one level (handles when passed a 'slices' root)
+            if len(subdirs) == 1 and subdirs[0].name == "payload":
+                slices_dir = slices_dir.parent
+                subdirs = [d for d in slices_dir.iterdir() if d.is_dir()]
+
+            # Fallback: if still no subdirs but current dir looks like a slice dir, use it
+            if not subdirs and (slices_dir / "metadata.json").exists() and (slices_dir / "payload").exists():
+                subdirs = [slices_dir]
 
         slices_data = []
         for d in subdirs:
@@ -403,7 +418,12 @@ class RunnerAnalyzer:
             with open(meta_path, "r") as f:
                 meta = json.load(f)
             s0 = meta["slices"][0]
-            idx = int(s0["index"])  # index from metadata
+            # Prefer index from directory name (e.g., slice_2) when available; fallback to metadata index
+            try:
+                dir_idx = int(str(d.name).split('_')[-1]) if str(d.name).startswith('slice_') else None
+            except Exception:
+                dir_idx = None
+            idx = dir_idx if dir_idx is not None else int(s0.get("index", 0))
             # two lines to get relative path and filename directly from metadata
             relpath = s0.get("relative_path") or s0.get("path")
             filename = s0.get("filename")
@@ -413,6 +433,7 @@ class RunnerAnalyzer:
                 "index": idx,
                 "path": onnx_path,
                 "slice_metadata": str(meta_path.resolve()),
+                "dir_index": idx,
             })
 
         if not slices_data:

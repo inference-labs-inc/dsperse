@@ -93,10 +93,13 @@ class RunnerAnalyzer:
             idx = item.get("index")
             slice_key = f"slice_{idx}"
 
-            # Normalize ONNX path to 'slice_#/payload/...'
+            slice_meta_rel = (item.get("slice_metadata_relative_path")
+                              or os.path.join(slice_key, "metadata.json"))
+            slice_dirname = str(slice_meta_rel).split(os.sep)[0] if slice_meta_rel else slice_key
+
             rel_from_meta = item.get("relative_path") or item.get("path")
             rel_payload = RunnerAnalyzer.rel_from_payload(rel_from_meta) or rel_from_meta
-            onnx_path = RunnerAnalyzer.with_slice_prefix(rel_payload, slice_key)
+            onnx_path = RunnerAnalyzer.with_slice_prefix(rel_payload, slice_dirname)
 
             # Shapes and dependencies
             tensor_shape = (item.get("shape") or {}).get("tensor_shape") or {}
@@ -119,14 +122,15 @@ class RunnerAnalyzer:
             def _norm(rel: Optional[str]) -> Optional[str]:
                 if not rel:
                     return None
-                return RunnerAnalyzer.with_slice_prefix(RunnerAnalyzer.rel_from_payload(rel) or rel, slice_key)
+                return RunnerAnalyzer.with_slice_prefix(
+                    RunnerAnalyzer.rel_from_payload(rel) or rel,
+                    slice_dirname,
+                )
 
             circuit_path = _norm(compiled_rel)
             settings_path = _norm(settings_rel)
             pk_path = _norm(pk_rel)
             vk_path = _norm(vk_rel)
-
-            slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
 
             slices[slice_key] = {
                 "path": onnx_path,
@@ -221,7 +225,8 @@ class RunnerAnalyzer:
         Expects `slices_metadata` to contain a top-level 'slices' list as produced by slicing.
         """
         slices_data = (slices_metadata or {}).get('slices', [])
-        slices = RunnerAnalyzer.process_slices(slices_dir, slices_data)
+        #TODO: look into process_slices function
+        slices = RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
         execution_chain = RunnerAnalyzer._build_execution_chain(slices)
         circuit_slices = RunnerAnalyzer._build_circuit_slices(slices)
         overall_security = RunnerAnalyzer._calculate_security(slices)

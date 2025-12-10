@@ -10,9 +10,9 @@ import os
 import logging
 from typing import Optional
 
-from dsperse.src.utils.slicer_utils.onnx_slicer import OnnxSlicer
-# Import ModelSlicer for future use
-# from src.slicers.model_slicer import ModelSlicer
+from dsperse.src.slice.onnx_slicer import OnnxSlicer
+from dsperse.src.slice.utils.converter import Converter
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,50 +24,6 @@ class Slicer:
     to the appropriate slicer implementation based on the model type.
     """
     
-    @staticmethod
-    def create(model_path: str, save_path: Optional[str] = None) -> 'Slicer':
-        """
-        Factory method to create a Slicer instance based on the model type.
-        
-        Args:
-            model_path: Path to the model file or directory
-            save_path: Optional path to save the model analysis
-            
-        Returns:
-            A Slicer instance
-            
-        Raises:
-            ValueError: If the model type is not supported
-        """
-        # Check if the path is a file or directory
-        if os.path.isfile(model_path):
-            model_file = model_path
-            model_dir = os.path.dirname(model_path)
-            if not model_dir:  # If the directory is empty (e.g., just "model.onnx")
-                model_dir = "."
-        else:
-            model_dir = model_path
-            model_file = None
-            
-        # Determine model type
-        is_onnx = False
-        
-        # Check if it's an ONNX model
-        if model_file and model_file.lower().endswith('.onnx'):
-            is_onnx = True
-        elif os.path.exists(os.path.join(model_dir, "model.onnx")):
-            is_onnx = True
-            model_file = os.path.join(model_dir, "model.onnx")
-            
-        # Create appropriate slicer
-        if is_onnx:
-            logger.info(f"Creating ONNX slicer for model: {model_file}")
-            return Slicer(OnnxSlicer(model_file, save_path))
-        else:
-            # For now, we only support ONNX models as per requirements
-            # In the future, this can be extended to support other model types
-            raise ValueError(f"Unsupported model type at path: {model_path}")
-    
     def __init__(self, slicer_impl):
         """
         Initialize the Slicer with a specific implementation.
@@ -76,20 +32,51 @@ class Slicer:
             slicer_impl: The slicer implementation to use
         """
         self.slicer_impl = slicer_impl
-        
-    def slice_model(self, output_path: Optional[str] = None, **kwargs):
+
+
+    @staticmethod
+    def create(model_path: str, save_path: Optional[str] = None) -> 'Slicer':
         """
-        Slice the model using the appropriate slicer implementation.
-        
+        Factory method to create a Slicer instance based on the model type.
+
+        Args:
+            model_path: Path to the model file or directory
+            save_path: Optional path to save the model analysis
+
+        Returns:
+            A Slicer instance
+
+        Raises:
+            ValueError: If the model type is not supported
+        """
+        # For now, we only support ONNX models.
+        # In the future, this can be extended to support other model types.
+        logger.info(f"Creating ONNX slicer for model: {model_path}")
+        return Slicer(OnnxSlicer(model_path, save_path))
+
+
+    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs"):
+        """
+        Slice the model using the appropriate slicer implementation, then optionally convert output.
+
         Args:
             output_path: Directory to save the sliced model
-            **kwargs: Additional arguments to pass to the slicer implementation
-            
+            output_type: One of {'dsperse', 'dslice', 'dirs'}
+
         Returns:
-            The result of the slicing operation
+            The result of the slicing operation (list of slice paths from slicer_impl)
         """
+        if not output_path:
+            raise ValueError("output_path must be provided for slicing")
+
         logger.info(f"Slicing model to output path: {output_path}")
-        return self.slicer_impl.slice_model(output_path=output_path)
+        result = self.slicer_impl.slice_model(output_path=output_path)
+
+        if output_type != "dirs":
+            Converter.convert(output_path, output_type)
+
+        return result
+
 
 
 if __name__ == "__main__":
@@ -98,11 +85,13 @@ if __name__ == "__main__":
 
     # Model configurations
     base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet",
-        4: "../models/age",
-        5: "../models/version"
+        1: "../../models/doom",
+        2: "../../models/net",
+        3: "../../models/resnet",
+        4: "../../models/age",
+        5: "../../models/version",
+        6: "../../models/bert",
+        7: "../../models/roberta"
     }
 
     # Resolve paths
@@ -116,7 +105,7 @@ if __name__ == "__main__":
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")
-        slices = slicer.slice_model(output_path=output_dir)
+        slices = slicer.slice_model(output_path=output_dir, output_type="dslice")
 
         # Display results
         print("\nSlicing completed!")

@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+import time
 from pathlib import Path
 import torch
 
@@ -39,31 +41,54 @@ class Utils:
         with file_path.open('w') as f:
             json.dump(metadata, f, indent=4)
 
+    @staticmethod
+    def find_metadata_path(dir_path: str) -> str:
+        """
+        Find the metadata.json file in the given directory or its slices subdirectory.
+
+        Args:
+            dir_path: Directory path to search for metadata.json
+
+        Returns:
+            str: Path to the metadata.json file
+
+        Raises:
+            FileNotFoundError: If metadata.json is not found in the directory or its slices subdirectory
+        """
+        metadata_path = os.path.join(dir_path, "metadata.json")
+        if not os.path.exists(metadata_path):
+            alt = os.path.join(dir_path, "slices", "metadata.json")
+            if os.path.exists(alt):
+                metadata_path = alt
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(f"metadata.json not found in {dir_path} or its slices subdirectory")
+        return metadata_path
+
 
     @staticmethod
-    def filter_inputs(segment_inputs, graph):
-        # Filter input names from segment details
-        segment_filtered_inputs = []
-        for input_info in segment_inputs:
+    def filter_inputs(slice_inputs, graph):
+        # Filter input names from slice details
+        slice_filtered_inputs = []
+        for input_info in slice_inputs:
             # Only include actual inputs that are not weights or biases
             # Typically, weights and biases have names containing "weight" or "bias"
             if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
                     input_info.name in [inp.name for inp in graph.input]):
-                segment_filtered_inputs.append(input_info.name)
+                slice_filtered_inputs.append(input_info.name)
             # Also include intermediate tensors from previous layers
             elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                segment_filtered_inputs.append(input_info.name)
+                slice_filtered_inputs.append(input_info.name)
         # If there are no inputs after filtering, include the first non-weight/bias input
-        if not segment_filtered_inputs:
-            for input_info in segment_inputs:
+        if not slice_filtered_inputs:
+            for input_info in slice_inputs:
                 if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    segment_filtered_inputs.append(input_info.name)
+                    slice_filtered_inputs.append(input_info.name)
                     break
 
             # If still no inputs, use the first input as a fallback
-            if not segment_filtered_inputs and segment_inputs:
-                segment_filtered_inputs.append(segment_inputs[0].name)
-        return segment_filtered_inputs
+            if not slice_filtered_inputs and slice_inputs:
+                slice_filtered_inputs.append(slice_inputs[0].name)
+        return slice_filtered_inputs
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):
@@ -144,3 +169,191 @@ class Utils:
             tensor = tensor[0]
 
         return tensor
+
+    @staticmethod
+    def load_run_metadata(run_path: str | Path) -> dict:
+        run_path = Path(run_path)
+        meta_file = run_path / "metadata.json"
+        if not run_path.exists() or not meta_file.exists():
+            raise FileNotFoundError(f"Run path invalid; expected {meta_file}")
+        with open(meta_file, 'r') as f:
+            return json.load(f)
+
+    @staticmethod
+    def dirs_root_from(path: Path) -> Path:
+        """Return the slices root directory for proving.
+        Accepts either a root containing `slice_*` subdirs or a single `slice_*` dir.
+        """
+        path = Path(path)
+        if path.is_dir() and path.name.startswith("slice_"):
+            return path.parent
+        return path
+
+    @staticmethod
+    def iter_circuit_slices(metadata: dict):
+        """Yield (slice_id, slice_meta) for slices that have circuit and pk present.
+        Prefer `use_circuit` flag; otherwise check presence of compiled circuit + keys.
+        """
+        slices = (metadata or {}).get("slices", {})
+        for sid, meta in slices.items():
+            use_circuit = bool(meta.get("use_circuit"))
+            circuit_path = meta.get("circuit_path") or meta.get("compiled")
+            pk_path = meta.get("pk_path")
+            if use_circuit or (circuit_path and pk_path):
+                yield sid, meta
+
+    @staticmethod
+    def resolve_under_slice(slice_dir: Path, rel_or_abs: str | None) -> str | None:
+        if not rel_or_abs:
+            return None
+        p = str(rel_or_abs)
+        if os.path.isabs(p):
+            return p
+        # strip leading `slice_#` if present
+        sd_name = os.path.basename(os.path.abspath(str(slice_dir)))
+        parts = p.split(os.sep)
+        if parts and parts[0] == sd_name:
+            parts = parts[1:]
+            p = os.path.join(*parts) if parts else ''
+        return os.path.abspath(os.path.join(str(slice_dir), p))
+
+    @staticmethod
+    def slice_dirs_path(dirs_root: Path, slice_id: str) -> Path:
+        return Path(dirs_root) / slice_id
+
+    @staticmethod
+    def witness_path_for(run_path: Path, slice_id: str) -> Path:
+        return Path(run_path) / slice_id / "output.json"
+
+    @staticmethod
+    def proof_output_path(run_path: Path, slice_id: str, output_root: str | Path | None) -> Path:
+        if output_root:
+            root = Path(output_root)
+            # Treat provided output as a root directory
+            return root / slice_id / "proof.json"
+        return Path(run_path) / slice_id / "proof.json"
+
+    @staticmethod
+    def run_results_path(run_path: Path) -> Path:
+        return Path(run_path) / "run_results.json"
+
+    @staticmethod
+    def load_run_results(run_path: Path) -> dict:
+        rp = Utils.run_results_path(run_path)
+        if not rp.exists():
+            # Minimal skeleton if inference wasn't run (unlikely)
+            return {"execution_chain": {"execution_results": []}}
+        with open(rp, 'r') as f:
+            return json.load(f)
+
+    @staticmethod
+    def save_run_results(run_path: Path, data: dict) -> None:
+        rp = Utils.run_results_path(run_path)
+        rp.parent.mkdir(parents=True, exist_ok=True)
+        with open(rp, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    @staticmethod
+    def merge_execution_into_run_results(run_results: dict, execution_data: dict, execution_type: str) -> tuple[
+        dict, int]:
+        """Attach per-slice execution data (proof or verification) and compute success count.
+
+        Args:
+            run_results: The run results dictionary to update
+            execution_data: Mapping slice_id -> {success, time_sec, error, ...}
+            execution_type: Either 'proof' or 'verification'
+
+        Returns: (updated_results, success_count)
+        """
+        exec_chain = (run_results or {}).setdefault("execution_chain", {})
+        results = exec_chain.setdefault("execution_results", [])
+        success_count = 0
+
+        # Build quick index by slice_id/segment_id
+        by_id = {}
+        for entry in results:
+            sid = entry.get("slice_id") or entry.get("segment_id")
+            if sid:
+                by_id[sid] = entry
+
+        for sid, info in execution_data.items():
+            # Build execution entry based on type
+            if execution_type == "proof":
+                exec_entry = {
+                    "proof_file": info.get("proof_path"),
+                    "success": bool(info.get("success")),
+                    "proof_generation_time": float(info.get("time_sec", 0.0)),
+                }
+            elif execution_type == "verification":
+                exec_entry = {
+                    "verified": bool(info.get("success")),
+                    "success": bool(info.get("success")),
+                    "verification_time": float(info.get("time_sec", 0.0)),
+                }
+            else:
+                raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
+
+            # Add error if present and not successful
+            if not info.get("success") and info.get("error"):
+                exec_entry["error"] = info.get("error")
+
+            # Determine the key name for this execution type
+            exec_key = f"{execution_type}_execution"
+
+            # Update or append entry
+            if sid in by_id:
+                by_id[sid][exec_key] = exec_entry
+            else:
+                # If run_results lacks this slice, append a minimal entry
+                results.append({"slice_id": sid, exec_key: exec_entry})
+
+            if info.get("success"):
+                success_count += 1
+
+        return run_results, success_count
+
+    @staticmethod
+    def update_metadata_after_execution(run_path: Path, total: int, success_count: int, execution_type: str) -> None:
+        """Update metadata with execution summary (proof or verification).
+
+        Args:
+            run_path: Path to the run directory
+            total: Total number of slices processed
+            success_count: Number of successful executions
+            execution_type: Either 'proof' or 'verification'
+        """
+        meta_path = Path(run_path) / "metadata.json"
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+        except Exception:
+            logger.warning(f"Could not read metadata at {meta_path} to update {execution_type} summary.")
+            return
+
+        # Determine summary key and field names based on execution type
+        if execution_type == "proof":
+            summary_key = "proof_summary"
+            fields = {
+                "total_circuit_slices": int(total),
+                "proved_slices": int(success_count),
+                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S')
+            }
+        elif execution_type == "verification":
+            summary_key = "verification_summary"
+            fields = {
+                "total_proof_candidates": int(total),
+                "verified_slices": int(success_count),
+                "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S')
+            }
+        else:
+            raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
+
+        # Non-breaking addition: add/refresh a top-level summary
+        meta.setdefault(summary_key, {})
+        meta[summary_key].update(fields)
+
+        try:
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to write updated metadata to {meta_path}: {e}")

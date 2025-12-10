@@ -1,6 +1,6 @@
 """
-Dsperse CLI package.
-Contains modules for the Dsperse command-line interface.
+DSperse CLI package.
+Contains modules for the DSperse command-line interface.
 """
 
 from dsperse.src.cli.base import DsperseArgumentParser, print_header, print_easter_egg, configure_logging, logger

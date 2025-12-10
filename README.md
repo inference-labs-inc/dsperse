@@ -1,4 +1,4 @@
-# Dsperse: Distributed zkML
+# DSperse: Distributed zkML
 
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/inference-labs-inc/dsperse)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-7289DA?style=flat-square&logo=discord)](https://discord.gg/GBxBCWJs)
@@ -7,7 +7,7 @@
 [![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.com)
 [![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](http://arxiv.org/abs/2508.06972)
 
-Dsperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
+DSperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
 ## Features
 
@@ -66,7 +66,7 @@ dsperse fr -m models/net -i models/net/input.json
 
 ### Install from PyPI
 
-The simplest way to install Dsperse is via PyPI:
+The simplest way to install DSperse is via PyPI:
 
 ```bash
 # Using pip
@@ -89,7 +89,7 @@ Preferred: one-step installer script
 ./install.sh
 ```
   - The script will:
-    - Install the Dsperse CLI in editable mode so the dsperse command is available
+    - Install the DSperse CLI in editable mode so the dsperse command is available
     - Install EZKL (prompting for cargo or pip method if needed)
     - Check EZKL SRS files (~/.ezkl/srs). It will offer to download them interactively (downloads can take a while) because having them locally speeds up circuitization/proving.
 
@@ -109,7 +109,7 @@ python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 ```
 
-2) Install the Dsperse CLI
+2) Install the DSperse CLI
 
 ```bash
 pip install -e .
@@ -165,12 +165,12 @@ dsperse slice --model-dir models/net --save-file models/net/analysis/model_metad
 ```
 
 What happens:
-- Slices are written to models/net/slices/segment_<i>/segment_<i>.onnx
-- A slices metadata.json is created at models/net/slices/metadata.json
+- Slices are written to models/net/slices/slice_<i>/payload/slice_<i>.onnx
+- A model-level metadata.json is created at models/net/slices/metadata.json
 
 ### Metadata Files Behavior
 
-Dsperse creates different types of metadata files for different purposes:
+DSperse creates different types of metadata files for different purposes:
 
 **Operational Metadata** (`metadata.json`):
 - **Location**: Always created in the output directory (e.g., `models/net/slices/metadata.json`)
@@ -217,9 +217,9 @@ dsperse compile --slices-path models/net/slices --layers 0-2
 
 What happens:
 - For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
-- Circuit artifacts are saved under each segment: models/net/slices/segment_<i>/ezkl_circuitization/
-  - segment_i_settings.json, segment_i_model.compiled, segment_i_vk.key, segment_i_pk.key
-- Slices metadata is updated with ezkl_circuitization info per segment
+- Circuit artifacts are saved under each slice: `models/net/slices/slice_<i>/ezkl/`
+- `settings.json`, `model.compiled`, `vk.key`, `pk.key` are the new file names
+- Slices metadata is updated with ezkl compilation info per segment
 
 Note on missing slices:
 - If you pass a model directory without slices metadata present, the CLI will prompt you to slice first.
@@ -244,54 +244,56 @@ What happens:
 - A run metadata file is auto-generated at models/net/run/metadata.json if missing
 - A timestamped run directory is created: models/net/run/run_YYYYMMDD_HHMMSS/
 - Segment-by-segment inputs/outputs are saved under that run directory
-- A run_result.json is written summarizing the chain execution
+- A run_results.json is written summarizing the chain execution
 
 4) Generate proofs
 - Proves the segments that successfully produced EZKL witnesses in the selected run.
 
-Typical usage:
+Typical usage (new positional-args form):
 ```bash
-dsperse prove --run-dir models/net/run
-# You will be prompted to choose among existing runs under models/net/run/
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices
+# data_path can also be a single slice_* dir, a .dslice, or a .dsperse
+# To write proofs under a custom root:
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --proof-output /tmp/my_proofs
 ```
 
-Alternatively, specify a run directly:
+Legacy flags are still accepted for backward compatibility (will prompt for selection):
 ```bash
-dsperse prove --run-dir models/net/run/run_YYYYMMDD_HHMMSS
+dsperse prove --run-dir models/net/run
 ```
 
 Optionally save the updated run results to a separate file:
 ```bash
-dsperse prove --run-dir models/net/run --output-file models/net/proof_results.json
+dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-file models/net/proof_results.json
 ```
 
 What happens:
 - For each segment with a successful EZKL witness, the CLI calls ezkl prove
 - Proof files are stored under the specific run’s segment folder
-- The run_result.json is updated with proof_execution details
+- The run_results.json is updated with proof_execution details
 
 5) Verify proofs
 - Verifies the proofs generated in step 4 against the stored verification keys and settings.
 
-Typical usage:
+Typical usage (new positional-args form):
 ```bash
-dsperse verify --run-dir models/net/run
-# You will be prompted to choose the run (same as in prove)
+dsperse verify models/net/run/run_YYYYMMDD_HHMMSS models/net/slices
+# data_path can also be a single slice_* dir, a .dslice, or a .dsperse
 ```
 
-Or specify a particular run:
+Legacy flags are still accepted for backward compatibility (will prompt for selection):
 ```bash
-dsperse verify --run-dir models/net/run/run_YYYYMMDD_HHMMSS
+dsperse verify --run-dir models/net/run
 ```
 
 Optionally save verification results to a separate file:
 ```bash
-dsperse verify --run-dir models/net/run --output-file models/net/verification_results.json
+dsperse verify models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-file models/net/verification_results.json
 ```
 
 What happens:
 - For each segment with a proof, the CLI calls ezkl verify
-- The run_result.json is updated with verification_execution details
+- The run_results.json is updated with verification_execution details
 - A summary of verified segments is printed
 
 Tips and troubleshooting
@@ -374,3 +376,71 @@ dsperse full-run \
   --input-file src/models/net/input.json \
   --layers "1, 3-5"
 ```
+
+
+## Slicing outputs and flags
+
+By default, `dsperse slice` produces a single portable bundle named after your slices folder, e.g. `slices.dsperse`. When you pass `--output-dir models/net/slices`, the slicer stages files under `models/net/slices/` and then the converter creates `models/net/slices.dsperse` and cleans up the staging directory.
+
+What the `.dsperse` contains:
+- A top-level `metadata.json` describing the model and slices
+- All per-slice `.dslice` archives (one per slice)
+
+Choose the output format with `--output-type` (default: `dsperse`):
+- `--output-type dsperse` (default): creates `models/net/slices.dsperse` and removes `models/net/slices/`
+- `--output-type dslice`: creates `.dslice` files under `models/net/slices/` (and keeps `metadata.json`); removes intermediate `slice_#/` directories
+- `--output-type dirs`: keeps raw `slice_#/` directories with `payload/` and per-slice `metadata.json`
+
+Examples:
+```bash
+# Default: produce only slices.dsperse (staging dir cleaned up)
+dsperse slice -m models/net/model.onnx -o models/net/slices
+
+# Produce per-slice .dslice files in a directory (keeps metadata.json)
+dsperse slice -m models/net/model.onnx -o models/net/slices --output-type dslice
+
+# Keep unpacked slice_# directories
+ dsperse slice -m models/net/model.onnx -o models/net/slices --output-type dirs
+```
+
+Notes:
+- The `.dsperse` bundle is a ZIP file; you can inspect it with any unzip tool.
+- Each `.dslice` inside the bundle is also a ZIP with its own `metadata.json` and `payload/model.onnx`.
+
+
+## Convert between formats
+
+Use `dsperse slice convert` (or the top-level `dsperse convert`) to go back and forth between single-file bundles and directory layouts. The converter auto-detects the input type; you specify the target with `--to {dirs, dslice, dsperse}`.
+
+Supported conversions:
+- slices.dsperse -> directory (contains `*.dslice` + `metadata.json`; add `--expand-slices` to also create `slice_#/` folders)
+- directory (with `slice_#/` or `*.dslice` + `metadata.json`) -> slices.dsperse
+- slice_X.dslice -> directory (extracts to `slice_X/` with `payload/` and `metadata.json`)
+- directory (a single `slice_X/` folder with `payload/` + `metadata.json`) -> slice_X.dslice
+
+Usage examples:
+```bash
+# 1) Unpack a bundle next to the file (default: keeps .dslice files, does not expand slices)
+dsperse slice convert -i models/net/slices.dsperse --to dirs
+
+# 1b) Unpack and also expand each embedded .dslice into slice_# folders
+dsperse slice convert -i models/net/slices.dsperse --to dirs --expand-slices
+
+# 1c) Preserve the input bundle instead of deleting it after a successful conversion
+ dsperse slice convert -i models/net/slices.dsperse --to dirs --no-cleanup
+
+# 2) Create a .dsperse from a directory
+# If the input is a slices/ directory with slice_#/ subfolders, the converter will package and name it `<dirname>.dsperse`.
+ dsperse slice convert -i models/net/slices --to dsperse
+
+# 3) Unpack a single .dslice to a directory
+ dsperse slice convert -i models/net/slices/slice_1.dslice --to dirs -o models/net/slices/slice_1
+
+# 4) Create a .dslice from a slice directory (must contain metadata.json and payload/)
+ dsperse slice convert -i models/net/slices/slice_1 --to dslice -o models/net/slices/slice_1.dslice
+```
+
+Notes:
+- If you omit --output, sensible defaults are chosen (e.g., extracting next to the input file with the same stem, or naming `<dirname>.dsperse`).
+- Use `--cleanup/--no-cleanup` to control whether the source artifact is deleted after a successful conversion (default: cleanup enabled for `.dsperse` sources).
+- The converter is the single source of truth for formats; CLI commands delegate to it to ensure consistent behavior and cleanup.

@@ -6,10 +6,12 @@ import os
 import time
 import traceback
 import glob
+from pathlib import Path
 from colorama import Fore, Style
 
 from dsperse.src.verifier import Verifier
-from dsperse.src.cli.base import save_result, prompt_for_value, normalize_path
+from dsperse.src.cli.base import normalize_path, logger, prompt_for_value
+from dsperse.src.utils.utils import Utils
 
 def setup_parser(subparsers):
     """
@@ -21,12 +23,13 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    verify_parser = subparsers.add_parser('verify', aliases=['v'], help='Verify a proof for a run')
+    verify_parser = subparsers.add_parser('verify', aliases=['v'], help='Verify proofs for a run using EZKL')
     # Ensure canonical command even when alias is used
     verify_parser.set_defaults(command='verify')
 
-    verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='Specific run directory to verify')
-    verify_parser.add_argument('--output-file', '-o', dest='output_file', help='Path to save output results')
+    # Flags-only interface
+    verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='The run directory generated when you run the model')
+    verify_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
 
     return verify_parser
 
@@ -38,13 +41,19 @@ def get_all_runs(run_root_dir):
         run_root_dir (str): Path to the runs root directory (contains metadata.json and run_* subdirs)
         
     Returns:
-        list: List of run directories, sorted by name (latest last)
+        list: List of run directories (absolute paths), sorted by name (latest last)
     """
     if not os.path.exists(run_root_dir):
         return []
     
+    # Normalize the run root directory to ensure absolute paths
+    run_root_dir = normalize_path(run_root_dir)
+    
     # Get all run directories sorted by name (which includes timestamp)
     run_dirs = sorted(glob.glob(os.path.join(run_root_dir, "run_*")))
+    
+    # Ensure all paths are normalized/absolute
+    run_dirs = [normalize_path(d) for d in run_dirs]
     
     return run_dirs
 
@@ -68,81 +77,35 @@ def get_latest_run(run_root_dir):
 
 def verify_proof(args):
     """
-    Verify a proof based on a provided runs root directory or a specific run directory.
+    Verify proofs for a run.
 
     Args:
         args: The parsed command-line arguments
     """
     print(f"{Fore.CYAN}Verifying proof...{Style.RESET_ALL}")
 
-    run_root_dir = None
-    run_dir = None
+    # Flags-only behavior with prompts when missing: require --run-dir and --slices
+    run_dir = getattr(args, 'run_dir', None)
+    slices_path = getattr(args, 'slices_path', None)
 
-    def is_run_id_dir(p):
-        return os.path.exists(os.path.join(p, "run_result.json"))
+    # If flags missing, prompt interactively for them
+    if not run_dir:
+        run_dir = prompt_for_value('run-dir', 'Enter the run directory (run/run_<timestamp>)')
+    if not slices_path:
+        slices_path = prompt_for_value('slices', 'Enter the slices path (dslice file, slices directory, or dsperse file)')
 
-    def is_run_root_dir(p):
-        return os.path.exists(os.path.join(p, "metadata.json"))
-
-    # Determine input
-    if hasattr(args, 'run_dir') and args.run_dir:
-        candidate = normalize_path(args.run_dir)
-    else:
-        candidate = prompt_for_value('run-or-run-id-dir', 'Enter run directory (runs root or a run_* directory)')
-
-    # Normalize candidate from prompt
-    candidate = normalize_path(candidate)
-
-    if not os.path.exists(candidate):
-        print(f"{Fore.RED}Error: Path {candidate} does not exist{Style.RESET_ALL}")
-        return
-
-    if is_run_id_dir(candidate):
-        run_dir = candidate
-        run_root_dir = os.path.dirname(candidate)
-    elif is_run_root_dir(candidate):
-        run_root_dir = candidate
-        all_runs = get_all_runs(run_root_dir)
-        if not all_runs:
-            print(f"{Fore.RED}Error: No runs found in {run_root_dir}{Style.RESET_ALL}")
-            return
-        run_names = [os.path.basename(p) for p in all_runs]
-        default_run = run_names[-1]
-        run_list = ", ".join(run_names)
-        print(f"We found {len(all_runs)} runs, {run_list}, enter which run you would like to verify (default {default_run})")
-        user_input = input().strip()
-        if not user_input:
-            run_dir = all_runs[-1]
-        else:
-            try:
-                idx = int(user_input) - 1
-                if 0 <= idx < len(all_runs):
-                    run_dir = all_runs[idx]
-                else:
-                    print(f"{Fore.RED}Error: Invalid run index{Style.RESET_ALL}")
-                    return
-            except ValueError:
-                candidate_run = normalize_path(os.path.join(run_root_dir, user_input))
-                if os.path.exists(candidate_run) and is_run_id_dir(candidate_run):
-                    run_dir = candidate_run
-                else:
-                    print(f"{Fore.RED}Error: Run directory {candidate_run} does not exist or is invalid{Style.RESET_ALL}")
-                    return
-    else:
-        print(f"{Fore.RED}Error: Provided path is neither a runs root (metadata.json) nor a run directory (run_result.json){Style.RESET_ALL}")
-        return
-
-    # Validate
     run_dir = normalize_path(run_dir)
-    run_root_dir = normalize_path(run_root_dir)
-    run_result_path = os.path.join(run_dir, "run_result.json")
-    if not os.path.exists(run_result_path):
-        print(f"{Fore.RED}Error: run_result.json not found in {run_dir}{Style.RESET_ALL}")
-        return
+    slices_path = normalize_path(slices_path)
 
-    metadata_path = os.path.join(run_root_dir, "metadata.json")
-    if not os.path.exists(metadata_path):
-        print(f"{Fore.RED}Error: metadata.json not found in {run_root_dir}{Style.RESET_ALL}")
+    if not os.path.exists(run_dir):
+        print(f"{Fore.RED}Error: Run directory not found: {run_dir}{Style.RESET_ALL}")
+        return
+    # Validate run_dir by presence of either run-root files or per-slice files
+    rd = Path(run_dir)
+    is_run_root = (rd / 'metadata.json').exists()
+    is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
+    if not (is_run_root or is_slice_run):
+        print(f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
         return
 
     print("verifying...")
@@ -150,30 +113,18 @@ def verify_proof(args):
     try:
         verifier = Verifier()
         start_time = time.time()
-        result = verifier.verify_run(run_result_path, metadata_path)
+        result = verifier.verify(run_dir, slices_path)
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Verification completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
+        print(f"Verification saved to run_results.json within the run directory {run_dir}")
         print("\nDone!")
 
-        if not hasattr(args, 'output_file') or not args.output_file:
-            save_output = prompt_for_value('save-output', 'Save verification results to separate file?', default='n', required=False).lower()
-            if save_output.startswith('y'):
-                default_output_file = os.path.join(run_root_dir, "verification_results.json")
-                args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)
-
-        if args.output_file:
-            try:
-                args.output_file = normalize_path(args.output_file)
-                save_result(result, args.output_file)
-                print(f"{Fore.GREEN}Results saved to {args.output_file}{Style.RESET_ALL}")
-            except Exception as e:
-                print(f"{Fore.RED}Error saving output file: {e}{Style.RESET_ALL}")
-
-        if "execution_chain" in result:
+        # Print the verification summary
+        if isinstance(result, dict) and "execution_chain" in result:
             execution_chain = result["execution_chain"]
             print(f"\n{Fore.YELLOW}Verification Summary:{Style.RESET_ALL}")
-            print(f"Verified segments: {execution_chain.get('ezkl_verified_slices', 0)} of {execution_chain.get('ezkl_proved_slices', 0)}")
+            print(f"Verified slices: {execution_chain.get('ezkl_verified_slices', 0)} of {execution_chain.get('ezkl_proved_slices', 0)}")
             denom = execution_chain.get('ezkl_proved_slices', 0) or 1
             print(f"Verification percentage: {(execution_chain.get('ezkl_verified_slices', 0) / denom * 100):.1f}%")
         else:
@@ -182,3 +133,5 @@ def verify_proof(args):
     except Exception as e:
         print(f"{Fore.RED}Error verifying run: {e}{Style.RESET_ALL}")
         traceback.print_exc()
+    finally:
+        pass

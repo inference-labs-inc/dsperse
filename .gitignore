@@ -50,6 +50,14 @@ develop-eggs/
 */src/models/*/analysis/model_metadata.json
 */models/*/run
 */src/models/*/run/
+*/models/*/input.json
+*/src/models/*/input.json
+*/models/*/*.onnx
+*/src/models/*/*.onnx
+*/models/*/*.dsperse
+*/src/models/*/*.dsperse
+*/models/*/*.data
+*/src/models/*/*.data
 
 
 # Local virtual envs

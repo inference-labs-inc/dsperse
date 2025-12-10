@@ -101,7 +101,12 @@ def main():
 
     # Handle commands
     if args.command == "slice":
-        slice_model(args)
+        # Dispatch slice sub-commands
+        if getattr(args, "slice_subcommand", None) == "convert":
+            from dsperse.src.cli.slice import slice_convert
+            slice_convert(args)
+        else:
+            slice_model(args)
     elif args.command == "run":
         run_inference(args)
     elif args.command == "prove":

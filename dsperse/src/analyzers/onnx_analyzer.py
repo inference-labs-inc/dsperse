@@ -1,11 +1,12 @@
+import logging
 import os
-import json
 from pathlib import Path
+from typing import Dict, Any
 
 import onnx
-import logging
+
+from dsperse.src.slice.utils.onnx_utils import OnnxUtils
 from dsperse.src.utils.utils import Utils
-from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,7 @@ class OnnxAnalyzer:
         # Return node metadata
         return {
             "index": index,
-            "segment_name": f"{node_type}_{index}",
+            "slice_name": f"{node_type}_{index}",
             "parameters": parameters,
             "node_type": node_type,
             "in_features": in_features,
@@ -380,10 +381,11 @@ class OnnxAnalyzer:
                 segments.append(segment_metadata)
 
         # Add segments to metadata
-        model_overview["segments"] = segments
+        model_overview["slices"] = segments
 
         # Save metadata if output_dir is provided
         Utils.save_metadata_file(model_overview, output_path=output_dir)
+        OnnxUtils.write_slice_dirs_metadata(output_dir)
 
         return model_overview
 
@@ -464,14 +466,17 @@ class OnnxAnalyzer:
 
         segment_shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
 
-        output_dir = os.path.join(os.path.dirname(output_dir), "slices", "segment_{}".format(segment_idx)) if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", "segment_{}".format(segment_idx))
-        os.makedirs(output_dir, exist_ok=True)
-        segment_path = os.path.abspath(os.path.join(output_dir, f"segment_{segment_idx}.onnx"))
+        output_dir = os.path.join(output_dir, f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
+        # Ensure dslice-style payload directory exists
+        payload_dir = os.path.join(output_dir, "payload")
+        os.makedirs(payload_dir, exist_ok=True)
+        segment_filename = f"slice_{segment_idx}.onnx"
+        segment_path = os.path.abspath(os.path.join(payload_dir, segment_filename))
 
         # Create segment info
         segment_info = {
             "index": segment_idx,
-            "filename": f"segment_{segment_idx}.onnx",
+            "filename": segment_filename,
             "path": segment_path,
             "parameters": segment_parameters,
             "shape": segment_shape,

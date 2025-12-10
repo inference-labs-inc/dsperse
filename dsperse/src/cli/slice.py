@@ -4,11 +4,12 @@ CLI module for slicing models.
 
 import os
 import traceback
+from pathlib import Path
 
 from colorama import Fore, Style
 
 from dsperse.src.cli.base import check_model_dir, prompt_for_value, logger, normalize_path
-from dsperse.src.slicer import Slicer
+from dsperse.src.slice.slicer import Slicer
 
 
 def setup_parser(subparsers):
@@ -21,7 +22,7 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    slice_parser = subparsers.add_parser('slice', aliases=['s'], help='Slice a model into segments')
+    slice_parser = subparsers.add_parser('slice', aliases=['s'], help='Slice a model into slices')
     # Ensure canonical command name even when alias is used
     slice_parser.set_defaults(command='slice')
 
@@ -32,8 +33,76 @@ def setup_parser(subparsers):
                               help='Directory to save the sliced model (default: model_dir/slices)')
     slice_parser.add_argument('--save-file', '--save', '-S', nargs='?', const='default',
                               help='(Optional) Save path of the model analysis (default: model_dir/analysis/model_metadata.json)')
+    # Output format for slicing
+    slice_parser.add_argument('--output-type', '--ot', '-ot', dest='output_type',
+                              choices=['dirs', 'dslice', 'dsperse'], default='dirs',
+                              help='Output format of the slicing result: dirs (default), dslice, or dsperse')
+
+    # Sub-commands under slice
+    sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
+    convert_parser = sub.add_parser('convert', aliases=['c'], help='Convert between .dsperse/.dslice and directory layouts')
+    convert_parser.set_defaults(slice_subcommand='convert')
+    convert_parser.add_argument('--input', '-i', dest='input_path', help='Input path (.dsperse/.dslice or directory)')
+    convert_parser.add_argument('--to', '--output-type', '--type', '-t', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
+                                help='Desired output type')
+    convert_parser.add_argument('--output', '-o', dest='output_path', help='Output path (directory or archive)')
+    convert_parser.add_argument('--expand-slices', action='store_true',
+                                help='When converting .dsperse -> dirs, also extract embedded .dslice files')
+    convert_parser.add_argument('--cleanup', dest='cleanup', action='store_true', default=True,
+                                help='Remove source artifact after successful conversion (default: True)')
+    convert_parser.add_argument('--no-cleanup', dest='cleanup', action='store_false', help='Keep source artifact')
 
     return slice_parser
+
+
+
+def slice_convert(args):
+    """Convert between dsperse/dslice and directories (sub-command under slice)."""
+    # Lazy import to keep Converter usage confined to explicit conversion command
+    from dsperse.src.slice.utils.converter import Converter
+    # Prompt if not provided
+    if not getattr(args, 'input_path', None):
+        args.input_path = prompt_for_value('input', 'Enter input path (.dsperse/.dslice or directory)')
+    else:
+        args.input_path = normalize_path(args.input_path)
+
+    input_path = args.input_path
+    output_path = normalize_path(args.output_path) if getattr(args, 'output_path', None) else None
+
+    p = Path(input_path)
+    if not p.exists():
+        print(f"{Fore.RED}Input path does not exist: {p}{Style.RESET_ALL}")
+        logger.error(f"Input path does not exist: {p}")
+        return
+
+    # Prompt for output type if missing
+    if not getattr(args, 'to_type', None):
+        valid = {'dirs', 'dslice', 'dsperse'}
+        from pathlib import Path as _P
+        while True:
+            chosen_raw = prompt_for_value('to', 'Enter desired output type (dirs, dslice, dsperse)')
+            # Sanitize in case prompt_for_value normalized it like a path
+            chosen = _P(str(chosen_raw)).name.strip().lower()
+            if chosen in valid:
+                args.to_type = chosen
+                break
+            print(f"{Fore.YELLOW}Invalid choice: '{chosen}'. Please enter one of: dirs, dslice, dsperse{Style.RESET_ALL}")
+
+    try:
+        # Delegate all conversions to the central Converter, which handles
+        # the dsperse -> dirs default of fully expanding embedded .dslice files.
+        result = Converter.convert(
+            input_path,
+            output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None),
+            output_path=output_path,
+            cleanup=bool(getattr(args, 'cleanup', True)),
+        )
+        print(f"{Fore.GREEN}✓ Converted to: {result}{Style.RESET_ALL}")
+        logger.info(f"Converted to: {result}")
+    except Exception as e:
+        print(f"{Fore.RED}Error converting: {e}{Style.RESET_ALL}")
+        logger.error(f"Error converting: {e}")
+
 
 def slice_model(args):
     """
@@ -111,8 +180,14 @@ def slice_model(args):
 
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
-        logger.info(f"Slicing ONNX model to output path: {output_dir}")
-        slicer.slice_model(output_path=output_dir)
+        # Determine desired output type (default to 'dirs')
+        output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
+        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}")
+        # Delegate to Slicer which will convert if needed
+        slicer.slice_model(
+            output_path=output_dir,
+            output_type=output_type,
+        )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")
         logger.info(success_msg)

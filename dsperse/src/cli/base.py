@@ -1,5 +1,5 @@
 """
-Base module for Dsperse CLI functionality.
+Base module for DSperse CLI functionality.
 Contains common utilities and classes used by all CLI commands.
 """
 
@@ -105,17 +105,17 @@ EASTER_EGGS = [
     "Did you know? Neural networks are just spicy linear algebra!",
     "Fun fact: The first neural network was created in 1943 by Warren McCulloch and Walter Pitts.",
     "Pro tip: Always normalize your inputs!",
-    "Dsperse fact: Slicing models helps with interpretability and verification.",
+    "DSperse fact: Slicing models helps with interpretability and verification.",
     "ZK fact: Zero-knowledge proofs allow you to prove you know something without revealing what it is.",
-    "Dsperse makes it easier to reason about model segments.",
+    "DSperse makes it easier to reason about model segments.",
     "The answer to life, the universe, and everything is... 42 (but you need a neural network to understand why).",
     "Neural networks don't actually think. They just do math really fast.",
     "If you're reading this, you're awesome! Keep up the great work!",
-    "Dsperse: Making neural networks more transparent, one slice at a time."
+    "DSperse: Making neural networks more transparent, one slice at a time."
 ]
 
 def print_header():
-    """Print the Dsperse CLI header with ASCII art."""
+    """Print the DSperse CLI header with ASCII art."""
     header = f"""
 {Fore.CYAN}
 8888888b.   .d8888b.                                              
@@ -133,7 +133,7 @@ def print_header():
 {Fore.YELLOW}Distributed zkML Toolkit{Style.RESET_ALL}
 """
     print(header)  # Keep print for header as it's visual UI element
-    logger.info("Dsperse CLI started")
+    logger.info("DSperse CLI started")
 
 def print_easter_egg():
     """Print a random easter egg."""

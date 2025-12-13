@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.backends.JSTprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
@@ -31,6 +32,11 @@ class Runner:
         self.run_metadata = None
 
         self.ezkl_runner = EZKL()
+        try:
+            self.jstprove_runner = JSTprove()
+        except RuntimeError:
+            self.jstprove_runner = None
+            logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
 
     def run(self, input_json_path, slice_path: str, output_path: str = None) -> dict:
@@ -148,6 +154,56 @@ class Runner:
         else:
             # When EZKL fails, output_tensor contains the error string or exception message
             exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"
+
+        return success, output_tensor, exec_info
+
+    def _run_jstprove_slice(self, slice_info: dict, input_tensor_path, output_witness_path, slice_dir: Path = None):
+        """Run JSTprove inference for a slice with fallback to ONNX.
+        Accepts paths possibly formatted as `slice_#/payload/...` or `payload/...` and resolves them
+        under the provided `slice_dir` if necessary.
+        """
+        if self.jstprove_runner is None:
+            return False, "JSTprove CLI not available", {'success': False, 'method': 'jstprove_gen_witness', 'error': 'JSTprove CLI not available'}
+
+        def _resolve_rel_path(p: str, base_dir: Path) -> str:
+            path = str((base_dir / p).resolve())
+            if not Path(path).exists():
+                path = str((Path(base_dir).parent / Path(p)).resolve())
+            return path
+
+        circuit_path = slice_info.get("circuit_path")
+        settings_path = slice_info.get("settings_path")
+
+        # Resolve possibly relative paths
+        if circuit_path and not os.path.isabs(str(circuit_path)):
+            circuit_path = _resolve_rel_path(circuit_path, slice_dir)
+
+        start_time = time.time()
+        # Attempt JSTprove execution
+        try:
+            success, output_tensor = self.jstprove_runner.generate_witness(
+                input_file=input_tensor_path,
+                model_path=circuit_path,
+                output_file=output_witness_path,
+            )
+        except Exception as e:
+            success = False
+            output_tensor = str(e)
+
+        end_time = time.time()
+        exec_info = {
+            'success': success,
+            'method': 'jstprove_gen_witness',
+            'execution_time': end_time - start_time,
+            'witness_path': str(output_witness_path),
+            'attempted_jstprove': True
+        }
+
+        if success:
+            exec_info['input_file'] = str(input_tensor_path.resolve())
+            exec_info['output_file'] = str(output_witness_path.resolve())
+        else:
+            exec_info['error'] = output_tensor if isinstance(output_tensor, str) else "Unknown JSTprove error"
 
         return success, output_tensor, exec_info
 

@@ -13,5 +13,5 @@ SRS_LOGROWS_MAX = 24
 SRS_LOGROWS_RANGE = range(SRS_LOGROWS_MIN, SRS_LOGROWS_MAX + 1)
 SRS_FILES = [f"kzg{n}.srs" for n in SRS_LOGROWS_RANGE]
 
-# JSTprove configuration
+# JSTprove CLI command
 JSTPROVE_COMMAND = "jst"

@@ -95,16 +95,29 @@ class RunnerAnalyzer:
             dependencies = item.get("dependencies") or {}
             parameters = item.get("parameters", 0)
 
-            # EZKL compilation info
-            comp = ((item.get("compilation") or {}).get("ezkl") or {})
-            files = (comp.get("files") or {})
-            compiled_flag = bool(comp.get("compiled", False))
-
-            # Accept both keys: 'compiled_circuit' and legacy 'compiled'
-            compiled_rel = files.get("compiled_circuit") or files.get("compiled")
-            settings_rel = files.get("settings")
-            pk_rel = files.get("pk_key")
-            vk_rel = files.get("vk_key")
+            # Check for compilation info (JSTprove first, then EZKL)
+            compilation = item.get("compilation") or {}
+            jst_comp = compilation.get("jstprove") or {}
+            ezkl_comp = compilation.get("ezkl") or {}
+            
+            # Prefer JSTprove if available, otherwise EZKL
+            if jst_comp.get("compiled"):
+                backend = "jstprove"
+                files = jst_comp.get("files") or {}
+                compiled_flag = True
+                compiled_rel = files.get("circuit")
+                settings_rel = None
+                pk_rel = None
+                vk_rel = None
+            else:
+                backend = "ezkl"
+                files = ezkl_comp.get("files") or {}
+                compiled_flag = bool(ezkl_comp.get("compiled", False))
+                # Accept both keys: 'compiled_circuit' and legacy 'compiled'
+                compiled_rel = files.get("compiled_circuit") or files.get("compiled")
+                settings_rel = files.get("settings")
+                pk_rel = files.get("pk_key")
+                vk_rel = files.get("vk_key")
 
             def _norm(rel: Optional[str]) -> Optional[str]:
                 if not rel:
@@ -124,6 +137,7 @@ class RunnerAnalyzer:
                 "output_shape": output_shape,
                 "ezkl_compatible": True,
                 "ezkl": bool(compiled_flag),
+                "backend": backend,
                 "circuit_size": 0,  # unknown without touching filesystem; keep 0
                 "dependencies": dependencies,
                 "parameters": parameters,
@@ -171,21 +185,36 @@ class RunnerAnalyzer:
             dependencies = slice.get("dependencies") or {}
             parameters = slice.get("parameters", 0)
 
-            # EZKL compilation info
-            comp = ((slice.get("compilation") or {}).get("ezkl") or {})
-            files = (comp.get("files") or {})
-            compiled_flag = bool(comp.get("compiled", False))
-
-            if files:
-                circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
-                settings_path = os.path.join(parent_dir, files.get("settings"))
-                pk_path = os.path.join(parent_dir, files.get("pk_key"))
-                vk_path = os.path.join(parent_dir, files.get("vk_key"))
-            else:
-                circuit_path = None
+            # Check for compilation info (JSTprove first, then EZKL)
+            compilation = slice.get("compilation") or {}
+            jst_comp = compilation.get("jstprove") or {}
+            ezkl_comp = compilation.get("ezkl") or {}
+            
+            if jst_comp.get("compiled"):
+                backend = "jstprove"
+                files = jst_comp.get("files") or {}
+                compiled_flag = True
+                if files:
+                    circuit_path = os.path.join(parent_dir, files.get("circuit"))
+                else:
+                    circuit_path = None
                 settings_path = None
                 pk_path = None
                 vk_path = None
+            else:
+                backend = "ezkl"
+                files = ezkl_comp.get("files") or {}
+                compiled_flag = bool(ezkl_comp.get("compiled", False))
+                if files:
+                    circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
+                    settings_path = os.path.join(parent_dir, files.get("settings"))
+                    pk_path = os.path.join(parent_dir, files.get("pk_key"))
+                    vk_path = os.path.join(parent_dir, files.get("vk_key"))
+                else:
+                    circuit_path = None
+                    settings_path = None
+                    pk_path = None
+                    vk_path = None
 
             slices[slice_key] = {
                 "path": onnx_path,
@@ -193,6 +222,7 @@ class RunnerAnalyzer:
                 "output_shape": output_shape,
                 "ezkl_compatible": True,
                 "ezkl": bool(compiled_flag),
+                "backend": backend,
                 "circuit_size": 0,
                 "dependencies": dependencies,
                 "parameters": parameters,
@@ -243,9 +273,11 @@ class RunnerAnalyzer:
             meta = slices.get(slice_key, {})
             circuit_path = meta.get('circuit_path')
             onnx_path = meta.get('path')
+            backend = meta.get('backend', 'ezkl')
             has_circuit = circuit_path is not None and circuit_path != ""
             has_keys = (meta.get('pk_path') is not None) and (meta.get('vk_path') is not None)
-            use_circuit = bool(meta.get('ezkl')) and has_circuit and has_keys
+            # JSTprove doesn't require pk/vk keys; EZKL does
+            use_circuit = bool(meta.get('ezkl')) and has_circuit and (backend == 'jstprove' or has_keys)
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
             execution_chain["nodes"][slice_key] = {

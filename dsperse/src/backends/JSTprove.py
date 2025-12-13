@@ -130,13 +130,15 @@ class JSTprove:
         if circuit_path.exists() and circuit_path.suffix == '.onnx':
             onnx_model_path = circuit_path
             circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
-            logger.info(f"JSTprove: Compiling ONNX model {onnx_model_path} to circuit {circuit_path}")
 
-        # If we have an ONNX model, compile it first
-        if onnx_model_path:
+        # If we have an ONNX model, compile it first only if circuit doesn't exist
+        if onnx_model_path and not circuit_path.exists():
+            logger.info(f"JSTprove: Compiling ONNX model {onnx_model_path} to circuit {circuit_path}")
             ok, err = self.compile_circuit(onnx_model_path, circuit_path)
             if not ok:
                 raise RuntimeError(f"Circuit compilation failed: {err}")
+        elif onnx_model_path and circuit_path.exists():
+            logger.info(f"Using existing circuit: {circuit_path}")
         elif not circuit_path.exists():
             raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
 
@@ -420,6 +422,12 @@ class JSTprove:
             # JSTprove dict format with 'rescaled_output' key
             if isinstance(witness_data, dict) and "rescaled_output" in witness_data:
                 self._witness_format = "jstprove_dict"
+                # NOTE: Rescaled outputs are in output.json (from -o flag), not in the witness binary file (-w flag).
+                # The witness binary contains only the raw quantized values needed for proof generation.
+                logger.warning(
+                    "Using rescaled outputs from output.json (not witness binary). "
+                    "These are the model's floating-point outputs after de-quantization."
+                )
                 return {"logits": _to_logits(witness_data["rescaled_output"])}
             # Raw array format
             elif isinstance(witness_data, list):

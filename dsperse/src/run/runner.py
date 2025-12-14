@@ -30,6 +30,8 @@ class Runner:
         self._provided_run_metadata_path = run_metadata_path
         self._save_metadata_path = save_metadata_path
         self.run_metadata = None
+        # Expose the last run directory to callers (e.g., CLI) for user messaging
+        self.last_run_dir: Path | None = None
 
         self.ezkl_runner = EZKL()
         try:

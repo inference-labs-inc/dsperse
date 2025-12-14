@@ -138,15 +138,15 @@ def run_inference(args):
         print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         logger.info(f"Inference completed in {elapsed_time:.2f} seconds")
 
-        # Prompt for output file if not provided
-        if not hasattr(args, 'output_file') or not args.output_file:
-            save_output = prompt_for_value('save-output', 'Save output to file?', default='n', required=False).lower()
-            if save_output.startswith('y'):
-                default_output_file = os.path.join(model_dir, "output.json")
-                args.output_file = prompt_for_value('output-file', 'Enter the output file path', default=default_output_file, required=False)
+        # Do not prompt to save output; only save if an explicit output file path is provided via CLI
+        # Print the run directory that was just created
+        if getattr(runner, 'last_run_dir', None):
+            run_dir_path = str(runner.last_run_dir)
+            print(f"Run data saved to {run_dir_path}")
+            logger.info(f"Run data saved to {run_dir_path}")
 
-        # Save the result if an output file is specified
-        if args.output_file:
+        # Save the result only if an output file was explicitly specified
+        if hasattr(args, 'output_file') and args.output_file:
             try:
                 args.output_file = normalize_path(args.output_file)
                 save_result(result, args.output_file)

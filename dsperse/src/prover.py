@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.slice.utils.converter import Converter
+from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -129,24 +130,123 @@ class Prover:
         return summary
 
     def prove(self, run_path: str | Path, model_dir: str | Path, output_path: str | Path | None = None) -> dict:
-        """Route to the appropriate prove path based on `data_path` packaging.
-        - run_path: path to a run folder (must contain metadata.json)
-        - model_dir: slices dir root, a single `slice_*` dir, a `.dslice` file/dir, or a `.dsperse` bundle
-        - output_path: optional root directory for proofs; defaults to `<run_path>/slice_#/proof.json`
+        """Route to the appropriate prove path based on `model_dir` packaging.
+        Supports two modes for run_path:
+        - Run-root mode: run_path contains metadata.json (prove all circuit-capable slices)
+        - Single-slice mode: run_path contains input.json and output.json (prove just this slice)
         """
-        Utils.load_run_metadata(run_path)
+        run_path = Path(run_path)
+
+        # Determine run mode
+        is_run_root = (run_path / "metadata.json").exists()
+        is_slice_run = (run_path / "input.json").exists() and (run_path / "output.json").exists()
 
         detected = Converter.detect_type(model_dir)
 
-        if detected == "dslice":
-            return self.prove_dslice(run_path, model_dir, output_path)
-        if detected == "dsperse":
-            return self.prove_dsperse(run_path, model_dir, output_path)
-        if detected == "dirs":
-            # Either root of slices or a single slice dir
-            return self.prove_dirs(run_path, model_dir, output_path)
+        if is_run_root:
+            # Existing behavior
+            Utils.load_run_metadata(run_path)
+            if detected == "dslice":
+                return self.prove_dslice(run_path, model_dir, output_path)
+            if detected == "dsperse":
+                return self.prove_dsperse(run_path, model_dir, output_path)
+            if detected == "dirs":
+                return self.prove_dirs(run_path, model_dir, output_path)
+            raise ValueError(f"Unsupported data type for proving: {detected}")
 
-        raise ValueError(f"Unsupported data type for proving: {detected}")
+        # Single-slice mode: no run metadata, but we must have per-slice files
+        if is_slice_run:
+            # Ensure we operate on a directory layout for the provided slices/model path
+            dirs_model_path = model_dir
+            if detected != "dirs":
+                dirs_model_path = Converter.convert(str(model_dir), output_type="dirs", cleanup=False)
+
+            # Prove using the directory layout, while remembering original packaging for reconversion
+            result = self._prove_single_slice(run_path, dirs_model_path, detected)
+
+            # Convert back to the original packaging if needed
+            if detected != "dirs":
+                Converter.convert(str(Utils.dirs_root_from(Path(dirs_model_path))), output_type=detected, cleanup=True)
+
+            return result
+
+        # Otherwise invalid run_dir
+        raise FileNotFoundError(f"Run path invalid; expected run-root (metadata.json) or per-slice (input.json + output.json) at {run_path}")
+
+    def _prove_single_slice(self, run_path: Path, model_dir: str | Path, detected: str) -> dict:
+        """Internal: prove exactly one slice using a per-slice run directory.
+        Expects `<run_path>/input.json` and `<run_path>/output.json` to exist and `model_dir` to
+        resolve to a single-slice metadata source (slice dir or .dslice).
+        Writes `proof.json` and updates/creates `run_results.json` in `run_path`.
+        """
+        # Normalize/expand model_dir into run-like metadata so we can get artifact paths
+        sdir = Path(model_dir)
+
+        # Generate run-like metadata strictly from provided slices path
+        run_meta = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None, original_format=detected)
+        model_slices = (run_meta or {}).get("slices", {})
+
+        # Expect exactly one slice in provided metadata for single-slice proving
+        if len(model_slices) != 1:
+            raise ValueError(f"Slices path must represent exactly one slice for single-slice proving; found {len(model_slices)} in {model_dir}")
+
+        # Extract the only slice id and meta
+        (slice_id, meta), = model_slices.items()
+
+        # Resolve artifacts relative to the provided slices path root
+        dirs_root = Utils.dirs_root_from(Path(model_dir))
+        slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
+        model_path_res = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
+        pk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("pk_path"))
+        settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+
+        # Validate required inputs
+        if not model_path_res or not os.path.exists(model_path_res):
+            raise FileNotFoundError(f"Compiled circuit not found for {slice_id} at {model_path_res}")
+        if not pk_path_res or not os.path.exists(pk_path_res):
+            raise FileNotFoundError(f"Proving key not found for {slice_id} at {pk_path_res}")
+        if settings_path_res and not os.path.exists(settings_path_res):
+            # Settings optional; set to None if missing
+            settings_path_res = None
+
+        witness_path = Path(run_path) / "output.json"
+        if not witness_path.exists():
+            raise FileNotFoundError(f"Witness not found at {witness_path}")
+
+        proof_path = Path(run_path) / "proof.json"
+        proof_path.parent.mkdir(parents=True, exist_ok=True)
+
+        start = time.time()
+        success, result = self.ezkl_runner.prove(
+            witness_path=str(witness_path),
+            model_path=model_path_res,
+            proof_path=str(proof_path),
+            pk_path=pk_path_res,
+            settings_path=settings_path_res,
+        )
+        elapsed = time.time() - start
+
+        # Merge into run_results.json located in the per-slice dir
+        proofs = {
+            slice_id: {
+                "success": bool(success),
+                "proof_path": str(proof_path),
+                "time_sec": elapsed,
+                "error": None if success else str(result),
+            }
+        }
+        run_results = Utils.load_run_results(Path(run_path))
+        run_results, proved_count = Utils.merge_execution_into_run_results(run_results, proofs, "proof")
+        exec_chain = run_results.setdefault("execution_chain", {})
+        exec_chain["ezkl_proved_slices"] = int(proved_count)
+
+        existing_witness = int(exec_chain.get("ezkl_witness_slices", 0) or 0)
+        if existing_witness == 0:
+            exec_chain["ezkl_witness_slices"] = len(proofs)
+        # Save run_results.json next to the per-slice files
+        Utils.save_run_results(Path(run_path), run_results)
+
+        return run_results
 
 
 if __name__ == "__main__":
@@ -163,7 +263,7 @@ if __name__ == "__main__":
 
     model_dir = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(model_dir, "slices") # slices dir, or single slice, or dsperse file
-    slices_dir = os.path.join(slices_dir, "slice_0.dslice")  # give a single slice to test
+    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")  # give a single slice to test
 
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")

@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.slice.utils.converter import Converter
+from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -121,18 +122,97 @@ class Verifier:
         return result
 
     def verify(self, run_path: str | Path, model_path: str | Path) -> dict:
-        # Validate run path
-        Utils.load_run_metadata(run_path)
+        """Verify proofs.
+        Supports:
+        - Run-root mode: run_path contains metadata.json (verify across slices using run_results proof paths)
+        - Single-slice mode: run_path contains input.json and output.json (verify proof.json in-place)
+        """
+        run_path = Path(run_path)
+
+        is_run_root = (run_path / "metadata.json").exists()
+        is_slice_run = (run_path / "input.json").exists() and (run_path / "output.json").exists()
 
         detected = Converter.detect_type(model_path)
 
-        if detected == "dslice":
-            return self.verify_dslice(run_path, model_path)
-        if detected == "dsperse":
-            return self.verify_dsperse(run_path, model_path)
-        if detected == "dirs":
-            return self.verify_dirs(run_path, model_path)
-        raise ValueError(f"Unsupported data type for verification: {detected}")
+        if is_run_root:
+            # Normal multi-slice flow
+            Utils.load_run_metadata(run_path)
+            if detected == "dslice":
+                return self.verify_dslice(run_path, model_path)
+            if detected == "dsperse":
+                return self.verify_dsperse(run_path, model_path)
+            if detected == "dirs":
+                return self.verify_dirs(run_path, model_path)
+            raise ValueError(f"Unsupported data type for verification: {detected}")
+
+        if is_slice_run:
+            # Ensure we operate on directory layout for the provided model/slice path
+            dirs_model_path = model_path
+            if detected != "dirs":
+                dirs_model_path = Converter.convert(str(model_path), output_type="dirs", cleanup=False)
+
+            result = self._verify_single_slice(run_path, dirs_model_path, detected)
+
+            # Convert back to the original packaging if needed
+            if detected != "dirs":
+                from dsperse.src.utils.utils import Utils as _Utils
+                root = _Utils.dirs_root_from(Path(dirs_model_path))
+                Converter.convert(str(root), output_type=detected, cleanup=True)
+
+            return result
+
+        raise FileNotFoundError(f"Run path invalid; expected run-root (metadata.json) or per-slice (input.json + output.json) at {run_path}")
+
+    def _verify_single_slice(self, run_path: Path, model_path: str | Path, detected: str) -> dict:
+        """Internal: verify exactly one slice using a per-slice run directory.
+        Expects `<run_path>/input.json` and `<run_path>/output.json` and proof.json to exist and `model_path` to
+        resolve to a single-slice metadata source (slice dir or .dslice).
+        Updates/creates `run_results.json` in `run_path`.
+        """
+        sdir = Path(model_path)
+
+        run_meta = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None, original_format=detected)
+        model_slices = (run_meta or {}).get("slices", {})
+        if len(model_slices) != 1:
+            raise ValueError(f"Slices path must represent exactly one slice for single-slice verification; found {len(model_slices)} in {model_path}")
+
+        (slice_id, meta), = model_slices.items()
+
+        dirs_root = Utils.dirs_root_from(Path(model_path))
+        slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
+        vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
+        settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+
+        if not vk_path_res or not os.path.exists(vk_path_res):
+            raise FileNotFoundError(f"Verification key not found for {slice_id} at {vk_path_res}")
+        if settings_path_res and not os.path.exists(settings_path_res):
+            raise FileNotFoundError(f"Settings file not found for {slice_id} at {settings_path_res}")
+
+        proof_path = Path(run_path) / "proof.json"
+        if not proof_path.exists():
+            raise FileNotFoundError(f"Proof file not found at {proof_path}. Run 'prove' for this slice first.")
+
+        start = time.time()
+        success = self.ezkl_runner.verify(
+            proof_path=str(proof_path),
+            settings_path=settings_path_res,
+            vk_path=vk_path_res,
+        )
+        elapsed = time.time() - start
+
+        verifs = {
+            slice_id: {
+                "success": bool(success),
+                "time_sec": elapsed,
+                "error": None if success else "verification_failed",
+            }
+        }
+        run_results = Utils.load_run_results(Path(run_path))
+        run_results, verified_count = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
+        exec_chain = run_results.setdefault("execution_chain", {})
+        exec_chain["ezkl_verified_slices"] = int(verified_count)
+        Utils.save_run_results(Path(run_path), run_results)
+        return run_results
 
 
 if __name__ == "__main__":
@@ -149,7 +229,7 @@ if __name__ == "__main__":
     # Get model directory
     model_dir = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(model_dir, "slices")
-    slices_dir = os.path.join(slices_dir, "slice_0.dslice")  # give a single slice to test
+    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")  # give a single slice to test
     
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")

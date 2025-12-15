@@ -124,9 +124,15 @@ def verify_proof(args):
         if isinstance(result, dict) and "execution_chain" in result:
             execution_chain = result["execution_chain"]
             print(f"\n{Fore.YELLOW}Verification Summary:{Style.RESET_ALL}")
-            print(f"Verified slices: {execution_chain.get('ezkl_verified_slices', 0)} of {execution_chain.get('ezkl_proved_slices', 0)}")
-            denom = execution_chain.get('ezkl_proved_slices', 0) or 1
-            print(f"Verification percentage: {(execution_chain.get('ezkl_verified_slices', 0) / denom * 100):.1f}%")
+            j_verified = int(execution_chain.get('jstprove_verified_slices', 0) or 0)
+            e_verified = int(execution_chain.get('ezkl_verified_slices', 0) or 0)
+            j_proved = int(execution_chain.get('jstprove_proved_slices', 0) or 0)
+            e_proved = int(execution_chain.get('ezkl_proved_slices', 0) or 0)
+            total_verified = j_verified + e_verified
+            total_proved = j_proved + e_proved
+            pct = (total_verified / total_proved * 100.0) if total_proved > 0 else 0.0
+            print(f"Verified slices: {total_verified} of {total_proved}")
+            print(f"Verification percentage: {pct:.1f}%")
         else:
             print(f"\n{Fore.YELLOW}No verification results found{Style.RESET_ALL}")
 

@@ -35,6 +35,10 @@ def setup_parser(subparsers):
     run_parser.add_argument('--output-file', '-o', dest='output_file',
                             help='Path to save output results (default: parent_dir/output.json)')
 
+    # Optional backend forcing (run all slices using a specific backend, else ONNX)
+    run_parser.add_argument('--backends', '--backend', '-b', dest='force_backend', choices=['jstprove', 'ezkl', 'onnx'],
+                            help='Force running all slices with the selected backend. If a slice lacks artifacts for that backend, ONNX is used.')
+
     return run_parser
 
 def run_inference(args):
@@ -132,6 +136,9 @@ def run_inference(args):
         start_time = time.time()
         # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
         runner = Runner(run_metadata_path=run_metadata_path)
+        # Honor forced backend selection if provided
+        if getattr(args, 'force_backend', None):
+            setattr(runner, 'force_backend', args.force_backend)
         result = runner.run(args.input_file, slice_path=slices_dir_effective or model_dir)
         elapsed_time = time.time() - start_time
 
@@ -169,6 +176,19 @@ def run_inference(args):
             print("\nSlice Methods:")
             for slice_name, slice_info in slice_results.items():
                 print(f"{slice_name}: {slice_info.get('method', 'N/A')}")
+
+        # Print execution summary if present
+        try:
+            from dsperse.src.utils.utils import Utils
+            rr = Utils.load_run_results(getattr(runner, 'last_run_dir', None)) if getattr(runner, 'last_run_dir', None) else {}
+            ec = (rr or {}).get('execution_chain', {})
+            if ec:
+                print("\nExecution summary:")
+                print(f"  JSTprove witness slices: {int(ec.get('jstprove_witness_slices', 0))}")
+                print(f"  EZKL witness slices: {int(ec.get('ezkl_witness_slices', 0))}")
+                print(f"  Overall security: {ec.get('overall_security', 'N/A')}")
+        except Exception:
+            pass
 
 
     except Exception as e:

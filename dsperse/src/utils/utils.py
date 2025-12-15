@@ -282,13 +282,16 @@ class Utils:
                 exec_entry = {
                     "proof_file": info.get("proof_path"),
                     "success": bool(info.get("success")),
-                    "proof_generation_time": float(info.get("time_sec", 0.0)),
+                    # Standardized timing key
+                    "time_sec": float(info.get("time_sec", 0.0)),
                 }
             elif execution_type == "verification":
                 exec_entry = {
+                    # Keep a simple boolean while also storing success
                     "verified": bool(info.get("success")),
                     "success": bool(info.get("success")),
-                    "verification_time": float(info.get("time_sec", 0.0)),
+                    # Standardized timing key
+                    "time_sec": float(info.get("time_sec", 0.0)),
                 }
             else:
                 raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")

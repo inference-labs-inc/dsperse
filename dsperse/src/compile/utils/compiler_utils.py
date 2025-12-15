@@ -131,14 +131,45 @@ class CompilerUtils:
         Returns a tuple of (payload_rel_dict, calibration_rel_path).
         """
         calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
-        relative_paths = {
+
+        # Detect backend by fields present in compilation_data
+        is_jstprove = bool(compilation_data.get('compiled')) and not bool(compilation_data.get('vk_key'))
+
+        if is_jstprove:
+            relative_paths = CompilerUtils.get_relative_paths_jstprove(compilation_data, calibration_rel)
+        else:
+            relative_paths = CompilerUtils.get_relative_paths_ezkl(compilation_data, calibration_rel)
+
+        return relative_paths
+
+    @staticmethod
+    def get_relative_paths_jstprove(compilation_data: Dict[str, Any], calibration_rel: Optional[str]) -> dict[str, str | None]:
+        """
+        Build payload-relative files mapping for JSTprove artifacts using backend-provided keys.
+        """
+        return {
+            'settings': CompilerUtils._rel_from_payload(compilation_data.get('settings')),
+            'compiled': CompilerUtils._rel_from_payload(compilation_data.get('compiled')),
+            'witness_solver': CompilerUtils._rel_from_payload(compilation_data.get('witness_solver')),
+            'wandb': CompilerUtils._rel_from_payload(compilation_data.get('wandb')),
+            'quantized_model': CompilerUtils._rel_from_payload(compilation_data.get('quantized_model')),
+            'metadata': CompilerUtils._rel_from_payload(compilation_data.get('metadata')),
+            'architecture': CompilerUtils._rel_from_payload(compilation_data.get('architecture')),
+            'calibration': calibration_rel,
+        }
+
+    @staticmethod
+    def get_relative_paths_ezkl(compilation_data: Dict[str, Any], calibration_rel: Optional[str]) -> dict[str, str | None]:
+        """
+        Build payload-relative files mapping for EZKL artifacts using backend-provided keys.
+        """
+        return {
             'settings': CompilerUtils._rel_from_payload(compilation_data.get('settings')),
             'compiled': CompilerUtils._rel_from_payload(compilation_data.get('compiled')),
             'vk_key': CompilerUtils._rel_from_payload(compilation_data.get('vk_key')),
             'pk_key': CompilerUtils._rel_from_payload(compilation_data.get('pk_key')),
-            'calibration': calibration_rel
+            'calibration': calibration_rel,
         }
-        return relative_paths
 
     @staticmethod
     def apply_payload_rel_to_comp_data(compilation_data: Dict[str, Any], payload_rel: Dict[str, Optional[str]]) -> Dict[str, Any]:
@@ -207,7 +238,7 @@ class CompilerUtils:
 
         # Get backend version based on which backend was used
         if backend_name == "jstprove":
-            from dsperse.src.backends.JSTprove import JSTprove
+            from dsperse.src.backends.jstprove import JSTprove
             backend_version = JSTprove.get_version()
         elif backend_name == "ezkl":
             backend_version = EZKL.get_version()
@@ -218,14 +249,10 @@ class CompilerUtils:
         compilation_info = {
             "compiled": success,
             "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
+            "backend": backend_name,
             "backend_version": backend_version,
-            "files": {
-                "settings": file_paths.get('settings'),
-                "compiled_circuit": file_paths.get('compiled'),
-                "vk_key": file_paths.get('vk_key'),
-                "pk_key": file_paths.get('pk_key'),
-                "calibration": file_paths.get('calibration')
-            }
+            # Preserve keys from provided file_paths to mirror model-level structure
+            "files": file_paths or {}
         }
 
         # Add any errors if present

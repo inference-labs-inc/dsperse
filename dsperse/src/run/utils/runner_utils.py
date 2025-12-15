@@ -78,10 +78,50 @@ class RunnerUtils:
 
     @staticmethod
     def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
+        # Respect optional global forced backend selection
+        forced = getattr(runner, 'force_backend', None)
+        if forced == 'onnx':
+            return runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+
         if node.get("use_circuit"):
+            preferred = (slice_info.get("backend") or node.get("backend") or "jstprove").lower()
+            if forced in ("jstprove", "ezkl"):
+                preferred = forced
+            # Try JSTprove path first when selected/forced and available
+            if preferred == "jstprove" and getattr(runner, "jstprove_runner", None):
+                ok, tensor, j_info = runner._run_jstprove_slice(slice_info, in_file, out_file, slice_dir)
+                if ok:
+                    return ok, tensor, j_info
+                # If forced JSTprove, do not switch to EZKL; go directly to ONNX
+                if forced == 'jstprove':
+                    ok, tensor, o_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                    o_info["method"] = "forced_jstprove_fallback_onnx"
+                    o_info["attempted_jstprove"] = True
+                    return ok, tensor, o_info
+                # Otherwise fall back to EZKL then ONNX
+                ok, tensor, e_info = runner._run_ezkl_slice(slice_info, in_file, out_file, slice_dir)
+                if ok:
+                    return ok, tensor, e_info
+                ok, tensor, o_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                o_info["method"] = "jstprove_ezkl_fallback_onnx"
+                o_info["attempted_jstprove"] = True
+                o_info["attempted_ezkl"] = True
+                if j_info.get("error") and not o_info.get("error"):
+                    o_info["error"] = j_info.get("error")
+                elif e_info.get("error") and not o_info.get("error"):
+                    o_info["error"] = e_info.get("error")
+                return ok, tensor, o_info
+
+            # Otherwise, try EZKL first (legacy/default), then fallback to ONNX
             ok, tensor, ezkl_info = runner._run_ezkl_slice(slice_info, in_file, out_file, slice_dir)
             result_info = ezkl_info
             if not ok:
+                # If forced EZKL, go directly to ONNX
+                if forced == 'ezkl':
+                    ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                    onnx_info["method"] = "forced_ezkl_fallback_onnx"
+                    onnx_info["attempted_ezkl"] = True
+                    return ok, tensor, onnx_info
                 ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
                 onnx_info["method"] = "ezkl_fallback_onnx"
                 onnx_info["attempted_ezkl"] = True

@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
-from dsperse.src.backends.JSTprove import JSTprove
+from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
@@ -32,6 +32,8 @@ class Runner:
         self.run_metadata = None
         # Expose the last run directory to callers (e.g., CLI) for user messaging
         self.last_run_dir: Path | None = None
+        # Optional: force a specific backend at runtime ('jstprove' | 'ezkl' | 'onnx')
+        self.force_backend: str | None = None
 
         self.ezkl_runner = EZKL()
         try:
@@ -183,6 +185,10 @@ class Runner:
         start_time = time.time()
         # Attempt JSTprove execution
         try:
+            # Record the actual JSTprove witness file name produced by the backend
+            # Convention: runner writes outputs to <run_dir>/slice_#/output.json and JSTprove
+            # emits a binary witness next to it named 'output_witness.bin'.
+            witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
             success, output_tensor = self.jstprove_runner.generate_witness(
                 input_file=input_tensor_path,
                 model_path=circuit_path,
@@ -198,6 +204,7 @@ class Runner:
             'method': 'jstprove_gen_witness',
             'execution_time': end_time - start_time,
             'witness_path': str(output_witness_path),
+            'witness_file': str(witness_file_path),
             'attempted_jstprove': True
         }
 
@@ -219,6 +226,10 @@ class Runner:
             1 for r in slice_results.values()
             if r.get("method") == "ezkl_gen_witness"
         )
+        jstprove_complete = sum(
+            1 for r in slice_results.values()
+            if r.get("method") == "jstprove_gen_witness"
+        )
         total_slices = len(slice_results)
 
         # Build execution results
@@ -228,7 +239,8 @@ class Runner:
             witness_execution = {
                 "method": exec_info.get("method", "unknown"),
                 "execution_time": exec_info.get("execution_time", 0),
-                "attempted_ezkl": exec_info.get("attempted_ezkl", True),
+                "attempted_ezkl": exec_info.get("attempted_ezkl", False),
+                "attempted_jstprove": exec_info.get("attempted_jstprove", False),
                 "success": exec_info.get("success", False),
                 "input_file": exec_info.get("input_file", "unknown"),
                 "output_file": exec_info.get("output_file", "unknown"),
@@ -245,8 +257,9 @@ class Runner:
 
             execution_results.append(result_entry)
 
-        # Calculate security percentage
-        security_percent = (ezkl_complete / total_slices * 100) if total_slices > 0 else 0
+        # Calculate security percentage (any circuit backend counts as secure)
+        circuit_slices = ezkl_complete + jstprove_complete
+        security_percent = (circuit_slices / total_slices * 100) if total_slices > 0 else 0
 
         # Build output structure
         inference_output = {
@@ -255,6 +268,7 @@ class Runner:
             "probabilities": results["probabilities"],
             "execution_chain": {
                 "total_slices": total_slices,
+                "jstprove_witness_slices": jstprove_complete,
                 "ezkl_witness_slices": ezkl_complete,
                 "overall_security": f"{security_percent:.1f}%",
                 "execution_results": execution_results
@@ -287,6 +301,8 @@ class Runner:
     def _run(self, output_path=None, input_json_path=None):
         head, nodes = RunnerAnalyzer.get_execution_chain(self.run_metadata)
         run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
+        # Remember for CLI messaging and summaries
+        self.last_run_dir = run_dir
 
         current_slice_id = head
         current_tensor = Utils.read_input(input_json_path)
@@ -322,7 +338,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -336,6 +352,7 @@ if __name__ == "__main__":
     # Get model directory
     abs_path = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(abs_path, "slices")
+    # slices_dir = os.path.join(slices_dir, "slice_0")
     input_json = os.path.join(abs_path, "input.json")
     run_metadata_path = None
 

@@ -114,10 +114,9 @@ def setup_parser(subparsers):
                                 help='Path to the model or slices directory (or a .dsperse/.dslice file)')
     compile_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                                 help='Path to input file for calibration (optional)')
-    compile_parser.add_argument('--layers', '-l', help='Specify which layers to compile (e.g., "3, 20-22"). If not provided, all layers will be compiled.')
+    compile_parser.add_argument('--layers', '-l', help='Layer selection or per-layer backend mapping. Examples: "3,20-22" (select layers), or "0,2:jstprove;3-4:ezkl" (per-layer backends). If not provided, all layers will be compiled with default fallback (jstprove→ezkl→onnx).')
     compile_parser.add_argument('--backend', '-b', default=None,
-                                help='Backend specification. Can be: "jstprove", "ezkl", or per-layer like "0,2:jstprove;3-4:ezkl". '
-                                     'Default: try both jstprove and ezkl, fallback to onnx. Note: requires --layers to compile.')
+                                help='Backend specification for all selected layers: "jstprove" | "ezkl" | "onnx". Alternatively, provide per-layer mapping via --layers, e.g., "0,2:jstprove;3-4:ezkl". Default: try both jstprove and ezkl, fallback to onnx.')
     
     return compile_parser
 
@@ -185,6 +184,10 @@ def compile_model(args):
     # Normalize input file if provided via flag
     if hasattr(args, 'input_file') and args.input_file:
         args.input_file = normalize_path(args.input_file)
+
+    # If --layers is a per-layer backend mapping (contains ':'), prefer it as compiler backend spec
+    if layers and ':' in str(layers):
+        backend = layers
 
     # Initialize the Compiler (it supports dirs or model.onnx)
     try:

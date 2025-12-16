@@ -7,6 +7,7 @@ import time
 import logging
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
@@ -23,13 +24,64 @@ class Verifier:
         Initialize the verifier.
         """
         self.ezkl_runner = EZKL()
+        try:
+            self.jstprove_runner = JSTprove()
+        except Exception:
+            self.jstprove_runner = None
+
+    # ------------------------ Small helpers (mirror Prover) ------------------------
+    @staticmethod
+    def _get_witness_backend_from_run(run_path: Path, slice_id: str) -> str | None:
+        """Inspect run_results.json to see which backend produced the witness for a slice."""
+        try:
+            rr = Utils.load_run_results(run_path)
+        except Exception:
+            return None
+        exec_chain = (rr or {}).get("execution_chain") or {}
+        exec_results = exec_chain.get("execution_results") or []
+        for entry in exec_results:
+            if entry.get("slice_id") == slice_id:
+                w = entry.get("witness_execution") or {}
+                method = (w.get("method") or "").lower()
+                if method.startswith("jstprove"):
+                    return "jstprove"
+                if method.startswith("ezkl"):
+                    return "ezkl"
+        return None
+
+    @staticmethod
+    def _get_witness_file_from_run(run_path: Path, slice_id: str) -> str | None:
+        """Return concrete witness file path recorded by runner for a slice, if any."""
+        try:
+            rr = Utils.load_run_results(run_path)
+        except Exception:
+            return None
+        exec_chain = (rr or {}).get("execution_chain") or {}
+        exec_results = exec_chain.get("execution_results") or []
+        for entry in exec_results:
+            if entry.get("slice_id") == slice_id:
+                w = entry.get("witness_execution") or {}
+                wf = w.get("witness_file") or w.get("witness_path")
+                return wf
+        return None
+
+    @staticmethod
+    def _select_verification_backend(run_path: Path, slice_id: str, meta: dict) -> str:
+        """Prefer the backend that produced the witness; else meta backend; default jstprove."""
+        from_run = Verifier._get_witness_backend_from_run(run_path, slice_id)
+        if from_run in ("jstprove", "ezkl"):
+            return from_run
+        meta_backend = (meta.get("backend") or "").lower()
+        if meta_backend in ("jstprove", "ezkl"):
+            return meta_backend
+        return "jstprove"
 
     def verify_dirs(self, run_path: str | Path, dirs_path: str | Path) -> dict:
-        """Verify proofs for circuit-capable slices.
+        """Verify proofs for circuit-capable slices (JSTprove and EZKL).
         - Loads run metadata from run_path/metadata.json.
-        - Gets per-slice proof path exclusively from run_results.execution_chain.execution_results[].proof_execution.proof_file.
-        - Resolves settings and vk relative to the slice directory.
-        - Persists verification_execution entries into run_results.json and updates ezkl_verified_slices.
+        - Locates per-slice proof path from run_results (fallback to <run>/slice_#/proof.json).
+        - Selects backend aligned with witness backend; no cross-backend verification.
+        - Persists per-slice verification into run_results.json and updates per-backend counters.
         Returns updated run_results dict.
         """
         run_path = Path(run_path)
@@ -50,15 +102,30 @@ class Verifier:
 
         verifs: dict[str, dict] = {}
         total = 0
+        jst_verified = 0
+        ezkl_verified = 0
 
-        for slice_id, meta in Utils.iter_circuit_slices(metadata):
+        # Build slice iterator with graceful fallback (mirror Prover)
+        try:
+            slices_iter = list(Utils.iter_circuit_slices(metadata))
+        except Exception:
+            slices_iter = []
+        if not slices_iter:
+            nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
+            all_slices = (metadata or {}).get("slices", {})
+            slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
+
+        if not slices_iter:
+            logger.warning(f"No circuit-capable slices found to verify under run {run_path}. Nothing to do.")
+            return run_results
+
+        for slice_id, meta in slices_iter:
             # Determine proof path preference order
             if slice_id in proof_paths_by_slice:
                 proof_path = Path(proof_paths_by_slice[slice_id])
             else:
-                logger.warning(f"Skipping {slice_id}: proof path not recorded in run_results")
-                continue
-
+                # Fallback to standard location
+                proof_path = Path(run_path) / slice_id / "proof.json"
             if not proof_path.exists():
                 logger.warning(f"Skipping {slice_id}: proof not found at {proof_path}")
                 continue
@@ -66,39 +133,94 @@ class Verifier:
             total += 1
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
 
-            # Resolve verification artifacts
-            settings_path = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
-            vk_path = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
-
-            if not settings_path or not os.path.exists(settings_path):
-                logger.warning(f"Skipping {slice_id}: settings file not found ({settings_path})")
-                continue
-            if not vk_path or not os.path.exists(vk_path):
-                logger.warning(f"Skipping {slice_id}: verification key not found ({vk_path})")
-                continue
+            # Choose backend strictly (no cross-backend)
+            preferred = self._select_verification_backend(run_path, slice_id, meta)
 
             start = time.time()
-            success = self.ezkl_runner.verify(
-                proof_path=str(proof_path),
-                settings_path=settings_path,
-                vk_path=vk_path,
-            )
+            success = False
+            error_msg = None
+            method = None
+
+            if preferred == "jstprove":
+                if self.jstprove_runner is None:
+                    logger.warning("JSTprove CLI not available; cannot verify JSTprove proof")
+                    success = False
+                    error_msg = "JSTprove CLI not available"
+                    method = "jstprove_verify"
+                else:
+                    # Resolve JSTprove artifacts
+                    circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
+                    input_path = Path(run_path) / slice_id / "input.json"
+                    output_path = Path(run_path) / slice_id / "output.json"
+                    wf = self._get_witness_file_from_run(run_path, slice_id)
+                    witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
+
+                    # Validate required files
+                    missing = [p for p in [circuit_path, input_path, output_path, witness_path] if not p or not Path(p).exists()]
+                    if missing:
+                        success = False
+                        error_msg = f"Missing files for JSTprove verify: {', '.join(map(str, missing))}"
+                        method = "jstprove_verify"
+                    else:
+                        try:
+                            success = self.jstprove_runner.verify(
+                                proof_path=str(proof_path),
+                                circuit_path=str(circuit_path),
+                                input_path=str(input_path),
+                                output_path=str(output_path),
+                                witness_path=str(witness_path),
+                            )
+                            method = "jstprove_verify"
+                        except Exception as e:
+                            success = False
+                            error_msg = str(e)
+                            method = "jstprove_verify"
+                if success:
+                    jst_verified += 1
+            else:
+                # EZKL verify path
+                settings_path = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+                vk_path = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
+                if not settings_path or not os.path.exists(settings_path):
+                    logger.warning(f"Skipping {slice_id}: settings file not found ({settings_path})")
+                    continue
+                if not vk_path or not os.path.exists(vk_path):
+                    logger.warning(f"Skipping {slice_id}: verification key not found ({vk_path})")
+                    continue
+                try:
+                    success = self.ezkl_runner.verify(
+                        proof_path=str(proof_path),
+                        settings_path=settings_path,
+                        vk_path=vk_path,
+                    )
+                    method = "ezkl_verify"
+                except Exception as e:
+                    success = False
+                    error_msg = str(e)
+                    method = "ezkl_verify"
+                if success:
+                    ezkl_verified += 1
+
             elapsed = time.time() - start
 
             verifs[slice_id] = {
                 "success": bool(success),
                 "time_sec": elapsed,
-                "error": None if success else "verification_failed",
+                "method": method or "unknown",
+                "attempted_jstprove": preferred == "jstprove",
+                "attempted_ezkl": preferred == "ezkl",
+                "error": None if success else (error_msg or "verification_failed"),
             }
 
         # Persist to run_results.json
         run_results, verified_count = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
         exec_chain = run_results.setdefault("execution_chain", {})
-        exec_chain["ezkl_verified_slices"] = int(verified_count)
+        exec_chain["jstprove_verified_slices"] = int(jst_verified)
+        exec_chain["ezkl_verified_slices"] = int(ezkl_verified)
         # Save updates
         Utils.save_run_results(run_path, run_results)
         # Update metadata
-        Utils.update_metadata_after_execution(run_path, total, verified_count, "verification")
+        Utils.update_metadata_after_execution(run_path, total, (jst_verified + ezkl_verified), "verification")
         return run_results
 
     def verify_dslice(self, run_path: str | Path, dslice_path: str | Path) -> dict:
@@ -180,37 +302,70 @@ class Verifier:
 
         dirs_root = Utils.dirs_root_from(Path(model_path))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
-        vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
-        settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
-
-        if not vk_path_res or not os.path.exists(vk_path_res):
-            raise FileNotFoundError(f"Verification key not found for {slice_id} at {vk_path_res}")
-        if settings_path_res and not os.path.exists(settings_path_res):
-            raise FileNotFoundError(f"Settings file not found for {slice_id} at {settings_path_res}")
-
         proof_path = Path(run_path) / "proof.json"
         if not proof_path.exists():
             raise FileNotFoundError(f"Proof file not found at {proof_path}. Run 'prove' for this slice first.")
 
+        # Select backend like multi-slice
+        preferred = self._select_verification_backend(run_path, slice_id, meta)
+
         start = time.time()
-        success = self.ezkl_runner.verify(
-            proof_path=str(proof_path),
-            settings_path=settings_path_res,
-            vk_path=vk_path_res,
-        )
+        success = False
+        error_msg = None
+        method = None
+
+        if preferred == "jstprove":
+            if self.jstprove_runner is None:
+                raise RuntimeError("JSTprove CLI not available; cannot verify JSTprove proof")
+            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
+            input_path = Path(run_path) / "input.json"
+            output_path = Path(run_path) / "output.json"
+            wf = self._get_witness_file_from_run(run_path, slice_id)
+            witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
+            missing = [p for p in [circuit_path, input_path, output_path, witness_path] if not p or not Path(p).exists()]
+            if missing:
+                raise FileNotFoundError(f"Missing files for JSTprove verify: {', '.join(map(str, missing))}")
+            success = self.jstprove_runner.verify(
+                proof_path=str(proof_path),
+                circuit_path=str(circuit_path),
+                input_path=str(input_path),
+                output_path=str(output_path),
+                witness_path=str(witness_path),
+            )
+            method = "jstprove_verify"
+        else:
+            vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
+            settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+            if not vk_path_res or not os.path.exists(vk_path_res):
+                raise FileNotFoundError(f"Verification key not found for {slice_id} at {vk_path_res}")
+            if settings_path_res and not os.path.exists(settings_path_res):
+                raise FileNotFoundError(f"Settings file not found for {slice_id} at {settings_path_res}")
+            success = self.ezkl_runner.verify(
+                proof_path=str(proof_path),
+                settings_path=settings_path_res,
+                vk_path=vk_path_res,
+            )
+            method = "ezkl_verify"
+
         elapsed = time.time() - start
 
         verifs = {
             slice_id: {
                 "success": bool(success),
                 "time_sec": elapsed,
-                "error": None if success else "verification_failed",
+                "method": method,
+                "attempted_jstprove": preferred == "jstprove",
+                "attempted_ezkl": preferred == "ezkl",
+                "error": None if success else (error_msg or "verification_failed"),
             }
         }
         run_results = Utils.load_run_results(Path(run_path))
         run_results, verified_count = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
         exec_chain = run_results.setdefault("execution_chain", {})
-        exec_chain["ezkl_verified_slices"] = int(verified_count)
+        if method == "jstprove_verify":
+            exec_chain["jstprove_verified_slices"] = int(exec_chain.get("jstprove_verified_slices", 0)) + int(success)
+        elif method == "ezkl_verify":
+            exec_chain["ezkl_verified_slices"] = int(exec_chain.get("ezkl_verified_slices", 0)) + int(success)
         Utils.save_run_results(Path(run_path), run_results)
         return run_results
 
@@ -249,14 +404,17 @@ if __name__ == "__main__":
     
     # Display results
     print(f"\nVerification completed!")
-    print(f"Verified slices: {results['execution_chain']['ezkl_verified_slices']} of {results['execution_chain']['ezkl_proved_slices']}")
+    ec = results.get('execution_chain', {})
+    verified_total = int(ec.get('jstprove_verified_slices', 0)) + int(ec.get('ezkl_verified_slices', 0))
+    proved_total = int(ec.get('jstprove_proved_slices', 0)) + int(ec.get('ezkl_proved_slices', 0))
+    print(f"Verified slices: {verified_total} of {proved_total}")
     
     # Print details for each slice
     print("\nSlice details:")
-    for slice_result in results["execution_chain"]["execution_results"]:
-        slice_id = slice_result["slice_id"]
-        if "verification_execution" in slice_result:
-            verified = slice_result["verification_execution"]["verified"]
-            status = "Success" if verified else "Failed"
-            time_taken = slice_result["verification_execution"]["verification_time"]
+    for slice_result in results.get("execution_chain", {}).get("execution_results", []):
+        slice_id = slice_result.get("slice_id")
+        ve = slice_result.get("verification_execution")
+        if ve:
+            status = "Success" if ve.get("success") else "Failed"
+            time_taken = ve.get("time_sec", 0.0)
             print(f"  {slice_id}: {status} (Time: {time_taken:.2f}s)")

@@ -14,7 +14,10 @@ DSperse is a toolkit for slicing, analyzing, and running neural network models. 
 - **Model Slicing**: Split neural network models into individual layers or custom segments
 - **ONNX Support**: Slice and orchestrate ONNX models
 - **Layered Inference**: Run inference on sliced models, chaining the output of each segment
-- **Zero-Knowledge Proofs**: Generate proofs for model execution (via ezkl integration)
+- **Zero-Knowledge Proofs**: Generate proofs for model execution via multiple backends:
+  - **JSTprove**: Fast, efficient ZK proof generation (default, with fallback)
+  - **EZKL**: Alternative ZK proof backend
+- **Flexible Backend Selection**: Choose backends per-layer or use automatic fallback
 - **Visualization**: Analyze model structure and performance
 
 ## Documentation
@@ -23,6 +26,7 @@ For more detailed information about the project, please refer to the following d
 
 - [Overview](docs/overview.md): A high-level overview of the project, its goals, and features
 - [Architecture](docs/arc42.md): Up-to-date architecture summary (arc42-style) reflecting the current CLI and ONNX-only support
+- [JSTprove Backend](docs/JSTPROVE_BACKEND.md): Detailed guide on JSTprove integration, backend selection, and usage examples
 
 ## CLI shorthands and aliases
 
@@ -116,8 +120,9 @@ pip install -e .
 ```
 This exposes the dsperse command.
 
-3) Install EZKL CLI
+3) Install ZK Backend CLIs
 
+**EZKL (optional, for EZKL backend):**
 Recommended via cargo (requires Rust):
 ```bash
 cargo install --locked ezkl
@@ -130,15 +135,33 @@ pip install -U ezkl
 ezkl --version
 ```
 
+**JSTprove (default backend):**
+```bash
+uv tool install jstprove
+# or: pip install jstprove
+```
+Also requires Open MPI:
+```bash
+brew install open-mpi  # macOS
+# or apt-get install openmpi-bin libopenmpi-dev  # Linux
+```
+
+Verify installation:
+```bash
+jst --help
+```
+
 4) (Optional but recommended) Download EZKL SRS files
 
-SRS files are stored at ~/.ezkl/srs (kzg<N>.srs). They are needed for circuit setup/proving and downloading them ahead of time speeds things up.
+SRS files are stored at ~/.ezkl/srs (kzg<N>.srs). They are needed for EZKL circuit setup/proving and downloading them ahead of time speeds things up.
 
 Example manual command to fetch one size:
 ```bash
 ezkl get-srs --logrows 20 --commitment kzg
 ```
 Repeat for other logrows you need (commonly 2..21).
+
+Note: JSTprove does not require SRS files.
 
 Quickstart workflow
 
@@ -191,18 +214,30 @@ DSperse creates different types of metadata files for different purposes:
 - Both files contain similar top-level information but different levels of detail
 - **This behavior is intended** but can be confusing due to similar names and purposes
 
-2) Compile with EZKL
+2) Compile with ZK Backends (JSTprove or EZKL)
 - Compile either the whole model.onnx or the sliced segments (recommended for incremental proofs):
 
-Slices directory:
+**Default (Fallback Mode):**
 ```bash
 dsperse compile --slices-path models/net/slices
+```
+- Tries JSTprove first
+- Falls back to EZKL if JSTprove fails
+- Falls back to ONNX (skip ZK compilation) if both fail
+
+**Single Backend:**
+```bash
+dsperse compile --slices-path models/net/slices --backend jstprove
+dsperse compile --slices-path models/net/slices --backend ezkl
 ```
 
-Sliced model directory (auto-detects slices metadata):
+**Per-Layer Backend Assignment:**
 ```bash
-dsperse compile --slices-path models/net/slices
+dsperse compile --slices-path models/net/slices --backend "0,2:jstprove;3-4:ezkl"
 ```
+- Layer 0 and 2: Use JSTprove
+- Layer 3 and 4: Use EZKL
+- Unspecified layers use default backend
 
 Optional calibration input to improve settings:
 ```bash
@@ -216,16 +251,18 @@ dsperse compile --slices-path models/net/slices --layers 0-2
 ```
 
 What happens:
-- For each selected segment, EZKL steps run: gen-settings, calibrate-settings, compile-circuit, setup
-- Circuit artifacts are saved under each slice: `models/net/slices/slice_<i>/ezkl/`
-- `settings.json`, `model.compiled`, `vk.key`, `pk.key` are the new file names
-- Slices metadata is updated with ezkl compilation info per segment
+- For each selected segment, the chosen backend compiles the circuit
+- JSTprove: Circuit artifacts saved under `models/net/slices/slice_<i>/jstprove/`
+- EZKL: Circuit artifacts saved under `models/net/slices/slice_<i>/ezkl/`
+- Slices metadata is updated with compilation info per segment
+
+For more details on backend selection and JSTprove integration, see [JSTprove Backend Documentation](docs/JSTPROVE_BACKEND.md).
 
 Note on missing slices:
 - If you pass a model directory without slices metadata present, the CLI will prompt you to slice first.
 
 3) Run inference
-- Runs a chained execution over the slices using EZKL where available and falling back to ONNX per-segment on failure.
+- Runs a chained execution over the slices using ZK backends where available and falling back to ONNX per-segment on failure.
 
 Common examples:
 ```bash
@@ -247,7 +284,7 @@ What happens:
 - A run_results.json is written summarizing the chain execution
 
 4) Generate proofs
-- Proves the segments that successfully produced EZKL witnesses in the selected run.
+- Proves the segments that successfully produced witnesses in the selected run.
 
 Typical usage (new positional-args form):
 ```bash
@@ -268,8 +305,8 @@ dsperse prove models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-file
 ```
 
 What happens:
-- For each segment with a successful EZKL witness, the CLI calls ezkl prove
-- Proof files are stored under the specific run’s segment folder
+- For each segment with a successful witness, the CLI generates proofs
+- Proof files are stored under the specific run's segment folder
 - The run_results.json is updated with proof_execution details
 
 5) Verify proofs
@@ -292,17 +329,18 @@ dsperse verify models/net/run/run_YYYYMMDD_HHMMSS models/net/slices --output-fil
 ```
 
 What happens:
-- For each segment with a proof, the CLI calls ezkl verify
+- For each segment with a proof, the CLI verifies the proof
 - The run_results.json is updated with verification_execution details
 - A summary of verified segments is printed
 
 Tips and troubleshooting
 
-- EZKL not found:
-  - Ensure ezkl is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
-- SRS files missing/slow downloads:
-  - You can skip downloads during install and fetch later with ezkl get-srs --logrows <N> --commitment kzg
-- Compile says “slice first”:
+- Backend CLI not found:
+  - JSTprove: Ensure `jst` is on your PATH (`uv tool install jstprove` or `pip install jstprove`) and Open MPI is installed
+  - EZKL: Ensure `ezkl` is on your PATH. If installed via cargo, add $HOME/.cargo/bin to PATH.
+- SRS files missing/slow downloads (EZKL only):
+  - You can skip downloads during install and fetch later with `ezkl get-srs --logrows <N> --commitment kzg`
+- Compile says "slice first":
   - Run dsperse slice --model-dir <model_dir> to produce slices and metadata.json
 - Paths in saved JSON are absolute on your machine; sharing outputs across machines may require path adjustments.
 
@@ -310,10 +348,11 @@ Project structure (updated)
 
 - src/
   - slicer.py: orchestrator for slicing (uses OnnxSlicer)
-  - compiler.py: orchestrator for compilation (uses EZKL backend pipeline)
-  - runner.py: chained execution across segments (EZKL or ONNX fallback)
+  - compiler.py: orchestrator for compilation (backend pipeline with fallback)
+  - runner.py: chained execution across segments (ZK backends or ONNX fallback)
   - backends/
     - onnx_models.py: ONNX inference utilities
+    - jstprove.py: JSTprove CLI bindings and circuitization pipeline
     - ezkl.py: EZKL CLI bindings and circuitization pipeline
   - cli/
     - base.py: shared CLI helpers

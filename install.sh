@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# install.sh - Installer for Dsperse CLI and EZKL (with lookup tables)
+# install.sh - Installer for Dsperse CLI, JSTproveand EZKL (with lookup tables)
 # This script installs:
 #   - Dsperse CLI (python package, console script: dsperse)
 #   - EZKL CLI (if missing)
 #   - EZKL lookup tables (if missing)
+#   - Open MPI (required for JSTprove)
+#   - JSTprove CLI (if missing)
 # It detects existing installations and will skip or prompt accordingly.
 
 set -euo pipefail
@@ -198,6 +200,113 @@ ensure_ezkl() {
   fi
 }
 
+# Install Open MPI (required for JSTprove)
+install_openmpi() {
+  info "Checking for Open MPI installation..."
+  if command -v mpirun >/dev/null 2>&1; then
+    info "Open MPI already installed: $(command -v mpirun)"
+    mpirun --version 2>/dev/null | head -n1 || true
+    return 0
+  fi
+
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS - use Homebrew
+    if command -v brew >/dev/null 2>&1; then
+      info "Installing Open MPI via Homebrew..."
+      if brew install open-mpi; then
+        info "Open MPI installed successfully via Homebrew"
+      else
+        warn "Failed to install Open MPI via Homebrew"
+      fi
+    else
+      warn "Homebrew not found. Please install Homebrew first, then run: brew install open-mpi"
+    fi
+  elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # Linux - try apt or yum
+    if command -v apt-get >/dev/null 2>&1; then
+      info "Installing Open MPI via apt..."
+      if sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev; then
+        info "Open MPI installed successfully via apt"
+      else
+        warn "Failed to install Open MPI via apt"
+      fi
+    elif command -v yum >/dev/null 2>&1; then
+      info "Installing Open MPI via yum..."
+      if sudo yum install -y openmpi openmpi-devel; then
+        info "Open MPI installed successfully via yum"
+      else
+        warn "Failed to install Open MPI via yum"
+      fi
+    else
+      warn "Could not detect package manager. Please install Open MPI manually."
+    fi
+  else
+    warn "Unsupported OS for automatic Open MPI installation. Please install manually."
+  fi
+
+  if command -v mpirun >/dev/null 2>&1; then
+    info "Open MPI is now available: $(command -v mpirun)"
+  else
+    warn "Open MPI installation may require PATH configuration. Check your shell profile."
+  fi
+}
+
+# Install JSTprove via uv
+install_jstprove() {
+  info "Checking for JSTprove installation..."
+  
+  # Add common uv tool bin paths to PATH for detection
+  export PATH="$HOME/.local/bin:$PATH"
+  
+  if command -v jst >/dev/null 2>&1; then
+    info "JSTprove already installed: $(command -v jst)"
+    jst --version 2>/dev/null || jst --help 2>/dev/null | head -n1 || true
+    if [[ "$INTERACTIVE" == true ]] && confirm "Reinstall/upgrade JSTprove?"; then
+      :
+    else
+      info "Skipping JSTprove install."
+      return 0
+    fi
+  fi
+
+  # Check if uv is available
+  if command -v uv >/dev/null 2>&1; then
+    info "Installing JSTprove via uv..."
+    if uv tool install jstprove 2>/dev/null || uv pip install jstprove 2>/dev/null; then
+      info "JSTprove installed successfully via uv"
+      # Add uv tool bin to PATH
+      export PATH="$HOME/.local/bin:$PATH"
+      info "Added $HOME/.local/bin to PATH for JSTprove"
+    else
+      warn "Failed to install JSTprove via uv. Trying pip..."
+      if eval $PIP_BIN install jstprove 2>/dev/null; then
+        info "JSTprove installed successfully via pip"
+      else
+        warn "Failed to install JSTprove. Please install manually: uv tool install jstprove"
+      fi
+    fi
+  else
+    # Fallback to pip
+    info "uv not found. Installing JSTprove via pip..."
+    if eval $PIP_BIN install jstprove 2>/dev/null; then
+      info "JSTprove installed successfully via pip"
+    else
+      warn "Failed to install JSTprove via pip. Please install uv first: curl -LsSf https://astral.sh/uv/install.sh | sh"
+      warn "Then install JSTprove: uv tool install jstprove"
+    fi
+  fi
+
+  if command -v jst >/dev/null 2>&1; then
+    info "JSTprove is now available: $(command -v jst)"
+    jst --version 2>/dev/null || jst --help 2>/dev/null | head -n1 || true
+  else
+    warn "JSTprove CLI (jst) not found on PATH."
+    warn "You may need to add ~/.local/bin to your PATH:"
+    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    warn "Add this line to your shell profile (~/.bashrc, ~/.zshrc, etc.) for persistence."
+  fi
+}
+
 # Ensure SRS files (kzg commitment) exist under ~/.ezkl/srs
 ensure_srs() {
   if ! command -v ezkl >/dev/null 2>&1; then
@@ -370,6 +479,12 @@ main() {
   # Lookup tables (for some ezkl versions)
   install_lookup_tables
 
+  # Install Open MPI (required for JSTprove)
+  install_openmpi
+
+  # Install JSTprove
+  install_jstprove
+
   # Final verification step for EZKL and SRS
   verify_environment_post_install
 
@@ -384,6 +499,12 @@ main() {
     info "EZKL is ready: ezkl --help"
   else
     warn "EZKL not detected; some features will fall back to ONNX or fail."
+  fi
+
+  if command -v jst >/dev/null 2>&1; then
+    info "JSTprove is ready: jst --help"
+  else
+    warn "JSTprove not detected; JSTprove backend features will not be available."
   fi
 
   say "\nInstallation complete!"

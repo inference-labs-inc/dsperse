@@ -121,10 +121,15 @@ def run_proof(args):
         if isinstance(result, dict) and "execution_chain" in result:
             execution_chain = result["execution_chain"]
             print(f"\n{Fore.YELLOW}Proof Generation Summary:{Style.RESET_ALL}")
-            print(f"Proved slices: {execution_chain.get('ezkl_proved_slices', 0)} of {execution_chain.get('ezkl_witness_slices', 0)}")
-            if execution_chain.get('ezkl_witness_slices', 0) > 0:
-                proof_percentage = (execution_chain.get('ezkl_proved_slices', 0) / execution_chain.get('ezkl_witness_slices', 0)) * 100
-                print(f"Proof generation percentage: {proof_percentage:.1f}%")
+            j_proved = int(execution_chain.get('jstprove_proved_slices', 0) or 0)
+            e_proved = int(execution_chain.get('ezkl_proved_slices', 0) or 0)
+            j_witness = int(execution_chain.get('jstprove_witness_slices', 0) or 0)
+            e_witness = int(execution_chain.get('ezkl_witness_slices', 0) or 0)
+            total_proved = j_proved + e_proved
+            total_witness = j_witness + e_witness
+            pct = (total_proved / total_witness * 100.0) if total_witness > 0 else 0.0
+            print(f"Proved slices: {total_proved} of {total_witness}")
+            print(f"Proof generation percentage: {pct:.1f}%")
         else:
             print(f"\n{Fore.YELLOW}No proof generation results found{Style.RESET_ALL}")
 

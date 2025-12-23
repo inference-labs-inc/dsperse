@@ -41,6 +41,7 @@ class Compiler:
         """
         self.backend_spec = backend
         self.layer_backends = {}  # Map layer index -> backend name
+        self.default_layer_indices: set[int] = set()  # Indices explicitly requested with default behavior (both)
         self.use_fallback = False
 
         # Parse backend specification
@@ -65,10 +66,20 @@ class Compiler:
 
     def _parse_layer_backends(self, spec: str):
         """Parse layer-specific backend specification like '0,2:jstprove;3-4:ezkl'"""
+        # Reset containers for a fresh parse
+        self.layer_backends = {}
+        self.default_layer_indices = set()
+
         parts = spec.split(';')
         for part in parts:
             part = part.strip()
+            if not part:
+                continue
+            # Support bare groups (e.g. '0' or '0,2-3') meaning "default behavior (both backends)"
             if ':' not in part:
+                idxs = CompilerUtils.parse_layers(part)
+                if idxs:
+                    self.default_layer_indices.update(idxs)
                 continue
             layers_str, backend_name = part.split(':', 1)
             backend_name = backend_name.strip().lower()
@@ -504,7 +515,16 @@ class Compiler:
             raise FileNotFoundError(f"Path does not exist: {model_path}")
         logger.info(f"Compiling: {model_path}")
 
-        layer_indices = CompilerUtils.parse_layers(layers) if layers else None
+        # Support both simple layer lists (e.g., "3,20-22") and backend-annotated specs
+        # like "0,2:jstprove;3-4:ezkl". For annotated specs, populate self.layer_backends
+        # and derive indices from it to avoid parse warnings.
+        if layers and (":" in layers or ";" in layers):
+            # Populate per-layer backend mapping (and collect default indices from bare groups)
+            self._parse_layer_backends(layers)
+            layer_indices = sorted(set(self.layer_backends.keys()) | set(self.default_layer_indices))
+        else:
+            layer_indices = CompilerUtils.parse_layers(layers) if layers else None
+
         if layer_indices:
             logger.info(f"Will compile only layers with indices: {layer_indices}")
         else:
@@ -549,5 +569,5 @@ if __name__ == "__main__":
     input_file = os.path.join(model_dir, "input.json")
 
     compiler = Compiler()
-    result = compiler.compile(model_path=slices_dir)#, input_file=input_file, layers="3, 4")
+    result = compiler.compile(model_path=slices_dir, input_file=None, layers="0;2:jstprove;3-4:ezkl")
     print(f"Compilation finished.")

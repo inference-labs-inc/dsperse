@@ -84,51 +84,92 @@ class RunnerUtils:
             return runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
 
         if node.get("use_circuit"):
+            # Detect available compiled circuit backends for this slice
+            has_jst = bool(slice_info.get("jstprove_circuit_path")) and getattr(runner, "jstprove_runner", None)
+            has_ezkl = bool(slice_info.get("ezkl_circuit_path"))
+            available_backends = [b for b in (["jstprove"] if has_jst else []) + (["ezkl"] if has_ezkl else [])]
+
+            # Determine preferred backend: use flag only when multiple circuit backends exist
             preferred = (slice_info.get("backend") or node.get("backend") or "jstprove").lower()
-            if forced in ("jstprove", "ezkl"):
+            if forced in ("jstprove", "ezkl") and len(available_backends) > 1:
                 preferred = forced
-            # Try JSTprove path first when selected/forced and available
-            if preferred == "jstprove" and getattr(runner, "jstprove_runner", None):
-                ok, tensor, j_info = runner._run_jstprove_slice(slice_info, in_file, out_file, slice_dir)
+
+            # Preferred JSTprove path
+            if preferred == "jstprove" and has_jst:
+                # Ensure we pass JSTprove-specific artifacts
+                j_slice = dict(slice_info)
+                j_slice["circuit_path"] = slice_info.get("jstprove_circuit_path") or slice_info.get("circuit_path")
+                if slice_info.get("jstprove_settings_path"):
+                    j_slice["settings_path"] = slice_info.get("jstprove_settings_path")
+                ok, tensor, j_info = runner._run_jstprove_slice(j_slice, in_file, out_file, slice_dir)
                 if ok:
                     return ok, tensor, j_info
-                # If forced JSTprove, do not switch to EZKL; go directly to ONNX
-                if forced == 'jstprove':
-                    ok, tensor, o_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
-                    o_info["method"] = "forced_jstprove_fallback_onnx"
-                    o_info["attempted_jstprove"] = True
-                    return ok, tensor, o_info
-                # Otherwise fall back to EZKL then ONNX
-                ok, tensor, e_info = runner._run_ezkl_slice(slice_info, in_file, out_file, slice_dir)
-                if ok:
-                    return ok, tensor, e_info
+                # If multiple backends are available, try the other compiled backend before ONNX
+                if len(available_backends) > 1 and has_ezkl:
+                    e_slice = dict(slice_info)
+                    e_slice["circuit_path"] = slice_info.get("ezkl_circuit_path") or slice_info.get("circuit_path")
+                    if slice_info.get("ezkl_settings_path"):
+                        e_slice["settings_path"] = slice_info.get("ezkl_settings_path")
+                    if slice_info.get("ezkl_vk_path"):
+                        e_slice["vk_path"] = slice_info.get("ezkl_vk_path")
+                    if slice_info.get("ezkl_pk_path"):
+                        e_slice["pk_path"] = slice_info.get("ezkl_pk_path")
+                    ok, tensor, e_info = runner._run_ezkl_slice(e_slice, in_file, out_file, slice_dir)
+                    if ok:
+                        return ok, tensor, e_info
+                # Fall back to ONNX
                 ok, tensor, o_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
-                o_info["method"] = "jstprove_ezkl_fallback_onnx"
+                o_info["method"] = "jstprove_ezkl_fallback_onnx" if has_ezkl else "jstprove_fallback_onnx"
                 o_info["attempted_jstprove"] = True
-                o_info["attempted_ezkl"] = True
-                if j_info.get("error") and not o_info.get("error"):
-                    o_info["error"] = j_info.get("error")
-                elif e_info.get("error") and not o_info.get("error"):
-                    o_info["error"] = e_info.get("error")
+                if len(available_backends) > 1 and has_ezkl:
+                    o_info["attempted_ezkl"] = True
+                    if j_info.get("error") and not o_info.get("error"):
+                        o_info["error"] = j_info.get("error")
+                    elif e_info.get("error") and not o_info.get("error"):
+                        o_info["error"] = e_info.get("error")
                 return ok, tensor, o_info
 
-            # Otherwise, try EZKL first (legacy/default), then fallback to ONNX
-            ok, tensor, ezkl_info = runner._run_ezkl_slice(slice_info, in_file, out_file, slice_dir)
-            result_info = ezkl_info
-            if not ok:
-                # If forced EZKL, go directly to ONNX
-                if forced == 'ezkl':
+            # Otherwise, prefer EZKL when available
+            if has_ezkl:
+                # Ensure we pass EZKL-specific artifacts
+                e_slice = dict(slice_info)
+                e_slice["circuit_path"] = slice_info.get("ezkl_circuit_path") or slice_info.get("circuit_path")
+                # EZKL requires settings and vk
+                if slice_info.get("ezkl_settings_path"):
+                    e_slice["settings_path"] = slice_info.get("ezkl_settings_path")
+                if slice_info.get("ezkl_vk_path"):
+                    e_slice["vk_path"] = slice_info.get("ezkl_vk_path")
+                if slice_info.get("ezkl_pk_path"):
+                    e_slice["pk_path"] = slice_info.get("ezkl_pk_path")
+                ok, tensor, ezkl_info = runner._run_ezkl_slice(e_slice, in_file, out_file, slice_dir)
+                result_info = ezkl_info
+                if not ok:
+                    # If multiple backends exist, try JSTprove before ONNX
+                    if len(available_backends) > 1 and has_jst:
+                        j_slice = dict(slice_info)
+                        j_slice["circuit_path"] = slice_info.get("jstprove_circuit_path") or slice_info.get("circuit_path")
+                        if slice_info.get("jstprove_settings_path"):
+                            j_slice["settings_path"] = slice_info.get("jstprove_settings_path")
+                        ok, tensor, j_info = runner._run_jstprove_slice(j_slice, in_file, out_file, slice_dir)
+                        if ok:
+                            return ok, tensor, j_info
                     ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
-                    onnx_info["method"] = "forced_ezkl_fallback_onnx"
+                    onnx_info["method"] = "ezkl_jstprove_fallback_onnx" if has_jst else "ezkl_fallback_onnx"
                     onnx_info["attempted_ezkl"] = True
-                    return ok, tensor, onnx_info
-                ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
-                onnx_info["method"] = "ezkl_fallback_onnx"
-                onnx_info["attempted_ezkl"] = True
-                if ezkl_info.get("error") and not onnx_info.get("error"):
-                    onnx_info["error"] = ezkl_info.get("error")
-                result_info = onnx_info
-            return ok, tensor, result_info
+                    if len(available_backends) > 1 and has_jst:
+                        onnx_info["attempted_jstprove"] = True
+                        if ezkl_info.get("error") and not onnx_info.get("error"):
+                            onnx_info["error"] = ezkl_info.get("error")
+                        elif j_info.get("error") and not onnx_info.get("error"):
+                            onnx_info["error"] = j_info.get("error")
+                    result_info = onnx_info
+                return ok, tensor, result_info
+
+            # If no circuit backend appears available, run ONNX
+            ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            onnx_info["attempted_ezkl"] = False
+            return ok, tensor, onnx_info
+
         ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
         onnx_info["attempted_ezkl"] = False
         return ok, tensor, onnx_info

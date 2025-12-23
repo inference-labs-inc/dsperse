@@ -138,6 +138,12 @@ class RunnerAnalyzer:
             jstprove_circuit_path = _norm(jst_circuit_rel)
             ezkl_circuit_path = _norm(ezkl_circuit_rel)
 
+            # Per-backend auxiliary artifact paths (for runtime backend switching)
+            jstprove_settings_path = _norm(jst_files.get("settings")) if jst_files else None
+            ezkl_settings_path = _norm(ezkl_files.get("settings")) if ezkl_files else None
+            ezkl_pk_path = _norm(ezkl_files.get("pk_key")) if ezkl_files else None
+            ezkl_vk_path = _norm(ezkl_files.get("vk_key")) if ezkl_files else None
+
             slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
 
             slices[slice_key] = {
@@ -158,6 +164,11 @@ class RunnerAnalyzer:
                 # extra paths for multi-level fallback planning
                 "jstprove_circuit_path": jstprove_circuit_path,
                 "ezkl_circuit_path": ezkl_circuit_path,
+                # per-backend aux artifacts
+                "jstprove_settings_path": jstprove_settings_path,
+                "ezkl_settings_path": ezkl_settings_path,
+                "ezkl_pk_path": ezkl_pk_path,
+                "ezkl_vk_path": ezkl_vk_path,
             }
 
         return slices
@@ -239,6 +250,12 @@ class RunnerAnalyzer:
             jstprove_circuit_path = os.path.join(parent_dir, jst_rel) if jst_rel else None
             ezkl_circuit_path = os.path.join(parent_dir, ezkl_rel) if ezkl_rel else None
 
+            # Per-backend aux artifacts for runtime switching
+            jstprove_settings_path = os.path.join(parent_dir, jst_files.get("settings")) if jst_files and jst_files.get("settings") else None
+            ezkl_settings_path = os.path.join(parent_dir, ezkl_files.get("settings")) if ezkl_files and ezkl_files.get("settings") else None
+            ezkl_pk_path = os.path.join(parent_dir, ezkl_files.get("pk_key")) if ezkl_files and ezkl_files.get("pk_key") else None
+            ezkl_vk_path = os.path.join(parent_dir, ezkl_files.get("vk_key")) if ezkl_files and ezkl_files.get("vk_key") else None
+
             slices[slice_key] = {
                 "path": onnx_path,
                 "input_shape": input_shape,
@@ -257,6 +274,11 @@ class RunnerAnalyzer:
                 # extra paths for multi-level fallback planning
                 "jstprove_circuit_path": jstprove_circuit_path,
                 "ezkl_circuit_path": ezkl_circuit_path,
+                # per-backend aux artifacts
+                "jstprove_settings_path": jstprove_settings_path,
+                "ezkl_settings_path": ezkl_settings_path,
+                "ezkl_pk_path": ezkl_pk_path,
+                "ezkl_vk_path": ezkl_vk_path,
             }
 
         return slices

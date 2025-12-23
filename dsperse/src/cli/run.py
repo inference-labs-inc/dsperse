@@ -35,9 +35,10 @@ def setup_parser(subparsers):
     run_parser.add_argument('--output-file', '-o', dest='output_file',
                             help='Path to save output results (default: parent_dir/output.json)')
 
-    # Optional backend forcing (run all slices using a specific backend, else ONNX)
+    # Optional backend selector (applies only when a slice has multiple circuit backends compiled)
     run_parser.add_argument('--backends', '--backend', '-b', dest='force_backend', choices=['jstprove', 'ezkl', 'onnx'],
-                            help='Force running all slices with the selected backend. If a slice lacks artifacts for that backend, ONNX is used.')
+                            help='Backend to use at runtime when a slice was compiled with multiple circuit backends. '
+                                 'If a slice has only one circuit backend compiled, this flag is ignored for that slice (unless you choose "onnx" to skip circuits).')
 
     return run_parser
 
@@ -136,10 +137,12 @@ def run_inference(args):
         start_time = time.time()
         # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
         runner = Runner(run_metadata_path=run_metadata_path)
-        # Honor forced backend selection if provided
-        if getattr(args, 'force_backend', None):
-            setattr(runner, 'force_backend', args.force_backend)
-        result = runner.run(args.input_file, slice_path=slices_dir_effective or model_dir)
+        # Pass optional backend selection directly to Runner.run()
+        result = runner.run(
+            args.input_file,
+            slice_path=slices_dir_effective or model_dir,
+            backend=getattr(args, 'force_backend', None)
+        )
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Inference completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")

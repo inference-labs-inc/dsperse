@@ -55,8 +55,12 @@ dsperse s -m models/net -o models/net/slices -S
 # Compile selected layers with calibration input
 dsperse c -s models/net/slices -i models/net/input.json -l 0-2
 
-# Run inference over slices with input and output paths
+# Run inference over slices with input and output paths (default backend behavior)
 dsperse r -s models/net/slices -i models/net/input.json -o models/net/output.json
+
+# Run inference forcing a backend when slices were compiled with multiple backends
+# Use -b jstprove | ezkl | onnx (onnx skips circuit backends entirely)
+dsperse r -s models/net/slices -i models/net/input.json -b jstprove
 
 # Prove and verify a specific run
 dsperse p --rd models/net/run/run_YYYYMMDD_HHMMSS
@@ -65,6 +69,63 @@ dsperse v --rd models/net/run/run_YYYYMMDD_HHMMSS
 # Full pipeline (alias fr)
 dsperse fr -m models/net -i models/net/input.json
 ```
+
+## Backend selection
+
+### Runtime backend flag (Runner)
+
+You can select which backend to use at runtime when a slice was compiled with multiple circuit backends.
+
+- CLI:
+  ```bash
+  dsperse run -p models/net/slices -i models/net/input.json -b jstprove   # or -b ezkl | -b onnx
+  ```
+- Python:
+  ```text
+  from dsperse.src.run.runner import Runner
+  Runner().run(input_json_path="models/net/input.json", slice_path="models/net/slices", backend="ezkl")
+  ```
+
+Behavior rules:
+- If a slice has both JSTprove and EZKL compiled, the selected backend is used for that slice.
+- If a slice has only one circuit backend compiled, the flag is ignored for that slice (unless you choose `onnx`, which skips circuit backends and uses pure ONNX).
+- If the selected backend fails on a slice that has multiple compiled backends, the runner falls back to the other compiled backend, then to ONNX.
+
+Run results record which backend generated the witness per slice in `run/run_YYYYMMDD_HHMMSS/run_results.json`.
+
+### Compile-time layer/backend selection
+
+You can control which slices to compile and which backend(s) to use per slice using the `--layers/-l` argument along with the compiler's backend selection:
+
+- Plain layer list (compile those indices with default fallback behavior):
+  ```bash
+  dsperse compile -s models/net/slices -l 0,2,3-4
+  ```
+
+- Per-layer backend specification with groups separated by `;` and `index_or_range:backend` pairs:
+  ```bash
+  dsperse compile -s models/net/slices --backend "2:jstprove;3-4:ezkl"
+  ```
+
+- Mixed with default groups (compile with both backends) by using a bare group without `:`:
+  ```bash
+  # slice 0 -> default (both backends)
+  # slice 2 -> jstprove only
+  # slices 3-4 -> ezkl only
+  dsperse compile -s models/net/slices --backend "0;2:jstprove;3-4:ezkl"
+  ```
+
+Notes:
+- Bare groups like `"0"` or `"0,5-6"` mean “default behavior (compile both backends)”.
+- Unspecified slices are skipped during compilation and will run with ONNX at runtime.
+
+### Prove and Verify alignment with witness backend
+
+The prover and verifier automatically use the backend that produced the witness for each slice:
+- JSTprove slices use the JSTprove circuit and the binary witness produced at runtime.
+- EZKL slices use the EZKL compiled circuit, `pk.key` (prove) and `vk.key` (verify), and `settings.json` when available.
+
+Results are merged into `run_results.json` with per-slice `proof_execution` and `verification_execution` entries and counters by backend.
 
 ## Installation
 

@@ -11,8 +11,8 @@ This document describes the integration of JSTprove as an additional ZK proof ba
 - Uses JSTprove CLI (`jst` command) for circuit compilation, witness generation, proof generation, and verification
 - Compatible with existing EZKL interface for seamless integration
 
-### 2. Flexible Backend Selection
-The compiler now supports three modes:
+### 2. Flexible Backend Selection (compile-time)
+The compiler supports three modes:
 
 **Default (Fallback Mode):**
 ```bash
@@ -35,6 +35,38 @@ dsperse compile --path model/slices --backend "0,2:jstprove;3-4:ezkl"
 - Layer 0 and 2: Use JSTprove
 - Layer 3 and 4: Use EZKL
 - Unspecified layers use default backend
+
+You can also mix default groups (compile both backends) using a bare group without a backend:
+
+```bash
+# slice 0 -> default (both backends)
+# slice 2 -> jstprove only
+# slices 3-4 -> ezkl only
+dsperse compile --path model/slices --backend "0;2:jstprove;3-4:ezkl"
+```
+
+Notes:
+- Bare groups like `"0"` or `"0,5-6"` mean “default behavior (compile both backends)”.
+- Unspecified slices are skipped at compile time and will run with ONNX at runtime.
+
+### 3. Runtime Backend Selection (Runner)
+
+When a slice has multiple circuit backends compiled, you can choose which backend to use at runtime:
+
+```bash
+dsperse run -p model/slices -i model/input.json -b jstprove   # or -b ezkl | -b onnx
+```
+
+Python API:
+```text
+from dsperse.src.run.runner import Runner
+Runner().run(input_json_path="model/input.json", slice_path="model/slices", backend="ezkl")
+```
+
+Behavior rules:
+- If a slice has both JSTprove and EZKL compiled, the selected backend is used for that slice.
+- If a slice has only one circuit backend compiled, the flag is ignored for that slice (unless `onnx` is specified to skip circuits).
+- If the selected backend fails (and multiple are available), the runner falls back to the other compiled backend, then to ONNX.
 
 ## Installation
 
@@ -87,6 +119,11 @@ dsperse compile --path model/slices --layers "0-4" --backend "0,2:jstprove;3-4:e
 dsperse compile --path model/slices --backend jstprove
 ```
 
+**Run with a chosen backend when multiple are available:**
+```bash
+dsperse run --path model/slices --input-file model/input.json -b ezkl
+```
+
 ## Backend Comparison
 
 | Feature | JSTprove | EZKL |
@@ -98,8 +135,9 @@ dsperse compile --path model/slices --backend jstprove
 
 ## Notes
 
-- JSTprove uses CLI-only interface (no Python package import)
+- JSTprove uses a CLI interface (no Python package import)
 - Fallback logic ensures compilation continues even if preferred backend fails
-- Metadata tracks which backend was used for each slice
+- Metadata tracks which backend was used for each slice and which backend produced the witness at runtime
+- Proving and verifying use the witness backend automatically (JSTprove does not require pk/vk; EZKL requires `pk.key` for proving and `vk.key` for verifying, plus `settings.json` when available)
 - All changes maintain backward compatibility with existing EZKL workflows
 

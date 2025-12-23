@@ -30,14 +30,36 @@ class Prover:
 
     # ------------------------ Small helpers (no behavior change) ------------------------
     @staticmethod
-    def _resolve_slice_artifacts(slice_dir: Path, meta: dict) -> tuple[str | None, str | None, str | None]:
-        """Resolve circuit, pk, settings paths under a given slice directory.
+    def _resolve_slice_artifacts(
+        slice_dir: Path,
+        meta: dict,
+        backend: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """Resolve circuit, pk, and settings paths under a given slice directory.
+        Selection is backend-aware:
+        - For 'ezkl': prefer `ezkl_*` paths, fallback to generic fields
+        - For 'jstprove': prefer `jstprove_*` paths, fallback to generic fields
+        - Otherwise: use generic fields only
         Returns (circuit_path, pk_path, settings_path), any may be None.
         """
-        circuit_rel = meta.get("circuit_path") or meta.get("compiled")
+        b = (backend or "").lower()
+        if b == "ezkl":
+            circuit_rel = meta.get("ezkl_circuit_path") or meta.get("circuit_path") or meta.get("compiled")
+            pk_rel = meta.get("ezkl_pk_path") or meta.get("pk_path")
+            settings_rel = meta.get("ezkl_settings_path") or meta.get("settings_path")
+        elif b == "jstprove":
+            circuit_rel = meta.get("jstprove_circuit_path") or meta.get("circuit_path") or meta.get("compiled")
+            # JSTprove does not use pk, but keep any provided value for API symmetry
+            pk_rel = meta.get("pk_path")
+            settings_rel = meta.get("jstprove_settings_path") or meta.get("settings_path")
+        else:
+            circuit_rel = meta.get("circuit_path") or meta.get("compiled")
+            pk_rel = meta.get("pk_path")
+            settings_rel = meta.get("settings_path")
+
         circuit_path = Utils.resolve_under_slice(slice_dir, circuit_rel)
-        pk_path = Utils.resolve_under_slice(slice_dir, meta.get("pk_path"))
-        settings_path = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+        pk_path = Utils.resolve_under_slice(slice_dir, pk_rel)
+        settings_path = Utils.resolve_under_slice(slice_dir, settings_rel)
 
         if settings_path and not os.path.exists(settings_path):
             logger.warning(f"Settings file not found at {settings_path}; proceeding without it.")
@@ -150,16 +172,17 @@ class Prover:
         proved_jst = 0
         proved_ezkl = 0
 
-        # Get slices to prove from metadata (prefer Utils helper; fallback to execution_chain)
-        try:
-            slices_iter = list(Utils.iter_circuit_slices(metadata))
-        except Exception:
-            slices_iter = []
+        # Get slices to prove from execution_chain nodes (authoritative),
+        # falling back to Utils helper only if nodes are missing.
+        nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
+        all_slices = (metadata or {}).get("slices", {})
+        slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
 
         if not slices_iter:
-            nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
-            all_slices = (metadata or {}).get("slices", {})
-            slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
+            try:
+                slices_iter = list(Utils.iter_circuit_slices(metadata))
+            except Exception:
+                slices_iter = []
 
         if not slices_iter:
             logger.warning(f"No circuit-capable slices found to prove under run {run_path}. Nothing to do.")
@@ -169,10 +192,12 @@ class Prover:
         for slice_id, meta in slices_iter:
             total += 1
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
-            circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta)
+            # Decide backend: strictly use witness backend (or meta fallback); no cross-backend fallback
+            preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
+            # Resolve artifacts for the selected backend
+            circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
             # Determine witness path strictly based on backend that generated it
-            preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
             if preferred == "jstprove":
                 # Prefer runner-recorded witness file; else default to 'output_witness.bin' next to output.json
                 wf = self._get_witness_file_from_run(Path(run_path), slice_id)
@@ -191,9 +216,6 @@ class Prover:
             if not circuit_path or not os.path.exists(circuit_path):
                 logger.warning(f"Skipping {slice_id}: compiled circuit not found ({circuit_path})")
                 continue
-
-            # Decide backend: strictly use witness backend (or meta fallback); no cross-backend fallback
-            preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
 
             start = time.time()
             success = False
@@ -326,10 +348,13 @@ class Prover:
         # Extract the only slice id and meta
         (slice_id, meta), = model_slices.items()
 
-        # Resolve artifacts relative to the provided slices path root
+        # Decide preferred backend using run_results (if available) or slice meta
+        preferred = self._select_proving_backend(run_path, slice_id, meta)
+
+        # Resolve artifacts relative to the provided slices path root, backend-aware
         dirs_root = Utils.dirs_root_from(Path(model_dir))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
-        model_path_res, pk_path_res, settings_path_res = self._resolve_slice_artifacts(slice_dir, meta)
+        model_path_res, pk_path_res, settings_path_res = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
         # Validate required inputs (circuit and witness); pk may be absent for JSTprove
         if not model_path_res or not os.path.exists(model_path_res):
@@ -342,7 +367,6 @@ class Prover:
         proof_path = Path(run_path) / "proof.json"
         proof_path.parent.mkdir(parents=True, exist_ok=True)
 
-        preferred = self._select_proving_backend(run_path, slice_id, meta)
         # Adjust witness path per backend: JSTprove expects a dedicated witness file
         if preferred == "jstprove":
             wf = self._get_witness_file_from_run(run_path, slice_id)
@@ -432,9 +456,10 @@ if __name__ == "__main__":
     # Print details for each slice
     print("\nSlice details:")
     for slice_result in results["execution_chain"]["execution_results"]:
+        # print(f"\n{slice_result}:")
         slice_id = slice_result["slice_id"]
         if "proof_execution" in slice_result:
             success = slice_result["proof_execution"]["success"]
             status = "Success" if success else "Failed"
-            time_taken = slice_result["proof_execution"]["proof_generation_time"]
+            time_taken = slice_result["proof_execution"]["time_sec"]
             print(f"  {slice_id}: {status} (Time: {time_taken:.2f}s)")

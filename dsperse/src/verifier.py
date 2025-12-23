@@ -105,15 +105,16 @@ class Verifier:
         jst_verified = 0
         ezkl_verified = 0
 
-        # Build slice iterator with graceful fallback (mirror Prover)
-        try:
-            slices_iter = list(Utils.iter_circuit_slices(metadata))
-        except Exception:
-            slices_iter = []
+        # Build slice iterator with authoritative source first (mirror Prover):
+        # Prefer execution_chain nodes with use_circuit=True, fall back to Utils helper only if needed.
+        nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
+        all_slices = (metadata or {}).get("slices", {})
+        slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
         if not slices_iter:
-            nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
-            all_slices = (metadata or {}).get("slices", {})
-            slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
+            try:
+                slices_iter = list(Utils.iter_circuit_slices(metadata))
+            except Exception:
+                slices_iter = []
 
         if not slices_iter:
             logger.warning(f"No circuit-capable slices found to verify under run {run_path}. Nothing to do.")
@@ -178,9 +179,13 @@ class Verifier:
                 if success:
                     jst_verified += 1
             else:
-                # EZKL verify path
-                settings_path = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
-                vk_path = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
+                # EZKL verify path (prefer per-backend fields when present)
+                settings_path = Utils.resolve_under_slice(
+                    slice_dir, meta.get("ezkl_settings_path") or meta.get("settings_path")
+                )
+                vk_path = Utils.resolve_under_slice(
+                    slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path")
+                )
                 if not settings_path or not os.path.exists(settings_path):
                     logger.warning(f"Skipping {slice_id}: settings file not found ({settings_path})")
                     continue
@@ -334,8 +339,9 @@ class Verifier:
             )
             method = "jstprove_verify"
         else:
-            vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("vk_path"))
-            settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("settings_path"))
+            # Prefer EZKL-specific fields for single-slice verification
+            vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+            settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_settings_path") or meta.get("settings_path"))
             if not vk_path_res or not os.path.exists(vk_path_res):
                 raise FileNotFoundError(f"Verification key not found for {slice_id} at {vk_path_res}")
             if settings_path_res and not os.path.exists(settings_path_res):

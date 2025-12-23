@@ -43,10 +43,18 @@ class Runner:
             logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
 
-    def run(self, input_json_path, slice_path: str, output_path: str = None) -> dict:
+    def run(self, input_json_path, slice_path: str, output_path: str = None, backend: str | None = None) -> dict:
         """Run inference through the chain using run/metadata.json.
 
         slice_path can be provided here (preferred) or at construction time for backward compatibility.
+        
+        Args:
+            input_json_path: Path to the input JSON tensor file
+            slice_path: Path to the slices directory or packaged slices (.dsperse/.dslice)
+            output_path: Optional path where run data/results should be saved
+            backend: Optional backend selector ('jstprove' | 'ezkl' | 'onnx').
+                     - When provided, applies only at run-time and only affects slices that
+                       have multiple circuit backends compiled. If 'onnx', skips circuit backends.
         """
         # Ensure slices path is available and valid
         if slice_path is None or not Path(slice_path).exists():
@@ -62,8 +70,17 @@ class Runner:
         # Generate run metadata if needed
         self._generate_run_metadata(format)
 
-        # run inference
-        results = self._run(input_json_path=input_json_path, output_path=output_path)
+        # Apply optional one-shot backend override for this run only
+        prev_forced = self.force_backend
+        if backend is not None:
+            self.force_backend = backend
+
+        try:
+            # run inference
+            results = self._run(input_json_path=input_json_path, output_path=output_path)
+        finally:
+            # Restore previous forced backend setting
+            self.force_backend = prev_forced
 
         if format != "dirs":
             self.slices_path = Converter.convert(str(self.slices_path), output_type=format, cleanup=True)
@@ -365,7 +382,7 @@ if __name__ == "__main__":
 
     # Run inference
     print(f"Running inference on model {base_paths[model_choice]}...")
-    results = runner.run(input_json, slice_path=slices_dir)
+    results = runner.run(input_json, slice_path=slices_dir)#, backend="onnx")
 
     # Display results
     print(f"\nPrediction: {results['prediction']}")

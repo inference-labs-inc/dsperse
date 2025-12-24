@@ -1,0 +1,136 @@
+{
+  "original_model": "/Users/shirinshahabinejad/Debugdslice/dsperse/models/deer_detector/model_opset18.onnx",
+  "model_type": "ONNX",
+  "total_parameters": 4160,
+  "input_shape": [
+    [
+      1,
+      3,
+      640,
+      640
+    ]
+  ],
+  "output_shapes": [
+    [
+      1,
+      5,
+      8400
+    ]
+  ],
+  "slice_points": [
+    41
+  ],
+  "slices": [
+    {
+      "index": 41,
+      "filename": "slice_41.onnx",
+      "path": "/Users/shirinshahabinejad/Debugdslice/dsperse/models/deer_detector/slices_opset18/slice_41/payload/slice_41.onnx",
+      "parameters": 4160,
+      "shape": {
+        "weight_shape": {
+          "input": [
+            64,
+            64,
+            1,
+            1
+          ],
+          "output": [
+            1,
+            64,
+            1,
+            1
+          ]
+        },
+        "tensor_shape": {
+          "input": [
+            [
+              64,
+              64,
+              1,
+              1
+            ],
+            [
+              64
+            ],
+            [
+              1,
+              64,
+              80,
+              80
+            ]
+          ],
+          "output": [
+            [
+              1,
+              64,
+              80,
+              80
+            ]
+          ]
+        }
+      },
+      "dependencies": {
+        "input": [
+          "/model.22/cv2.0/cv2.0.1/act/Mul_output_0",
+          "model.22.cv2.0.2.weight",
+          "model.22.cv2.0.2.bias"
+        ],
+        "output": [
+          "/model.22/cv2.0/cv2.0.2/Conv_output_0"
+        ],
+        "filtered_inputs": [
+          "/model.22/cv2.0/cv2.0.1/act/Mul_output_0"
+        ]
+      },
+      "layers": [
+        {
+          "name": "/model.22/cv2.0/cv2.0.2/Conv",
+          "type": "Conv",
+          "activation": "Conv",
+          "parameter_details": {
+            "model.22.cv2.0.2.weight": {
+              "shape": [
+                64,
+                64,
+                1,
+                1
+              ],
+              "size": 4096
+            },
+            "model.22.cv2.0.2.bias": {
+              "shape": [
+                64
+              ],
+              "size": 64
+            },
+            "in_features": 64,
+            "in_channels": 64,
+            "out_features": 64,
+            "out_channels": 64
+          }
+        }
+      ],
+      "relative_path": "payload/slice_41.onnx",
+      "dsperse_version": "1.0.1",
+      "opset_version": 18,
+      "compilation": {
+        "jstprove": {
+          "compiled": true,
+          "compilation_timestamp": "2025-12-24 00:29:11",
+          "backend": "jstprove",
+          "backend_version": null,
+          "files": {
+            "settings": "payload/jstprove/slice_41_settings.json",
+            "compiled": "payload/jstprove/slice_41_circuit.txt",
+            "witness_solver": "payload/jstprove/slice_41_circuit_witness_solver.txt",
+            "wandb": null,
+            "quantized_model": "payload/jstprove/slice_41_circuit_quantized_model.onnx",
+            "metadata": null,
+            "architecture": null,
+            "calibration": null
+          }
+        }
+      }
+    }
+  ]
+}

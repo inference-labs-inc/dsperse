@@ -1,0 +1,7 @@
+{
+  "backend": "jstprove",
+  "model_path": "/Users/elenashirin/deer/dsperse/dsperse/models/deer_detector_hard_silu/slices/slice_41/payload/slice_41.onnx",
+  "circuit_path": "/Users/elenashirin/deer/dsperse/dsperse/models/deer_detector_hard_silu/slices/slice_41/payload/jstprove/slice_41_circuit.txt",
+  "compiled_at": "/Users/elenashirin/deer/dsperse/dsperse/models/deer_detector_hard_silu/slices/slice_41/payload/jstprove",
+  "note": "This is a dummy settings file for dsperse compatibility. JSTprove handles settings internally."
+}

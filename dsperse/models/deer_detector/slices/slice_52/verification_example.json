@@ -1,0 +1,13 @@
+{
+  "slice_id": "slice_52",
+  "verification_status": "verified",
+  "circuit_path": "payload/jstprove_circuitization/slice_52_circuit.txt",
+  "settings_path": "payload/jstprove_circuitization/slice_52_settings.json",
+  "quantized_model": "payload/jstprove_circuitization/slice_52_circuit_quantized_model.onnx",
+  "witness_solver": "payload/jstprove_circuitization/slice_52_circuit_witness_solver.txt",
+  "verification_method": "jstprove",
+  "watermark_embedded": true,
+  "proof_generated": true,
+  "note": "This slice was circuitized with JStprove and verified with zero-knowledge proofs. The proof includes JStproveN watermarks for tamper-evident attestation."
+}
+

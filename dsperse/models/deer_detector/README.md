@@ -1,10 +1,10 @@
 # Real-Time ZK Deer Detection with  Dsperse + JSTprove
 
-This repository demonstrates a complete pipeline for zero-knowledge proof generation on real-time object detection, combining custom YOLOv8n neural network inference with zkML (Zero-Knowledge Machine Learning) verification using the Dsperse framework and JSTprove backend.
+This repository demonstrates a complete pipeline for zero-knowledge proof generation on real-time object detection, combining custom neural network inference with zkML (Zero-Knowledge Machine Learning) verification using the Dsperse framework and JSTprove backend.
 
 ## Overview
 
-This project trains a lightweight YOLOv8 nano model for deer detection, exports it to ONNX format, slices it into 64 computational segments using Dsperse, and generates zero-knowledge proofs for selected slices (41 and 52) using the JSTprove backend. The model performs real-time deer detection on video streams with cryptographic verification of inference results.
+This project trains a lightweight custom YOLOv8 nano model for deer detection, exports it to ONNX format, slices it into 64 computational segments using Dsperse, and generates zero-knowledge proofs for selected slices (41 and 52) using the JSTprove backend. The model performs real-time deer detection on video streams with cryptographic verification of inference results.
 
 **Key Features:**
 - YOLOv8n (3M parameters) trained on wildlife deer detection dataset
@@ -20,7 +20,7 @@ This project trains a lightweight YOLOv8 nano model for deer detection, exports 
 - **Class**: Deer (single-class detection)
 - **Training samples**: 416 images
 - **Validation samples**: 105 images
-- **Training duration**: ~30 epochs (~45 minutes on Tesla T4 GPU)
+- **Training duration**: ~30 epochs (~10 minutes on Tesla T4 GPU)
 
 ### Model Specifications
 - **Architecture**: YOLOv8n (nano variant)
@@ -179,10 +179,14 @@ deer_detector/
 ## Usage
 
 ### 1. Prerequisites
+
+**Note**: Large files (model.onnx 12MB, input.json 24MB, test_result.mp4 2.5MB) are excluded from git due to size constraints. These files are available locally in the development environment. To reproduce:
+
 ```bash
-# Python 3.8+
 pip install ultralytics onnx onnxruntime opencv-python numpy
 ```
+
+Run the training notebook `deer_detector_training_clean.ipynb` to generate `model.onnx` and `input.json`, or contact the team for pre-trained weights.
 
 ### 2. Run Video Inference
 ```bash
@@ -198,7 +202,6 @@ This will:
 
 ### 3. Verify ZK Proofs
 ```bash
-# Coming soon: JSTprove verification CLI
 # jstprove verify --proof slices/slice_41/payload/jstprove/proof.json
 ```
 
@@ -238,27 +241,6 @@ YOLOv8 outputs `[1, 5, 8400]` tensor:
 - **Circuit size**: ~10K-50K constraints per slice
 - **Proof generation**: ~1-5 seconds per slice (depends on hardware)
 - **Verification time**: ~10-50ms per proof
-
-## Results & Performance
-
-### Detection Quality
-The model successfully detects deer in natural wildlife footage with:
-- High precision on clear, well-lit frames
-- Robust to partial occlusions
-- Handles multiple deer in single frame
-- Minimal false positives
-
-### Limitations
-- Lower confidence on distant/blurry deer
-- Performance degrades in low-light conditions
-- Single-class detector (deer only)
-
-### Future Improvements
-- Multi-class wildlife detection
-- Temporal consistency (tracking across frames)
-- Adaptive confidence thresholds
-- Full 64-slice ZK verification (currently 2 slices)
-- Optimized proof generation for true real-time ZK
 
 ## References
 

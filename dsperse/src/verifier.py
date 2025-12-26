@@ -406,7 +406,7 @@ if __name__ == "__main__":
     # Get model directory
     model_dir = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(model_dir, "slices")
-    slices_dir = os.path.join(slices_dir, "slice_0")  # give a single slice to test
+    # slices_dir = os.path.join(slices_dir, "slice_0")  # give a single slice to test
     
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")
@@ -416,8 +416,6 @@ if __name__ == "__main__":
     
     latest_run = run_dirs[-1]
     run_path = os.path.join(run_dir, latest_run)
-
-    run_path = '/Volumes/SSD/Users/dan/Projects/dsperse/dsperse/models/net/run/run_20251226_105112/slice_0'
     
     # Initialize verifier
     verifier = Verifier()

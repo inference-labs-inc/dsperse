@@ -23,13 +23,15 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    verify_parser = subparsers.add_parser('verify', aliases=['v'], help='Verify proofs for a run using EZKL')
+    verify_parser = subparsers.add_parser('verify', aliases=['v'], help='Verify proofs for a run')
     # Ensure canonical command even when alias is used
     verify_parser.set_defaults(command='verify')
 
     # Flags-only interface
     verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='The run directory generated when you run the model')
     verify_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
+    verify_parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
+                               help='Backend to use. In single-slice mode this is required. In run-root mode, only verify slices whose witness backend matches this choice.')
 
     return verify_parser
 
@@ -113,7 +115,7 @@ def verify_proof(args):
     try:
         verifier = Verifier()
         start_time = time.time()
-        result = verifier.verify(run_dir, slices_path)
+        result = verifier.verify(run_dir, slices_path, backend=getattr(args, 'backend', None))
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Verification completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")

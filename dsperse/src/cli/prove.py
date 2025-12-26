@@ -23,12 +23,14 @@ def setup_parser(subparsers):
     Returns:
         The created parser
     """
-    prove_parser = subparsers.add_parser('prove', aliases=['p'], help='Generate proofs for a run using EZKL')
+    prove_parser = subparsers.add_parser('prove', aliases=['p'], help='Generate proofs for a run')
     # Ensure canonical command even when alias is used
     prove_parser.set_defaults(command='prove')
 
     prove_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='The run directory generated when you run the model')
     prove_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
+    prove_parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
+                             help='Backend to use. In single-slice mode this is required. In run-root mode, only prove slices whose witness backend matches this choice.')
 
     return prove_parser
 
@@ -111,7 +113,7 @@ def run_proof(args):
     try:
         prover = Prover()
         start_time = time.time()
-        result = prover.prove(run_dir, slices_path, None)
+        result = prover.prove(run_dir, slices_path, None, backend=getattr(args, 'backend', None))
         elapsed_time = time.time() - start_time
         print(f"{Fore.GREEN}✓ Proof generation completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
         print(f"Proof saved to run_results.json within the run directory {run_dir}{Style.RESET_ALL}")

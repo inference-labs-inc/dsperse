@@ -76,7 +76,7 @@ class Verifier:
             return meta_backend
         return "jstprove"
 
-    def verify_dirs(self, run_path: str | Path, dirs_path: str | Path) -> dict:
+    def verify_dirs(self, run_path: str | Path, dirs_path: str | Path, backend: str | None = None) -> dict:
         """Verify proofs for circuit-capable slices (JSTprove and EZKL).
         - Loads run metadata from run_path/metadata.json.
         - Locates per-slice proof path from run_results (fallback to <run>/slice_#/proof.json).
@@ -119,6 +119,18 @@ class Verifier:
         if not slices_iter:
             logger.warning(f"No circuit-capable slices found to verify under run {run_path}. Nothing to do.")
             return run_results
+
+        # Optional filtering by explicit backend, using the run's witness backend
+        if backend in ("jstprove", "ezkl"):
+            filtered = []
+            for slice_id, meta in slices_iter:
+                wb = self._get_witness_backend_from_run(Path(run_path), slice_id)
+                if wb == backend:
+                    filtered.append((slice_id, meta))
+            slices_iter = filtered
+            if not slices_iter:
+                logger.info(f"No slices found with witness backend '{backend}' to verify under run {run_path}.")
+                return run_results
 
         for slice_id, meta in slices_iter:
             # Determine proof path preference order
@@ -228,27 +240,27 @@ class Verifier:
         Utils.update_metadata_after_execution(run_path, total, (jst_verified + ezkl_verified), "verification")
         return run_results
 
-    def verify_dslice(self, run_path: str | Path, dslice_path: str | Path) -> dict:
+    def verify_dslice(self, run_path: str | Path, dslice_path: str | Path, backend: str | None = None) -> dict:
         temp_dirs = Converter.convert(str(dslice_path), output_type="dirs", cleanup=False)
 
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
-        result = self.verify_dirs(run_path, dirs_root)
+        result = self.verify_dirs(run_path, dirs_root, backend=backend)
 
         Converter.convert(str(dirs_root), output_type="dslice", cleanup=False)
 
         return result
 
-    def verify_dsperse(self, run_path: str | Path, dsperse_path: str | Path) -> dict:
+    def verify_dsperse(self, run_path: str | Path, dsperse_path: str | Path, backend: str | None = None) -> dict:
         temp_dirs = Converter.convert(dsperse_path, output_type="dirs", cleanup=False)
 
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
-        result = self.verify_dirs(run_path, dirs_root)
+        result = self.verify_dirs(run_path, dirs_root, backend=backend)
 
         Converter.convert(str(dirs_root), output_type="dsperse", cleanup=False)
 
         return result
 
-    def verify(self, run_path: str | Path, model_path: str | Path) -> dict:
+    def verify(self, run_path: str | Path, model_path: str | Path, backend: str | None = None) -> dict:
         """Verify proofs.
         Supports:
         - Run-root mode: run_path contains metadata.json (verify across slices using run_results proof paths)
@@ -269,16 +281,19 @@ class Verifier:
             if detected == "dsperse":
                 return self.verify_dsperse(run_path, model_path)
             if detected == "dirs":
-                return self.verify_dirs(run_path, model_path)
+                return self.verify_dirs(run_path, model_path, backend=backend)
             raise ValueError(f"Unsupported data type for verification: {detected}")
 
         if is_slice_run:
+            # Single-slice mode requires explicit backend
+            if backend not in ("jstprove", "ezkl"):
+                raise ValueError("Single-slice verification requires explicit backend: 'jstprove' or 'ezkl'.")
             # Ensure we operate on directory layout for the provided model/slice path
             dirs_model_path = model_path
             if detected != "dirs":
                 dirs_model_path = Converter.convert(str(model_path), output_type="dirs", cleanup=False)
 
-            result = self._verify_single_slice(run_path, dirs_model_path, detected)
+            result = self._verify_single_slice(run_path, dirs_model_path, detected, backend)
 
             # Convert back to the original packaging if needed
             if detected != "dirs":
@@ -290,7 +305,7 @@ class Verifier:
 
         raise FileNotFoundError(f"Run path invalid; expected run-root (metadata.json) or per-slice (input.json + output.json) at {run_path}")
 
-    def _verify_single_slice(self, run_path: Path, model_path: str | Path, detected: str) -> dict:
+    def _verify_single_slice(self, run_path: Path, model_path: str | Path, detected: str, backend: str) -> dict:
         """Internal: verify exactly one slice using a per-slice run directory.
         Expects `<run_path>/input.json` and `<run_path>/output.json` and proof.json to exist and `model_path` to
         resolve to a single-slice metadata source (slice dir or .dslice).
@@ -311,8 +326,8 @@ class Verifier:
         if not proof_path.exists():
             raise FileNotFoundError(f"Proof file not found at {proof_path}. Run 'prove' for this slice first.")
 
-        # Select backend like multi-slice
-        preferred = self._select_verification_backend(run_path, slice_id, meta)
+        # Use explicitly provided backend (single-slice mode enforces this)
+        preferred = (backend or "").lower()
 
         start = time.time()
         success = False
@@ -322,7 +337,8 @@ class Verifier:
         if preferred == "jstprove":
             if self.jstprove_runner is None:
                 raise RuntimeError("JSTprove CLI not available; cannot verify JSTprove proof")
-            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
+            # Prefer JSTprove-specific circuit path when available
+            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get("circuit_path") or meta.get("compiled"))
             input_path = Path(run_path) / "input.json"
             output_path = Path(run_path) / "output.json"
             wf = self._get_witness_file_from_run(run_path, slice_id)
@@ -390,7 +406,7 @@ if __name__ == "__main__":
     # Get model directory
     model_dir = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(model_dir, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")  # give a single slice to test
+    # slices_dir = os.path.join(slices_dir, "slice_0")  # give a single slice to test
     
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")
@@ -406,7 +422,7 @@ if __name__ == "__main__":
     
     # Run verification
     print(f"Verifying run {latest_run} for model {base_paths[model_choice]}...")
-    results = verifier.verify(run_path, slices_dir)
+    results = verifier.verify(run_path, slices_dir, backend="jstprove")
     
     # Display results
     print(f"\nVerification completed!")

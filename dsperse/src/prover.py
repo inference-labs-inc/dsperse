@@ -155,7 +155,7 @@ class Prover:
             return False, "ezkl_prove", str(e)
 
 
-    def prove_dirs(self, run_path: str | Path, dirs_path: str | Path, output_path: str | Path | None = None) -> dict:
+    def prove_dirs(self, run_path: str | Path, dirs_path: str | Path, output_path: str | Path | None = None, backend: str | None = None) -> dict:
         """Prove all circuit-capable slices (JSTprove preferred, fallback EZKL) given a slices directory layout.
         - Reads run metadata from `run_path/metadata.json`.
         - For each circuit slice, locates witness at `run_path/slice_#/output.json`.
@@ -188,6 +188,18 @@ class Prover:
             logger.warning(f"No circuit-capable slices found to prove under run {run_path}. Nothing to do.")
             # Return existing run_results unchanged to avoid silent no-op
             return Utils.load_run_results(run_path)
+
+        # Optional filtering by explicit backend: only keep slices whose witness backend == backend
+        if backend in ("jstprove", "ezkl"):
+            filtered = []
+            for slice_id, meta in slices_iter:
+                wb = self._get_witness_backend_from_run(Path(run_path), slice_id)
+                if wb == backend:
+                    filtered.append((slice_id, meta))
+            slices_iter = filtered
+            if not slices_iter:
+                logger.info(f"No slices found with witness backend '{backend}' to prove under run {run_path}.")
+                return Utils.load_run_results(run_path)
 
         for slice_id, meta in slices_iter:
             total += 1
@@ -261,30 +273,30 @@ class Prover:
         Utils.update_metadata_after_execution(run_path, total, proved_jst + proved_ezkl, "proof")
         return run_results
 
-    def prove_dslice(self, run_path: str | Path, dslice_path: str | Path, output_path: str | Path | None = None) -> dict:
+    def prove_dslice(self, run_path: str | Path, dslice_path: str | Path, output_path: str | Path | None = None, backend: str | None = None) -> dict:
         """Convert dslice -> dirs, delegate to `prove_dirs`, then convert back to dslice."""
         temp_dirs = Converter.convert(dslice_path, output_type="dirs", cleanup=False)
 
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
-        summary = self.prove_dirs(run_path, dirs_root, output_path)
+        summary = self.prove_dirs(run_path, dirs_root, output_path, backend=backend)
 
         # Convert back to dslice packaging (non-destructive)
         Converter.convert(str(dirs_root), output_type="dslice", cleanup=False)
 
         return summary
 
-    def prove_dsperse(self, run_path: str | Path, dsperse_path: str | Path, output_path: str | Path | None = None) -> dict:
+    def prove_dsperse(self, run_path: str | Path, dsperse_path: str | Path, output_path: str | Path | None = None, backend: str | None = None) -> dict:
         """Convert dsperse -> dirs, delegate to `prove_dirs`, then convert back to dsperse."""
         temp_dirs = Converter.convert(dsperse_path, output_type="dirs", cleanup=False)
 
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
-        summary = self.prove_dirs(run_path, dirs_root, output_path)
+        summary = self.prove_dirs(run_path, dirs_root, output_path, backend=backend)
 
         Converter.convert(str(dirs_root), output_type="dsperse", cleanup=False)
 
         return summary
 
-    def prove(self, run_path: str | Path, model_dir: str | Path, output_path: str | Path | None = None) -> dict:
+    def prove(self, run_path: str | Path, model_dir: str | Path, output_path: str | Path | None = None, backend: str | None = None) -> dict:
         """Route to the appropriate prove path based on `model_dir` packaging.
         Supports two modes for run_path:
         - Run-root mode: run_path contains metadata.json (prove all circuit-capable slices)
@@ -302,22 +314,25 @@ class Prover:
             # Existing behavior
             Utils.load_run_metadata(run_path)
             if detected == "dslice":
-                return self.prove_dslice(run_path, model_dir, output_path)
+                return self.prove_dslice(run_path, model_dir, output_path, backend=backend)
             if detected == "dsperse":
-                return self.prove_dsperse(run_path, model_dir, output_path)
+                return self.prove_dsperse(run_path, model_dir, output_path, backend=backend)
             if detected == "dirs":
-                return self.prove_dirs(run_path, model_dir, output_path)
+                return self.prove_dirs(run_path, model_dir, output_path, backend=backend)
             raise ValueError(f"Unsupported data type for proving: {detected}")
 
         # Single-slice mode: no run metadata, but we must have per-slice files
         if is_slice_run:
+            # Single-slice mode requires explicit backend
+            if backend not in ("jstprove", "ezkl"):
+                raise ValueError("Single-slice proving requires explicit backend: 'jstprove' or 'ezkl'.")
             # Ensure we operate on a directory layout for the provided slices/model path
             dirs_model_path = model_dir
             if detected != "dirs":
                 dirs_model_path = Converter.convert(str(model_dir), output_type="dirs", cleanup=False)
 
             # Prove using the directory layout, while remembering original packaging for reconversion
-            result = self._prove_single_slice(run_path, dirs_model_path, detected)
+            result = self._prove_single_slice(run_path, dirs_model_path, detected, backend)
 
             # Convert back to the original packaging if needed
             if detected != "dirs":
@@ -328,7 +343,7 @@ class Prover:
         # Otherwise invalid run_dir
         raise FileNotFoundError(f"Run path invalid; expected run-root (metadata.json) or per-slice (input.json + output.json) at {run_path}")
 
-    def _prove_single_slice(self, run_path: Path, model_dir: str | Path, detected: str) -> dict:
+    def _prove_single_slice(self, run_path: Path, model_dir: str | Path, detected: str, backend: str) -> dict:
         """Internal: prove exactly one slice using a per-slice run directory.
         Expects `<run_path>/input.json` and `<run_path>/output.json` to exist and `model_dir` to
         resolve to a single-slice metadata source (slice dir or .dslice).
@@ -348,8 +363,8 @@ class Prover:
         # Extract the only slice id and meta
         (slice_id, meta), = model_slices.items()
 
-        # Decide preferred backend using run_results (if available) or slice meta
-        preferred = self._select_proving_backend(run_path, slice_id, meta)
+        # Use explicitly provided backend (single-slice mode enforces this)
+        preferred = (backend or "").lower()
 
         # Resolve artifacts relative to the provided slices path root, backend-aware
         dirs_root = Utils.dirs_root_from(Path(model_dir))
@@ -360,19 +375,17 @@ class Prover:
         if not model_path_res or not os.path.exists(model_path_res):
             raise FileNotFoundError(f"Compiled circuit not found for {slice_id} at {model_path_res}")
 
-        witness_path = Path(run_path) / "output.json"
-        if not witness_path.exists():
-            raise FileNotFoundError(f"Witness not found at {witness_path}")
-
         proof_path = Path(run_path) / "proof.json"
         proof_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Adjust witness path per backend: JSTprove expects a dedicated witness file
+        # Select witness path strictly per backend
         if preferred == "jstprove":
             wf = self._get_witness_file_from_run(run_path, slice_id)
             witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
-        else:
+        elif preferred == "ezkl":
             witness_path = Path(run_path) / "output.json"
+        else:
+            raise ValueError("Unsupported backend for single-slice proving. Use 'jstprove' or 'ezkl'.")
         if not witness_path.exists():
             raise FileNotFoundError(f"Witness not found at {witness_path}")
 
@@ -441,14 +454,12 @@ if __name__ == "__main__":
     latest_run = run_dirs[-1]
     run_path = os.path.join(run_dir, latest_run)
 
-    # run_path = '/Volumes/SSD/Users/dan/Projects/dsperse/dsperse/models/net/run/run_20251214_234920/slice_0'
-
     # Initialize prover
     prover = Prover()
 
     # Run proving
     print(f"Proving run {latest_run} for model {base_paths[model_choice]}...")
-    results = prover.prove(run_path, slices_dir)
+    results = prover.prove(run_path, slices_dir, backend="jstprove")
 
     # Display results
     print(f"\nProving completed!")

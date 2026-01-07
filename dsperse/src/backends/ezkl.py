@@ -4,6 +4,7 @@ import subprocess
 import torch
 import logging
 import traceback
+import shutil
 from pathlib import Path
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.constants import EZKL_PATH
@@ -464,27 +465,29 @@ class EZKL:
         ]
         if target:
             cmd += ["--target", target]
+        # Run without raising so we can capture and surface EZKL's own error text
         try:
             process = subprocess.run(
                 cmd,
                 env=self.env,
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                # Print the full Python stack and the process stderr
-                traceback.print_stack()
-                if process.stderr:
-                    print(process.stderr)
-                return False, process.stderr or "calibrate-settings failed"
-            return True, None
-        except subprocess.CalledProcessError as e:
-            # Print the full stack trace from the exception and the process stderr
-            traceback.print_exc()
-            if getattr(e, "stderr", None):
-                print(e.stderr)
-            return False, getattr(e, "stderr", str(e))
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Failed to invoke ezkl calibrate-settings: {e}")
+            return False, str(e)
+
+        if process.returncode != 0:
+            stderr = (process.stderr or "").strip()
+            stdout = (process.stdout or "").strip()
+            combined = stderr if stderr else stdout
+            if stderr and stdout:
+                combined = f"{stderr}\n{stdout}"
+            logging.getLogger(__name__).error(f"EZKL calibrate-settings failed:\n{combined}")
+            return False, combined or "calibrate-settings failed"
+
+        return True, None
 
     def compile_circuit(self, model_path: str, settings_path: str, compiled_path: str):
         """
@@ -602,6 +605,7 @@ class EZKL:
         compiled_path = os.path.join(output_path, f"model.compiled")
         vk_path = os.path.join(output_path, f"vk.key")
         pk_path = os.path.join(output_path, f"pk.key")
+        calibration_dest = os.path.join(output_path, "calibration.json") if input_file_path else None
 
         # Initialize circuitization data dictionary
         compilation_data = {
@@ -609,10 +613,20 @@ class EZKL:
             "compiled": compiled_path,
             "vk_key": vk_path,
             "pk_key": pk_path,
-            "calibration": input_file_path,
+            "calibration": calibration_dest if input_file_path else None,
         }
 
         try:
+            if input_file_path and os.path.exists(input_file_path):
+                try:
+                    src = os.path.abspath(input_file_path)
+                    dst = os.path.abspath(calibration_dest)
+                    if src != dst:
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        shutil.copyfile(src, dst)
+                except Exception as copy_err:
+                    logging.getLogger(__name__).warning(f"Could not write calibration.json: {copy_err}")
+
             # Step 1: Generate settings
             logger.info(f"Generating settings for {model_name}")
             ok, err = self.gen_settings(
@@ -631,9 +645,8 @@ class EZKL:
                     data_path=input_file_path,
                     target="accuracy",
                 )
-                compilation_data["calibration"] = input_file_path
                 if not ok:
-                    logger.warning("Failed to calibrate settings")
+                    logger.warning(f"Failed to calibrate settings: {err}")
                     compilation_data["calibrate-settings_error"] = err
             else:
                 # If no input file, log and skip calibration

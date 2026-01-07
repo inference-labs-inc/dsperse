@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -288,8 +289,15 @@ class CompilerUtils:
     @staticmethod
     def run_onnx_inference_chain(slices_data: list, base_path: str, input_file_path: Optional[str] = None):
         """
-        Phase 1: Run ONNX inference chain to generate calibration files.
+        Phase 1: Run ONNX inference chain to generate calibration files, using
+        a single `calibration.json` per slice directory.
 
+        Chaining scheme:
+          input -> slice_0/ezkl/calibration.json -> output_0
+          output_0 -> slice_1/ezkl/calibration.json -> output_1
+          ...
+        where each slice only stores one file named `calibration.json`.
+        
         Args:
             slices_data: List of slice metadata
             base_path: Base path for relative file paths
@@ -316,20 +324,45 @@ class CompilerUtils:
                 slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
                 os.makedirs(slice_output_path, exist_ok=True)
 
-                # Run ONNX inference to generate calibration data
-                output_tensor_path = os.path.join(slice_output_path, "calibration.json")
-                logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
-                success, _tensor, exec_info = Runner.run_onnx_slice(
-                    slice_info={"path": slice_path},
-                    input_tensor_path=Path(current_input),
-                    output_tensor_path=Path(output_tensor_path)
-                )
+                # 1) Save the INPUT tensor for this slice as calibration.json (what EZKL expects)
+                calibration_path = os.path.join(slice_output_path, "calibration.json")
+                try:
+                    if os.path.abspath(current_input) != os.path.abspath(calibration_path):
+                        shutil.copyfile(current_input, calibration_path)
+                except Exception as e:
+                    logger.warning(f"Failed to write calibration.json for slice {idx}: {e}")
 
-                if not success:
-                    logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
-                    return
+                # 2) Run ONNX to produce the OUTPUT for chaining to the NEXT slice's calibration.json
+                if idx < len(slices_data) - 1:
+                    next_slice = slices_data[idx + 1]
+                    next_slice_path = next_slice.get('path')
+                    if not (next_slice_path and os.path.exists(next_slice_path)):
+                        if next_slice.get('relative_path'):
+                            next_slice_path = os.path.join(base_path, next_slice.get('relative_path'))
+                    if not next_slice_path or not os.path.exists(next_slice_path):
+                        logger.warning(f"Next slice file not found for index {idx + 1}; stopping chain after slice {idx}")
+                        break
 
-                current_input = output_tensor_path
-                logger.info(f"Generated calibration file: {output_tensor_path}")
+                    next_slice_output_path = os.path.join(os.path.dirname(next_slice_path), "ezkl")
+                    os.makedirs(next_slice_output_path, exist_ok=True)
+                    next_calibration_path = os.path.join(next_slice_output_path, "calibration.json")
+
+                    logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
+                    success, _tensor, exec_info = Runner.run_onnx_slice(
+                        slice_info={"path": slice_path},
+                        input_tensor_path=Path(current_input),
+                        output_tensor_path=Path(next_calibration_path)
+                    )
+
+                    if not success:
+                        logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
+                        return
+
+                    current_input = next_calibration_path
+                    logger.info(f"Saved calibration input for slice {idx}: {calibration_path}")
+                    logger.info(f"Generated next slice calibration file: {next_calibration_path}")
+                else:
+                    # Last slice: no next consumer; keep only its calibration.json
+                    logger.info(f"Saved calibration input for last slice {idx}: {calibration_path}")
         else:
             logger.warning("No input file provided, skipping ONNX inference chain")

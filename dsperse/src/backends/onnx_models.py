@@ -45,7 +45,7 @@ class OnnxModels:
             return True, result
         except Exception as e:
             logger.warning(f"Error during inference: {e}")
-            return False, None
+            return False, str(e)
 
     @staticmethod
     def run_inference_multi(model_path: str, primary_input_file: str, extra_tensors: dict, output_file: str):

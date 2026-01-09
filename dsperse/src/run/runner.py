@@ -401,10 +401,15 @@ class Runner:
         """Run ONNX inference for a multi-input slice."""
         onnx_path = slice_info.get("path")
         if onnx_path and not os.path.isabs(str(onnx_path)):
-            onnx_path = str((Path(slice_dir) / onnx_path).resolve())
-            if not Path(onnx_path).exists():
-                rel = slice_info.get("relative_path", "")
-                onnx_path = str((Path(slice_dir) / rel).resolve())
+            resolved = Path(slice_dir) / onnx_path
+            if resolved.exists():
+                onnx_path = str(resolved.resolve())
+            else:
+                rel = slice_info.get("relative_path")
+                if rel:
+                    onnx_path = str((Path(slice_dir) / rel).resolve())
+                else:
+                    logger.warning(f"ONNX path not found: {resolved}")
 
         start_time = time.time()
         try:

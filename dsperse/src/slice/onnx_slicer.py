@@ -163,19 +163,20 @@ class OnnxSlicer:
         return segment_nodes
 
     @staticmethod
-    def _get_segment_details(segment_nodes, graph, initializer_map):
+    def _get_segment_details(segment_nodes, graph, initializer_map, future_inputs=None):
         """
         Determine inputs, outputs, and initializers for a segment.
 
         Args:
             segment_nodes: List of nodes in the segment
             graph: ONNX graph
-            value_info_map: Map of value info names to value infos
             initializer_map: Map of initializer names to initializers
+            future_inputs: Set of tensor names needed by future segments (must be outputs if produced here)
 
         Returns:
             tuple: (segment_inputs, segment_outputs, segment_initializers)
         """
+        future_inputs = future_inputs or set()
         segment_inputs = []
         segment_outputs = []
         segment_initializers = []
@@ -234,22 +235,19 @@ class OnnxSlicer:
                     )
                     segment_inputs.append(t)
 
-        # Outputs are those that are produced by nodes in this segment but not consumed by any node in this segment
-        # or are model outputs
+        # Outputs are tensors that:
+        # 1. Are produced by this segment but not consumed within it, OR
+        # 2. Are model outputs, OR
+        # 3. Are needed by future segments (even if consumed within this segment)
+        model_output_names = {o.name for o in graph.output}
         for out in segment_node_outputs:
-            # Check if this output is used as an input by any node in this segment
-            is_output = True
-            for node in segment_nodes:
-                if out in node.input:
-                    is_output = False
-                    break
+            consumed_internally = any(out in node.input for node in segment_nodes)
+            needed_externally = out in future_inputs or out in model_output_names
 
-            # If it's not used as an input or it's a model output, add it as a segment output
-            if is_output or out in [o.name for o in graph.output]:
+            if not consumed_internally or needed_externally:
                 if out in all_value_infos:
                     segment_outputs.append(all_value_infos[out])
                 else:
-                    # For unknown outputs, infer shape from the producing node
                     inferred_shape = OnnxSlicer._infer_output_shape(out, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
                         out,
@@ -363,6 +361,26 @@ class OnnxSlicer:
         # Sort slice points to ensure they're in order
         slice_points.sort()
 
+        # Pre-compute inputs needed by each segment to identify cross-segment dependencies
+        segment_inputs_map = {}
+        for i in range(len(slice_points)):
+            seg_idx = i - 1
+            start_idx = slice_points[i - 1] if i > 0 else 0
+            end_idx = slice_points[i]
+            if start_idx == end_idx:
+                continue
+            seg_nodes = self._get_nodes(start_idx, end_idx, index_to_node_name,
+                                        index_to_segment_name, node_map, node_type_index_map, seg_idx)
+            seg_outputs = set()
+            for node in seg_nodes:
+                seg_outputs.update(node.output)
+            seg_inputs = set()
+            for node in seg_nodes:
+                for inp in node.input:
+                    if inp not in seg_outputs and inp not in initializer_map:
+                        seg_inputs.add(inp)
+            segment_inputs_map[seg_idx] = seg_inputs
+
         # Store paths to sliced models
         slice_paths = []
 
@@ -384,9 +402,15 @@ class OnnxSlicer:
             if not segment_nodes:
                 continue
 
+            # Compute inputs needed by all future segments
+            future_inputs = set()
+            for future_idx in segment_inputs_map:
+                if future_idx > segment_idx:
+                    future_inputs.update(segment_inputs_map[future_idx])
+
             # Get segment details
             segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
-                segment_nodes, graph, initializer_map)
+                segment_nodes, graph, initializer_map, future_inputs)
 
             # Save the segment model in dslice-style folder layout: slice_X/payload/slice_X.onnx (zero-based)
             save_path = os.path.join(output_path, f"slice_{segment_idx}")

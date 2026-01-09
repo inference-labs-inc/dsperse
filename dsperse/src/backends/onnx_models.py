@@ -48,8 +48,8 @@ class OnnxModels:
             return False, str(e)
 
     @staticmethod
-    def run_inference_multi(model_path: str, primary_input_file: str, extra_tensors: dict, output_file: str):
-        """Run inference with multiple named inputs."""
+    def run_inference_multi(model_path: str, extra_tensors: dict, output_file: str):
+        """Run inference with multiple named inputs. All inputs must be provided in extra_tensors."""
         try:
             session_options = ort.SessionOptions()
             session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
@@ -58,36 +58,23 @@ class OnnxModels:
             model_inputs = session.get_inputs()
             input_dict = {}
 
-            primary_tensor = RunnerUtils.preprocess_input(primary_input_file)
-            if isinstance(primary_tensor, torch.Tensor):
-                primary_np = primary_tensor.numpy().astype(np.float32)
-            else:
-                primary_np = np.array(primary_tensor, dtype=np.float32)
-
             for model_input in model_inputs:
                 name = model_input.name
                 shape = [d if isinstance(d, int) else 1 for d in model_input.shape]
 
-                if name in extra_tensors and extra_tensors[name] is not None:
-                    t = extra_tensors[name]
-                    if isinstance(t, torch.Tensor):
-                        arr = t.numpy().astype(np.float32)
-                    else:
-                        arr = np.array(t, dtype=np.float32)
-                    if arr.shape != tuple(shape):
-                        arr = arr.flatten()[:np.prod(shape)].reshape(shape)
-                    input_dict[name] = arr
+                if name not in extra_tensors or extra_tensors[name] is None:
+                    raise ValueError(f"Missing required input tensor: {name}")
+
+                t = extra_tensors[name]
+                if isinstance(t, torch.Tensor):
+                    arr = t.numpy().astype(np.float32)
                 else:
-                    needed = np.prod(shape)
-                    flat = primary_np.flatten()
-                    if flat.size >= needed:
-                        input_dict[name] = flat[:needed].reshape(shape)
-                        primary_np = flat[needed:].reshape(-1)
-                    else:
-                        padded = np.zeros(needed, dtype=np.float32)
-                        padded[:flat.size] = flat
-                        input_dict[name] = padded.reshape(shape)
-                        primary_np = np.array([], dtype=np.float32)
+                    arr = np.array(t, dtype=np.float32)
+
+                if arr.shape != tuple(shape):
+                    raise ValueError(f"Shape mismatch for {name}: got {arr.shape}, expected {tuple(shape)}")
+
+                input_dict[name] = arr
 
             raw_output = session.run(None, input_dict)
 

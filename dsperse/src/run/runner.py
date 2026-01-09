@@ -354,8 +354,8 @@ class Runner:
             Utils.write_input(current_tensor, str(in_file))
 
             if len(filtered_inputs) > 1:
-                extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs[1:] if tensor_cache.get(name) is not None}
-                ok, result, exec_info = self._run_slice_multi_input(info, in_file, out_file, slice_dir, extra_tensors)
+                extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs}
+                ok, result, exec_info = self._run_slice_multi_input(info, out_file, slice_dir, extra_tensors)
             else:
                 ok, result, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)
 
@@ -397,25 +397,22 @@ class Runner:
 
         return results
 
-    def _run_slice_multi_input(self, slice_info, primary_input_file, output_file, slice_dir, extra_tensors):
+    def _run_slice_multi_input(self, slice_info, output_file, slice_dir, extra_tensors):
         """Run ONNX inference for a multi-input slice."""
         onnx_path = slice_info.get("path")
-        if onnx_path and not os.path.isabs(str(onnx_path)):
-            resolved = Path(slice_dir) / onnx_path
-            if resolved.exists():
-                onnx_path = str(resolved.resolve())
-            else:
-                rel = slice_info.get("relative_path")
-                if rel:
-                    onnx_path = str((Path(slice_dir) / rel).resolve())
-                else:
-                    logger.warning(f"ONNX path not found: {resolved}")
+        if not onnx_path:
+            return False, "No ONNX path in slice_info", {'error': 'missing_path'}
+
+        if not os.path.isabs(str(onnx_path)):
+            onnx_path = str((Path(slice_dir) / onnx_path).resolve())
+
+        if not Path(onnx_path).exists():
+            return False, f"ONNX file not found: {onnx_path}", {'error': 'file_not_found'}
 
         start_time = time.time()
         try:
             success, result = OnnxModels.run_inference_multi(
                 model_path=onnx_path,
-                primary_input_file=primary_input_file,
                 extra_tensors=extra_tensors,
                 output_file=output_file
             )

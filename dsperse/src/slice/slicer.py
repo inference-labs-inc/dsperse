@@ -55,13 +55,14 @@ class Slicer:
         return Slicer(OnnxSlicer(model_path, save_path))
 
 
-    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs"):
+    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs", tile_size: Optional[int] = None):
         """
         Slice the model using the appropriate slicer implementation, then optionally convert output.
 
         Args:
             output_path: Directory to save the sliced model
             output_type: One of {'dsperse', 'dslice', 'dirs'}
+            tile_size: If set, tile Conv slices with spatial dims > tile_size
 
         Returns:
             The result of the slicing operation (list of slice paths from slicer_impl)
@@ -70,7 +71,7 @@ class Slicer:
             raise ValueError("output_path must be provided for slicing")
 
         logger.info(f"Slicing model to output path: {output_path}")
-        result = self.slicer_impl.slice_model(output_path=output_path)
+        result = self.slicer_impl.slice_model(output_path=output_path, tile_size=tile_size)
 
         if output_type != "dirs":
             Converter.convert(output_path, output_type)

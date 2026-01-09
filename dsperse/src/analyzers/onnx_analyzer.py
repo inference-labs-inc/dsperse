@@ -334,7 +334,7 @@ class OnnxAnalyzer:
 
         return layer_info
 
-    def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None):
+    def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None, tiled_info=None):
         """
         Generate metadata for sliced ONNX models.
 
@@ -343,14 +343,14 @@ class OnnxAnalyzer:
             slice_points: List of indices representing nodes with parameter details
             output_dir: Directory where the metadata will be saved
             slices_paths: Paths to sliced onnx files
+            tiled_info: Dict of {slice_idx: tiling_info} from autotiler
 
         Returns:
             dict: Complete metadata for the sliced models
         """
-        # Get model-level metadata
         model_overview = self._get_model_metadata(model_metadata, slice_points)
+        tiled_info = tiled_info or {}
 
-        # Process each segment
         segments = []
 
         for i in range(len(slice_points)):
@@ -361,23 +361,22 @@ class OnnxAnalyzer:
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
 
-            # Skip if start and end are the same
             if start_idx == end_idx:
                 continue
 
             slice_path = slices_paths[segment_idx] if slices_paths else None
 
-            # Get segment metadata
             segment_metadata = self._get_segment_metadata(
-                model_metadata, 
-                segment_idx, 
-                start_idx, 
+                model_metadata,
+                segment_idx,
+                start_idx,
                 end_idx,
                 slice_path,
                 output_dir
             )
-            # extract shape
             if segment_metadata:
+                if segment_idx in tiled_info:
+                    segment_metadata["tiling"] = tiled_info[segment_idx]
                 segments.append(segment_metadata)
 
         # Add segments to metadata

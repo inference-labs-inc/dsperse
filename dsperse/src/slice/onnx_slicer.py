@@ -6,6 +6,7 @@ import logging
 from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from typing import List, Dict
 from dsperse.src.utils.utils import Utils
+from dsperse.src.slice.autotiler import autotile_slices
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
@@ -496,25 +497,28 @@ class OnnxSlicer:
 
         return abs_paths
 
-    def slice_model(self, output_path=None):
+    def slice_model(self, output_path=None, tile_size: int = None):
         """
-        Run the complete workflow: determine slice points and slice.
+        Run the complete workflow: determine slice points, slice, and optionally tile.
 
         Args:
             output_path: The path to save the slices to.
+            tile_size: If set, tile Conv slices with spatial dims > tile_size.
 
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
-
-        # Step 1: Determine slice points
         slice_points = self.determine_slice_points(self.analysis)
-
-        # Step 2: Slice the model
         slices_paths = self.slice(slice_points, self.analysis, output_path)
 
-        # Step 3: generate slices metadata
-        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path)
+        tiled_info = {}
+        if tile_size is not None:
+            slices_dir = output_path or os.path.join(os.path.dirname(self.onnx_path), "slices")
+            tiled_info = autotile_slices(slices_dir, tile_size)
+            if tiled_info:
+                logger.info(f"Tiled {len(tiled_info)} slices with tile_size={tile_size}")
+
+        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
 
         return slices_paths
 

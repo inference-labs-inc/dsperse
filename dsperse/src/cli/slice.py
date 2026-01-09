@@ -37,6 +37,8 @@ def setup_parser(subparsers):
     slice_parser.add_argument('--output-type', '--ot', '-ot', dest='output_type',
                               choices=['dirs', 'dslice', 'dsperse'], default='dirs',
                               help='Output format of the slicing result: dirs (default), dslice, or dsperse')
+    slice_parser.add_argument('--tile-size', '-t', type=int, default=None,
+                              help='Tile Conv slices with spatial dims > this value (e.g., 16)')
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
@@ -180,13 +182,13 @@ def slice_model(args):
 
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
-        # Determine desired output type (default to 'dirs')
         output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
-        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}")
-        # Delegate to Slicer which will convert if needed
+        tile_size = getattr(args, 'tile_size', None)
+        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}, tile_size={tile_size}")
         slicer.slice_model(
             output_path=output_dir,
             output_type=output_type,
+            tile_size=tile_size,
         )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

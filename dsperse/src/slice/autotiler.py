@@ -1,29 +1,61 @@
-import onnx
-from onnx import helper, TensorProto, numpy_helper
+"""
+Autotiler for Conv slices.
+
+Tiling breaks large convolution operations into smaller tiles that can be processed
+independently, reducing memory/circuit size for ZK proofs. The key insight is that
+convolutions are spatially local - each output pixel only depends on a small window
+of input pixels (the kernel receptive field).
+
+Tiling strategy:
+  1. Split input spatially into tiles of size T x T
+  2. Each tile needs extra "halo" pixels around edges for correct convolution boundary
+  3. The halo size equals the original Conv padding (pixels the Conv would read beyond edges)
+  4. Process each tile independently through the same Conv + elementwise ops
+  5. Crop output tiles to remove boundary artifacts, then stitch together
+
+Example: 64x64 input with 3x3 conv, stride=2, pad=1 -> tile_size=16
+  - Input tile: 16x16 + 2*1 halo = 18x18 (tile_with_halo)
+  - Output tile: 8x8 (after stride=2)
+  - 64/16 = 4x4 = 16 tiles to process
+"""
 import json
-import os
 from pathlib import Path
 
-ELEMENTWISE_OPS = {'Sigmoid', 'Mul', 'Add', 'Sub', 'Div', 'Relu', 'LeakyRelu', 'PRelu', 'Tanh', 'Clip', 'Neg', 'Abs', 'Sqrt', 'Exp', 'Log', 'Pow', 'Sin', 'Cos'}
+import onnx
+from onnx import helper, TensorProto, numpy_helper
+
+ELEMENTWISE_OPS = {
+    'Sigmoid', 'Mul', 'Add', 'Sub', 'Div', 'Relu', 'LeakyRelu', 'PRelu',
+    'Tanh', 'Clip', 'Neg', 'Abs', 'Sqrt', 'Exp', 'Log', 'Pow', 'Sin', 'Cos'
+}
 
 
 def find_tile_size(spatial_dim: int, target: int) -> int | None:
-    if spatial_dim <= target:
-        return None
-    for tile in range(min(target, spatial_dim), 7, -1):
-        if spatial_dim % tile == 0:
-            return tile
+    """
+    Find largest tile size <= target that evenly divides spatial_dim.
+    Returns None if no valid tile size >= 8 exists.
+    """
+    if 7 <= target < spatial_dim:
+        for tile in range(target, 7, -1):
+            if spatial_dim % tile == 0:
+                return tile
     return None
 
 
 def is_tileable(model: onnx.ModelProto) -> bool:
+    """
+    A slice is tileable if it contains exactly one Conv followed by
+    zero or more elementwise ops. Elementwise ops apply independently
+    per-pixel, so they don't affect tiling boundaries.
+    """
     ops = {n.op_type for n in model.graph.node}
     if 'Conv' not in ops:
         return False
     return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
 
 
-def get_conv_params(model: onnx.ModelProto):
+def get_conv_params(model: onnx.ModelProto) -> dict | None:
+    """Extract Conv node parameters from model."""
     for node in model.graph.node:
         if node.op_type == "Conv":
             attrs = {a.name: a for a in node.attribute}
@@ -37,11 +69,26 @@ def get_conv_params(model: onnx.ModelProto):
     return None
 
 
-def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
+def tile_conv_slice(slice_path: Path, tile_size: int, output_path: Path) -> dict | None:
+    """
+    Create a tiled version of a Conv slice.
+
+    The tiled model expects input tiles with halo (overlap) regions that provide
+    the extra context needed for convolution at tile boundaries. The halo size
+    equals the original padding - this is the key insight that makes tiling work.
+
+    Args:
+        slice_path: Path to original slice ONNX model
+        tile_size: Spatial size of each tile (before adding halo)
+        output_path: Where to save the tiled model
+
+    Returns:
+        Dict with tiling metadata, or None if slice can't be tiled
+    """
     m = onnx.load(slice_path)
     orig_input = m.graph.input[0]
     orig_dims = [d.dim_value for d in orig_input.type.tensor_type.shape.dim]
-    _, c_in, h_in, w_in = orig_dims
+    c_in = orig_dims[1]
 
     conv_params = get_conv_params(m)
     if not conv_params:
@@ -50,6 +97,8 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
     conv_node = conv_params['node']
     kh, kw = conv_params['kernel']
     sh, sw = conv_params['stride']
+    if sh == 0 or sw == 0:
+        return None
     dh, dw = conv_params['dilation']
     pads = conv_params['pads']
 
@@ -64,19 +113,37 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
         return None
 
     c_out = weights.shape[0]
+
+    # Halo = original padding. This is the overlap needed at tile boundaries
+    # to produce correct output without edge artifacts.
     halo_h, halo_w = pads[0], pads[1]
+
+    # Effective kernel size accounting for dilation
     effective_kh = (kh - 1) * dh + 1
     effective_kw = (kw - 1) * dw + 1
 
+    # Input tile dimensions (tile + halo on each side)
     tile_with_halo_h = tile_size + 2 * halo_h
     tile_with_halo_w = tile_size + 2 * halo_w
+
+    # Output dimensions from convolution formula: (input - kernel) / stride + 1
+    # We use pads=[0,0,0,0] in tiled conv since halo already provides the context
     conv_out_h = (tile_with_halo_h - effective_kh) // sh + 1
     conv_out_w = (tile_with_halo_w - effective_kw) // sw + 1
+
+    # Expected output tile size (what we need after cropping)
     out_tile_h = tile_size // sh
     out_tile_w = tile_size // sw
 
-    X = helper.make_tensor_value_info(orig_input.name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w])
-    Y = helper.make_tensor_value_info(m.graph.output[0].name, TensorProto.FLOAT, [1, c_out, conv_out_h, conv_out_w])
+    # Build the tiled ONNX model
+    X = helper.make_tensor_value_info(
+        orig_input.name, TensorProto.FLOAT,
+        [1, c_in, tile_with_halo_h, tile_with_halo_w]
+    )
+    Y = helper.make_tensor_value_info(
+        m.graph.output[0].name, TensorProto.FLOAT,
+        [1, c_out, conv_out_h, conv_out_w]
+    )
 
     W = helper.make_tensor("W", TensorProto.FLOAT, weights.shape, weights.flatten().tolist())
     initializers = [W]
@@ -86,8 +153,13 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
         initializers.append(B)
         conv_inputs.append("B")
 
-    nodes = [helper.make_node("Conv", conv_inputs, ["conv_out"], kernel_shape=[kh, kw], strides=[sh, sw], pads=[0, 0, 0, 0], dilations=[dh, dw])]
+    # Conv with zero padding (halo provides the needed context)
+    nodes = [helper.make_node(
+        "Conv", conv_inputs, ["conv_out"],
+        kernel_shape=[kh, kw], strides=[sh, sw], pads=[0, 0, 0, 0], dilations=[dh, dw]
+    )]
 
+    # Copy non-Conv ops (Sigmoid, Mul, etc), rewiring inputs to use conv_out
     non_conv_ops = [n for n in m.graph.node if n.op_type != "Conv"]
     if non_conv_ops:
         for i, orig_node in enumerate(non_conv_ops):
@@ -101,7 +173,8 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
                     new_inputs.append(inp)
             is_last = (i == len(non_conv_ops) - 1)
             new_outputs = [m.graph.output[0].name] if is_last else list(orig_node.output)
-            nodes.append(helper.make_node(orig_node.op_type, new_inputs, new_outputs))
+            attr_kwargs = {a.name: helper.get_attribute_value(a) for a in orig_node.attribute}
+            nodes.append(helper.make_node(orig_node.op_type, new_inputs, new_outputs, **attr_kwargs))
     else:
         nodes[-1].output[0] = m.graph.output[0].name
 
@@ -110,7 +183,7 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
     model.ir_version = 8
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    onnx.save(model, output_path)
+    onnx.save(model, str(output_path))
 
     return {
         "original_input": orig_dims,
@@ -127,21 +200,35 @@ def tile_conv_slice(slice_path: str, tile_size: int, output_path: str):
     }
 
 
-def autotile_slices(slices_dir: str, tile_size: int = 16) -> dict:
+def autotile_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
     """
-    Scan slices directory, tile Conv slices with spatial > tile_size.
-    Returns dict of {slice_idx: tiling_info} for tiled slices.
+    Scan slices directory and create tiled versions of Conv slices.
+
+    Args:
+        slices_dir: Directory containing slice_N subdirectories
+        tile_size: Target tile size (will find largest divisor <= this)
+
+    Returns:
+        Dict mapping slice index to tiling metadata for each tiled slice
     """
-    tiled_dir = os.path.join(slices_dir, "tiled")
-    Path(tiled_dir).mkdir(exist_ok=True)
+    slices_dir = Path(slices_dir)
+    tiled_dir = slices_dir / "tiled"
+    tiled_dir.mkdir(exist_ok=True)
 
     tiled_info = {}
-    for i in range(500):
-        path = os.path.join(slices_dir, f"slice_{i}", "payload", f"slice_{i}.onnx")
-        if not os.path.exists(path):
+    for entry in sorted(slices_dir.iterdir()):
+        if not entry.name.startswith("slice_") or not entry.is_dir():
+            continue
+        try:
+            i = int(entry.name.split("_")[1])
+        except (IndexError, ValueError):
             continue
 
-        m = onnx.load(path)
+        onnx_path = entry / "payload" / f"{entry.name}.onnx"
+        if not onnx_path.exists():
+            continue
+
+        m = onnx.load(str(onnx_path))
         if not is_tileable(m):
             continue
 
@@ -158,14 +245,18 @@ def autotile_slices(slices_dir: str, tile_size: int = 16) -> dict:
         if not tile:
             continue
 
-        dst = os.path.join(tiled_dir, f"slice_{i}_tiled.onnx")
-        info = tile_conv_slice(path, tile, dst)
+        dst = tiled_dir / f"slice_{i}_tiled.onnx"
+        info = tile_conv_slice(onnx_path, tile, dst)
         if info:
-            info["tiled_path"] = dst
+            info["tiled_path"] = str(dst)
             tiled_info[i] = info
 
     if tiled_info:
-        with open(os.path.join(tiled_dir, "tiled_info.json"), "w") as f:
-            json.dump({"slices": {str(k): v for k, v in tiled_info.items()}, "tiled_indices": list(tiled_info.keys())}, f, indent=2)
+        info_path = tiled_dir / "tiled_info.json"
+        with open(info_path, "w") as f:
+            json.dump({
+                "slices": {str(k): v for k, v in tiled_info.items()},
+                "tiled_indices": list(tiled_info.keys())
+            }, f, indent=2)
 
     return tiled_info

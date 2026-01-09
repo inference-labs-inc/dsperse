@@ -20,44 +20,90 @@ class OnnxModels:
         Run inference with the ONNX model and return the logits, probabilities, and predictions.
         """
         try:
-            # Create ONNX Runtime session with all optimizations disabled
             session_options = ort.SessionOptions()
-            
-            # Disable all optimizations to prevent operation fusion
             session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
             session_options.enable_profiling = False
             session_options.enable_mem_pattern = False
             session_options.enable_cpu_mem_arena = False
             session_options.enable_mem_reuse = False
-            
-            # Disable execution providers optimizations
             session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            
-            # Create an ONNX Runtime session with disabled optimizations
+
             session = ort.InferenceSession(model_path, session_options)
-
-            # Convert PyTorch tensor to numpy array for ONNX Runtime
             input_tensor = RunnerUtils.preprocess_input(input_file)
-
-            # Apply proper shaping based on the ONNX model's expected input
             input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
-
-            # Run inference
             raw_output = session.run(None, input_dict)
 
-            # Convert the output back to a PyTorch tensor
+            model_outputs = session.get_outputs()
+            output_tensors = {}
+            for i, out in enumerate(model_outputs):
+                output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
+
             output_tensor = torch.tensor(raw_output[0], dtype=torch.float32)
-
-            # Process the output
             result = RunnerUtils.process_final_output(output_tensor)
-
+            result['output_tensors'] = output_tensors
             RunnerUtils.save_to_file_flattened(result['logits'], output_file)
-
             return True, result
-
         except Exception as e:
             logger.warning(f"Error during inference: {e}")
             return False, None
+
+    @staticmethod
+    def run_inference_multi(model_path: str, primary_input_file: str, extra_tensors: dict, output_file: str):
+        """Run inference with multiple named inputs."""
+        try:
+            session_options = ort.SessionOptions()
+            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+            session = ort.InferenceSession(model_path, session_options)
+
+            model_inputs = session.get_inputs()
+            input_dict = {}
+
+            primary_tensor = RunnerUtils.preprocess_input(primary_input_file)
+            if isinstance(primary_tensor, torch.Tensor):
+                primary_np = primary_tensor.numpy().astype(np.float32)
+            else:
+                primary_np = np.array(primary_tensor, dtype=np.float32)
+
+            for model_input in model_inputs:
+                name = model_input.name
+                shape = [d if isinstance(d, int) else 1 for d in model_input.shape]
+
+                if name in extra_tensors and extra_tensors[name] is not None:
+                    t = extra_tensors[name]
+                    if isinstance(t, torch.Tensor):
+                        arr = t.numpy().astype(np.float32)
+                    else:
+                        arr = np.array(t, dtype=np.float32)
+                    if arr.shape != tuple(shape):
+                        arr = arr.flatten()[:np.prod(shape)].reshape(shape)
+                    input_dict[name] = arr
+                else:
+                    needed = np.prod(shape)
+                    flat = primary_np.flatten()
+                    if flat.size >= needed:
+                        input_dict[name] = flat[:needed].reshape(shape)
+                        primary_np = flat[needed:].reshape(-1)
+                    else:
+                        padded = np.zeros(needed, dtype=np.float32)
+                        padded[:flat.size] = flat
+                        input_dict[name] = padded.reshape(shape)
+                        primary_np = np.array([], dtype=np.float32)
+
+            raw_output = session.run(None, input_dict)
+
+            model_outputs = session.get_outputs()
+            output_tensors = {}
+            for i, out in enumerate(model_outputs):
+                output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
+
+            output_tensor = torch.tensor(raw_output[0], dtype=torch.float32)
+            result = RunnerUtils.process_final_output(output_tensor)
+            result['output_tensors'] = output_tensors
+            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
+            return True, result
+        except Exception as e:
+            logger.warning(f"Error during multi-input inference: {e}")
+            return False, str(e)
 
     @staticmethod
     def apply_onnx_shape(model_path, input_tensor, is_numpy=False):

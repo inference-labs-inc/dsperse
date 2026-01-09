@@ -331,32 +331,64 @@ class Runner:
     def _run(self, output_path=None, input_json_path=None):
         head, nodes = RunnerAnalyzer.get_execution_chain(self.run_metadata)
         run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
-        # Remember for CLI messaging and summaries
         self.last_run_dir = run_dir
 
+        input_tensor = Utils.read_input(input_json_path)
+        model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
+        tensor_cache = {model_input_name: input_tensor}
+
         current_slice_id = head
-        current_tensor = Utils.read_input(input_json_path)
         slice_results = {}
+        final_tensor = None
 
         while current_slice_id:
             info = self.run_metadata["slices"][current_slice_id]
             slice_dir = self.slices_path
             in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
+
+            filtered_inputs = info.get("dependencies", {}).get("filtered_inputs", [])
+            output_names = info.get("dependencies", {}).get("output", [])
+
+            input_name = filtered_inputs[0] if filtered_inputs else model_input_name
+            current_tensor = tensor_cache.get(input_name, input_tensor)
             Utils.write_input(current_tensor, str(in_file))
-            ok, tensor, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file,
-                                                              slice_dir)
+
+            if len(filtered_inputs) > 1:
+                extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs[1:] if tensor_cache.get(name) is not None}
+                ok, result, exec_info = self._run_slice_multi_input(info, in_file, out_file, slice_dir, extra_tensors)
+            else:
+                ok, result, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)
+
+            if ok and result:
+                if isinstance(result, dict) and 'output_tensors' in result:
+                    for oname, tensor in result['output_tensors'].items():
+                        tensor_cache[oname] = tensor
+                    first_output = list(result['output_tensors'].values())[0] if result['output_tensors'] else None
+                    final_tensor = first_output if first_output is not None else result.get('logits')
+                else:
+                    out_tensor = result.get('logits', result) if isinstance(result, dict) else result
+                    if isinstance(out_tensor, torch.Tensor):
+                        for oname in output_names:
+                            tensor_cache[oname] = out_tensor
+                        final_tensor = out_tensor
+
             slice_results[current_slice_id] = exec_info
             if not ok:
                 raise Exception(f"Inference failed for {current_slice_id}: {exec_info.get('error', 'unknown')}")
-            current_tensor = RunnerUtils.filter_tensor(info, tensor)
             current_slice_id = nodes[current_slice_id].get("next")
 
-        probs = F.softmax(current_tensor, dim=1)
-        pred = torch.argmax(probs, dim=1).item()
+        if final_tensor is None:
+            final_tensor = input_tensor
+
+        if final_tensor.dim() == 3 and final_tensor.shape[0] == 1:
+            probs = F.softmax(final_tensor, dim=-1)
+        else:
+            probs = F.softmax(final_tensor.flatten().unsqueeze(0), dim=1)
+        pred = torch.argmax(probs.flatten()).item()
         results = {
             "prediction": pred,
             "probabilities": probs.tolist(),
-            "tensor_shape": list(current_tensor.shape),
+            "tensor_shape": list(final_tensor.shape),
             "slice_results": slice_results,
         }
 
@@ -364,6 +396,31 @@ class Runner:
         self._save_inference_output(results, run_dir / "run_results.json")
 
         return results
+
+    def _run_slice_multi_input(self, slice_info, primary_input_file, output_file, slice_dir, extra_tensors):
+        """Run ONNX inference for a multi-input slice."""
+        onnx_path = slice_info.get("path")
+        if onnx_path and not os.path.isabs(str(onnx_path)):
+            onnx_path = str((Path(slice_dir) / onnx_path).resolve())
+            if not Path(onnx_path).exists():
+                rel = slice_info.get("relative_path", "")
+                onnx_path = str((Path(slice_dir) / rel).resolve())
+
+        start_time = time.time()
+        try:
+            success, result = OnnxModels.run_inference_multi(
+                model_path=onnx_path,
+                primary_input_file=primary_input_file,
+                extra_tensors=extra_tensors,
+                output_file=output_file
+            )
+        except Exception as e:
+            success, result = False, str(e)
+
+        exec_info = {'success': success, 'method': 'onnx_multi_input', 'execution_time': time.time() - start_time}
+        if not success:
+            exec_info['error'] = result if isinstance(result, str) else 'unknown'
+        return success, result, exec_info
 
 
 if __name__ == "__main__":

@@ -39,8 +39,6 @@ def setup_parser(subparsers):
                               help='Output format of the slicing result: dirs (default), dslice, or dsperse')
     slice_parser.add_argument('--tile-size', '-t', type=int, default=None,
                               help='Tile Conv slices with spatial dims > this value (e.g., 16)')
-    slice_parser.add_argument('--no-tile', action='store_true',
-                              help='Disable tiling even if --tile-size is set')
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
@@ -185,7 +183,7 @@ def slice_model(args):
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
         output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
-        tile_size = None if getattr(args, 'no_tile', False) else getattr(args, 'tile_size', None)
+        tile_size = getattr(args, 'tile_size', None)
         logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}, tile_size={tile_size}")
         slicer.slice_model(
             output_path=output_dir,

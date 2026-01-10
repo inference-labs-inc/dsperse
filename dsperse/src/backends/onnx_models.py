@@ -34,11 +34,15 @@ class OnnxModels:
             raw_output = session.run(None, input_dict)
 
             model_outputs = session.get_outputs()
+            if not model_outputs:
+                raise ValueError("Model has no outputs")
+
             output_tensors = {}
             for i, out in enumerate(model_outputs):
                 output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
 
-            output_tensor = torch.tensor(raw_output[0], dtype=torch.float32)
+            first_output_name = model_outputs[0].name
+            output_tensor = output_tensors[first_output_name]
             result = RunnerUtils.process_final_output(output_tensor)
             result['output_tensors'] = output_tensors
             RunnerUtils.save_to_file_flattened(result['logits'], output_file)
@@ -93,11 +97,15 @@ class OnnxModels:
             raw_output = session.run(None, input_dict)
 
             model_outputs = session.get_outputs()
+            if not model_outputs:
+                raise ValueError("Model has no outputs")
+
             output_tensors = {}
             for i, out in enumerate(model_outputs):
                 output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
 
-            output_tensor = torch.tensor(raw_output[0], dtype=torch.float32)
+            first_output_name = model_outputs[0].name
+            output_tensor = output_tensors[first_output_name]
             result = RunnerUtils.process_final_output(output_tensor)
             result['output_tensors'] = output_tensors
             RunnerUtils.save_to_file_flattened(result['logits'], output_file)

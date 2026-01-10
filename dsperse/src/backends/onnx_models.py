@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 import numpy as np
 import onnxruntime as ort
@@ -15,74 +16,77 @@ class OnnxModels:
         self.device = torch.device("cpu")
 
     @staticmethod
-    def run_inference(input_file: str, model_path: str, output_file: str):
-        """
-        Run inference with the ONNX model and return the logits, probabilities, and predictions.
-        """
-        try:
-            session_options = ort.SessionOptions()
-            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-            session_options.enable_profiling = False
-            session_options.enable_mem_pattern = False
-            session_options.enable_cpu_mem_arena = False
-            session_options.enable_mem_reuse = False
-            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    def _create_session(model_path: str) -> ort.InferenceSession:
+        """Create ONNX Runtime session with deterministic settings for ZK proofs."""
+        opts = ort.SessionOptions()
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+        opts.enable_profiling = False
+        opts.enable_mem_pattern = False
+        opts.enable_cpu_mem_arena = False
+        opts.enable_mem_reuse = False
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        return ort.InferenceSession(model_path, opts)
 
-            session = ort.InferenceSession(model_path, session_options)
+    @staticmethod
+    def _process_outputs(session: ort.InferenceSession, raw_output: list, output_file: str) -> dict:
+        """Convert raw ONNX outputs to result dict with tensors."""
+        model_outputs = session.get_outputs()
+        if not model_outputs:
+            raise ValueError("Model has no outputs")
+
+        output_tensors = {}
+        for i, out in enumerate(model_outputs):
+            output_tensors[out.name] = torch.from_numpy(raw_output[i])
+
+        first_output_name = model_outputs[0].name
+        output_tensor = output_tensors[first_output_name].float()
+        result = RunnerUtils.process_final_output(output_tensor)
+        result['output_tensors'] = output_tensors
+        RunnerUtils.save_to_file_flattened(result['logits'], output_file)
+        return result
+
+    @staticmethod
+    def run_inference(input_file: str, model_path: str, output_file: str):
+        """Run inference with the ONNX model and return the logits, probabilities, and predictions."""
+        try:
+            session = OnnxModels._create_session(model_path)
             input_tensor = RunnerUtils.preprocess_input(input_file)
             input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
             raw_output = session.run(None, input_dict)
-
-            model_outputs = session.get_outputs()
-            if not model_outputs:
-                raise ValueError("Model has no outputs")
-
-            output_tensors = {}
-            for i, out in enumerate(model_outputs):
-                output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
-
-            first_output_name = model_outputs[0].name
-            output_tensor = output_tensors[first_output_name]
-            result = RunnerUtils.process_final_output(output_tensor)
-            result['output_tensors'] = output_tensors
-            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
-            return True, result
+            return True, OnnxModels._process_outputs(session, raw_output, output_file)
         except Exception as e:
-            logger.exception(f"Error during inference: {e}")
+            logger.exception("Error during inference")
             return False, str(e)
+
+    @staticmethod
+    def _parse_onnx_type(type_str: str) -> np.dtype:
+        """Parse onnxruntime type string like 'tensor(float)' to numpy dtype."""
+        type_map = {
+            'float': np.float32, 'float16': np.float16, 'double': np.float64,
+            'int8': np.int8, 'int16': np.int16, 'int32': np.int32, 'int64': np.int64,
+            'uint8': np.uint8, 'uint16': np.uint16, 'uint32': np.uint32, 'uint64': np.uint64,
+            'bool': np.bool_,
+        }
+        match = re.search(r'tensor\((\w+)\)', type_str)
+        if match:
+            return type_map.get(match.group(1), np.float32)
+        return np.float32
 
     @staticmethod
     def run_inference_multi(model_path: str, extra_tensors: dict, output_file: str):
         """Run inference with multiple named inputs. All inputs must be provided in extra_tensors."""
         try:
-            session_options = ort.SessionOptions()
-            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-            session = ort.InferenceSession(model_path, session_options)
-
-            model_inputs = session.get_inputs()
+            session = OnnxModels._create_session(model_path)
             input_dict = {}
 
-            onnx_dtype_map = {
-                1: np.float32, 2: np.uint8, 3: np.int8, 4: np.uint16,
-                5: np.int16, 6: np.int32, 7: np.int64, 9: np.bool_,
-                10: np.float16, 11: np.float64, 12: np.uint32, 13: np.uint64,
-            }
-
-            for model_input in model_inputs:
+            for model_input in session.get_inputs():
                 name = model_input.name
-
                 if name not in extra_tensors or extra_tensors[name] is None:
                     raise ValueError(f"Missing required input tensor: {name}")
 
                 t = extra_tensors[name]
-                if isinstance(t, torch.Tensor):
-                    arr = t.detach().cpu().numpy()
-                else:
-                    arr = np.asarray(t)
-
-                onnx_dtype = model_input.type.tensor_type.elem_type
-                target_dtype = onnx_dtype_map.get(onnx_dtype, np.float32)
-                arr = arr.astype(target_dtype)
+                arr = t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
+                arr = arr.astype(OnnxModels._parse_onnx_type(model_input.type))
 
                 expected_rank = len(model_input.shape)
                 if arr.ndim != expected_rank:
@@ -95,23 +99,9 @@ class OnnxModels:
                 input_dict[name] = arr
 
             raw_output = session.run(None, input_dict)
-
-            model_outputs = session.get_outputs()
-            if not model_outputs:
-                raise ValueError("Model has no outputs")
-
-            output_tensors = {}
-            for i, out in enumerate(model_outputs):
-                output_tensors[out.name] = torch.tensor(raw_output[i], dtype=torch.float32)
-
-            first_output_name = model_outputs[0].name
-            output_tensor = output_tensors[first_output_name]
-            result = RunnerUtils.process_final_output(output_tensor)
-            result['output_tensors'] = output_tensors
-            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
-            return True, result
+            return True, OnnxModels._process_outputs(session, raw_output, output_file)
         except Exception as e:
-            logger.exception(f"Error during multi-input inference: {e}")
+            logger.exception("Error during multi-input inference")
             return False, str(e)
 
     @staticmethod
@@ -128,19 +118,7 @@ class OnnxModels:
             Dictionary mapping input names to properly shaped tensors
         """
         try:
-            # Create ONNX Runtime session with all optimizations disabled
-            session_options = ort.SessionOptions()
-            session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
-            session_options.enable_profiling = False
-            session_options.enable_mem_pattern = False
-            session_options.enable_cpu_mem_arena = False
-            session_options.enable_mem_reuse = False
-            session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-            
-            # Create an ONNX Runtime session to get model metadata
-            session = ort.InferenceSession(model_path, session_options)
-
-            # Get input details from the model
+            session = OnnxModels._create_session(model_path)
             model_inputs = session.get_inputs()
             logger.info(f"Model expects {len(model_inputs)} input(s)")
 

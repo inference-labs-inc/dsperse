@@ -44,7 +44,7 @@ class OnnxModels:
             RunnerUtils.save_to_file_flattened(result['logits'], output_file)
             return True, result
         except Exception as e:
-            logger.warning(f"Error during inference: {e}")
+            logger.exception(f"Error during inference: {e}")
             return False, str(e)
 
     @staticmethod
@@ -58,6 +58,12 @@ class OnnxModels:
             model_inputs = session.get_inputs()
             input_dict = {}
 
+            onnx_dtype_map = {
+                1: np.float32, 2: np.uint8, 3: np.int8, 4: np.uint16,
+                5: np.int16, 6: np.int32, 7: np.int64, 9: np.bool_,
+                10: np.float16, 11: np.float64, 12: np.uint32, 13: np.uint64,
+            }
+
             for model_input in model_inputs:
                 name = model_input.name
 
@@ -66,9 +72,13 @@ class OnnxModels:
 
                 t = extra_tensors[name]
                 if isinstance(t, torch.Tensor):
-                    arr = t.numpy().astype(np.float32)
+                    arr = t.detach().cpu().numpy()
                 else:
-                    arr = np.array(t, dtype=np.float32)
+                    arr = np.asarray(t)
+
+                onnx_dtype = model_input.type.tensor_type.elem_type
+                target_dtype = onnx_dtype_map.get(onnx_dtype, np.float32)
+                arr = arr.astype(target_dtype)
 
                 expected_rank = len(model_input.shape)
                 if arr.ndim != expected_rank:
@@ -93,7 +103,7 @@ class OnnxModels:
             RunnerUtils.save_to_file_flattened(result['logits'], output_file)
             return True, result
         except Exception as e:
-            logger.warning(f"Error during multi-input inference: {e}")
+            logger.exception(f"Error during multi-input inference: {e}")
             return False, str(e)
 
     @staticmethod

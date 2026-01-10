@@ -60,7 +60,6 @@ class OnnxModels:
 
             for model_input in model_inputs:
                 name = model_input.name
-                shape = [d if isinstance(d, int) else 1 for d in model_input.shape]
 
                 if name not in extra_tensors or extra_tensors[name] is None:
                     raise ValueError(f"Missing required input tensor: {name}")
@@ -71,8 +70,13 @@ class OnnxModels:
                 else:
                     arr = np.array(t, dtype=np.float32)
 
-                if arr.shape != tuple(shape):
-                    raise ValueError(f"Shape mismatch for {name}: got {arr.shape}, expected {tuple(shape)}")
+                expected_rank = len(model_input.shape)
+                if arr.ndim != expected_rank:
+                    raise ValueError(f"Rank mismatch for {name}: got {arr.ndim}D, expected {expected_rank}D")
+
+                for i, (got, expected) in enumerate(zip(arr.shape, model_input.shape)):
+                    if isinstance(expected, int) and got != expected:
+                        raise ValueError(f"Dim {i} mismatch for {name}: got {got}, expected {expected}")
 
                 input_dict[name] = arr
 

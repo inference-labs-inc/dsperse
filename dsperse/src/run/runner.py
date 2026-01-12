@@ -502,7 +502,10 @@ class Runner:
                 Utils.write_input(current_tensor, str(in_file))
 
                 if len(filtered_inputs) > 1:
-                    extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs}
+                    missing = [n for n in filtered_inputs if n not in tensor_cache]
+                    if missing:
+                        raise ValueError(f"Missing input tensors for {current_slice_id}: {missing}")
+                    extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
                     ok, result, exec_info = self._run_slice_multi_input(info, out_file, slice_dir, extra_tensors)
                 else:
                     ok, result, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)

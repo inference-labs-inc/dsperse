@@ -352,6 +352,8 @@ class Runner:
         input_name = tiling["input_name"]
         output_name = tiling["output_name"]
         input_tensor = tensor_cache.get(input_name)
+        if input_tensor is None:
+            raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_idx}")
 
         split_run_dir = run_dir / f"slice_{slice_idx}_split"
         split_run_dir.mkdir(parents=True, exist_ok=True)
@@ -386,6 +388,8 @@ class Runner:
             tile_out = tile_run_dir / "output.json"
 
             tile_tensor = tensor_cache.get(tile_input_name)
+            if tile_tensor is None:
+                raise ValueError(f"Missing tile input tensor '{tile_input_name}' for slice {slice_idx}")
             Utils.write_input(tile_tensor, str(tile_in))
 
             ok, result = OnnxModels.run_inference(
@@ -415,6 +419,9 @@ class Runner:
         concat_run_dir.mkdir(parents=True, exist_ok=True)
         concat_out = concat_run_dir / "output.json"
 
+        missing = [name for name in concat_info["input_names"] if name not in tensor_cache]
+        if missing:
+            raise ValueError(f"Missing concat input tensors for slice {slice_idx}: {missing[:5]}{'...' if len(missing) > 5 else ''}")
         concat_tensors = {name: tensor_cache[name] for name in concat_info["input_names"]}
 
         concat_start = time.time()
@@ -509,6 +516,8 @@ class Runner:
             current_slice_id = nodes[current_slice_id].get("next")
 
         if final_tensor is None:
+            if slice_results:
+                logger.warning("No output tensor produced by execution chain, using input tensor")
             final_tensor = input_tensor
 
         if final_tensor.dim() == 3 and final_tensor.shape[0] == 1:

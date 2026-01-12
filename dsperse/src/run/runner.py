@@ -5,6 +5,7 @@ Runner for EzKL Circuit and ONNX Inference
 import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -335,9 +336,13 @@ class Runner:
     def _load_tiled_info(self):
         tiled_info_path = self.slices_path / "tiled" / "tiled_info.json"
         if tiled_info_path.exists():
-            with open(tiled_info_path, 'r') as f:
-                self.tiled_info = json.load(f)
-            logger.info(f"Loaded tiled info for slices: {self.tiled_info.get('tiled_indices', [])}")
+            try:
+                with open(tiled_info_path, 'r') as f:
+                    self.tiled_info = json.load(f)
+                logger.info(f"Loaded tiled info for slices: {self.tiled_info.get('tiled_indices', [])}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse tiled_info.json: {e}. Tiling disabled.")
+                self.tiled_info = None
         else:
             self.tiled_info = None
 
@@ -399,17 +404,19 @@ class Runner:
             )
             return tile_idx, tile_output_name, ok, result
 
+        cache_lock = threading.Lock()
         tile_start = time.time()
         tile_results = {}
         with ThreadPoolExecutor(max_workers=min(32, num_tiles)) as executor:
             futures = {executor.submit(run_single_tile, ti): ti for ti in tile_infos}
             for future in as_completed(futures):
-                tile_idx, tile_output_name, ok, result = future.result()
+                tile_idx, _tile_output_name, ok, result = future.result()
                 if not ok:
                     raise Exception(f"Tile {tile_idx} failed: {result}")
                 if isinstance(result, dict) and 'output_tensors' in result:
-                    for oname, tensor in result['output_tensors'].items():
-                        tensor_cache[oname] = tensor
+                    with cache_lock:
+                        for oname, tensor in result['output_tensors'].items():
+                            tensor_cache[oname] = tensor
                 tile_results[tile_idx] = result
 
         tile_time = time.time() - tile_start
@@ -470,7 +477,10 @@ class Runner:
             info = self.run_metadata["slices"][current_slice_id]
             slice_dir = self.slices_path
 
-            slice_idx = int(current_slice_id.split("_")[1]) if "_" in current_slice_id else -1
+            try:
+                slice_idx = int(current_slice_id.split("_")[1]) if "_" in current_slice_id else -1
+            except (IndexError, ValueError):
+                slice_idx = -1
 
             if slice_idx in tiled_indices:
                 if str(slice_idx) not in self.tiled_info.get("slices", {}):

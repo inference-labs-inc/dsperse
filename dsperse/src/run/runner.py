@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import torch
@@ -46,6 +47,8 @@ class Runner:
         except RuntimeError:
             self.jstprove_runner = None
             logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
+
+        self.tiled_info = None
 
 
     def run(self, input_json_path, slice_path: str, output_path: str = None, backend: str | None = None) -> dict:
@@ -327,6 +330,119 @@ class Runner:
                 save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
             self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
 
+        self._load_tiled_info()
+
+    def _load_tiled_info(self):
+        tiled_info_path = self.slices_path / "tiled" / "tiled_info.json"
+        if tiled_info_path.exists():
+            with open(tiled_info_path, 'r') as f:
+                self.tiled_info = json.load(f)
+            logger.info(f"Loaded tiled info for slices: {self.tiled_info.get('tiled_indices', [])}")
+        else:
+            self.tiled_info = None
+
+    def _run_tiled_slice(self, slice_idx: int, tensor_cache: dict, run_dir: Path) -> dict:
+        """Run a tiled slice: split → tiles (parallel) → concat."""
+        tiling = self.tiled_info["slices"][str(slice_idx)]
+        num_tiles = tiling["num_tiles"]
+        split_info = tiling["split"]
+        tile_infos = tiling["tiles"]
+        concat_info = tiling["concat"]
+
+        input_name = tiling["input_name"]
+        output_name = tiling["output_name"]
+        input_tensor = tensor_cache.get(input_name)
+
+        split_run_dir = run_dir / f"slice_{slice_idx}_split"
+        split_run_dir.mkdir(parents=True, exist_ok=True)
+        split_in = split_run_dir / "input.json"
+        split_out = split_run_dir / "output.json"
+
+        Utils.write_input(input_tensor, str(split_in))
+
+        start_time = time.time()
+        success, split_result = OnnxModels.run_inference(
+            model_path=split_info["path"],
+            input_file=split_in,
+            output_file=split_out
+        )
+        if not success:
+            raise Exception(f"Split slice failed: {split_result}")
+
+        for oname, tensor in split_result.get('output_tensors', {}).items():
+            tensor_cache[oname] = tensor
+
+        split_time = time.time() - start_time
+        logger.info(f"Split slice {slice_idx} completed in {split_time:.2f}s, produced {num_tiles} tiles")
+
+        def run_single_tile(tile_info):
+            tile_idx = tile_info["tile_idx"]
+            tile_input_name = tile_info["input_name"]
+            tile_output_name = tile_info["output_name"]
+
+            tile_run_dir = run_dir / f"slice_{slice_idx}_tile_{tile_idx}"
+            tile_run_dir.mkdir(parents=True, exist_ok=True)
+            tile_in = tile_run_dir / "input.json"
+            tile_out = tile_run_dir / "output.json"
+
+            tile_tensor = tensor_cache.get(tile_input_name)
+            Utils.write_input(tile_tensor, str(tile_in))
+
+            ok, result = OnnxModels.run_inference(
+                model_path=tile_info["path"],
+                input_file=tile_in,
+                output_file=tile_out
+            )
+            return tile_idx, tile_output_name, ok, result
+
+        tile_start = time.time()
+        tile_results = {}
+        with ThreadPoolExecutor(max_workers=min(32, num_tiles)) as executor:
+            futures = {executor.submit(run_single_tile, ti): ti for ti in tile_infos}
+            for future in as_completed(futures):
+                tile_idx, tile_output_name, ok, result = future.result()
+                if not ok:
+                    raise Exception(f"Tile {tile_idx} failed: {result}")
+                if isinstance(result, dict) and 'output_tensors' in result:
+                    for oname, tensor in result['output_tensors'].items():
+                        tensor_cache[oname] = tensor
+                tile_results[tile_idx] = result
+
+        tile_time = time.time() - tile_start
+        logger.info(f"All {num_tiles} tiles completed in {tile_time:.2f}s ({tile_time/num_tiles*1000:.1f}ms avg)")
+
+        concat_run_dir = run_dir / f"slice_{slice_idx}_concat"
+        concat_run_dir.mkdir(parents=True, exist_ok=True)
+        concat_out = concat_run_dir / "output.json"
+
+        concat_tensors = {name: tensor_cache[name] for name in concat_info["input_names"]}
+
+        concat_start = time.time()
+        success, concat_result = OnnxModels.run_inference_multi(
+            model_path=concat_info["path"],
+            extra_tensors=concat_tensors,
+            output_file=concat_out
+        )
+        if not success:
+            raise Exception(f"Concat slice failed: {concat_result}")
+
+        if isinstance(concat_result, dict) and 'output_tensors' in concat_result:
+            for oname, tensor in concat_result['output_tensors'].items():
+                tensor_cache[oname] = tensor
+        concat_time = time.time() - concat_start
+        logger.info(f"Concat slice {slice_idx} completed in {concat_time:.2f}s")
+
+        total_time = split_time + tile_time + concat_time
+        return {
+            'success': True,
+            'method': 'tiled_parallel',
+            'execution_time': total_time,
+            'num_tiles': num_tiles,
+            'split_time': split_time,
+            'tile_time': tile_time,
+            'concat_time': concat_time,
+        }
+
 
     def _run(self, output_path=None, input_json_path=None):
         head, nodes = RunnerAnalyzer.get_execution_chain(self.run_metadata)
@@ -337,6 +453,8 @@ class Runner:
         model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
         tensor_cache = {model_input_name: input_tensor}
 
+        tiled_indices = set(self.tiled_info.get("tiled_indices", [])) if self.tiled_info else set()
+
         current_slice_id = head
         slice_results = {}
         final_tensor = None
@@ -344,33 +462,44 @@ class Runner:
         while current_slice_id:
             info = self.run_metadata["slices"][current_slice_id]
             slice_dir = self.slices_path
-            in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
 
-            filtered_inputs = info.get("dependencies", {}).get("filtered_inputs", [])
-            output_names = info.get("dependencies", {}).get("output", [])
+            slice_idx = int(current_slice_id.split("_")[1]) if "_" in current_slice_id else -1
 
-            input_name = filtered_inputs[0] if filtered_inputs else model_input_name
-            current_tensor = tensor_cache.get(input_name, input_tensor)
-            Utils.write_input(current_tensor, str(in_file))
-
-            if len(filtered_inputs) > 1:
-                extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs}
-                ok, result, exec_info = self._run_slice_multi_input(info, out_file, slice_dir, extra_tensors)
+            if slice_idx in tiled_indices:
+                logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
+                exec_info = self._run_tiled_slice(slice_idx, tensor_cache, run_dir)
+                ok = exec_info.get('success', False)
+                output_names = info.get("dependencies", {}).get("output", [])
+                if ok and output_names:
+                    final_tensor = tensor_cache.get(output_names[0])
             else:
-                ok, result, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)
+                in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
 
-            if ok and result:
-                if isinstance(result, dict) and 'output_tensors' in result:
-                    for oname, tensor in result['output_tensors'].items():
-                        tensor_cache[oname] = tensor
-                    first_output = list(result['output_tensors'].values())[0] if result['output_tensors'] else None
-                    final_tensor = first_output if first_output is not None else result.get('logits')
+                filtered_inputs = info.get("dependencies", {}).get("filtered_inputs", [])
+                output_names = info.get("dependencies", {}).get("output", [])
+
+                input_name = filtered_inputs[0] if filtered_inputs else model_input_name
+                current_tensor = tensor_cache.get(input_name, input_tensor)
+                Utils.write_input(current_tensor, str(in_file))
+
+                if len(filtered_inputs) > 1:
+                    extra_tensors = {name: tensor_cache.get(name) for name in filtered_inputs}
+                    ok, result, exec_info = self._run_slice_multi_input(info, out_file, slice_dir, extra_tensors)
                 else:
-                    out_tensor = result.get('logits', result) if isinstance(result, dict) else result
-                    if isinstance(out_tensor, torch.Tensor):
-                        for oname in output_names:
-                            tensor_cache[oname] = out_tensor
-                        final_tensor = out_tensor
+                    ok, result, exec_info = RunnerUtils.execute_slice(self, nodes[current_slice_id], info, in_file, out_file, slice_dir)
+
+                if ok and result:
+                    if isinstance(result, dict) and 'output_tensors' in result:
+                        for oname, tensor in result['output_tensors'].items():
+                            tensor_cache[oname] = tensor
+                        first_output = list(result['output_tensors'].values())[0] if result['output_tensors'] else None
+                        final_tensor = first_output if first_output is not None else result.get('logits')
+                    else:
+                        out_tensor = result.get('logits', result) if isinstance(result, dict) else result
+                        if isinstance(out_tensor, torch.Tensor):
+                            for oname in output_names:
+                                tensor_cache[oname] = out_tensor
+                            final_tensor = out_tensor
 
             slice_results[current_slice_id] = exec_info
             if not ok:

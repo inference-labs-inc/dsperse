@@ -466,6 +466,8 @@ class Runner:
             slice_idx = int(current_slice_id.split("_")[1]) if "_" in current_slice_id else -1
 
             if slice_idx in tiled_indices:
+                if str(slice_idx) not in self.tiled_info.get("slices", {}):
+                    raise ValueError(f"Slice {slice_idx} in tiled_indices but missing from tiled_info['slices']")
                 logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
                 exec_info = self._run_tiled_slice(slice_idx, tensor_cache, run_dir)
                 ok = exec_info.get('success', False)

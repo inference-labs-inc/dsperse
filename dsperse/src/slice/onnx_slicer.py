@@ -60,9 +60,10 @@ class OnnxSlicer:
         return model
 
     @staticmethod
-    def isolate_conv(slice_points: List[int], model_metadata: Dict) -> List[int]:
+    def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
         """
-        Adjust slice points to isolate convolution layers by slicing before and after them.
+        Adjust slice points to maximize slices containing only JSTprove-supported operations.
+        Slices at transitions between supported and unsupported operations.
 
         Args:
             slice_points: Current list of node indices for slicing.
@@ -72,18 +73,34 @@ class OnnxSlicer:
             List[int]: Updated list of slice points.
         """
         updated_points = set(slice_points)
-        nodes = model_metadata.get("nodes", {})
+        nodes_dict = model_metadata.get("nodes", {})
 
-        for node_name, node_info in nodes.items():
-            if node_info.get("node_type") in ["Conv", "ConvTranspose", "Gemm", "MatMul"]:
-                index = node_info.get("index")
-                # Slice before the convolution
-                updated_points.add(index)
-                # Slice after the convolution
-                updated_points.add(index + 1)
+        # JSTprove supported operations
+        supported_ops = {
+            "Add", "Clip", "BatchNormalization", "Div", "Sub",
+            "Mul", "Constant", "Conv", "Flatten", "Gemm",
+            "MaxPool", "Max", "Min", "ReLU", "Relu", "Reshape"
+        }
+
+        # Sort nodes by index to ensure sequential traversal
+        sorted_nodes = sorted(nodes_dict.values(), key=lambda x: x.get("index", 0))
+
+        def is_supported(node):
+            return node.get("node_type") in supported_ops
+
+        for i in range(len(sorted_nodes) - 1):
+            curr_node = sorted_nodes[i]
+            next_node = sorted_nodes[i+1]
+
+            curr_supported = is_supported(curr_node)
+            next_supported = is_supported(next_node)
+
+            if curr_supported != next_supported:
+                # Transition point: slice before the next node to separate supported/unsupported
+                updated_points.add(next_node.get("index"))
 
         # Ensure we don't slice past the last node index
-        max_idx = max((n["index"] for n in nodes.values()), default=0)
+        max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
     def determine_slice_points(self, model_metadata) -> List[int]:
@@ -102,14 +119,13 @@ class OnnxSlicer:
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 slice_points.append(node_info["index"])
 
-        #isolate conv
+        # Maximize clean slices for JSTprove
         print(f"Original slice points: {slice_points}")
-        slice_points = self.isolate_conv(slice_points, model_metadata)
-
+        slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
         # Sort slice points by index
         slice_points.sort()
 
-        print(f"Isolated slice points: {slice_points}")
+        print(f"jstprove optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points

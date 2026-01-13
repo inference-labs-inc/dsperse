@@ -140,7 +140,7 @@ def full_run(args):
         # Call existing slice command; keep its logic and interactivity.
         # For built-ins, we point the slicer to the built-in model file but output to ~/dsperse/{name}/slices
         model_metadata_path = os.path.join(analysis_dir, 'model_metadata.json')
-        slice_args = Namespace(model_dir=args.model_dir, output_dir=default_slices_dir, save_file=model_metadata_path)
+        slice_args = Namespace(model_dir=args.model_dir, output_dir=default_slices_dir, save_file=model_metadata_path, output_type='dirs')
         print(f"{Fore.CYAN}Step 1/5: Slicing model...{Style.RESET_ALL}")
         slice_model(slice_args)
         slices_dir = default_slices_dir
@@ -148,8 +148,9 @@ def full_run(args):
         print(f"{Fore.YELLOW}Skipping slicing step, using existing slices at: {slices_dir}{Style.RESET_ALL}")
 
     # 3) Compile (circuitize) with calibration input
-    compile_args = Namespace(slices_path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None))
-    print(f"{Fore.CYAN}Step 2/5: Compiling slices (EZKL circuitization)...{Style.RESET_ALL}")
+    # User requested: compilation should just be jstprove.
+    compile_args = Namespace(path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None), backend='jstprove')
+    print(f"{Fore.CYAN}Step 2/5: Compiling slices (JSTprove circuitization)...{Style.RESET_ALL}")
     compile_model(compile_args)
 
     # 4) Run inference
@@ -159,7 +160,8 @@ def full_run(args):
     except Exception:
         pass
     inference_output_path = os.path.join(run_root_dir, 'inference_results.json')
-    run_args = Namespace(slices_dir=slices_dir, run_metadata_path=None, input_file=args.input_file, output_file=inference_output_path)
+    # run_inference expects 'path' for slices, and doesn't use output_file directly for run_results.json anymore (it saves to run_results.json in the run dir)
+    run_args = Namespace(path=slices_dir, run_metadata_path=None, input_file=args.input_file, output_file=inference_output_path, force_backend=None)
     print(f"{Fore.CYAN}Step 3/5: Running inference over slices...{Style.RESET_ALL}")
     run_inference(run_args)
 
@@ -170,14 +172,14 @@ def full_run(args):
         latest_run_dir = run_root_dir
 
     # 5) Generate proof
-    proof_output_path = os.path.join(latest_run_dir, 'proof_results.json')
-    prove_args = Namespace(run_dir=latest_run_dir, output_file=proof_output_path)
+    # run_proof expects run_dir and slices_path
+    prove_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None)
     print(f"{Fore.CYAN}Step 4/5: Generating proof...{Style.RESET_ALL}")
     run_proof(prove_args)
 
     # 6) Verify proof
-    verification_output_path = os.path.join(run_root_dir, 'verification_results.json')
-    verify_args = Namespace(run_dir=latest_run_dir, output_file=verification_output_path)
+    # verify_proof expects run_dir and slices_path
+    verify_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None)
     print(f"{Fore.CYAN}Step 5/5: Verifying proof...{Style.RESET_ALL}")
     verify_proof(verify_args)
 

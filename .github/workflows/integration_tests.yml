@@ -14,23 +14,34 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/share/swift
+          sudo docker image prune --all --force
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: '3.12'
 
       - name: Install dependencies using install.sh
         run: |
           chmod +x install.sh
+          # Tell install.sh to use the python from the uv environment
+          export PYTHON_BIN="$(uv run python -c 'import sys; print(sys.executable)')"
           ./install.sh -n
+          # Ensure tools installed by install.sh are in PATH for subsequent steps
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Run Integration Tests
         run: uv run pytest tests/integration/test_full_run.py

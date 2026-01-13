@@ -28,6 +28,14 @@ def _check_layers(slices_path, layers_str):
     if not layers_str:
         return None
         
+    # Support both simple layer lists (e.g., "3,20-22") and backend-annotated specs
+    # like "0,2:jstprove;3-4:ezkl".
+    if ':' in layers_str or ';' in layers_str:
+        # For mixed backend specs, we don't validate indices here as the parser
+        # in _check_layers only understands simple comma-separated numbers/ranges.
+        # The Compiler will handle invalid indices by logging warnings.
+        return layers_str
+
     # Parse the layers string into a list of indices
     layer_indices = []
     parts = [p.strip() for p in layers_str.split(',')]

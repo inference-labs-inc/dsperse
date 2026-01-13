@@ -407,14 +407,21 @@ class Compiler:
             logger.info(f"Compiling slice {idx}...")
 
             # Decide which backends to compile for this slice
-            backends_to_build: list[str]
+            backends_to_build: list[str] = []
             if idx in self.layer_backends:
-                backends_to_build = [self.layer_backends[idx]]
-            elif self.default_backend in {"jstprove", "ezkl"} and not self.use_fallback:
-                backends_to_build = [self.default_backend]
-            else:
-                # Default behavior: try both
-                backends_to_build = ["jstprove", "ezkl"]
+                backends_to_build.append(self.layer_backends[idx])
+            
+            if idx in self.default_layer_indices:
+                for b in ["jstprove", "ezkl"]:
+                    if b not in backends_to_build:
+                        backends_to_build.append(b)
+            
+            if not backends_to_build:
+                if self.default_backend in {"jstprove", "ezkl"} and not self.use_fallback:
+                    backends_to_build = [self.default_backend]
+                else:
+                    # Default behavior: try both
+                    backends_to_build = ["jstprove", "ezkl"]
 
             successful_backends: list[str] = []
 
@@ -522,6 +529,10 @@ class Compiler:
             # Populate per-layer backend mapping (and collect default indices from bare groups)
             self._parse_layer_backends(layers)
             layer_indices = sorted(set(self.layer_backends.keys()) | set(self.default_layer_indices))
+            # Enable mixed mode and force using fallback logic to build all requested backends
+            self.use_fallback = True
+            # Re-initialize backend flags based on the updated self.use_fallback
+            self.default_backend = None
         else:
             layer_indices = CompilerUtils.parse_layers(layers) if layers else None
 
@@ -569,5 +580,5 @@ if __name__ == "__main__":
     input_file = os.path.join(model_dir, "input.json")
 
     compiler = Compiler()
-    result = compiler.compile(model_path=slices_dir, input_file=None, layers="0;2:jstprove;3-4:ezkl")
+    result = compiler.compile(model_path=slices_dir, input_file=input_file)#, layers="0-4:ezkl")
     print(f"Compilation finished.")

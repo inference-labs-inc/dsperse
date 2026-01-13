@@ -59,6 +59,33 @@ class OnnxSlicer:
             fix_vi(vv)
         return model
 
+    @staticmethod
+    def isolate_conv(slice_points: List[int], model_metadata: Dict) -> List[int]:
+        """
+        Adjust slice points to isolate convolution layers by slicing before and after them.
+
+        Args:
+            slice_points: Current list of node indices for slicing.
+            model_metadata: The model analysis metadata containing node information.
+
+        Returns:
+            List[int]: Updated list of slice points.
+        """
+        updated_points = set(slice_points)
+        nodes = model_metadata.get("nodes", {})
+
+        for node_name, node_info in nodes.items():
+            if node_info.get("node_type") in ["Conv", "ConvTranspose", "Gemm", "MatMul"]:
+                index = node_info.get("index")
+                # Slice before the convolution
+                updated_points.add(index)
+                # Slice after the convolution
+                updated_points.add(index + 1)
+
+        # Ensure we don't slice past the last node index
+        max_idx = max((n["index"] for n in nodes.values()), default=0)
+        return [p for p in updated_points if p <= max_idx]
+
     def determine_slice_points(self, model_metadata) -> List[int]:
         """
         Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
@@ -75,8 +102,14 @@ class OnnxSlicer:
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 slice_points.append(node_info["index"])
 
+        #isolate conv
+        print(f"Original slice points: {slice_points}")
+        slice_points = self.isolate_conv(slice_points, model_metadata)
+
         # Sort slice points by index
         slice_points.sort()
+
+        print(f"Isolated slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points
@@ -543,7 +576,6 @@ class OnnxSlicer:
                 logger.info(f"Tiled {len(tiled_info)} slices with tile_size={tile_size}")
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
-
         return slices_paths
 
 

@@ -82,7 +82,7 @@ class Slicer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2 # Change this to test different models
+    model_choice = 8 # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -92,7 +92,8 @@ if __name__ == "__main__":
         4: "../../models/age",
         5: "../../models/version",
         6: "../../models/bert",
-        7: "../../models/roberta"
+        7: "../../models/roberta",
+        8: "../../models/yolov8"
     }
 
     # Resolve paths

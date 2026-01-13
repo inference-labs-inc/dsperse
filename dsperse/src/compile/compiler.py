@@ -234,9 +234,15 @@ class Compiler:
                     logger.info(f"Slice {idx}: {try_backend_name} compilation succeeded")
                     break
                 else:
-                    logger.warning(f"Slice {idx}: {try_backend_name} compilation failed, trying fallback...")
+                    if self.use_fallback:
+                        logger.warning(f"Slice {idx}: {try_backend_name} compilation failed, trying fallback...")
+                    else:
+                        logger.error(f"Slice {idx}: {try_backend_name} compilation failed.")
             except Exception as e:
-                logger.warning(f"Slice {idx}: {try_backend_name} error: {e}, trying fallback...")
+                if self.use_fallback:
+                    logger.warning(f"Slice {idx}: {try_backend_name} error: {e}, trying fallback...")
+                else:
+                    logger.error(f"Slice {idx}: {try_backend_name} error: {e}")
                 if not self.use_fallback:
                     raise
 
@@ -371,9 +377,15 @@ class Compiler:
                     logger.info(f"Compilation completed with {try_backend_name}. Output saved to {circuit_folder}")
                     return circuit_folder
                 else:
-                    logger.warning(f"{try_backend_name} compilation failed, trying fallback...")
+                    if self.use_fallback:
+                        logger.warning(f"{try_backend_name} compilation failed, trying fallback...")
+                    else:
+                        logger.error(f"{try_backend_name} compilation failed.")
             except Exception as e:
-                logger.warning(f"{try_backend_name} error: {e}, trying fallback...")
+                if self.use_fallback:
+                    logger.warning(f"{try_backend_name} error: {e}, trying fallback...")
+                else:
+                    logger.error(f"{try_backend_name} error: {e}")
                 if not self.use_fallback:
                     raise
 
@@ -525,7 +537,12 @@ class Compiler:
         # Support both simple layer lists (e.g., "3,20-22") and backend-annotated specs
         # like "0,2:jstprove;3-4:ezkl". For annotated specs, populate self.layer_backends
         # and derive indices from it to avoid parse warnings.
-        if layers and (":" in layers or ";" in layers):
+        if layers and layers.lower() in ["jstprove", "ezkl"]:
+            # Simple backend name - use only this backend for all layers
+            self.default_backend = layers.lower()
+            self.use_fallback = False
+            layer_indices = None
+        elif layers and (":" in layers or ";" in layers):
             # Populate per-layer backend mapping (and collect default indices from bare groups)
             self._parse_layer_backends(layers)
             layer_indices = sorted(set(self.layer_backends.keys()) | set(self.default_layer_indices))
@@ -539,8 +556,11 @@ class Compiler:
         if layer_indices:
             logger.info(f"Will compile only layers with indices: {layer_indices}")
         else:
-            # No layers specified: compile ALL layers with default fallback
-            logger.info("No layers specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx).")
+            # No layers specified: compile ALL layers
+            if self.default_backend and not self.use_fallback:
+                logger.info(f"No layers specified. Will compile all layers using only {self.default_backend}.")
+            else:
+                logger.info("No layers specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx).")
 
         is_sliced, slice_path, type = CompilerUtils.is_sliced_model(model_path)
         if is_sliced:
@@ -564,14 +584,17 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 8  # Change this to test different models
 
     base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet",
-        4: "../models/age",
-        5: "../models/version"
+        1: "../../models/doom",
+        2: "../../models/net",
+        3: "../../models/resnet",
+        4: "../../models/age",
+        5: "../../models/version",
+        6: "../../models/bert",
+        7: "../../models/roberta",
+        8: "../../models/yolov8"
     }
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = abs_path
@@ -580,5 +603,5 @@ if __name__ == "__main__":
     input_file = os.path.join(model_dir, "input.json")
 
     compiler = Compiler()
-    result = compiler.compile(model_path=slices_dir, input_file=input_file)#, layers="0-4:ezkl")
+    result = compiler.compile(model_path=slices_dir, layers='jstprove')#, input_file=input_file, layers="0-4:ezkl")
     print(f"Compilation finished.")

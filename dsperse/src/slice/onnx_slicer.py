@@ -60,7 +60,7 @@ class OnnxSlicer:
         return model
 
     @staticmethod
-    def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
+    def maximize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
         """
         Adjust slice points to maximize slices containing only JSTprove-supported operations.
         Slices at transitions between supported and unsupported operations.
@@ -121,7 +121,7 @@ class OnnxSlicer:
 
         # Maximize clean slices for JSTprove
         print(f"Original slice points: {slice_points}")
-        slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
+        slice_points = self.maximize_jstprove_slices(slice_points, model_metadata)
         # Sort slice points by index
         slice_points.sort()
 

@@ -37,9 +37,23 @@ def check_ezkl():
     """Check if EZKL is installed and get version"""
     ezkl_path = shutil.which("ezkl")
     if not ezkl_path:
-        if EZKL_PATH.exists():
-            ezkl_path = str(EZKL_PATH)
-        else:
+        # Check common installation paths
+        home = Path.home()
+        potential_paths = [
+            home / ".ezkl" / "ezkl",
+            home / ".ezkl" / "bin" / "ezkl",
+            home / ".config" / ".ezkl" / "ezkl",
+            home / ".config" / ".ezkl" / "bin" / "ezkl",
+            home / ".config" / ".ezkl",
+            home / ".local" / "bin" / "ezkl",
+            home / ".cargo" / "bin" / "ezkl",
+        ]
+        for p in potential_paths:
+            if p.exists() and os.access(p, os.X_OK):
+                ezkl_path = str(p)
+                break
+        
+        if not ezkl_path:
             return None, None
 
     try:
@@ -69,8 +83,11 @@ def install_ezkl_official():
 
     if result.returncode == 0:
         logger.info("✓ EZKL installed via official script")
-        if EZKL_PATH.parent.exists():
-            os.environ["PATH"] = f"{EZKL_PATH.parent}:{os.environ.get('PATH', '')}"
+        # Try to find where it went and add to PATH
+        ezkl_path, _ = check_ezkl()
+        if ezkl_path:
+            parent = str(Path(ezkl_path).parent)
+            os.environ["PATH"] = f"{parent}:{os.environ.get('PATH', '')}"
         return True
     else:
         logger.error("Failed to install EZKL via the official script")

@@ -35,7 +35,12 @@ class Runner:
         # Optional: force a specific backend at runtime ('jstprove' | 'ezkl' | 'onnx')
         self.force_backend: str | None = None
 
-        self.ezkl_runner = EZKL()
+        try:
+            self.ezkl_runner = EZKL()
+        except RuntimeError:
+            self.ezkl_runner = None
+            logger.warning("EZKL CLI not available. EZKL backend will be disabled.")
+
         try:
             self.jstprove_runner = JSTprove()
         except RuntimeError:
@@ -128,6 +133,14 @@ class Runner:
         Accepts paths possibly formatted as `slice_#/payload/...` or `payload/...` and resolves them
         under the provided `slice_dir` if necessary.
         """
+        if self.ezkl_runner is None:
+            return False, "EZKL CLI not available", {
+                'success': False,
+                'method': 'ezkl_gen_witness',
+                'error': 'EZKL CLI not available',
+                'attempted_ezkl': True
+            }
+
         def _resolve_rel_path(p: str, base_dir: Path) -> str:
             path = str((base_dir / p).resolve())
             if not Path(path).exists():

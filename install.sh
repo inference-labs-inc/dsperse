@@ -136,46 +136,57 @@ install_lookup_tables() {
 
 # Ensure EZKL installed
 ensure_ezkl() {
+  # 1. Try to detect if already on PATH
   if command -v ezkl >/dev/null 2>&1; then
-    info "EZKL already installed: $(command -v ezkl)"
+    local bin_path
+    bin_path=$(command -v ezkl)
+    info "EZKL already installed: $bin_path"
+    if [[ -n "${GITHUB_PATH:-}" ]]; then
+      echo "$(dirname "$bin_path")" >> "$GITHUB_PATH"
+    fi
     ezkl --version || true
     return 0
   fi
 
-  # Install only from the official source
+  # 2. Check common installation paths before trying to install
+  local potential_paths=(
+    "$HOME/.ezkl/ezkl"
+    "$HOME/.ezkl/bin/ezkl"
+    "$HOME/.config/.ezkl/ezkl"
+    "$HOME/.config/.ezkl/bin/ezkl"
+    "$HOME/.config/.ezkl"
+    "$HOME/.local/bin/ezkl"
+    "$HOME/.cargo/bin/ezkl"
+  )
+
+  for p in "${potential_paths[@]}"; do
+    if [[ -x "$p" ]]; then
+      info "Found EZKL at $p. Adding to PATH."
+      export PATH="$(dirname "$p"):$PATH"
+      return 0
+    fi
+  done
+
+  # 3. Install from official source
   info "Installing EZKL from the official source ..."
   if curl -fsSL https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash; then
-    info "✓ EZKL installed via official script"
+    info "✓ EZKL installation script completed."
+    
+    # 4. Try to find it again after installation
+    for p in "${potential_paths[@]}"; do
+      if [[ -x "$p" ]]; then
+        info "✓ EZKL detected after installation at $p"
+        export PATH="$(dirname "$p"):$PATH"
+        # If in GitHub Actions, also update GITHUB_PATH
+        if [[ -n "${GITHUB_PATH:-}" ]]; then
+          echo "$(dirname "$p")" >> "$GITHUB_PATH"
+        fi
+        ezkl --version || true
+        return 0
+      fi
+    done
   else
-    err "Failed to install EZKL via the official script. Please see https://github.com/zkonduit/ezkl for manual installation instructions."
-  fi
-
-  # Fallback: try ezkl install script if Linux or previous methods failed
-  if ! command -v ezkl >/dev/null 2>&1; then
-    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ -f /etc/os-release ]]; then
-      info "Trying EZKL installation via official install script..."
-      if curl -s https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash; then
-        info "✓ EZKL installed via official script"
-        # Ensure cargo bin in PATH for current session
-        export PATH="$HOME/.cargo/bin:$PATH"
-      else
-        warn "EZKL install script failed"
-      fi
-    fi
-  fi
-
-  # Fallback: try ezkl install script if Linux or previous methods failed
-  if ! command -v ezkl >/dev/null 2>&1; then
-    if [[ "$OSTYPE" == "linux-gnu"* ]] || [[ -f /etc/os-release ]]; then
-      info "Trying EZKL installation via official install script..."
-      if curl -s https://raw.githubusercontent.com/zkonduit/ezkl/main/install_ezkl_cli.sh | bash; then
-        info "✓ EZKL installed via official script"
-        # Ensure cargo bin in PATH for current session
-        export PATH="$HOME/.cargo/bin:$PATH"
-      else
-        warn "EZKL install script failed"
-      fi
-    fi
+    err "Failed to install EZKL via the official script."
   fi
 
   if command -v ezkl >/dev/null 2>&1; then
@@ -259,7 +270,12 @@ install_jstprove() {
   export PATH="$HOME/.local/bin:$PATH"
   
   if command -v jst >/dev/null 2>&1; then
-    info "JSTprove already installed: $(command -v jst)"
+    local bin_path
+    bin_path=$(command -v jst)
+    info "JSTprove already installed: $bin_path"
+    if [[ -n "${GITHUB_PATH:-}" ]]; then
+      echo "$(dirname "$bin_path")" >> "$GITHUB_PATH"
+    fi
     jst --version 2>/dev/null || jst --help 2>/dev/null | head -n1 || true
     if [[ "$INTERACTIVE" == true ]] && confirm "Reinstall/upgrade JSTprove?"; then
       :
@@ -276,6 +292,9 @@ install_jstprove() {
       info "JSTprove installed successfully via uv"
       # Add uv tool bin to PATH
       export PATH="$HOME/.local/bin:$PATH"
+      if [[ -n "${GITHUB_PATH:-}" ]]; then
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      fi
       info "Added $HOME/.local/bin to PATH for JSTprove"
     else
       warn "Failed to install JSTprove via uv. Trying pip..."

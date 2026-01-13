@@ -22,11 +22,17 @@ class Prover:
         """
         Initialize the prover.
         """
-        self.ezkl_runner = EZKL()
+        try:
+            self.ezkl_runner = EZKL()
+        except RuntimeError:
+            self.ezkl_runner = None
+            logger.warning("EZKL CLI not available. EZKL backend will be disabled.")
+
         try:
             self.jstprove_runner = JSTprove()
         except Exception:
             self.jstprove_runner = None
+            logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
     # ------------------------ Small helpers (no behavior change) ------------------------
     @staticmethod

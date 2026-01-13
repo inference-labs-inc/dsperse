@@ -39,10 +39,6 @@ jobs:
           # Tell install.sh to use the python from the uv environment
           export PYTHON_BIN="$(uv run python -c 'import sys; print(sys.executable)')"
           ./install.sh -n
-          # Ensure tools installed by install.sh are in PATH for subsequent steps
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "$HOME/.config/.ezkl/bin" >> $GITHUB_PATH
 
       - name: Run Integration Tests
         run: uv run pytest tests/integration/test_full_run.py

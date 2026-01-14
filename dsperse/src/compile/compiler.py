@@ -299,6 +299,7 @@ class Compiler:
 
         compatible, unsupported_ops = JSTprove.is_compatible(slice_path)
         if not compatible:
+            print(f"[jstprove] Slice {idx}: SKIP - unsupported ops {unsupported_ops}")
             logger.info(f"Slice {idx}: Skipping JSTprove - unsupported ops: {unsupported_ops}")
             raise RuntimeError(f"JSTprove incompatible: unsupported ops {unsupported_ops}")
 
@@ -463,6 +464,13 @@ class Compiler:
 
             for be in backends_to_build:
                 try:
+                    slice_path = slice_data.get('path') or os.path.join(base_path, slice_data.get('relative_path', ''))
+                    slice_name = os.path.basename(os.path.dirname(os.path.dirname(slice_path))) if slice_path else f"slice_{idx}"
+                    is_tile = tiling_info is not None
+                    tile_info_str = f" (tiled: {tiling_info.get('num_tiles')} tiles)" if is_tile else ""
+
+                    print(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: compiling...")
+                    compile_start = time.time()
                     if be == "jstprove":
                         success, file_paths = self._compile_jstprove_slice(idx, slice_data, base_path)
                         version = self._jstprove.get_version() if hasattr(self._jstprove, 'get_version') and self._jstprove else None
@@ -472,6 +480,11 @@ class Compiler:
                     else:
                         logger.warning(f"Unknown backend '{be}' requested for slice {idx}, skipping")
                         continue
+                    compile_time = time.time() - compile_start
+
+                    status = "OK" if success else "FAILED"
+                    print(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: {status} in {compile_time:.2f}s")
+                    logger.info(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: {status} in {compile_time:.2f}s")
 
                     compiled_count += 1
 

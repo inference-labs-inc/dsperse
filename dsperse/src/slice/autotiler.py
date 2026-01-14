@@ -566,9 +566,30 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
         if not onnx_path.exists():
             continue
 
+        m = onnx.load(str(onnx_path))
+        ops = {n.op_type for n in m.graph.node}
+        num_inputs = len(m.graph.input)
+        dims = [d.dim_value for d in m.graph.input[0].type.tensor_type.shape.dim] if m.graph.input else []
+        print(f"Slice {i}: inputs={num_inputs}, ops={ops}, dims={dims}")
+
+        if not is_tileable(m):
+            non_elem = ops - {'Conv'} - ELEMENTWISE_OPS
+            print(f"  -> Not tileable: num_inputs={num_inputs}, has_conv={'Conv' in ops}, non_elementwise={non_elem}")
+            continue
+
+        if len(dims) == 4:
+            h, w = dims[2], dims[3]
+            if h <= tile_size:
+                print(f"  -> Spatial dim {h} <= tile_size {tile_size}, skipping")
+                continue
+            if h != w:
+                print(f"  -> Non-square spatial dims {h}x{w}, skipping")
+                continue
+
         info = autotile_slice(i, onnx_path, tile_size, tiled_dir)
         if info:
             tiled_info[i] = info
+            print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
 
     if tiled_info:
         info_path = tiled_dir / "tiled_info.json"

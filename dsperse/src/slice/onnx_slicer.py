@@ -4,6 +4,7 @@ import onnx
 from onnx import shape_inference
 import logging
 from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
+from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from typing import List, Dict
 from dsperse.src.utils.utils import Utils
 from dsperse.src.slice.autotiler import autotile_slices
@@ -75,18 +76,10 @@ class OnnxSlicer:
         updated_points = set(slice_points)
         nodes_dict = model_metadata.get("nodes", {})
 
-        # JSTprove supported operations
-        supported_ops = {
-            "Add", "Clip", "BatchNormalization", "Div", "Sub",
-            "Mul", "Constant", "Conv", "Flatten", "Gemm",
-            "MaxPool", "Max", "Min", "ReLU", "Relu", "Reshape"
-        }
-
-        # Sort nodes by index to ensure sequential traversal
         sorted_nodes = sorted(nodes_dict.values(), key=lambda x: x.get("index", 0))
 
         def is_supported(node):
-            return node.get("node_type") in supported_ops
+            return node.get("node_type") in JSTPROVE_SUPPORTED_OPS
 
         for i in range(len(sorted_nodes) - 1):
             curr_node = sorted_nodes[i]

@@ -293,11 +293,18 @@ class Compiler:
 
         Returns: (success, file_paths)
         """
+        from dsperse.src.backends.jstprove import JSTprove
+
+        slice_path = self._resolve_slice_path(slice_data, base_path)
+
+        compatible, unsupported_ops = JSTprove.is_compatible(slice_path)
+        if not compatible:
+            logger.info(f"Slice {idx}: Skipping JSTprove - unsupported ops: {unsupported_ops}")
+            raise RuntimeError(f"JSTprove incompatible: unsupported ops {unsupported_ops}")
+
         backend = self._get_jstprove()
         if backend is None:
             raise RuntimeError("JSTprove backend is not available")
-
-        slice_path = self._resolve_slice_path(slice_data, base_path)
         backend_dir = "jstprove"
         slice_output_path = os.path.join(os.path.dirname(slice_path), backend_dir)
 
@@ -415,6 +422,23 @@ class Compiler:
                 logger.info(f"Skipping ZK compilation for slice {idx} (not in specified layers) - will use pure ONNX at runtime")
                 skipped_count += 1
                 continue
+
+            # Check if this slice has been tiled
+            tiling_info = slice_data.get('tiling')
+            if tiling_info:
+                # For tiled slices, compile just one representative tile (tile_0)
+                # All tiles are identical, so one circuit works for all
+                tiles = tiling_info.get('tiles', [])
+                if tiles:
+                    tile_0 = tiles[0]
+                    tile_path = tile_0.get('path')
+                    if tile_path and os.path.exists(tile_path):
+                        logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
+                        # Create a synthetic slice_data for the tile
+                        tile_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
+                        slice_data = tile_slice_data
+                    else:
+                        logger.warning(f"Slice {idx}: Tiled but tile_0 path not found, compiling original slice")
 
             logger.info(f"Compiling slice {idx}...")
 

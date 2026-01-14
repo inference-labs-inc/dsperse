@@ -41,11 +41,11 @@ def setup_parser(subparsers):
                               help='Tile Conv slices with spatial dims > this value (e.g., 16)')
 
     # Sub-commands under slice
-    sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
+    sub = slice_parser.add_subparsers(dest='slice_subcommand', required=False, help='Slice sub-commands')
     convert_parser = sub.add_parser('convert', aliases=['c'], help='Convert between .dsperse/.dslice and directory layouts')
     convert_parser.set_defaults(slice_subcommand='convert')
     convert_parser.add_argument('--input', '-i', dest='input_path', help='Input path (.dsperse/.dslice or directory)')
-    convert_parser.add_argument('--to', '--output-type', '--type', '-t', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
+    convert_parser.add_argument('--to', '--output-type', '--type', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
                                 help='Desired output type')
     convert_parser.add_argument('--output', '-o', dest='output_path', help='Output path (directory or archive)')
     convert_parser.add_argument('--expand-slices', action='store_true',

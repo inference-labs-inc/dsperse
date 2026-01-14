@@ -7,6 +7,7 @@ import os
 import subprocess
 import torch
 import logging
+import onnx
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
@@ -15,13 +16,44 @@ from dsperse.src.constants import JSTPROVE_COMMAND
 # Configure logger
 logger = logging.getLogger(__name__)
 
+JSTPROVE_SUPPORTED_OPS = {
+    "Add", "Clip", "BatchNormalization", "Div", "Sub",
+    "Mul", "Constant", "Conv", "Flatten", "Gemm",
+    "MaxPool", "Max", "Min", "ReLU", "Relu", "Reshape"
+}
+
 
 class JSTprove:
     """JSTprove backend for zero-knowledge proof generation using the JSTprove CLI."""
-    
+
     # Class constants
     COMMAND = JSTPROVE_COMMAND
     DEFAULT_FLAGS = ["--no-banner"]
+    SUPPORTED_OPS = JSTPROVE_SUPPORTED_OPS
+
+    @staticmethod
+    def is_compatible(model_path: Union[str, Path]) -> Tuple[bool, set]:
+        """
+        Check if an ONNX model contains only JSTprove-supported operations.
+
+        Args:
+            model_path: Path to the ONNX model file
+
+        Returns:
+            Tuple of (is_compatible: bool, unsupported_ops: set)
+        """
+        model_path = Path(model_path)
+        if not model_path.exists():
+            return False, {"FILE_NOT_FOUND"}
+
+        try:
+            model = onnx.load(str(model_path))
+            ops = {node.op_type for node in model.graph.node}
+            unsupported = ops - JSTPROVE_SUPPORTED_OPS
+            return len(unsupported) == 0, unsupported
+        except Exception as e:
+            logger.warning(f"Failed to check JSTprove compatibility: {e}")
+            return False, {"LOAD_ERROR"}
 
     def __init__(self, model_directory: Optional[str] = None) -> None:
         """

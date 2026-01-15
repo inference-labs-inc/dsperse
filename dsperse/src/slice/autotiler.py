@@ -27,9 +27,21 @@ ELEMENTWISE_OPS = {
 }
 
 
-def find_tile_size(spatial_dim: int, target: int) -> int | None:
-    if 7 <= target < spatial_dim:
-        for tile in range(target, 7, -1):
+def compute_halo(kernel: list[int], dilation: list[int]) -> tuple[int, int]:
+    effective_kh = (kernel[0] - 1) * dilation[0] + 1
+    effective_kw = (kernel[1] - 1) * dilation[1] + 1
+    return effective_kh // 2, effective_kw // 2
+
+
+def compute_min_tile_size(kernel: list[int], dilation: list[int]) -> int:
+    effective_kh = (kernel[0] - 1) * dilation[0] + 1
+    effective_kw = (kernel[1] - 1) * dilation[1] + 1
+    return max(effective_kh, effective_kw) + 1
+
+
+def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7) -> int | None:
+    if min_tile <= target < spatial_dim:
+        for tile in range(target, min_tile - 1, -1):
             if spatial_dim % tile == 0:
                 return tile
     return None
@@ -179,7 +191,6 @@ def create_tile_slice(
     if sh == 0 or sw == 0:
         return None
     dh, dw = conv_params['dilation']
-    pads = conv_params['pads']
 
     weights, bias = None, None
     for init in m.graph.initializer:
@@ -192,7 +203,7 @@ def create_tile_slice(
         return None
 
     c_out = weights.shape[0]
-    halo_h, halo_w = pads[0], pads[1]
+    halo_h, halo_w = compute_halo([kh, kw], [dh, dw])
     effective_kh = (kh - 1) * dh + 1
     effective_kw = (kw - 1) * dw + 1
     tile_with_halo_h = tile_size + 2 * halo_h
@@ -350,7 +361,6 @@ def tile_conv_slice(slice_path: Path, tile_size: int, output_path: Path) -> dict
     if sh == 0 or sw == 0:
         return None
     dh, dw = conv_params['dilation']
-    pads = conv_params['pads']
 
     weights, bias = None, None
     for init in m.graph.initializer:
@@ -363,7 +373,7 @@ def tile_conv_slice(slice_path: Path, tile_size: int, output_path: Path) -> dict
         return None
 
     c_out = weights.shape[0]
-    halo_h, halo_w = pads[0], pads[1]
+    halo_h, halo_w = compute_halo([kh, kw], [dh, dw])
     effective_kh = (kh - 1) * dh + 1
     effective_kw = (kw - 1) * dw + 1
     tile_with_halo_h = tile_size + 2 * halo_h
@@ -454,17 +464,20 @@ def autotile_slice(
     if h <= tile_size or h != w:
         return None
 
-    actual_tile_size = find_tile_size(h, tile_size)
-    if not actual_tile_size:
-        return None
-
     conv_params = get_conv_params(m)
     if not conv_params:
         return None
 
-    pads = conv_params['pads']
-    halo_h, halo_w = pads[0], pads[1]
+    kernel = conv_params['kernel']
+    dilation = conv_params['dilation']
     sh, sw = conv_params['stride']
+
+    halo_h, halo_w = compute_halo(kernel, dilation)
+    min_tile = compute_min_tile_size(kernel, dilation)
+
+    actual_tile_size = find_tile_size(h, tile_size, min_tile)
+    if not actual_tile_size:
+        return None
 
     tiles_y = h // actual_tile_size
     tiles_x = w // actual_tile_size

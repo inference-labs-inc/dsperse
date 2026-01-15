@@ -445,14 +445,12 @@ class Compiler:
             # Check if this slice has been tiled
             tiling_info = original_slice_entry.get('tiling')
             target_slice_data = original_slice_entry  # The dict we will attach compilation info to
-            
+
             compilation_slice_data = original_slice_entry
             if tiling_info:
-                # For tiled slices, compile just one representative tile (tile_0)
-                tiles = tiling_info.get('tiles', [])
-                if tiles:
-                    tile_0 = tiles[0]
-                    tile_path_raw = tile_0.get('path')
+                tile_meta = tiling_info.get('tile')
+                if tile_meta:
+                    tile_path_raw = tile_meta.get('path')
                     if tile_path_raw:
                         # Resolve tile path
                         if os.path.isabs(tile_path_raw):
@@ -465,12 +463,21 @@ class Compiler:
 
                         if os.path.exists(tile_path):
                             logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
+                            print(f"[compile] Slice {idx}: tiled with {tiling_info.get('num_tiles')} tiles, compiling tile.onnx only")
                             # Create a synthetic slice_data for the tile
                             compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
                         else:
-                            logger.warning(f"Slice {idx}: Tiled but tile_0 path not found at {tile_path}, compiling original slice")
+                            logger.warning(f"Slice {idx}: Tiled but tile path not found at {tile_path}, skipping")
+                            print(f"[compile] Slice {idx}: tile.onnx not found at {tile_path}, skipping tiled slice")
+                            continue
                     else:
-                        logger.warning(f"Slice {idx}: Tiled but tile_0 path missing in metadata")
+                        logger.warning(f"Slice {idx}: Tiled but tile path missing in metadata, skipping")
+                        print(f"[compile] Slice {idx}: tiled but tile path missing, skipping")
+                        continue
+                else:
+                    logger.warning(f"Slice {idx}: Tiled but tile metadata missing, skipping")
+                    print(f"[compile] Slice {idx}: tiled but no tile metadata, skipping")
+                    continue
 
             logger.info(f"Compiling slice {idx}...")
 
@@ -547,7 +554,7 @@ class Compiler:
                             "tile_size": tiling_info.get("tile_size"),
                             "tile_count": tiling_info.get("num_tiles"),
                             "files": {
-                                f"tile_{t_idx}": tile_files for t_idx in range(tiling_info.get("num_tiles", 0))
+                                "tile_0": tile_files
                             }
                         }
                     else:
@@ -678,7 +685,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",

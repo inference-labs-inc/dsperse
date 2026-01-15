@@ -168,9 +168,10 @@ class Verifier:
                     
                     if not tile_proof_path.exists():
                         logger.warning(f"Proof missing for {slice_id}/{tile_name}, skipping")
-                        tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": "proof_missing"})
+                        tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": "proof_missing", "time_sec": 0})
                         continue
 
+                    tile_start = time.time()
                     if preferred == "jstprove":
                         # Resolve artifacts for this tile (same as main slice)
                         circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
@@ -215,10 +216,12 @@ class Verifier:
                             ok = False
                             res = str(e)
                         method = "ezkl_verify"
+                    tile_elapsed = time.time() - tile_start
                     
                     tile_verifs.append({
                         "tile_idx": tile_idx,
                         "success": ok,
+                        "time_sec": tile_elapsed,
                         "error": res
                     })
                 
@@ -492,7 +495,7 @@ class Verifier:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {

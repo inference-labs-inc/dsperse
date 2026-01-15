@@ -246,22 +246,26 @@ class Prover:
 
                     if not tile_witness_path.exists():
                         logger.warning(f"Witness missing for {slice_id}/{tile_name}, skipping")
-                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "witness_missing"})
+                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "witness_missing", "time_sec": 0})
                         continue
 
                     # Validate circuit
                     if not circuit_path or not os.path.exists(circuit_path):
                         logger.error(f"Circuit not found for tile {slice_id}/{tile_name}: {circuit_path}")
-                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "circuit_missing"})
+                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "circuit_missing", "time_sec": 0})
                         continue
 
+                    tile_start = time.time()
                     ok, m, res = self._prove_with_backend(
                         preferred, tile_witness_path, str(circuit_path), tile_proof_path, pk_path, settings_path
                     )
+                    tile_elapsed = time.time() - tile_start
+
                     tile_results.append({
                         "tile_idx": tile_idx,
                         "success": ok,
                         "proof_path": str(tile_proof_path),
+                        "time_sec": tile_elapsed,
                         "error": None if ok else str(res)
                     })
                     if ok:
@@ -495,7 +499,7 @@ class Prover:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "../models/doom",

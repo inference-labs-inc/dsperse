@@ -198,6 +198,66 @@ class TestSliceE2E:
         assert data["original_model"].endswith("model.onnx")
         assert isinstance(data.get("model_type"), str) and data["model_type"]
 
+    def test_slice_with_tiling(self, project_root: Path, capfd):
+        """Verify end-to-end slicing with tiling enabled."""
+        model_dir = project_root / "tests" / "models" / "doom"
+        output_dir = project_root / "tests" / "models" / "doom_tiling_output"
+        
+        # Clean up before
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
+        args = SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=14  # doom input is 28x28, so 14 should trigger tiling
+        )
+
+        try:
+            slice_model(args)
+
+            # Capture console output
+            captured = capfd.readouterr()
+            combined_out = captured.out + captured.err
+            
+            assert "Slicing model" in combined_out
+            assert "ONNX model sliced successfully" in combined_out
+            # We don't strictly assert log messages as they might be diverted, 
+            # but 'print' output should be in captured.out
+            assert "Tiled successfully" in combined_out
+
+            # Verify artifacts
+            metadata_path = output_dir / "metadata.json"
+            assert metadata_path.exists()
+            meta = json.loads(metadata_path.read_text())
+
+            tiled_slices = [s for s in meta["slices"] if "tiling" in s]
+            assert len(tiled_slices) > 0, "At least one slice should be tiled"
+
+            for s in tiled_slices:
+                assert s["tiling"]["num_tiles"] == 4
+                payload_dir = output_dir / f"slice_{s['index']}" / "payload"
+                tiles_dir = payload_dir / "tiles"
+                assert tiles_dir.exists()
+                assert (tiles_dir / "split.onnx").exists()
+                assert (tiles_dir / "concat.onnx").exists()
+                assert (tiles_dir / "tile_0.onnx").exists()
+                
+                # Verify per-slice metadata tiling info
+                slice_metadata_path = output_dir / f"slice_{s['index']}" / "metadata.json"
+                assert slice_metadata_path.exists()
+                slice_meta = json.loads(slice_metadata_path.read_text())
+                assert "tiling" in slice_meta["slices"][0]
+                # Paths in per-slice metadata should be relative to the slice directory
+                assert slice_meta["slices"][0]["tiling"]["split"]["path"] == "payload/tiles/split.onnx"
+
+        finally:
+            # Clean up after
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+
 
 
 

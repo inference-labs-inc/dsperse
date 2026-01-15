@@ -70,7 +70,7 @@ class OnnxUtils:
         alongside payload/model.onnx so the folder can be zipped to become a valid .dslice.
         Also updates the global slices metadata slice 'path' to payload/model.onnx if needed.
         """
-        root = Path(slices_root)
+        root = Path(slices_root).resolve()
         metadata_path = root / "metadata.json"
         if not metadata_path.exists():
             alt = root / "slices" / "metadata.json"
@@ -167,6 +167,12 @@ class OnnxUtils:
             single_slice_entry["relative_path"] = str(desired_path.relative_to(root).relative_to("slice_" + str(idx)))
             single_slice_entry["dsperse_version"] = dsperse_ver
             single_slice_entry["opset_version"] = opset_version
+
+            # Relativize tiling info paths to the slice directory
+            if "tiling" in single_slice_entry:
+                single_slice_entry["tiling"] = Utils.relativize_tiling_info(
+                    single_slice_entry["tiling"], root_dir=slice_dir, base_dir=root
+                )
 
 
             if "shape" not in single_slice_entry or not single_slice_entry["shape"]:

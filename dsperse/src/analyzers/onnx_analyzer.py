@@ -376,7 +376,7 @@ class OnnxAnalyzer:
             )
             if segment_metadata:
                 if segment_idx in tiled_info:
-                    segment_metadata["tiling"] = tiled_info[segment_idx]
+                    segment_metadata["tiling"] = Utils.relativize_tiling_info(tiled_info[segment_idx], output_dir)
                 segments.append(segment_metadata)
 
         # Add segments to metadata

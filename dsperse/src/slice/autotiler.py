@@ -79,7 +79,8 @@ def create_split_slice(
     halo_h: int,
     halo_w: int,
     slice_idx: int,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict:
     """
     Create a split slice that pads input and extracts all tiles.
@@ -145,15 +146,20 @@ def create_split_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    split_dir = output_dir / f"slice_{slice_idx}_split"
-    split_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = split_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_split.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / "split.onnx"
+    else:
+        split_dir = output_dir / f"slice_{slice_idx}_split"
+        split_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = split_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_split.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_name": input_name,
         "output_names": [f"tile_{slice_idx}_{i}_in" for i in range(num_tiles)],
         "tiles_y": tiles_y,
@@ -167,7 +173,8 @@ def create_tile_slice(
     tile_size: int,
     tile_idx: int,
     slice_idx: int,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict | None:
     """
     Create a single tile processing slice.
@@ -258,15 +265,20 @@ def create_tile_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    tile_dir = output_dir / f"slice_{slice_idx}_tile_{tile_idx}"
-    tile_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = tile_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_tile_{tile_idx}.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / f"tile_{tile_idx}.onnx"
+    else:
+        tile_dir = output_dir / f"slice_{slice_idx}_tile_{tile_idx}"
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = tile_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_tile_{tile_idx}.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_name": input_name,
         "output_name": output_name,
         "tile_idx": tile_idx,
@@ -284,7 +296,8 @@ def create_concat_slice(
     out_tile_w: int,
     slice_idx: int,
     output_name: str,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict:
     """
     Create a concat slice that reassembles tile outputs.
@@ -329,15 +342,20 @@ def create_concat_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    concat_dir = output_dir / f"slice_{slice_idx}_concat"
-    concat_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = concat_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_concat.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / "concat.onnx"
+    else:
+        concat_dir = output_dir / f"slice_{slice_idx}_concat"
+        concat_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = concat_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_concat.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_names": [f"tile_{slice_idx}_{i}_out" for i in range(num_tiles)],
         "output_name": output_name,
         "full_shape": [1, c_out, full_h, full_w],
@@ -443,7 +461,8 @@ def autotile_slice(
     slice_idx: int,
     onnx_path: Path,
     tile_size: int,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict | None:
     """
     Create split + tile + concat slices for a single tileable slice.
@@ -507,7 +526,8 @@ def autotile_slice(
         halo_h=halo_h,
         halo_w=halo_w,
         slice_idx=slice_idx,
-        output_dir=output_dir
+        output_dir=output_dir,
+        nested=nested
     )
 
     tile_infos = []
@@ -517,7 +537,8 @@ def autotile_slice(
             tile_size=actual_tile_size,
             tile_idx=tile_idx,
             slice_idx=slice_idx,
-            output_dir=output_dir
+            output_dir=output_dir,
+            nested=nested
         )
         if tile_info:
             tile_infos.append(tile_info)
@@ -534,7 +555,8 @@ def autotile_slice(
         out_tile_w=out_tile_w,
         slice_idx=slice_idx,
         output_name=output_name,
-        output_dir=output_dir
+        output_dir=output_dir,
+        nested=nested
     )
 
     return {

@@ -1,5 +1,6 @@
 import os
 import os.path
+from pathlib import Path
 import onnx
 from onnx import shape_inference
 import logging
@@ -7,7 +8,7 @@ from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from typing import List, Dict
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slices
+from dsperse.src.slice.autotiler import autotile_slice
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
@@ -364,16 +365,18 @@ class OnnxSlicer:
         # Default fallback
         return ["batch_size", None]
 
-    def slice(self, slice_points: List[int], model_metadata, output_path=None):
+    def slice(self, slice_points: List[int], model_metadata, output_path=None, tile_size: int = None):
         """
         Slice the ONNX model based on the provided slice points.
 
         Args:
             slice_points: List of indices representing nodes with parameter details
             model_metadata: The model analysis metadata containing node information
+            output_path: The path to save the slices to
+            tile_size: If set, tile Conv slices with spatial dims > tile_size
 
         Returns:
-            List[str]: Paths to the sliced model files
+            Tuple[List[str], Dict]: Paths to sliced models and tiling metadata
         """
         # Error handling
         if not slice_points:
@@ -425,6 +428,7 @@ class OnnxSlicer:
 
         # Store paths to sliced models
         slice_paths = []
+        tiled_info = {}
 
         # Process each segment
         for i in range(len(slice_points)):
@@ -521,10 +525,23 @@ class OnnxSlicer:
                     logger.error(f"Error creating segment {segment_idx}: {e}")
                     continue
 
-        return self.slice_post_process(slice_paths, self.analysis)
+            if tile_size is not None and os.path.exists(file_path):
+                try:
+                    tiles_dir = os.path.join(payload_dir, "tiles")
+                    info = autotile_slice(segment_idx, Path(file_path), tile_size, Path(tiles_dir), nested=True)
+                    if info:
+                        tiled_info[segment_idx] = info
+                        logger.info(f"Tiled slice {segment_idx} successfully")
+                        print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
+                except Exception as e:
+                    logger.error(f"Error tiling slice {segment_idx}: {e}")
+                    print(f"  -> Tiling failed: {e}")
+
+        abs_paths = self.slice_post_process(slice_paths)
+        return abs_paths, tiled_info
 
     @staticmethod
-    def slice_post_process(slices_paths, model_metadata):
+    def slice_post_process(slices_paths):
         """
         Post-process sliced models with shape inference and validation.
         """
@@ -560,7 +577,6 @@ class OnnxSlicer:
             except Exception as e:
                 logger.error(f"Error processing {path}: {e}")
                 continue
-
         return abs_paths
 
     def slice_model(self, output_path=None, tile_size: int = None):
@@ -575,31 +591,30 @@ class OnnxSlicer:
             Dict[str, Any]: Metadata about the sliced model
         """
         slice_points = self.determine_slice_points(self.analysis)
-        slices_paths = self.slice(slice_points, self.analysis, output_path)
-
-        tiled_info = {}
-        if tile_size is not None:
-            slices_dir = output_path or os.path.join(os.path.dirname(self.onnx_path), "slices")
-            tiled_info = autotile_slices(slices_dir, tile_size)
-            if tiled_info:
-                logger.info(f"Tiled {len(tiled_info)} slices with tile_size={tile_size}")
+        slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
         return slices_paths
 
 
 if __name__ == "__main__":
-
+    # Choose which model to test
     model_choice = 1 # Change this to test different models
 
+    # Model configurations
     base_paths = {
-        1: "../../../models/doom",
-        2: "../../../models/net",
-        3: "../../../models/resnet",
-        4: "../../../models/yolov3"
+        1: "../../models/doom",
+        2: "../../models/net",
+        3: "../../models/resnet",
+        4: "../../models/age",
+        5: "../../models/version",
+        6: "../../models/bert",
+        7: "../../models/roberta",
+        8: "../../models/yolov8"
     }
+
     abs_path = os.path.abspath(base_paths[model_choice])
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
     onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir)
+    onnx_slicer.slice_model(output_path=output_dir, tile_size=16)

@@ -331,6 +331,8 @@ class Utils:
                     # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if "tile_proofs_info" in info:
+                    exec_entry["tile_proofs_info"] = info["tile_proofs_info"]
             elif execution_type == "verification":
                 exec_entry = {
                     # Keep a simple boolean while also storing success
@@ -339,6 +341,8 @@ class Utils:
                     # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if "tile_verifs_info" in info:
+                    exec_entry["tile_verifs_info"] = info["tile_verifs_info"]
             else:
                 raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
 

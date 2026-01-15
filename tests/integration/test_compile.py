@@ -50,14 +50,14 @@ class TestCompileE2E:
             idx = int(d.name.split("_")[-1])
             assert (payload / f"slice_{idx}.onnx").exists()
 
-            assert (payload / "ezkl").exists()
-            assert (payload / "jstprove").exists()
+            assert (d / "ezkl").exists()
+            assert (d / "jstprove").exists()
 
-            ezkl_dir = payload / "ezkl"
+            ezkl_dir = d / "ezkl"
             ezkl_expected = [ezkl_dir / "settings.json", ezkl_dir / "model.compiled", ezkl_dir / "vk.key", ezkl_dir / "pk.key"]
             assert any(p.exists() for p in ezkl_expected)
 
-            jst_dir = payload / "jstprove"
+            jst_dir = d / "jstprove"
             stem = f"slice_{idx}"
             jst_expected = [jst_dir / f"{stem}_circuit.txt", jst_dir / f"{stem}_settings.json"]
             assert any(p.exists() for p in jst_expected) or any(jst_dir.iterdir())
@@ -222,8 +222,8 @@ class TestCompileE2E:
         assert "Slices compiled successfully" in out
         assert "Error" not in out
         
-        # Verify calibration.json exists in slice 0 payload/ezkl
-        cal_file = slices_root / "slice_0" / "payload" / "ezkl" / "calibration.json"
+        # Verify calibration.json exists in slice 0 ezkl
+        cal_file = slices_root / "slice_0" / "ezkl" / "calibration.json"
         assert cal_file.exists(), "calibration.json should have been copied to slice output"
 
     @pytest.mark.parametrize("model_name", ["net"])
@@ -327,3 +327,72 @@ class TestCompileE2E:
         finally:
             if temp_extract.exists():
                 shutil.rmtree(temp_extract)
+
+    def test_compile_with_tiling(self, project_root: Path, capfd, jstprove_available):
+        """Verify that compilation correctly handles tiled slices."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        model_dir = project_root / "tests" / "models" / "doom"
+        output_dir = project_root / "tests" / "models" / "doom_tiling_compile"
+        
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
+        # 1. Slice with tiling
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=14
+        ))
+
+        # 2. Compile
+        compile_model(SimpleNamespace(
+            path=str(output_dir),
+            input_file=None,
+            layers=None,
+            backend="jstprove"
+        ))
+
+        # 3. Verify metadata
+        metadata_path = output_dir / "metadata.json"
+        meta = json.loads(metadata_path.read_text())
+        
+        tiled_slices = [s for s in meta["slices"] if "tiling" in s]
+        assert len(tiled_slices) > 0
+        
+        for s in tiled_slices:
+            idx = s["index"]
+            comp = s.get("compilation", {}).get("jstprove", {})
+            assert comp.get("compiled") is True
+            assert comp.get("tiled") is True
+            assert comp.get("tile_count") == 4
+            
+            files = comp.get("files", {})
+            assert "tile_0" in files
+            assert "tile_1" in files
+            
+            # Check that files actually exist
+            tile_0_circuit = output_dir / files["tile_0"]["compiled"]
+            assert tile_0_circuit.exists()
+            
+            # Per-slice metadata check
+            slice_meta_path = output_dir / f"slice_{idx}" / "metadata.json"
+            slice_meta = json.loads(slice_meta_path.read_text())
+            s_item = slice_meta["slices"][0]
+            s_comp = s_item.get("compilation", {}).get("jstprove", {})
+            
+            assert s_comp.get("tiled") is True
+            assert "tile_0" in s_comp.get("files", {})
+            
+            # Path in per-slice metadata should be relative to slice dir
+            # It should be jstprove/tiles/tile_0_circuit.txt
+            tile_0_rel_path = s_comp["files"]["tile_0"]["compiled"]
+            assert (output_dir / f"slice_{idx}" / tile_0_rel_path).exists()
+            assert tile_0_rel_path.startswith("jstprove/tiles/")
+
+        # Clean up
+        if output_dir.exists():
+            shutil.rmtree(output_dir)

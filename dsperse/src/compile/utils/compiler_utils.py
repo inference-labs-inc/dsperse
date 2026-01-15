@@ -106,69 +106,89 @@ class CompilerUtils:
     def is_ezkl_compilation_successful(compilation_data: Dict[str, Any]) -> bool:
         """
         Determine if compilation was successful based on produced file paths.
-        EZKL files are in payload subdirectories, JSTprove files are in backend directories.
         Supports both EZKL and JSTprove backends.
         """
-        def _ok_ezkl(key: str) -> bool:
+        def _ok(key: str) -> bool:
             p = compilation_data.get(key)
-            return bool(p) and os.path.exists(p) and ('payload' in str(p).split(os.sep))
-
-        def _ok_jstprove(key: str) -> bool:
-            p = compilation_data.get(key)
-            return bool(p) and os.path.exists(p)  # JSTprove doesn't use payload subdirs
+            return bool(p) and os.path.exists(p)
 
         # Check if this is a JSTprove compilation (has 'circuit' key, no 'vk_key'/'pk_key')
         if compilation_data.get('circuit') and not compilation_data.get('vk_key'):
             # JSTprove requires 'compiled' (circuit) and 'settings'
-            return _ok_jstprove('compiled') and _ok_jstprove('settings')
+            return _ok('compiled') and _ok('settings')
 
         # EZKL requires compiled, vk_key, pk_key, settings
-        return all([_ok_ezkl('compiled'), _ok_ezkl('vk_key'), _ok_ezkl('pk_key'), _ok_ezkl('settings')])
+        return all([_ok('compiled'), _ok('vk_key'), _ok('pk_key'), _ok('settings')])
 
     @staticmethod
-    def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str]) -> dict[str, str | None]:
+    def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
         """
-        Compute payload-relative paths for compiled artifacts and the calibration file.
-        Returns a tuple of (payload_rel_dict, calibration_rel_path).
+        Compute relative paths for compiled artifacts and the calibration file.
+        If slice_dir is provided, paths are relative to it. Otherwise, they are
+        relative starting from the 'payload' directory.
+        Returns a tuple of (rel_dict, calibration_rel_path).
         """
-        calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
+        if slice_dir:
+            def _rel(p):
+                if not p: return None
+                try: return os.path.relpath(p, slice_dir)
+                except ValueError: return None
+            calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
+        else:
+            calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
 
         # Detect backend by fields present in compilation_data
         is_jstprove = bool(compilation_data.get('compiled')) and not bool(compilation_data.get('vk_key'))
 
         if is_jstprove:
-            relative_paths = CompilerUtils.get_relative_paths_jstprove(compilation_data, calibration_rel)
+            relative_paths = CompilerUtils.get_relative_paths_jstprove(compilation_data, calibration_rel, slice_dir)
         else:
-            relative_paths = CompilerUtils.get_relative_paths_ezkl(compilation_data, calibration_rel)
+            relative_paths = CompilerUtils.get_relative_paths_ezkl(compilation_data, calibration_rel, slice_dir)
 
         return relative_paths
 
     @staticmethod
-    def get_relative_paths_jstprove(compilation_data: Dict[str, Any], calibration_rel: Optional[str]) -> dict[str, str | None]:
+    def get_relative_paths_jstprove(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
         """
-        Build payload-relative files mapping for JSTprove artifacts using backend-provided keys.
+        Build relative files mapping for JSTprove artifacts using backend-provided keys.
         """
+        def _rel(key):
+            p = compilation_data.get(key)
+            if not p: return None
+            if slice_dir:
+                try: return os.path.relpath(p, slice_dir)
+                except ValueError: return None
+            return CompilerUtils._rel_from_payload(p)
+
         return {
-            'settings': CompilerUtils._rel_from_payload(compilation_data.get('settings')),
-            'compiled': CompilerUtils._rel_from_payload(compilation_data.get('compiled')),
-            'witness_solver': CompilerUtils._rel_from_payload(compilation_data.get('witness_solver')),
-            'wandb': CompilerUtils._rel_from_payload(compilation_data.get('wandb')),
-            'quantized_model': CompilerUtils._rel_from_payload(compilation_data.get('quantized_model')),
-            'metadata': CompilerUtils._rel_from_payload(compilation_data.get('metadata')),
-            'architecture': CompilerUtils._rel_from_payload(compilation_data.get('architecture')),
+            'settings': _rel('settings'),
+            'compiled': _rel('compiled'),
+            'witness_solver': _rel('witness_solver'),
+            'wandb': _rel('wandb'),
+            'quantized_model': _rel('quantized_model'),
+            'metadata': _rel('metadata'),
+            'architecture': _rel('architecture'),
             'calibration': calibration_rel,
         }
 
     @staticmethod
-    def get_relative_paths_ezkl(compilation_data: Dict[str, Any], calibration_rel: Optional[str]) -> dict[str, str | None]:
+    def get_relative_paths_ezkl(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
         """
-        Build payload-relative files mapping for EZKL artifacts using backend-provided keys.
+        Build relative files mapping for EZKL artifacts using backend-provided keys.
         """
+        def _rel(key):
+            p = compilation_data.get(key)
+            if not p: return None
+            if slice_dir:
+                try: return os.path.relpath(p, slice_dir)
+                except ValueError: return None
+            return CompilerUtils._rel_from_payload(p)
+
         return {
-            'settings': CompilerUtils._rel_from_payload(compilation_data.get('settings')),
-            'compiled': CompilerUtils._rel_from_payload(compilation_data.get('compiled')),
-            'vk_key': CompilerUtils._rel_from_payload(compilation_data.get('vk_key')),
-            'pk_key': CompilerUtils._rel_from_payload(compilation_data.get('pk_key')),
+            'settings': _rel('settings'),
+            'compiled': _rel('compiled'),
+            'vk_key': _rel('vk_key'),
+            'pk_key': _rel('pk_key'),
             'calibration': calibration_rel,
         }
 
@@ -219,7 +239,7 @@ class CompilerUtils:
 
 
     @staticmethod
-    def update_slice_metadata(idx: int, filepath: str | Path, success: bool, file_paths: Dict[str, str | None], backend_name: str = "ezkl"):
+    def update_slice_metadata(idx: int, filepath: str | Path, success: bool, file_paths: Dict[str, Any], backend_name: str = "ezkl", tiling_info: Optional[Dict] = None):
         """
         Update the per-slice metadata.json file with compilation results.
 
@@ -227,8 +247,9 @@ class CompilerUtils:
             idx: Slice index
             filepath: Path to the slice's metadata.json file
             success: Boolean indicating if compilation was successful
-            file_paths: Dictionary containing file paths for compilation results
+            file_paths: Dictionary containing file paths for compilation results (or full comp_block)
             backend_name: Name of the backend used (jstprove, ezkl, or onnx)
+            tiling_info: Optional tiling information to structure tiled compilation info
         """
         # Load existing slice metadata or create new
         if os.path.exists(filepath):
@@ -237,29 +258,47 @@ class CompilerUtils:
         else:
             slice_metadata = {}
 
-        # Get backend version based on which backend was used
-        if backend_name == "jstprove":
-            from dsperse.src.backends.jstprove import JSTprove
-            backend_version = JSTprove.get_version()
-        elif backend_name == "ezkl":
-            backend_version = EZKL.get_version()
+        # If file_paths is already a full compilation block (has 'compiled' key), use it as is
+        if isinstance(file_paths, dict) and "compiled" in file_paths and "backend" in file_paths:
+            compilation_info = file_paths
         else:
-            backend_version = None
+            # Get backend version based on which backend was used
+            if backend_name == "jstprove":
+                from dsperse.src.backends.jstprove import JSTprove
+                backend_version = JSTprove.get_version()
+            elif backend_name == "ezkl":
+                backend_version = EZKL.get_version()
+            else:
+                backend_version = None
 
-        # Create compilation info nested under the backend name
-        compilation_info = {
-            "compiled": success,
-            "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
-            "backend": backend_name,
-            "backend_version": backend_version,
-            # Preserve keys from provided file_paths to mirror model-level structure
-            "files": file_paths or {}
-        }
+            # Create compilation info nested under the backend name
+            compilation_info = {
+                "compiled": success,
+                "compilation_timestamp": __import__('time').strftime("%Y-%m-%d %H:%M:%S"),
+                "backend": backend_name,
+                "backend_version": backend_version,
+            }
+
+            if tiling_info:
+                compilation_info["tiled"] = True
+                compilation_info["tile_size"] = tiling_info.get("tile_size")
+                compilation_info["tile_count"] = tiling_info.get("num_tiles")
+                
+                # Nested files structure
+                files = {}
+                # If we compiled tiles, file_paths contains the artifacts for one tile
+                files["tile_0"] = file_paths
+                for t_idx in range(1, tiling_info.get("num_tiles", 0)):
+                    files[f"tile_{t_idx}"] = file_paths
+                compilation_info["files"] = files
+            else:
+                compilation_info["files"] = file_paths or {}
 
         # Add any errors if present
-        errors = {k: v for k, v in file_paths.items() if k.endswith('_error')}
-        if errors:
-            compilation_info["errors"] = errors
+        if "files" in compilation_info and isinstance(compilation_info["files"], dict):
+            errors = {k: v for k, v in compilation_info["files"].items() if isinstance(k, str) and k.endswith('_error')}
+            if errors:
+                compilation_info["errors"] = errors
 
         # Find the specific slice by index and update its compilation info
         updated = False

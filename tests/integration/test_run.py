@@ -202,3 +202,70 @@ class TestRunE2E:
         assert "slice_4: ezkl" in out
         # onnx for 1
         assert "slice_1: onnx" in out
+
+    def test_run_with_tiling(self, project_root: Path, capfd, jstprove_available):
+        """9. Verify that running a tiled model works and produces correct run_results.json."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        model_dir = project_root / "tests" / "models" / "doom"
+        output_dir = project_root / "tests" / "models" / "doom_tiling_run"
+        
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
+        # 1. Slice with tiling
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=14
+        ))
+
+        # 2. Compile
+        compile_model(SimpleNamespace(
+            path=str(output_dir),
+            input_file=None,
+            layers=None,
+            backend="jstprove"
+        ))
+
+        # 3. Run
+        input_file = model_dir / "input.json"
+        run_args = SimpleNamespace(
+            path=str(output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend=None,
+            run_metadata_path=None
+        )
+        
+        capfd.readouterr()
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        
+        assert "Inference completed" in out
+        assert "slice_0: tiled_parallel" in out
+        
+        run_dir = self._get_run_dir(out)
+        run_results = json.loads((run_dir / "run_results.json").read_text())
+        
+        # Verify witness_execution for tiled slice
+        s0_res = next(r for r in run_results["execution_chain"]["execution_results"] if r["slice_id"] == "slice_0")
+        w_exec = s0_res["witness_execution"]
+        
+        assert w_exec["method"] == "tiled_parallel"
+        assert w_exec["input_file"] != "unknown"
+        assert w_exec["output_file"] != "unknown"
+        assert "slice_0/split/input.json" in w_exec["input_file"]
+        assert "slice_0/concat/output.json" in w_exec["output_file"]
+        assert len(w_exec["tile_exec_infos"]) == 4
+        
+        for t_info in w_exec["tile_exec_infos"]:
+            assert t_info["success"] is True
+            assert "jstprove" in t_info["method"]
+        
+        # Clean up
+        if output_dir.exists():
+            shutil.rmtree(output_dir)

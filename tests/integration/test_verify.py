@@ -189,3 +189,72 @@ class TestVerifyE2E:
 
         assert found_slice_0, "slice_0 not found in execution_results"
         assert found_slice_1, "slice_1 not found in execution_results"
+
+    def test_verify_with_tiling(self, project_root: Path, capfd, jstprove_available):
+        """Verify that verification correctly handles tiled slices."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        model_dir = project_root / "tests" / "models" / "doom"
+        output_dir = project_root / "tests" / "models" / "doom_tiling_verify"
+        
+        import shutil
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
+        # 1. Slice with tiling
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=14
+        ))
+
+        # 2. Compile
+        compile_model(SimpleNamespace(
+            path=str(output_dir),
+            input_file=None,
+            layers=None,
+            backend="jstprove"
+        ))
+
+        # 3. Run
+        input_file = model_dir / "input.json"
+        capfd.readouterr()
+        run_inference(SimpleNamespace(
+            path=str(output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend=None,
+            run_metadata_path=None
+        ))
+        out = capfd.readouterr().out
+        run_dir = self._get_run_dir(out)
+        
+        # 4. Prove
+        run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(output_dir), backend="jstprove"))
+        
+        # 5. Verify
+        capfd.readouterr()
+        verify_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(output_dir), backend="jstprove"))
+        
+        # 6. Verify run_results.json
+        run_results = json.loads((run_dir / "run_results.json").read_text())
+        exec_results = run_results["execution_chain"]["execution_results"]
+        
+        # slice_0 is tiled
+        s0_res = next(r for r in exec_results if r["slice_id"] == "slice_0")
+        v_exec = s0_res["verification_execution"]
+        
+        assert v_exec["success"] is True
+        assert v_exec["verified"] is True
+        assert "tile_verifs_info" in v_exec
+        assert len(v_exec["tile_verifs_info"]) == 4
+        
+        for t_verif in v_exec["tile_verifs_info"]:
+            assert t_verif["success"] is True
+
+        # Clean up
+        if output_dir.exists():
+            shutil.rmtree(output_dir)

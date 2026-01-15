@@ -278,6 +278,7 @@ class Runner:
                 "success": exec_info.get("success", False),
                 "input_file": exec_info.get("input_file", "unknown"),
                 "output_file": exec_info.get("output_file", "unknown"),
+                "tile_exec_infos": exec_info.get("tile_exec_infos", []),
             }
             # Propagate error message if present (e.g., EZKL failure reason before fallback)
             if "error" in exec_info and exec_info["error"]:
@@ -331,45 +332,44 @@ class Runner:
                 save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
             self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
 
-        self._load_tiled_info()
-
-    def _load_tiled_info(self):
-        tiled_info_path = self.slices_path / "tiled" / "tiled_info.json"
-        if tiled_info_path.exists():
-            try:
-                with open(tiled_info_path, 'r') as f:
-                    self.tiled_info = json.load(f)
-                logger.info(f"Loaded tiled info for slices: {self.tiled_info.get('tiled_indices', [])}")
-            except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse tiled_info.json: {e}. Tiling disabled.")
-                self.tiled_info = None
-        else:
-            self.tiled_info = None
-
-    def _run_tiled_slice(self, slice_idx: int, tensor_cache: dict, run_dir: Path) -> dict:
+    def _run_tiled_slice(self, slice_id: str, slice_info: dict, tensor_cache: dict, run_dir: Path) -> dict:
         """Run a tiled slice: split → tiles (parallel) → concat."""
-        tiling = self.tiled_info["slices"][str(slice_idx)]
+        tiling = slice_info.get("tiling")
+        if not tiling:
+            return {'success': False, 'error': 'missing_tiling_info'}
+
         num_tiles = tiling["num_tiles"]
         split_info = tiling["split"]
         tile_infos = tiling["tiles"]
         concat_info = tiling["concat"]
 
-        input_name = tiling["input_name"]
-        output_name = tiling["output_name"]
+        input_name = tiling.get("input_name") or slice_info.get("dependencies", {}).get("filtered_inputs", ["input"])[0]
+        output_name = tiling.get("output_name") or slice_info.get("dependencies", {}).get("output", ["output"])[0]
+        
         input_tensor = tensor_cache.get(input_name)
         if input_tensor is None:
-            raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_idx}")
+            # Try model input name as fallback
+            model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
+            input_tensor = tensor_cache.get(model_input_name)
+            
+        if input_tensor is None:
+            raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_id}")
 
-        split_run_dir = run_dir / f"slice_{slice_idx}_split"
+        split_run_dir = run_dir / slice_id / "split"
         split_run_dir.mkdir(parents=True, exist_ok=True)
         split_in = split_run_dir / "input.json"
         split_out = split_run_dir / "output.json"
 
         Utils.write_input(input_tensor, str(split_in))
 
+        # Split is always ONNX
+        split_path = split_info["path"]
+        if not os.path.isabs(split_path):
+            split_path = str((self.slices_path / split_path).resolve())
+
         start_time = time.time()
         success, split_result = OnnxModels.run_inference(
-            model_path=split_info["path"],
+            model_path=split_path,
             input_file=split_in,
             output_file=split_out
         )
@@ -380,60 +380,102 @@ class Runner:
             tensor_cache[oname] = tensor
 
         split_time = time.time() - start_time
-        logger.info(f"Split slice {slice_idx} completed in {split_time:.2f}s, produced {num_tiles} tiles")
+        logger.info(f"Split slice {slice_id} completed in {split_time:.2f}s, produced {num_tiles} tiles")
 
         def run_single_tile(tile_info):
             tile_idx = tile_info["tile_idx"]
             tile_input_name = tile_info["input_name"]
             tile_output_name = tile_info["output_name"]
 
-            tile_run_dir = run_dir / f"slice_{slice_idx}_tile_{tile_idx}"
+            tile_run_dir = run_dir / slice_id / f"tile_{tile_idx}"
             tile_run_dir.mkdir(parents=True, exist_ok=True)
             tile_in = tile_run_dir / "input.json"
             tile_out = tile_run_dir / "output.json"
 
             tile_tensor = tensor_cache.get(tile_input_name)
             if tile_tensor is None:
-                raise ValueError(f"Missing tile input tensor '{tile_input_name}' for slice {slice_idx}")
+                raise ValueError(f"Missing tile input tensor '{tile_input_name}' for slice {slice_id}")
             Utils.write_input(tile_tensor, str(tile_in))
 
-            ok, result = OnnxModels.run_inference(
-                model_path=tile_info["path"],
-                input_file=tile_in,
-                output_file=tile_out
+            # Resolve tile path
+            tile_onnx_path = tile_info["path"]
+            if not os.path.isabs(tile_onnx_path):
+                tile_onnx_path = str((self.slices_path / tile_onnx_path).resolve())
+
+            # Each tile uses the SAME compiled circuit as the main slice
+            # We create a synthetic slice_info for the tile
+            tile_slice_info = dict(slice_info)
+            tile_slice_info["path"] = tile_onnx_path
+            
+            # The node info for tiled execution should enable circuits if available
+            tile_node_info = {"use_circuit": True}
+            
+            ok, result, t_info = RunnerUtils.execute_slice(
+                self, tile_node_info, tile_slice_info, tile_in, tile_out, self.slices_path
             )
-            return tile_idx, tile_output_name, ok, result
+            
+            # Extract output tensor from results
+            output_tensor = None
+            if ok and result is not None:
+                if isinstance(result, dict) and 'output_tensors' in result:
+                    # ONNX multi-output format
+                    output_tensor = result['output_tensors'].get(tile_output_name)
+                    if output_tensor is None and result['output_tensors']:
+                        output_tensor = list(result['output_tensors'].values())[0]
+                else:
+                    # ZK backends: result is tensor or dict with 'logits'
+                    output_tensor = result.get('logits', result) if isinstance(result, dict) else result
+                
+                # Reshape tiled ZK output if it was flattened
+                if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
+                    c_out = tiling.get("c_out")
+                    h_out, w_out = tile_info.get("conv_out", [0, 0])
+                    if c_out and h_out and w_out:
+                        expected_numel = 1 * c_out * h_out * w_out
+                        if output_tensor.numel() == expected_numel:
+                            output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
+                            logger.debug(f"Reshaped tile {tile_idx} output to [1, {c_out}, {h_out}, {w_out}]")
+
+            return tile_idx, tile_output_name, ok, output_tensor, t_info
 
         cache_lock = threading.Lock()
         tile_start = time.time()
         tile_results = {}
+        tile_exec_infos = []
         with ThreadPoolExecutor(max_workers=min(32, num_tiles)) as executor:
             futures = {executor.submit(run_single_tile, ti): ti for ti in tile_infos}
             for future in as_completed(futures):
-                tile_idx, _tile_output_name, ok, result = future.result()
+                tile_idx, tile_output_name, ok, output_tensor, t_info = future.result()
                 if not ok:
-                    raise Exception(f"Tile {tile_idx} failed: {result}")
-                if isinstance(result, dict) and 'output_tensors' in result:
+                    raise Exception(f"Tile {tile_idx} failed: {output_tensor}")
+                
+                if output_tensor is not None:
                     with cache_lock:
-                        for oname, tensor in result['output_tensors'].items():
-                            tensor_cache[oname] = tensor
-                tile_results[tile_idx] = result
+                        tensor_cache[tile_output_name] = output_tensor
+                
+                tile_results[tile_idx] = output_tensor
+                tile_exec_infos.append(t_info)
 
         tile_time = time.time() - tile_start
         logger.info(f"All {num_tiles} tiles completed in {tile_time:.2f}s ({tile_time/num_tiles*1000:.1f}ms avg)")
 
-        concat_run_dir = run_dir / f"slice_{slice_idx}_concat"
+        concat_run_dir = run_dir / slice_id / "concat"
         concat_run_dir.mkdir(parents=True, exist_ok=True)
         concat_out = concat_run_dir / "output.json"
 
         missing = [name for name in concat_info["input_names"] if name not in tensor_cache]
         if missing:
-            raise ValueError(f"Missing concat input tensors for slice {slice_idx}: {missing[:5]}{'...' if len(missing) > 5 else ''}")
+            raise ValueError(f"Missing concat input tensors for slice {slice_id}: {missing[:5]}{'...' if len(missing) > 5 else ''}")
         concat_tensors = {name: tensor_cache[name] for name in concat_info["input_names"]}
+
+        # Concat is always ONNX
+        concat_path = concat_info["path"]
+        if not os.path.isabs(concat_path):
+            concat_path = str((self.slices_path / concat_path).resolve())
 
         concat_start = time.time()
         success, concat_result = OnnxModels.run_inference_multi(
-            model_path=concat_info["path"],
+            model_path=concat_path,
             extra_tensors=concat_tensors,
             output_file=concat_out
         )
@@ -444,7 +486,11 @@ class Runner:
             for oname, tensor in concat_result['output_tensors'].items():
                 tensor_cache[oname] = tensor
         concat_time = time.time() - concat_start
-        logger.info(f"Concat slice {slice_idx} completed in {concat_time:.2f}s")
+        logger.info(f"Concat slice {slice_id} completed in {concat_time:.2f}s")
+
+        # Aggregate attempted flags from tiles
+        any_jst = any(ti.get("attempted_jstprove") for ti in tile_exec_infos)
+        any_ezkl = any(ti.get("attempted_ezkl") for ti in tile_exec_infos)
 
         total_time = split_time + tile_time + concat_time
         return {
@@ -455,6 +501,12 @@ class Runner:
             'split_time': split_time,
             'tile_time': tile_time,
             'concat_time': concat_time,
+            'tile_exec_infos': tile_exec_infos,
+            'attempted_jstprove': any_jst,
+            'attempted_ezkl': any_ezkl,
+            'tiling': tiling,
+            'input_file': str(split_in.resolve()),
+            'output_file': str(concat_out.resolve())
         }
 
 
@@ -467,8 +519,6 @@ class Runner:
         model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
         tensor_cache = {model_input_name: input_tensor}
 
-        tiled_indices = set(self.tiled_info.get("tiled_indices", [])) if self.tiled_info else set()
-
         current_slice_id = head
         slice_results = {}
         final_tensor = None
@@ -477,16 +527,12 @@ class Runner:
             info = self.run_metadata["slices"][current_slice_id]
             slice_dir = self.slices_path
 
-            try:
-                slice_idx = int(current_slice_id.split("_")[1]) if "_" in current_slice_id else -1
-            except (IndexError, ValueError):
-                slice_idx = -1
+            # Check if this slice is tiled
+            tiling = info.get("tiling")
 
-            if slice_idx in tiled_indices:
-                if str(slice_idx) not in self.tiled_info.get("slices", {}):
-                    raise ValueError(f"Slice {slice_idx} in tiled_indices but missing from tiled_info['slices']")
+            if tiling:
                 logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
-                exec_info = self._run_tiled_slice(slice_idx, tensor_cache, run_dir)
+                exec_info = self._run_tiled_slice(current_slice_id, info, tensor_cache, run_dir)
                 ok = exec_info.get('success', False)
                 output_names = info.get("dependencies", {}).get("output", [])
                 if ok and output_names:
@@ -580,7 +626,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     # Model configurations
     base_paths = {

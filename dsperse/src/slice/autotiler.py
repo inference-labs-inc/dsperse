@@ -81,7 +81,8 @@ def create_split_slice(
     halo_h: int,
     halo_w: int,
     slice_idx: int,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict:
     """
     Create a split slice that pads input and extracts all tiles.
@@ -147,15 +148,20 @@ def create_split_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    split_dir = output_dir / f"slice_{slice_idx}_split"
-    split_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = split_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_split.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / "split.onnx"
+    else:
+        split_dir = output_dir / f"slice_{slice_idx}_split"
+        split_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = split_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_split.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_name": input_name,
         "output_names": [f"tile_{slice_idx}_{i}_in" for i in range(num_tiles)],
         "tiles_y": tiles_y,
@@ -169,7 +175,8 @@ def create_tile_slice(
     tile_size: int,
     tile_idx: int,
     slice_idx: int,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict | None:
     """
     Create a single tile processing slice.
@@ -260,15 +267,20 @@ def create_tile_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    tile_dir = output_dir / f"slice_{slice_idx}_tile_{tile_idx}"
-    tile_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = tile_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_tile_{tile_idx}.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / f"tile_{tile_idx}.onnx"
+    else:
+        tile_dir = output_dir / f"slice_{slice_idx}_tile_{tile_idx}"
+        tile_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = tile_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_tile_{tile_idx}.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_name": input_name,
         "output_name": output_name,
         "tile_idx": tile_idx,
@@ -286,7 +298,8 @@ def create_concat_slice(
     out_tile_w: int,
     slice_idx: int,
     output_name: str,
-    output_dir: Path
+    output_dir: Path,
+    nested: bool = False
 ) -> dict:
     """
     Create a concat slice that reassembles tile outputs.
@@ -331,15 +344,20 @@ def create_concat_slice(
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
-    concat_dir = output_dir / f"slice_{slice_idx}_concat"
-    concat_dir.mkdir(parents=True, exist_ok=True)
-    payload_dir = concat_dir / "payload"
-    payload_dir.mkdir(exist_ok=True)
-    onnx_path = payload_dir / f"slice_{slice_idx}_concat.onnx"
+    if nested:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        onnx_path = output_dir / "concat.onnx"
+    else:
+        concat_dir = output_dir / f"slice_{slice_idx}_concat"
+        concat_dir.mkdir(parents=True, exist_ok=True)
+        payload_dir = concat_dir / "payload"
+        payload_dir.mkdir(exist_ok=True)
+        onnx_path = payload_dir / f"slice_{slice_idx}_concat.onnx"
+
     onnx.save(model, str(onnx_path))
 
     return {
-        "path": str(onnx_path),
+        "path": str(onnx_path.resolve()),
         "input_names": [f"tile_{slice_idx}_{i}_out" for i in range(num_tiles)],
         "output_name": output_name,
         "full_shape": [1, c_out, full_h, full_w],
@@ -446,6 +464,7 @@ def autotile_slice(
     onnx_path: Path,
     tile_size: int,
     output_dir: Path,
+    nested: bool = False,
     parallel: bool = False
 ) -> dict | None:
     """
@@ -510,7 +529,8 @@ def autotile_slice(
         halo_h=halo_h,
         halo_w=halo_w,
         slice_idx=slice_idx,
-        output_dir=output_dir
+        output_dir=output_dir,
+        nested=nested
     )
 
     if parallel and num_tiles > 1:
@@ -520,7 +540,7 @@ def autotile_slice(
         tile_infos = [None] * num_tiles
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(create_tile_slice, onnx_path, actual_tile_size, tile_idx, slice_idx, output_dir): tile_idx
+                executor.submit(create_tile_slice, onnx_path, actual_tile_size, tile_idx, slice_idx, output_dir, nested): tile_idx
                 for tile_idx in range(num_tiles)
             }
             for future in as_completed(futures):
@@ -537,7 +557,8 @@ def autotile_slice(
                 tile_size=actual_tile_size,
                 tile_idx=tile_idx,
                 slice_idx=slice_idx,
-                output_dir=output_dir
+                output_dir=output_dir,
+                nested=nested
             )
             if tile_info:
                 tile_infos.append(tile_info)
@@ -554,7 +575,8 @@ def autotile_slice(
         out_tile_w=out_tile_w,
         slice_idx=slice_idx,
         output_name=output_name,
-        output_dir=output_dir
+        output_dir=output_dir,
+        nested=nested
     )
 
     return {
@@ -634,7 +656,7 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool 
         max_workers = min(len(tileable), multiprocessing.cpu_count())
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(autotile_slice, i, onnx_path, tile_size, tiled_dir, True): i
+                executor.submit(autotile_slice, i, onnx_path, tile_size, tiled_dir, False, True): i
                 for i, onnx_path in tileable
             }
             for future in as_completed(futures):
@@ -645,7 +667,7 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool 
                     print(f"  -> Slice {i} tiled successfully: {info['num_tiles']} tiles")
     else:
         for i, onnx_path in tileable:
-            info = autotile_slice(i, onnx_path, tile_size, tiled_dir, parallel=parallel)
+            info = autotile_slice(i, onnx_path, tile_size, tiled_dir, nested=False, parallel=parallel)
             if info:
                 tiled_info[i] = info
                 print(f"  -> Tiled successfully: {info['num_tiles']} tiles")

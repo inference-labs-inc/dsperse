@@ -113,7 +113,7 @@ class TestFullRunE2E:
         assert slice_ids
 
         for slice_id in slice_ids:
-            jst_dir = slices_output_dir / slice_id / "payload" / "jstprove"
+            jst_dir = slices_output_dir / slice_id / "jstprove"
             assert jst_dir.exists()
             assert any(jst_dir.iterdir())
 
@@ -133,3 +133,94 @@ class TestFullRunE2E:
             assert res["proof_execution"]["success"] is True
             assert "verification_execution" in res
             assert res["verification_execution"]["success"] is True
+
+    def test_tiled_full_cycle(self, project_root: Path, capfd, jstprove_available):
+        """Verify end-to-end full cycle with tiling: slice -> compile -> run -> prove -> verify."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        model_dir = project_root / "tests" / "models" / "doom"
+        output_dir = project_root / "tests" / "models" / "doom_tiled_e2e"
+        
+        # 1. Slice with tiling
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+
+        args = SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=14  # doom input is 28x28, so 14 triggers tiling for 2 slices
+        )
+        slice_model(args)
+        
+        # 2. Compile (should use JSTprove by default or EZKL if JSTprove fails)
+        # We'll force JSTprove for this test to be predictable
+        from dsperse.src.compile.compiler import Compiler
+        compiler = Compiler()
+        compiler.compile(str(output_dir), layers="jstprove")
+        
+        # 3. Run
+        input_file = model_dir / "input.json"
+        from dsperse.src.run.runner import Runner
+        runner = Runner()
+        run_results = runner.run(str(input_file), str(output_dir))
+        
+        run_dir = Path(runner.last_run_dir)
+        assert run_dir.exists()
+        
+        # Check if tiled slices were executed
+        tiled_slice_0_dir = run_dir / "slice_0" / "tile_0"
+        assert tiled_slice_0_dir.exists(), "Tiled execution directory missing"
+        
+        # 4. Prove
+        from dsperse.src.prover import Prover
+        prover = Prover()
+        prove_results = prover.prove(str(run_dir), str(output_dir))
+        
+        # 5. Verify
+        from dsperse.src.verifier import Verifier
+        verifier = Verifier()
+        verify_results = verifier.verify(str(run_dir), str(output_dir))
+        
+        # Assertions
+        assert run_results["prediction"] is not None
+        
+        # Verify that proofs were generated for tiled slices
+        exec_results = run_results.get("execution_chain", {}).get("execution_results", [])
+        for entry in exec_results:
+            slice_id = entry.get("slice_id")
+            w_exec = entry.get("witness_execution", {})
+            
+            if w_exec.get("method") == "tiled_parallel":
+                # Check that input_file and output_file are populated for tiled slice
+                assert w_exec.get("input_file") != "unknown"
+                assert w_exec.get("output_file") != "unknown"
+                assert "input.json" in w_exec.get("input_file")
+                assert "output.json" in w_exec.get("output_file")
+
+        # Verify results in run_results.json
+        run_results_path = run_dir / "run_results.json"
+        final_results = json.loads(run_results_path.read_text())
+        exec_results = final_results.get("execution_chain", {}).get("execution_results", [])
+        
+        for entry in exec_results:
+            slice_id = entry.get("slice_id")
+            proof_exec = entry.get("proof_execution", {})
+            verif_exec = entry.get("verification_execution", {})
+            w_exec = entry.get("witness_execution", {})
+            
+            if w_exec.get("method") == "tiled_parallel":
+                 assert proof_exec.get("success"), f"Proof failed for tiled slice {slice_id}: {proof_exec.get('error')}"
+                 assert "tile_proofs_info" in proof_exec
+                 assert len(proof_exec["tile_proofs_info"]) == 4
+                 assert proof_exec["proof_file"] is None
+                 
+                 assert verif_exec.get("success"), f"Verification failed for tiled slice {slice_id}: {verif_exec.get('error')}"
+                 assert "tile_verifs_info" in verif_exec
+                 assert len(verif_exec["tile_verifs_info"]) == 4
+
+        # Clean up
+        if output_dir.exists():
+            shutil.rmtree(output_dir)

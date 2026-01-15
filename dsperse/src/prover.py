@@ -88,6 +88,12 @@ class Prover:
             if entry.get("slice_id") == slice_id:
                 w = entry.get("witness_execution") or {}
                 method = (w.get("method") or "").lower()
+                if method == "tiled_parallel":
+                    # Tiled execution: check first tile to see backend
+                    tile_infos = w.get("tile_exec_infos", [])
+                    if tile_infos:
+                        method = (tile_infos[0].get("method", "") or "").lower()
+
                 if method.startswith("jstprove"):
                     return "jstprove"
                 if method.startswith("ezkl"):
@@ -215,47 +221,104 @@ class Prover:
             # Resolve artifacts for the selected backend
             circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
-            # Determine witness path strictly based on backend that generated it
-            if preferred == "jstprove":
-                # Prefer runner-recorded witness file; else default to 'output_witness.bin' next to output.json
-                wf = self._get_witness_file_from_run(Path(run_path), slice_id)
-                witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
+            tiling = meta.get("tiling")
+            if tiling:
+                # Tiled slice: prove each tile
+                num_tiles = tiling["num_tiles"]
+                logger.info(f"Proving tiled slice {slice_id} ({num_tiles} tiles)...")
+                tile_results = []
+                start = time.time()
+                success = False
+                method = None
+                
+                # Use standard locations for tiles
+                for tile_idx in range(num_tiles):
+                    tile_name = f"tile_{tile_idx}"
+                    tile_run_dir = run_path / slice_id / tile_name
+                    
+                    if preferred == "jstprove":
+                        tile_witness_path = tile_run_dir / "output_witness.bin"
+                    else:
+                        tile_witness_path = tile_run_dir / "output.json"
+
+                    tile_proof_path = Utils.proof_output_path(run_path, os.path.join(slice_id, tile_name), output_path)
+                    os.makedirs(tile_proof_path.parent, exist_ok=True)
+
+                    if not tile_witness_path.exists():
+                        logger.warning(f"Witness missing for {slice_id}/{tile_name}, skipping")
+                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "witness_missing"})
+                        continue
+
+                    # Validate circuit
+                    if not circuit_path or not os.path.exists(circuit_path):
+                        logger.error(f"Circuit not found for tile {slice_id}/{tile_name}: {circuit_path}")
+                        tile_results.append({"tile_idx": tile_idx, "success": False, "error": "circuit_missing"})
+                        continue
+
+                    ok, m, res = self._prove_with_backend(
+                        preferred, tile_witness_path, str(circuit_path), tile_proof_path, pk_path, settings_path
+                    )
+                    tile_results.append({
+                        "tile_idx": tile_idx,
+                        "success": ok,
+                        "proof_path": str(tile_proof_path),
+                        "error": None if ok else str(res)
+                    })
+                    if ok:
+                        method = m # Capture method from tiles
+
+                success = all(r["success"] for r in tile_results)
+                elapsed = time.time() - start
+                
+                proofs[slice_id] = {
+                    "success": success,
+                    "proof_path": None, # No single proof file for tiled slice
+                    "time_sec": elapsed,
+                    "method": method or "unknown",
+                    "attempted_jstprove": preferred == "jstprove",
+                    "attempted_ezkl": preferred == "ezkl",
+                    "tile_proofs_info": tile_results,
+                    "error": None if success else "One or more tiles failed to prove",
+                }
             else:
-                # EZKL uses the output.json written by runner as witness input for proving
-                witness_path = Utils.witness_path_for(run_path, slice_id)
-            if not witness_path.exists():
-                logger.warning(f"Skipping {slice_id}: witness not found at {witness_path}")
-                continue
+                # Standard slice
+                # Determine witness path strictly based on backend that generated it
+                if preferred == "jstprove":
+                    # Prefer runner-recorded witness file; else default to 'output_witness.bin' next to output.json
+                    wf = self._get_witness_file_from_run(Path(run_path), slice_id)
+                    witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
+                else:
+                    # EZKL uses the output.json written by runner as witness input for proving
+                    witness_path = Utils.witness_path_for(run_path, slice_id)
+                
+                if not witness_path.exists():
+                    logger.warning(f"Skipping {slice_id}: witness not found at {witness_path}")
+                    continue
 
-            proof_path = Utils.proof_output_path(run_path, slice_id, output_path)
-            os.makedirs(proof_path.parent, exist_ok=True)
+                proof_path = Utils.proof_output_path(run_path, slice_id, output_path)
+                os.makedirs(proof_path.parent, exist_ok=True)
 
-            # Validate circuit
-            if not circuit_path or not os.path.exists(circuit_path):
-                logger.warning(f"Skipping {slice_id}: compiled circuit not found ({circuit_path})")
-                continue
+                # Validate circuit
+                if not circuit_path or not os.path.exists(circuit_path):
+                    logger.warning(f"Skipping {slice_id}: compiled circuit not found ({circuit_path})")
+                    continue
 
-            start = time.time()
-            success = False
-            method = None
-            result = None
+                start = time.time()
+                # Attempt preferred backend only (no cross-backend fallback)
+                success, method, result = self._prove_with_backend(
+                    preferred, Path(witness_path), str(circuit_path), Path(proof_path), pk_path, settings_path
+                )
+                elapsed = time.time() - start
 
-            # Attempt preferred backend only (no cross-backend fallback)
-            success, method, result = self._prove_with_backend(
-                preferred, Path(witness_path), str(circuit_path), Path(proof_path), pk_path, settings_path
-            )
-
-            elapsed = time.time() - start
-
-            proofs[slice_id] = {
-                "success": success,
-                "proof_path": str(proof_path),
-                "time_sec": elapsed,
-                "method": method or "unknown",
-                "attempted_jstprove": preferred == "jstprove",
-                "attempted_ezkl": preferred == "ezkl",
-                "error": None if success else (str(result) if result is not None else "Unknown error"),
-            }
+                proofs[slice_id] = {
+                    "success": success,
+                    "proof_path": str(proof_path),
+                    "time_sec": elapsed,
+                    "method": method or "unknown",
+                    "attempted_jstprove": preferred == "jstprove",
+                    "attempted_ezkl": preferred == "ezkl",
+                    "error": None if success else (str(result) if result is not None else "Unknown error"),
+                }
             if success:
                 if method == "jstprove_prove":
                     proved_jst += 1
@@ -432,7 +495,7 @@ class Prover:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "../models/doom",

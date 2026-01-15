@@ -15,6 +15,52 @@ class Utils:
     """
 
     @staticmethod
+    def relativize_tiling_info(tiling_info, root_dir, base_dir=None):
+        """
+        Relativize paths in tiling info against the root directory.
+        If base_dir is provided, relative paths in tiling_info are assumed to be relative to base_dir.
+        """
+        if not tiling_info or not root_dir:
+            return tiling_info
+
+        # Work on a copy to avoid side effects
+        import copy
+        tiling = copy.deepcopy(tiling_info)
+        root = Path(root_dir).resolve()
+
+        def rel(p_str):
+            if not p_str:
+                return p_str
+            p = Path(p_str)
+            if not p.is_absolute() and base_dir:
+                p = Path(base_dir) / p
+            p = p.resolve()
+            try:
+                return str(p.relative_to(root))
+            except ValueError:
+                return p_str
+
+        # relativize original_onnx
+        if "original_onnx" in tiling:
+            tiling["original_onnx"] = rel(tiling["original_onnx"])
+
+        # relativize split
+        if "split" in tiling and "path" in tiling["split"]:
+            tiling["split"]["path"] = rel(tiling["split"]["path"])
+
+        # relativize tiles
+        if "tiles" in tiling:
+            for tile in tiling["tiles"]:
+                if "path" in tile:
+                    tile["path"] = rel(tile["path"])
+
+        # relativize concat
+        if "concat" in tiling and "path" in tiling["concat"]:
+            tiling["concat"]["path"] = rel(tiling["concat"]["path"])
+
+        return tiling
+
+    @staticmethod
     def save_metadata_file(metadata, output_path, filename="metadata.json"):
         """
         Save metadata to a JSON file.
@@ -285,6 +331,8 @@ class Utils:
                     # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if "tile_proofs_info" in info:
+                    exec_entry["tile_proofs_info"] = info["tile_proofs_info"]
             elif execution_type == "verification":
                 exec_entry = {
                     # Keep a simple boolean while also storing success
@@ -293,6 +341,8 @@ class Utils:
                     # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if "tile_verifs_info" in info:
+                    exec_entry["tile_verifs_info"] = info["tile_verifs_info"]
             else:
                 raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
 

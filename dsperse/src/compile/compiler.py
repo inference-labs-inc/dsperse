@@ -258,7 +258,7 @@ class Compiler:
         logger.error("No valid path found for slice")
         raise FileNotFoundError("No valid path found for slice")
 
-    def _compile_ezkl_slice(self, idx: int, slice_data: dict, base_path: str) -> tuple[bool, Dict[str, Any]]:
+    def _compile_ezkl_slice(self, idx: int, slice_data: dict, base_path: str, output_dir: Optional[str] = None, slice_dir: Optional[str] = None) -> tuple[bool, Dict[str, Any]]:
         """
         Compile a single slice with the EZKL backend.
 
@@ -270,11 +270,15 @@ class Compiler:
 
         slice_path = self._resolve_slice_path(slice_data, base_path)
         backend_dir = "ezkl"
-        slice_output_path = os.path.join(os.path.dirname(slice_path), backend_dir)
+        
+        if output_dir:
+            slice_output_path = output_dir
+        else:
+            slice_output_path = os.path.join(os.path.dirname(slice_path), backend_dir)
 
         calibration_input = os.path.join(
-            os.path.dirname(slice_path), backend_dir, "calibration.json"
-        ) if os.path.exists(os.path.join(os.path.dirname(slice_path), backend_dir, "calibration.json")) else None
+            slice_output_path, "calibration.json"
+        ) if os.path.exists(os.path.join(slice_output_path, "calibration.json")) else None
 
         logger.info(f"Slice {idx}: Compiling with EZKL...")
         compilation_data = backend.compilation_pipeline(
@@ -283,11 +287,11 @@ class Compiler:
             input_file_path=calibration_input
         )
         success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
-        # Normalize file paths for metadata (relative under payload and include calibration)
-        file_paths = CompilerUtils.get_relative_paths(compilation_data, calibration_input)
+        # Normalize file paths for metadata
+        file_paths = CompilerUtils.get_relative_paths(compilation_data, calibration_input, slice_dir)
         return success, file_paths
 
-    def _compile_jstprove_slice(self, idx: int, slice_data: dict, base_path: str) -> tuple[bool, Dict[str, Any]]:
+    def _compile_jstprove_slice(self, idx: int, slice_data: dict, base_path: str, output_dir: Optional[str] = None, slice_dir: Optional[str] = None) -> tuple[bool, Dict[str, Any]]:
         """
         Compile a single slice with the JSTprove backend.
 
@@ -307,11 +311,15 @@ class Compiler:
         if backend is None:
             raise RuntimeError("JSTprove backend is not available")
         backend_dir = "jstprove"
-        slice_output_path = os.path.join(os.path.dirname(slice_path), backend_dir)
+        
+        if output_dir:
+            slice_output_path = output_dir
+        else:
+            slice_output_path = os.path.join(os.path.dirname(slice_path), backend_dir)
 
         calibration_input = os.path.join(
-            os.path.dirname(slice_path), backend_dir, "calibration.json"
-        ) if os.path.exists(os.path.join(os.path.dirname(slice_path), backend_dir, "calibration.json")) else None
+            slice_output_path, "calibration.json"
+        ) if os.path.exists(os.path.join(slice_output_path, "calibration.json")) else None
 
         logger.info(f"Slice {idx}: Compiling with JSTprove...")
         compilation_data = backend.compilation_pipeline(
@@ -320,8 +328,8 @@ class Compiler:
             input_file_path=calibration_input
         )
         success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
-        # Normalize file paths for metadata (relative under payload and include calibration)
-        file_paths = CompilerUtils.get_relative_paths(compilation_data, calibration_input)
+        # Normalize file paths for metadata
+        file_paths = CompilerUtils.get_relative_paths(compilation_data, calibration_input, slice_dir)
         return success, file_paths
 
     def _compile_model(self, model_file_path: str, input_file_path: Optional[str] = None) -> str:
@@ -424,22 +432,45 @@ class Compiler:
                 skipped_count += 1
                 continue
 
+            # Resolve slice directory and metadata path
+            original_slice_entry = slice_data
+            slice_meta_rel = original_slice_entry.get('slice_metadata_relative_path')
+            if slice_meta_rel:
+                slice_dir = os.path.join(base_path, os.path.dirname(slice_meta_rel))
+            else:
+                slice_dir = os.path.join(base_path, f"slice_{idx}")
+            
+            slice_meta_path = Path(slice_dir) / "metadata.json"
+
             # Check if this slice has been tiled
-            tiling_info = slice_data.get('tiling')
+            tiling_info = original_slice_entry.get('tiling')
+            target_slice_data = original_slice_entry  # The dict we will attach compilation info to
+            
+            compilation_slice_data = original_slice_entry
             if tiling_info:
                 # For tiled slices, compile just one representative tile (tile_0)
-                # All tiles are identical, so one circuit works for all
                 tiles = tiling_info.get('tiles', [])
                 if tiles:
                     tile_0 = tiles[0]
-                    tile_path = tile_0.get('path')
-                    if tile_path and os.path.exists(tile_path):
-                        logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
-                        # Create a synthetic slice_data for the tile
-                        tile_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
-                        slice_data = tile_slice_data
+                    tile_path_raw = tile_0.get('path')
+                    if tile_path_raw:
+                        # Resolve tile path
+                        if os.path.isabs(tile_path_raw):
+                            tile_path = tile_path_raw
+                        else:
+                            # Try resolving relative to base_path (legacy) or slice_dir (new standard)
+                            tile_path = os.path.join(base_path, tile_path_raw)
+                            if not os.path.exists(tile_path):
+                                tile_path = os.path.join(slice_dir, tile_path_raw)
+
+                        if os.path.exists(tile_path):
+                            logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
+                            # Create a synthetic slice_data for the tile
+                            compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
+                        else:
+                            logger.warning(f"Slice {idx}: Tiled but tile_0 path not found at {tile_path}, compiling original slice")
                     else:
-                        logger.warning(f"Slice {idx}: Tiled but tile_0 path not found, compiling original slice")
+                        logger.warning(f"Slice {idx}: Tiled but tile_0 path missing in metadata")
 
             logger.info(f"Compiling slice {idx}...")
 
@@ -464,18 +495,24 @@ class Compiler:
 
             for be in backends_to_build:
                 try:
-                    slice_path = slice_data.get('path') or os.path.join(base_path, slice_data.get('relative_path', ''))
-                    slice_name = os.path.basename(os.path.dirname(os.path.dirname(slice_path))) if slice_path else f"slice_{idx}"
-                    is_tile = tiling_info is not None
-                    tile_info_str = f" (tiled: {tiling_info.get('num_tiles')} tiles)" if is_tile else ""
+                    # Determine output directory: slice_dir/backend[/tiles]
+                    if tiling_info:
+                        output_dir = os.path.join(slice_dir, be, "tiles")
+                    else:
+                        output_dir = os.path.join(slice_dir, be)
+                    
+                    os.makedirs(output_dir, exist_ok=True)
 
-                    print(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: compiling...")
+                    slice_name = f"slice_{idx}"
+                    tile_info_str = f" (tiled: {tiling_info.get('num_tiles')} tiles)" if tiling_info else ""
+
+                    print(f"[{be}] {slice_name}{tile_info_str}: compiling...")
                     compile_start = time.time()
                     if be == "jstprove":
-                        success, file_paths = self._compile_jstprove_slice(idx, slice_data, base_path)
+                        success, file_paths = self._compile_jstprove_slice(idx, compilation_slice_data, base_path, output_dir=output_dir, slice_dir=slice_dir)
                         version = self._jstprove.get_version() if hasattr(self._jstprove, 'get_version') and self._jstprove else None
                     elif be == "ezkl":
-                        success, file_paths = self._compile_ezkl_slice(idx, slice_data, base_path)
+                        success, file_paths = self._compile_ezkl_slice(idx, compilation_slice_data, base_path, output_dir=output_dir, slice_dir=slice_dir)
                         version = self._ezkl.get_version() if hasattr(self._ezkl, 'get_version') and self._ezkl else None
                     else:
                         logger.warning(f"Unknown backend '{be}' requested for slice {idx}, skipping")
@@ -483,37 +520,57 @@ class Compiler:
                     compile_time = time.time() - compile_start
 
                     status = "OK" if success else "FAILED"
-                    print(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: {status} in {compile_time:.2f}s")
-                    logger.info(f"[{be}] Slice {idx} ({slice_name}){tile_info_str}: {status} in {compile_time:.2f}s")
+                    print(f"[{be}] {slice_name}{tile_info_str}: {status} in {compile_time:.2f}s")
+                    logger.info(f"[{be}] {slice_name}{tile_info_str}: {status} in {compile_time:.2f}s")
 
                     compiled_count += 1
 
-                    # Prefix model-level file paths with slice dir (keep slice-level unchanged)
-                    sdn = (slice_data.get('relative_path') or '').split(os.sep)[0] or os.path.basename(os.path.dirname(os.path.dirname(slice_data.get('path') or '')))
-                    pref_files = ({k: (os.path.join(sdn, v) if isinstance(v, str) and not v.startswith(sdn + os.sep) else v) for k, v in (file_paths or {}).items()} if sdn else file_paths)
-                    comp_block = {
-                        "compiled": bool(success),
-                        "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "backend": be,
-                        "backend_version": version,
-                        "files": pref_files
-                    }
+                    # Structure the compilation block
+                    # Prefix model-level file paths with slice dir name for global metadata
+                    sdn = os.path.basename(slice_dir)
+                    pref_files = {}
+                    
+                    def _prefix_path(p):
+                        if isinstance(p, str) and not p.startswith(sdn + os.sep):
+                            return os.path.join(sdn, p)
+                        return p
 
-                    if isinstance(slice_data, dict):
-                        if 'compilation' not in slice_data or not isinstance(slice_data.get('compilation'), dict):
-                            slice_data['compilation'] = {}
-                        slice_data['compilation'][be] = comp_block
+                    if tiling_info:
+                        # Nested structure for tiled slices
+                        tile_files = {k: _prefix_path(v) for k, v in (file_paths or {}).items()}
+                        comp_block = {
+                            "compiled": bool(success),
+                            "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "backend": be,
+                            "backend_version": version,
+                            "tiled": True,
+                            "tile_size": tiling_info.get("tile_size"),
+                            "tile_count": tiling_info.get("num_tiles"),
+                            "files": {
+                                f"tile_{t_idx}": tile_files for t_idx in range(tiling_info.get("num_tiles", 0))
+                            }
+                        }
+                    else:
+                        # Standard structure
+                        pref_files = {k: _prefix_path(v) for k, v in (file_paths or {}).items()}
+                        comp_block = {
+                            "compiled": bool(success),
+                            "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "backend": be,
+                            "backend_version": version,
+                            "files": pref_files
+                        }
 
-                    # Update slice-level metadata file as well (if present)
-                    slice_meta_path: Optional[Path] = None
-                    if slice_data.get('slice_metadata') and os.path.exists(slice_data.get('slice_metadata')):
-                        slice_meta_path = Path(slice_data.get('slice_metadata'))
-                    elif slice_data.get('slice_metadata_relative_path') and os.path.exists(os.path.join(base_path, slice_data.get('slice_metadata_relative_path'))):
-                        slice_meta_path = Path(os.path.join(base_path, slice_data.get('slice_metadata_relative_path')))
+                    if isinstance(target_slice_data, dict):
+                        if 'compilation' not in target_slice_data or not isinstance(target_slice_data.get('compilation'), dict):
+                            target_slice_data['compilation'] = {}
+                        target_slice_data['compilation'][be] = comp_block
 
-                    if slice_meta_path is not None:
+                    # Update slice-level metadata file as well
+                    if slice_meta_path.exists():
                         try:
-                            CompilerUtils.update_slice_metadata(idx, slice_meta_path, bool(success), file_paths, backend_name=be)
+                            # Pass file_paths (relative to slice_dir) to update_slice_metadata
+                            CompilerUtils.update_slice_metadata(idx, slice_meta_path, bool(success), file_paths, backend_name=be, tiling_info=tiling_info)
                         except Exception as e:
                             logger.warning(f"Failed to update slice metadata for slice {idx} backend {be}: {e}")
 
@@ -621,7 +678,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 8  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",

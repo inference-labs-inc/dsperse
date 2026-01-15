@@ -36,6 +36,10 @@ class RunnerAnalyzer:
     def with_slice_prefix(rel_path: Optional[str], slice_dirname: str) -> Optional[str]:
         if not rel_path:
             return None
+        # Avoid duplicate prefixing if the path already starts with the slice directory name
+        p_str = str(rel_path)
+        if p_str.startswith(slice_dirname + os.sep) or p_str == slice_dirname:
+            return rel_path
         return os.path.join(slice_dirname, rel_path)
 
 
@@ -94,6 +98,7 @@ class RunnerAnalyzer:
             output_shape = tensor_shape.get("output")
             dependencies = item.get("dependencies") or {}
             parameters = item.get("parameters", 0)
+            tiling = item.get("tiling")
 
             # Check for compilation info (JSTprove first, then EZKL)
             compilation = item.get("compilation") or {}
@@ -103,8 +108,11 @@ class RunnerAnalyzer:
             # Prefer JSTprove if available, otherwise EZKL
             if jst_comp.get("compiled"):
                 backend = "jstprove"
-                files = jst_comp.get("files") or {}
                 compiled_flag = True
+                if jst_comp.get("tiled"):
+                    files = jst_comp.get("files", {}).get("tile_0", {})
+                else:
+                    files = jst_comp.get("files") or {}
                 # Accept both keys: prefer 'compiled' (current), fallback to legacy 'circuit'
                 compiled_rel = files.get("compiled") or files.get("circuit")
                 settings_rel = files.get("settings")
@@ -112,8 +120,11 @@ class RunnerAnalyzer:
                 vk_rel = None
             else:
                 backend = "ezkl"
-                files = ezkl_comp.get("files") or {}
                 compiled_flag = bool(ezkl_comp.get("compiled", False))
+                if ezkl_comp.get("tiled"):
+                    files = ezkl_comp.get("files", {}).get("tile_0", {})
+                else:
+                    files = ezkl_comp.get("files") or {}
                 # Accept both keys: 'compiled_circuit' and legacy 'compiled'
                 compiled_rel = files.get("compiled_circuit") or files.get("compiled")
                 settings_rel = files.get("settings")
@@ -131,8 +142,16 @@ class RunnerAnalyzer:
             vk_path = _norm(vk_rel)
 
             # Also compute alternate backend circuit paths to enable multi-level fallbacks in run-metadata
-            jst_files = (jst_comp or {}).get("files") or {}
-            ezkl_files = (ezkl_comp or {}).get("files") or {}
+            if jst_comp.get("tiled"):
+                jst_files = jst_comp.get("files", {}).get("tile_0", {})
+            else:
+                jst_files = (jst_comp or {}).get("files") or {}
+                
+            if ezkl_comp.get("tiled"):
+                ezkl_files = ezkl_comp.get("files", {}).get("tile_0", {})
+            else:
+                ezkl_files = (ezkl_comp or {}).get("files") or {}
+
             jst_circuit_rel = jst_files.get("compiled") or jst_files.get("circuit")
             ezkl_circuit_rel = ezkl_files.get("compiled_circuit") or ezkl_files.get("compiled")
             jstprove_circuit_path = _norm(jst_circuit_rel)
@@ -169,6 +188,7 @@ class RunnerAnalyzer:
                 "ezkl_settings_path": ezkl_settings_path,
                 "ezkl_pk_path": ezkl_pk_path,
                 "ezkl_vk_path": ezkl_vk_path,
+                "tiling": tiling,
             }
 
         return slices
@@ -207,6 +227,7 @@ class RunnerAnalyzer:
             output_shape = tensor_shape.get("output")
             dependencies = slice.get("dependencies") or {}
             parameters = slice.get("parameters", 0)
+            tiling = slice.get("tiling")
 
             # Check for compilation info (JSTprove first, then EZKL)
             compilation = slice.get("compilation") or {}
@@ -215,8 +236,11 @@ class RunnerAnalyzer:
             
             if jst_comp.get("compiled"):
                 backend = "jstprove"
-                files = jst_comp.get("files") or {}
                 compiled_flag = True
+                if jst_comp.get("tiled"):
+                    files = jst_comp.get("files", {}).get("tile_0", {})
+                else:
+                    files = jst_comp.get("files") or {}
                 if files:
                     circuit_rel = files.get("compiled") or files.get("circuit")
                     circuit_path = os.path.join(parent_dir, circuit_rel) if circuit_rel else None
@@ -229,8 +253,11 @@ class RunnerAnalyzer:
                 vk_path = None
             else:
                 backend = "ezkl"
-                files = ezkl_comp.get("files") or {}
                 compiled_flag = bool(ezkl_comp.get("compiled", False))
+                if ezkl_comp.get("tiled"):
+                    files = ezkl_comp.get("files", {}).get("tile_0", {})
+                else:
+                    files = ezkl_comp.get("files") or {}
                 if files:
                     circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
                     settings_path = os.path.join(parent_dir, files.get("settings"))
@@ -243,8 +270,16 @@ class RunnerAnalyzer:
                     vk_path = None
 
             # Compute alternate backend circuit paths (slice-prefixed) for multi-level fallback
-            jst_files = (jst_comp or {}).get("files") or {}
-            ezkl_files = (ezkl_comp or {}).get("files") or {}
+            if jst_comp.get("tiled"):
+                jst_files = jst_comp.get("files", {}).get("tile_0", {})
+            else:
+                jst_files = (jst_comp or {}).get("files") or {}
+                
+            if ezkl_comp.get("tiled"):
+                ezkl_files = ezkl_comp.get("files", {}).get("tile_0", {})
+            else:
+                ezkl_files = (ezkl_comp or {}).get("files") or {}
+
             jst_rel = jst_files.get("compiled") or jst_files.get("circuit")
             ezkl_rel = ezkl_files.get("compiled_circuit") or ezkl_files.get("compiled")
             jstprove_circuit_path = os.path.join(parent_dir, jst_rel) if jst_rel else None
@@ -279,6 +314,7 @@ class RunnerAnalyzer:
                 "ezkl_settings_path": ezkl_settings_path,
                 "ezkl_pk_path": ezkl_pk_path,
                 "ezkl_vk_path": ezkl_vk_path,
+                "tiling": tiling,
             }
 
         return slices

@@ -448,11 +448,10 @@ class Compiler:
             
             compilation_slice_data = original_slice_entry
             if tiling_info:
-                # For tiled slices, compile just one representative tile (tile_0)
-                tiles = tiling_info.get('tiles', [])
-                if tiles:
-                    tile_0 = tiles[0]
-                    tile_path_raw = tile_0.get('path')
+                # For tiled slices, compile just one representative tile (tile.onnx)
+                tile_meta = tiling_info.get('tile')
+                if tile_meta:
+                    tile_path_raw = tile_meta.get('path')
                     if tile_path_raw:
                         # Resolve tile path
                         if os.path.isabs(tile_path_raw):
@@ -468,9 +467,9 @@ class Compiler:
                             # Create a synthetic slice_data for the tile
                             compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
                         else:
-                            logger.warning(f"Slice {idx}: Tiled but tile_0 path not found at {tile_path}, compiling original slice")
+                            logger.warning(f"Slice {idx}: Tiled but tile path not found at {tile_path}, compiling original slice")
                     else:
-                        logger.warning(f"Slice {idx}: Tiled but tile_0 path missing in metadata")
+                        logger.warning(f"Slice {idx}: Tiled but tile path missing in metadata")
 
             logger.info(f"Compiling slice {idx}...")
 
@@ -547,7 +546,7 @@ class Compiler:
                             "tile_size": tiling_info.get("tile_size"),
                             "tile_count": tiling_info.get("num_tiles"),
                             "files": {
-                                f"tile_{t_idx}": tile_files for t_idx in range(tiling_info.get("num_tiles", 0))
+                                "tile_0": tile_files
                             }
                         }
                     else:
@@ -678,7 +677,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",

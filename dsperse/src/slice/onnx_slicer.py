@@ -8,7 +8,7 @@ from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from typing import List, Dict
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slice
+from dsperse.src.slice.autotiler import autotile_slice, ELEMENTWISE_OPS, ELEMENTWISE_OPS
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
@@ -62,7 +62,7 @@ class OnnxSlicer:
         return model
 
     @staticmethod
-    def maximize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
+    def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
         """
         Adjust slice points to maximize slices containing only JSTprove-supported operations.
         Slices at transitions between supported and unsupported operations.
@@ -97,7 +97,45 @@ class OnnxSlicer:
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
-    def determine_slice_points(self, model_metadata) -> List[int]:
+
+    @staticmethod
+    def optimize_for_tiling(slice_points: List[int], model_metadata: Dict) -> List[int]:
+        """
+        Adjust slice points to maximize slices containing only tiling-supported operations.
+        Slices at transitions between supported and unsupported operations.
+
+        Args:
+            slice_points: Current list of node indices for slicing.
+            model_metadata: The model analysis metadata containing node information.
+
+        Returns:
+            List[int]: Updated list of slice points.
+        """
+        updated_points = set(slice_points)
+        nodes_dict = model_metadata.get("nodes", {})
+
+        sorted_nodes = sorted(nodes_dict.values(), key=lambda x: x.get("index", 0))
+
+        def is_tileable(node):
+            node_type = node.get("node_type")
+            return node_type == "Conv" or node_type in ELEMENTWISE_OPS
+
+        for i in range(len(sorted_nodes) - 1):
+            curr_node = sorted_nodes[i]
+            next_node = sorted_nodes[i+1]
+
+            curr_tileable = is_tileable(curr_node)
+            next_tileable = is_tileable(next_node)
+
+            if curr_tileable != next_tileable:
+                # Transition point: slice before the next node to separate tileable/non-tileable
+                updated_points.add(next_node.get("index"))
+
+        # Ensure we don't slice past the last node index
+        max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
+        return [p for p in updated_points if p <= max_idx]
+
+    def determine_slice_points(self, model_metadata, tile_size=None) -> List[int]:
         """
         Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
 
@@ -115,11 +153,14 @@ class OnnxSlicer:
 
         # Maximize clean slices for JSTprove
         print(f"Original slice points: {slice_points}")
-        slice_points = self.maximize_jstprove_slices(slice_points, model_metadata)
-        # Sort slice points by index
+
+        slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
+        if tile_size:
+            slice_points = self.optimize_for_tiling(slice_points, model_metadata)
+
         slice_points.sort()
 
-        print(f"jstprove optimized slice points: {slice_points}")
+        print(f"optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points
@@ -590,7 +631,7 @@ class OnnxSlicer:
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
-        slice_points = self.determine_slice_points(self.analysis)
+        slice_points = self.determine_slice_points(self.analysis, tile_size)
         slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
@@ -599,7 +640,7 @@ class OnnxSlicer:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1 # Change this to test different models
+    model_choice = 2 # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -617,4 +658,4 @@ if __name__ == "__main__":
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
     onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir, tile_size=16)
+    onnx_slicer.slice_model(output_path=output_dir)#, tile_size=16)

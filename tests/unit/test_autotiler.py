@@ -197,16 +197,18 @@ class TestTiledVsNonTiledParity:
         return sess.run(None, {input_name: input_data})[0]
 
     def _run_tiled(self, tiled_info, input_data, tiled_dir):
-        """Run the split -> tiles -> concat pipeline manually."""
+        """Run the split -> single tile N times -> concat pipeline manually."""
         split_path = tiled_info["split"]["path"]
         split_sess = ort.InferenceSession(split_path, providers=["CPUExecutionProvider"])
         split_input_name = split_sess.get_inputs()[0].name
         tile_inputs = split_sess.run(None, {split_input_name: input_data})
 
+        tile_info = tiled_info["tile"]
+        tile_sess = ort.InferenceSession(tile_info["path"], providers=["CPUExecutionProvider"])
+        tile_input_name = tile_sess.get_inputs()[0].name
+
         tile_outputs = []
-        for i, tile_info in enumerate(tiled_info["tiles"]):
-            tile_sess = ort.InferenceSession(tile_info["path"], providers=["CPUExecutionProvider"])
-            tile_input_name = tile_sess.get_inputs()[0].name
+        for i in range(tiled_info["num_tiles"]):
             tile_out = tile_sess.run(None, {tile_input_name: tile_inputs[i]})[0]
             tile_outputs.append(tile_out)
 

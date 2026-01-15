@@ -173,13 +173,15 @@ def create_split_slice(
 def create_tile_slice(
     slice_path: Path,
     tile_size: int,
-    tile_idx: int,
     slice_idx: int,
     output_dir: Path,
     nested: bool = False
 ) -> dict | None:
     """
-    Create a single tile processing slice.
+    Create a single reusable tile processing slice.
+
+    This creates ONE tile ONNX that can be executed N times with different inputs.
+    Uses generic names (tile_in, tile_out) - the runner maps actual tensor names.
 
     Input: [1, C, tile_size + 2*halo, tile_size + 2*halo]
     Output: [1, C_out, out_tile, out_tile]
@@ -222,8 +224,8 @@ def create_tile_slice(
     out_tile_h = tile_size // sh
     out_tile_w = tile_size // sw
 
-    input_name = f"tile_{slice_idx}_{tile_idx}_in"
-    output_name = f"tile_{slice_idx}_{tile_idx}_out"
+    input_name = "tile_in"
+    output_name = "tile_out"
 
     X = helper.make_tensor_value_info(input_name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w])
     Y = helper.make_tensor_value_info(output_name, TensorProto.FLOAT, [1, c_out, conv_out_h, conv_out_w])
@@ -263,19 +265,19 @@ def create_tile_slice(
     else:
         nodes[-1].output[0] = output_name
 
-    graph = helper.make_graph(nodes, f"tile_{slice_idx}_{tile_idx}", [X], [Y], initializers)
+    graph = helper.make_graph(nodes, f"tile_{slice_idx}", [X], [Y], initializers)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
     model.ir_version = 8
 
     if nested:
         output_dir.mkdir(parents=True, exist_ok=True)
-        onnx_path = output_dir / f"tile_{tile_idx}.onnx"
+        onnx_path = output_dir / "tile.onnx"
     else:
-        tile_dir = output_dir / f"slice_{slice_idx}_tile_{tile_idx}"
+        tile_dir = output_dir / f"slice_{slice_idx}_tile"
         tile_dir.mkdir(parents=True, exist_ok=True)
         payload_dir = tile_dir / "payload"
         payload_dir.mkdir(exist_ok=True)
-        onnx_path = payload_dir / f"slice_{slice_idx}_tile_{tile_idx}.onnx"
+        onnx_path = payload_dir / f"slice_{slice_idx}_tile.onnx"
 
     onnx.save(model, str(onnx_path))
 
@@ -283,7 +285,6 @@ def create_tile_slice(
         "path": str(onnx_path.resolve()),
         "input_name": input_name,
         "output_name": output_name,
-        "tile_idx": tile_idx,
         "conv_out": [conv_out_h, conv_out_w],
         "out_tile": [out_tile_h, out_tile_w],
     }
@@ -533,37 +534,14 @@ def autotile_slice(
         nested=nested
     )
 
-    if parallel and num_tiles > 1:
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        import multiprocessing
-        max_workers = min(num_tiles, multiprocessing.cpu_count())
-        tile_infos = [None] * num_tiles
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(create_tile_slice, onnx_path, actual_tile_size, tile_idx, slice_idx, output_dir, nested): tile_idx
-                for tile_idx in range(num_tiles)
-            }
-            for future in as_completed(futures):
-                tile_idx = futures[future]
-                tile_info = future.result()
-                if tile_info:
-                    tile_infos[tile_idx] = tile_info
-        tile_infos = [t for t in tile_infos if t is not None]
-    else:
-        tile_infos = []
-        for tile_idx in range(num_tiles):
-            tile_info = create_tile_slice(
-                slice_path=onnx_path,
-                tile_size=actual_tile_size,
-                tile_idx=tile_idx,
-                slice_idx=slice_idx,
-                output_dir=output_dir,
-                nested=nested
-            )
-            if tile_info:
-                tile_infos.append(tile_info)
-
-    if len(tile_infos) != num_tiles:
+    tile_info = create_tile_slice(
+        slice_path=onnx_path,
+        tile_size=actual_tile_size,
+        slice_idx=slice_idx,
+        output_dir=output_dir,
+        nested=nested
+    )
+    if not tile_info:
         return None
 
     concat_info = create_concat_slice(
@@ -591,7 +569,7 @@ def autotile_slice(
         "c_out": c_out,
         "out_tile": [out_tile_h, out_tile_w],
         "split": split_info,
-        "tiles": tile_infos,
+        "tile": tile_info,
         "concat": concat_info,
         "input_name": input_name,
         "output_name": output_name,

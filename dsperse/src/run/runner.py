@@ -333,25 +333,25 @@ class Runner:
             self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
 
     def _run_tiled_slice(self, slice_id: str, slice_info: dict, tensor_cache: dict, run_dir: Path) -> dict:
-        """Run a tiled slice: split → tiles (parallel) → concat."""
+        """Run a tiled slice: split → single tile N times (parallel) → concat."""
         tiling = slice_info.get("tiling")
         if not tiling:
             return {'success': False, 'error': 'missing_tiling_info'}
 
         num_tiles = tiling["num_tiles"]
         split_info = tiling["split"]
-        tile_infos = tiling["tiles"]
+        tile_info = tiling["tile"]
         concat_info = tiling["concat"]
+        slice_idx = tiling.get("slice_idx", 0)
 
         input_name = tiling.get("input_name") or slice_info.get("dependencies", {}).get("filtered_inputs", ["input"])[0]
         output_name = tiling.get("output_name") or slice_info.get("dependencies", {}).get("output", ["output"])[0]
-        
+
         input_tensor = tensor_cache.get(input_name)
         if input_tensor is None:
-            # Try model input name as fallback
             model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
             input_tensor = tensor_cache.get(model_input_name)
-            
+
         if input_tensor is None:
             raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_id}")
 
@@ -362,7 +362,6 @@ class Runner:
 
         Utils.write_input(input_tensor, str(split_in))
 
-        # Split is always ONNX
         split_path = split_info["path"]
         if not os.path.isabs(split_path):
             split_path = str((self.slices_path / split_path).resolve())
@@ -382,51 +381,41 @@ class Runner:
         split_time = time.time() - start_time
         logger.info(f"Split slice {slice_id} completed in {split_time:.2f}s, produced {num_tiles} tiles")
 
-        def run_single_tile(tile_info):
-            tile_idx = tile_info["tile_idx"]
-            tile_input_name = tile_info["input_name"]
-            tile_output_name = tile_info["output_name"]
+        tile_onnx_path = tile_info["path"]
+        if not os.path.isabs(tile_onnx_path):
+            tile_onnx_path = str((self.slices_path / tile_onnx_path).resolve())
+
+        def run_single_tile(tile_idx: int):
+            cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
+            cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
 
             tile_run_dir = run_dir / slice_id / f"tile_{tile_idx}"
             tile_run_dir.mkdir(parents=True, exist_ok=True)
             tile_in = tile_run_dir / "input.json"
             tile_out = tile_run_dir / "output.json"
 
-            tile_tensor = tensor_cache.get(tile_input_name)
+            tile_tensor = tensor_cache.get(cache_input_name)
             if tile_tensor is None:
-                raise ValueError(f"Missing tile input tensor '{tile_input_name}' for slice {slice_id}")
+                raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
             Utils.write_input(tile_tensor, str(tile_in))
 
-            # Resolve tile path
-            tile_onnx_path = tile_info["path"]
-            if not os.path.isabs(tile_onnx_path):
-                tile_onnx_path = str((self.slices_path / tile_onnx_path).resolve())
-
-            # Each tile uses the SAME compiled circuit as the main slice
-            # We create a synthetic slice_info for the tile
             tile_slice_info = dict(slice_info)
             tile_slice_info["path"] = tile_onnx_path
-            
-            # The node info for tiled execution should enable circuits if available
             tile_node_info = {"use_circuit": True}
-            
+
             ok, result, t_info = RunnerUtils.execute_slice(
                 self, tile_node_info, tile_slice_info, tile_in, tile_out, self.slices_path
             )
-            
-            # Extract output tensor from results
+
             output_tensor = None
             if ok and result is not None:
                 if isinstance(result, dict) and 'output_tensors' in result:
-                    # ONNX multi-output format
-                    output_tensor = result['output_tensors'].get(tile_output_name)
+                    output_tensor = result['output_tensors'].get("tile_out")
                     if output_tensor is None and result['output_tensors']:
                         output_tensor = list(result['output_tensors'].values())[0]
                 else:
-                    # ZK backends: result is tensor or dict with 'logits'
                     output_tensor = result.get('logits', result) if isinstance(result, dict) else result
-                
-                # Reshape tiled ZK output if it was flattened
+
                 if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
                     c_out = tiling.get("c_out")
                     h_out, w_out = tile_info.get("conv_out", [0, 0])
@@ -436,23 +425,23 @@ class Runner:
                             output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
                             logger.debug(f"Reshaped tile {tile_idx} output to [1, {c_out}, {h_out}, {w_out}]")
 
-            return tile_idx, tile_output_name, ok, output_tensor, t_info
+            return tile_idx, cache_output_name, ok, output_tensor, t_info
 
         cache_lock = threading.Lock()
         tile_start = time.time()
         tile_results = {}
         tile_exec_infos = []
         with ThreadPoolExecutor(max_workers=min(32, num_tiles)) as executor:
-            futures = {executor.submit(run_single_tile, ti): ti for ti in tile_infos}
+            futures = {executor.submit(run_single_tile, i): i for i in range(num_tiles)}
             for future in as_completed(futures):
-                tile_idx, tile_output_name, ok, output_tensor, t_info = future.result()
+                tile_idx, cache_output_name, ok, output_tensor, t_info = future.result()
                 if not ok:
                     raise Exception(f"Tile {tile_idx} failed: {output_tensor}")
-                
+
                 if output_tensor is not None:
                     with cache_lock:
-                        tensor_cache[tile_output_name] = output_tensor
-                
+                        tensor_cache[cache_output_name] = output_tensor
+
                 tile_results[tile_idx] = output_tensor
                 tile_exec_infos.append(t_info)
 

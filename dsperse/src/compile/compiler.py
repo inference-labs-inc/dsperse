@@ -578,9 +578,17 @@ class Compiler:
                             logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
                             compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
                         else:
-                            logger.warning(f"Slice {idx}: Tiled but tile_0 path not found at {tile_path}, compiling original slice")
+                            logger.warning(f"Slice {idx}: Tiled but tile path not found at {tile_path}, skipping")
+                            print(f"[compile] Slice {idx}: tile.onnx not found at {tile_path}, skipping tiled slice")
+                            continue
                     else:
-                        logger.warning(f"Slice {idx}: Tiled but tile_0 path missing in metadata")
+                        logger.warning(f"Slice {idx}: Tiled but tile path missing in metadata, skipping")
+                        print(f"[compile] Slice {idx}: tiled but tile path missing, skipping")
+                        continue
+                else:
+                    logger.warning(f"Slice {idx}: Tiled but tile metadata missing, skipping")
+                    print(f"[compile] Slice {idx}: tiled but no tile metadata, skipping")
+                    continue
 
             backends_to_build: list[str] = []
             if idx in self.layer_backends:
@@ -744,7 +752,7 @@ class Compiler:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",

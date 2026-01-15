@@ -198,10 +198,10 @@ class TestSliceE2E:
         assert data["original_model"].endswith("model.onnx")
         assert isinstance(data.get("model_type"), str) and data["model_type"]
 
-    def test_slice_with_tiling(self, project_root: Path, capfd):
+    @pytest.mark.parametrize("model_name", ["net", "doom"])
+    def test_slice_with_tiling(self, model_name: str, model_dir: Path, capfd):
         """Verify end-to-end slicing with tiling enabled."""
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiling_output"
+        output_dir = model_dir.parent / f"{model_name}_tiling_output"
         
         # Clean up before
         if output_dir.exists():
@@ -212,7 +212,7 @@ class TestSliceE2E:
             output_dir=str(output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=14  # doom input is 28x28, so 14 should trigger tiling
+            tile_size=16
         )
 
         try:
@@ -243,7 +243,7 @@ class TestSliceE2E:
                 assert tiles_dir.exists()
                 assert (tiles_dir / "split.onnx").exists()
                 assert (tiles_dir / "concat.onnx").exists()
-                assert (tiles_dir / "tile_0.onnx").exists()
+                assert (tiles_dir / "tile.onnx").exists()
                 
                 # Verify per-slice metadata tiling info
                 slice_metadata_path = output_dir / f"slice_{s['index']}" / "metadata.json"
@@ -257,8 +257,6 @@ class TestSliceE2E:
             # Clean up after
             if output_dir.exists():
                 shutil.rmtree(output_dir)
-
-
 
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])

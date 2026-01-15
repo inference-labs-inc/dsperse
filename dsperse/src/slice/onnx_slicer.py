@@ -1,18 +1,36 @@
 import os
 import os.path
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import onnx
 from onnx import shape_inference
 import logging
 from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
-from typing import List, Dict
+from typing import List, Dict, Tuple, Any
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slice
+from dsperse.src.slice.autotiler import autotile_slice, ELEMENTWISE_OPS, ELEMENTWISE_OPS
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_single_slice(spec: Tuple[str, int, List[str], List[str], str]) -> Tuple[int, str] | None:
+    onnx_path, segment_idx, input_names, output_names, file_path = spec
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        extract_model(
+            input_path=onnx_path,
+            output_path=file_path,
+            input_names=input_names,
+            output_names=output_names
+        )
+        return (segment_idx, file_path)
+    except Exception as e:
+        logger.warning(f"extract_model failed for slice {segment_idx}: {e}")
+        return None
 
 
 class OnnxSlicer:
@@ -53,7 +71,7 @@ class OnnxSlicer:
         return model
 
     @staticmethod
-    def maximize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
+    def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
         updated_points = set(slice_points)
         nodes_dict = model_metadata.get("nodes", {})
 
@@ -75,17 +93,45 @@ class OnnxSlicer:
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
-    def determine_slice_points(self, model_metadata) -> List[int]:
+    @staticmethod
+    def optimize_for_tiling(slice_points: List[int], model_metadata: Dict) -> List[int]:
+        updated_points = set(slice_points)
+        nodes_dict = model_metadata.get("nodes", {})
+
+        sorted_nodes = sorted(nodes_dict.values(), key=lambda x: x.get("index", 0))
+
+        def is_tileable(node):
+            node_type = node.get("node_type")
+            return node_type == "Conv" or node_type in ELEMENTWISE_OPS
+
+        for i in range(len(sorted_nodes) - 1):
+            curr_node = sorted_nodes[i]
+            next_node = sorted_nodes[i+1]
+
+            curr_tileable = is_tileable(curr_node)
+            next_tileable = is_tileable(next_node)
+
+            if curr_tileable != next_tileable:
+                updated_points.add(next_node.get("index"))
+
+        max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
+        return [p for p in updated_points if p <= max_idx]
+
+    def determine_slice_points(self, model_metadata, tile_size=None) -> List[int]:
         slice_points = []
         for node_name, node_info in model_metadata["nodes"].items():
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 slice_points.append(node_info["index"])
 
         print(f"Original slice points: {slice_points}")
-        slice_points = self.maximize_jstprove_slices(slice_points, model_metadata)
+
+        slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
+        if tile_size:
+            slice_points = self.optimize_for_tiling(slice_points, model_metadata)
+
         slice_points.sort()
 
-        print(f"jstprove optimized slice points: {slice_points}")
+        print(f"optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points
@@ -259,7 +305,7 @@ class OnnxSlicer:
             model_metadata: The model analysis metadata containing node information
             output_path: The path to save the slices to
             tile_size: If set, tile Conv slices with spatial dims > tile_size
-            parallel: If True, parallelize post-processing
+            parallel: If True, parallelize extraction and post-processing
 
         Returns:
             Tuple[List[str], Dict]: Paths to sliced models and tiling metadata
@@ -305,8 +351,8 @@ class OnnxSlicer:
                         seg_inputs.add(inp)
             segment_inputs_map[seg_idx] = seg_inputs
 
-        slice_paths = []
-        tiled_info = {}
+        slice_specs = []
+        fallback_data = {}
 
         for i in range(len(slice_points)):
             segment_idx = i - 1
@@ -331,79 +377,110 @@ class OnnxSlicer:
                 segment_nodes, graph, initializer_map, future_inputs)
 
             save_path = os.path.join(output_path, f"slice_{segment_idx}")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path, exist_ok=True)
             payload_dir = os.path.join(save_path, "payload")
-            os.makedirs(payload_dir, exist_ok=True)
             file_path = os.path.join(payload_dir, f"slice_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
 
+            spec = (self.onnx_path, segment_idx, input_names, output_names, file_path)
+            slice_specs.append(spec)
+
+            fallback_data[segment_idx] = {
+                'segment_nodes': segment_nodes,
+                'segment_inputs': segment_inputs,
+                'segment_outputs': segment_outputs,
+                'segment_initializers': segment_initializers,
+                'file_path': file_path,
+            }
+
+            logger.info(f"Prepared slice {segment_idx}: {input_names} -> {output_names}")
+
+        extracted = {}
+        failed_indices = []
+
+        if parallel and len(slice_specs) > 1:
+            max_workers = min(len(slice_specs), multiprocessing.cpu_count())
+            print(f"Extracting {len(slice_specs)} slices in parallel (workers={max_workers})...")
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_extract_single_slice, spec): spec[1] for spec in slice_specs}
+                for future in as_completed(futures):
+                    segment_idx = futures[future]
+                    result = future.result()
+                    if result:
+                        idx, path = result
+                        extracted[idx] = path
+                        print(f"  Extracted slice {idx}")
+                    else:
+                        failed_indices.append(segment_idx)
+        else:
+            print(f"Extracting {len(slice_specs)} slices sequentially...")
+            for spec in slice_specs:
+                result = _extract_single_slice(spec)
+                if result:
+                    idx, path = result
+                    extracted[idx] = path
+                    print(f"  Extracted slice {idx}")
+                else:
+                    failed_indices.append(spec[1])
+
+        for segment_idx in failed_indices:
+            data = fallback_data[segment_idx]
+            file_path = data['file_path']
             try:
-                logger.info(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
-                print(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
-                extract_model(
-                    input_path=self.onnx_path,
-                    output_path=file_path,
-                    input_names=input_names,
-                    output_names=output_names
+                print(f"  Fallback: building slice {segment_idx} manually...")
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                segment_graph = onnx.helper.make_graph(
+                    data['segment_nodes'],
+                    f"segment_{segment_idx}_graph",
+                    data['segment_inputs'],
+                    data['segment_outputs'],
+                    data['segment_initializers']
                 )
-
-                try:
-                    extracted_model = onnx.load(file_path)
-                    extracted_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(extracted_model)
-                    extracted_model = self._concretize_symbolic_dims(extracted_model, value=1)
-                    onnx.save(extracted_model, file_path)
-                    logger.info(f"Shape inference applied successfully to extracted slice {segment_idx}")
-                except Exception as e:
-                    logger.warning(f"Shape inference failed on extracted slice {segment_idx}: {e}")
-                    print(f"Shape inference failed on extracted slice {segment_idx}: {e}")
-
-                slice_paths.append(file_path)
-
+                segment_model = onnx.helper.make_model(segment_graph)
+                segment_model = self._concretize_symbolic_dims(segment_model, value=1)
+                onnx.save(segment_model, file_path)
+                extracted[segment_idx] = file_path
             except Exception as e:
-                try:
-                    logger.info(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
-                    print(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
-                    segment_graph = onnx.helper.make_graph(
-                        segment_nodes,
-                        f"segment_{segment_idx}_graph",
-                        segment_inputs,
-                        segment_outputs,
-                        segment_initializers
-                    )
+                logger.error(f"Fallback failed for segment {segment_idx}: {e}")
 
-                    segment_model = onnx.helper.make_model(segment_graph)
-
-                    try:
-                        segment_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(segment_model)
-                        logger.info(f"Shape inference applied successfully to segment {segment_idx}")
-                    except Exception as e:
-                        logger.warning(f"Shape inference failed on segment {segment_idx}: {e}")
-                        print(f"Shape inference failed on segment {segment_idx}: {e}")
-
-                    segment_model = self._concretize_symbolic_dims(segment_model, value=1)
-                    onnx.save(segment_model, file_path)
-                    slice_paths.append(file_path)
-
-                except Exception as e:
-                    logger.error(f"Error creating segment {segment_idx}: {e}")
-                    continue
-
-            if tile_size is not None and os.path.exists(file_path):
-                try:
-                    tiles_dir = os.path.join(payload_dir, "tiles")
-                    info = autotile_slice(segment_idx, Path(file_path), tile_size, Path(tiles_dir), nested=True, parallel=parallel)
-                    if info:
-                        tiled_info[segment_idx] = info
-                        logger.info(f"Tiled slice {segment_idx} successfully")
-                        print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
-                except Exception as e:
-                    logger.error(f"Error tiling slice {segment_idx}: {e}")
-                    print(f"  -> Tiling failed: {e}")
+        slice_paths = [extracted[idx] for idx in sorted(extracted.keys())]
 
         abs_paths = self.slice_post_process(slice_paths, parallel=parallel)
+
+        tiled_info = {}
+        if tile_size is not None:
+            tile_targets = [(idx, extracted[idx]) for idx in sorted(extracted.keys()) if idx in extracted]
+            if parallel and len(tile_targets) > 1:
+                max_workers = min(len(tile_targets), multiprocessing.cpu_count())
+                print(f"Tiling {len(tile_targets)} slices in parallel (workers={max_workers})...")
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {}
+                    for idx, file_path in tile_targets:
+                        payload_dir = os.path.dirname(file_path)
+                        tiles_dir = os.path.join(payload_dir, "tiles")
+                        futures[executor.submit(autotile_slice, idx, Path(file_path), tile_size, Path(tiles_dir), True, False)] = idx
+                    for future in as_completed(futures):
+                        idx = futures[future]
+                        try:
+                            info = future.result()
+                            if info:
+                                tiled_info[idx] = info
+                                print(f"  Tiled slice {idx}: {info['num_tiles']} tiles")
+                        except Exception as e:
+                            logger.error(f"Tiling failed for slice {idx}: {e}")
+            else:
+                for idx, file_path in tile_targets:
+                    try:
+                        payload_dir = os.path.dirname(file_path)
+                        tiles_dir = os.path.join(payload_dir, "tiles")
+                        info = autotile_slice(idx, Path(file_path), tile_size, Path(tiles_dir), nested=True, parallel=False)
+                        if info:
+                            tiled_info[idx] = info
+                            print(f"  Tiled slice {idx}: {info['num_tiles']} tiles")
+                    except Exception as e:
+                        logger.error(f"Tiling failed for slice {idx}: {e}")
+
         return abs_paths, tiled_info
 
     @staticmethod
@@ -466,7 +543,7 @@ class OnnxSlicer:
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
-        slice_points = self.determine_slice_points(self.analysis)
+        slice_points = self.determine_slice_points(self.analysis, tile_size)
         slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size, parallel=parallel)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
@@ -491,4 +568,4 @@ if __name__ == "__main__":
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
     onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir, tile_size=16)
+    onnx_slicer.slice_model(output_path=output_dir)#, tile_size=16)

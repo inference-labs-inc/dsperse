@@ -285,11 +285,7 @@ class CompilerUtils:
                 compilation_info["tile_count"] = tiling_info.get("num_tiles")
                 
                 # Nested files structure
-                files = {}
-                # If we compiled tiles, file_paths contains the artifacts for one tile
-                files["tile_0"] = file_paths
-                for t_idx in range(1, tiling_info.get("num_tiles", 0)):
-                    files[f"tile_{t_idx}"] = file_paths
+                files = {"tile_0": file_paths}
                 compilation_info["files"] = files
             else:
                 compilation_info["files"] = file_paths or {}

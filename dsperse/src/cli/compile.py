@@ -125,7 +125,9 @@ def setup_parser(subparsers):
     compile_parser.add_argument('--layers', '-l', help='Layer selection or per-layer backend mapping. Examples: "3,20-22" (select layers), or "0,2:jstprove;3-4:ezkl" (per-layer backends). If not provided, all layers will be compiled with default fallback (jstprove→ezkl→onnx).')
     compile_parser.add_argument('--backend', '-b', default=None,
                                 help='Backend specification for all selected layers: "jstprove" | "ezkl" | "onnx". Alternatively, provide per-layer mapping via --layers, e.g., "0,2:jstprove;3-4:ezkl". Default: try both jstprove and ezkl, fallback to onnx.')
-    
+    compile_parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                                help='Number of parallel processes for compilation (default: 1)')
+
     return compile_parser
 
 
@@ -198,8 +200,9 @@ def compile_model(args):
         backend = layers
 
     # Initialize the Compiler (it supports dirs or model.onnx)
+    parallel = getattr(args, 'parallel', 1)
     try:
-        compiler = Compiler(backend=backend)
+        compiler = Compiler(backend=backend, parallel=parallel)
         logger.info(f"Compiler initialized successfully")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Compiler: {e}"

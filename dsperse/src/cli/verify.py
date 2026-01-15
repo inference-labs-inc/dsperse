@@ -32,6 +32,8 @@ def setup_parser(subparsers):
     verify_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
     verify_parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
                                help='Backend to use. In single-slice mode this is required. In run-root mode, only verify slices whose witness backend matches this choice.')
+    verify_parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                               help='Number of parallel processes for verification (default: 1)')
 
     return verify_parser
 
@@ -113,7 +115,8 @@ def verify_proof(args):
     print("verifying...")
 
     try:
-        verifier = Verifier()
+        parallel = getattr(args, 'parallel', 1)
+        verifier = Verifier(parallel=parallel)
         start_time = time.time()
         result = verifier.verify(run_dir, slices_path, backend=getattr(args, 'backend', None))
         elapsed_time = time.time() - start_time

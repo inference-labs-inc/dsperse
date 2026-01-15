@@ -31,6 +31,8 @@ def setup_parser(subparsers):
     prove_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
     prove_parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
                              help='Backend to use. In single-slice mode this is required. In run-root mode, only prove slices whose witness backend matches this choice.')
+    prove_parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                             help='Number of parallel processes for proof generation (default: 1)')
 
     return prove_parser
 
@@ -111,7 +113,8 @@ def run_proof(args):
     print("proving...")
 
     try:
-        prover = Prover()
+        parallel = getattr(args, 'parallel', 1)
+        prover = Prover(parallel=parallel)
         start_time = time.time()
         result = prover.prove(run_dir, slices_path, None, backend=getattr(args, 'backend', None))
         elapsed_time = time.time() - start_time

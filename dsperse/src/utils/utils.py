@@ -48,11 +48,9 @@ class Utils:
         if "split" in tiling and "path" in tiling["split"]:
             tiling["split"]["path"] = rel(tiling["split"]["path"])
 
-        # relativize tiles
-        if "tiles" in tiling:
-            for tile in tiling["tiles"]:
-                if "path" in tile:
-                    tile["path"] = rel(tile["path"])
+        # relativize tile
+        if "tile" in tiling and "path" in tiling["tile"]:
+            tiling["tile"]["path"] = rel(tiling["tile"]["path"])
 
         # relativize concat
         if "concat" in tiling and "path" in tiling["concat"]:

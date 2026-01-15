@@ -50,9 +50,11 @@ def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7) -> int | No
 def is_tileable(model: onnx.ModelProto) -> bool:
     if len(model.graph.input) > 1:
         return False
-    ops = {n.op_type for n in model.graph.node}
-    if 'Conv' not in ops:
+    op_types = [n.op_type for n in model.graph.node]
+    conv_count = op_types.count('Conv')
+    if conv_count != 1:
         return False
+    ops = set(op_types)
     return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
 
 
@@ -443,7 +445,8 @@ def autotile_slice(
     slice_idx: int,
     onnx_path: Path,
     tile_size: int,
-    output_dir: Path
+    output_dir: Path,
+    parallel: bool = False
 ) -> dict | None:
     """
     Create split + tile + concat slices for a single tileable slice.
@@ -510,17 +513,34 @@ def autotile_slice(
         output_dir=output_dir
     )
 
-    tile_infos = []
-    for tile_idx in range(num_tiles):
-        tile_info = create_tile_slice(
-            slice_path=onnx_path,
-            tile_size=actual_tile_size,
-            tile_idx=tile_idx,
-            slice_idx=slice_idx,
-            output_dir=output_dir
-        )
-        if tile_info:
-            tile_infos.append(tile_info)
+    if parallel and num_tiles > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing
+        max_workers = min(num_tiles, multiprocessing.cpu_count())
+        tile_infos = [None] * num_tiles
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(create_tile_slice, onnx_path, actual_tile_size, tile_idx, slice_idx, output_dir): tile_idx
+                for tile_idx in range(num_tiles)
+            }
+            for future in as_completed(futures):
+                tile_idx = futures[future]
+                tile_info = future.result()
+                if tile_info:
+                    tile_infos[tile_idx] = tile_info
+        tile_infos = [t for t in tile_infos if t is not None]
+    else:
+        tile_infos = []
+        for tile_idx in range(num_tiles):
+            tile_info = create_tile_slice(
+                slice_path=onnx_path,
+                tile_size=actual_tile_size,
+                tile_idx=tile_idx,
+                slice_idx=slice_idx,
+                output_dir=output_dir
+            )
+            if tile_info:
+                tile_infos.append(tile_info)
 
     if len(tile_infos) != num_tiles:
         return None
@@ -556,7 +576,44 @@ def autotile_slice(
     }
 
 
-def autotile_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
+def _check_tileable_slice(entry: Path, tile_size: int) -> tuple[int, Path] | None:
+    if not entry.name.startswith("slice_") or not entry.is_dir():
+        return None
+    if "_split" in entry.name or "_tile_" in entry.name or "_concat" in entry.name:
+        return None
+    try:
+        i = int(entry.name.split("_")[1])
+    except (IndexError, ValueError):
+        return None
+
+    onnx_path = entry / "payload" / f"{entry.name}.onnx"
+    if not onnx_path.exists():
+        return None
+
+    m = onnx.load(str(onnx_path))
+    ops = {n.op_type for n in m.graph.node}
+    num_inputs = len(m.graph.input)
+    dims = [d.dim_value for d in m.graph.input[0].type.tensor_type.shape.dim] if m.graph.input else []
+    print(f"Slice {i}: inputs={num_inputs}, ops={ops}, dims={dims}")
+
+    if not is_tileable(m):
+        non_elem = ops - {'Conv'} - ELEMENTWISE_OPS
+        print(f"  -> Not tileable: num_inputs={num_inputs}, has_conv={'Conv' in ops}, non_elementwise={non_elem}")
+        return None
+
+    if len(dims) == 4:
+        h, w = dims[2], dims[3]
+        if h <= tile_size:
+            print(f"  -> Spatial dim {h} <= tile_size {tile_size}, skipping")
+            return None
+        if h != w:
+            print(f"  -> Non-square spatial dims {h}x{w}, skipping")
+            return None
+
+    return (i, onnx_path)
+
+
+def autotile_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool = False) -> dict:
     """
     Scan slices directory and create tiled versions (split + tiles + concat) of Conv slices.
     """
@@ -564,45 +621,34 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
     tiled_dir = slices_dir / "tiled"
     tiled_dir.mkdir(exist_ok=True)
 
-    tiled_info = {}
+    tileable = []
     for entry in sorted(slices_dir.iterdir()):
-        if not entry.name.startswith("slice_") or not entry.is_dir():
-            continue
-        if "_split" in entry.name or "_tile_" in entry.name or "_concat" in entry.name:
-            continue
-        try:
-            i = int(entry.name.split("_")[1])
-        except (IndexError, ValueError):
-            continue
+        result = _check_tileable_slice(entry, tile_size)
+        if result:
+            tileable.append(result)
 
-        onnx_path = entry / "payload" / f"{entry.name}.onnx"
-        if not onnx_path.exists():
-            continue
-
-        m = onnx.load(str(onnx_path))
-        ops = {n.op_type for n in m.graph.node}
-        num_inputs = len(m.graph.input)
-        dims = [d.dim_value for d in m.graph.input[0].type.tensor_type.shape.dim] if m.graph.input else []
-        print(f"Slice {i}: inputs={num_inputs}, ops={ops}, dims={dims}")
-
-        if not is_tileable(m):
-            non_elem = ops - {'Conv'} - ELEMENTWISE_OPS
-            print(f"  -> Not tileable: num_inputs={num_inputs}, has_conv={'Conv' in ops}, non_elementwise={non_elem}")
-            continue
-
-        if len(dims) == 4:
-            h, w = dims[2], dims[3]
-            if h <= tile_size:
-                print(f"  -> Spatial dim {h} <= tile_size {tile_size}, skipping")
-                continue
-            if h != w:
-                print(f"  -> Non-square spatial dims {h}x{w}, skipping")
-                continue
-
-        info = autotile_slice(i, onnx_path, tile_size, tiled_dir)
-        if info:
-            tiled_info[i] = info
-            print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
+    tiled_info = {}
+    if parallel and len(tileable) > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing
+        max_workers = min(len(tileable), multiprocessing.cpu_count())
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(autotile_slice, i, onnx_path, tile_size, tiled_dir, True): i
+                for i, onnx_path in tileable
+            }
+            for future in as_completed(futures):
+                i = futures[future]
+                info = future.result()
+                if info:
+                    tiled_info[i] = info
+                    print(f"  -> Slice {i} tiled successfully: {info['num_tiles']} tiles")
+    else:
+        for i, onnx_path in tileable:
+            info = autotile_slice(i, onnx_path, tile_size, tiled_dir, parallel=parallel)
+            if info:
+                tiled_info[i] = info
+                print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
 
     if tiled_info:
         info_path = tiled_dir / "tiled_info.json"

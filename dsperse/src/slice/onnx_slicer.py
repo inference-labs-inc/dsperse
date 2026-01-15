@@ -364,13 +364,14 @@ class OnnxSlicer:
         # Default fallback
         return ["batch_size", None]
 
-    def slice(self, slice_points: List[int], model_metadata, output_path=None):
+    def slice(self, slice_points: List[int], model_metadata, output_path=None, parallel: bool = False):
         """
         Slice the ONNX model based on the provided slice points.
 
         Args:
             slice_points: List of indices representing nodes with parameter details
             model_metadata: The model analysis metadata containing node information
+            parallel: If True, parallelize post-processing
 
         Returns:
             List[str]: Paths to the sliced model files
@@ -521,66 +522,75 @@ class OnnxSlicer:
                     logger.error(f"Error creating segment {segment_idx}: {e}")
                     continue
 
-        return self.slice_post_process(slice_paths, self.analysis)
+        return self.slice_post_process(slice_paths, self.analysis, parallel=parallel)
 
     @staticmethod
-    def slice_post_process(slices_paths, model_metadata):
+    def _process_single_slice(path: str) -> str | None:
+        abs_path = os.path.abspath(path)
+        try:
+            model = onnx.load(path)
+            logger.info(f"Applying shape inference to {path}")
+            try:
+                model_with_shapes = shape_inference.infer_shapes(model)
+                model = model_with_shapes
+                logger.info(f"Shape inference successful for {path}")
+                print(f"Shape inference successful for {path}")
+            except Exception as shape_error:
+                logger.warning(f"Shape inference failed for {path}: {shape_error}")
+                print(f"Shape inference failed for {path}: {shape_error}")
+            model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
+            onnx.checker.check_model(model)
+            onnx.save(model, path)
+            logger.info(f"Successfully processed and saved {path}")
+            return abs_path
+        except Exception as e:
+            logger.error(f"Error processing {path}: {e}")
+            return None
+
+    @staticmethod
+    def slice_post_process(slices_paths, model_metadata, parallel: bool = False):
         """
         Post-process sliced models with shape inference and validation.
         """
+        if parallel:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            import multiprocessing
+            max_workers = min(len(slices_paths), multiprocessing.cpu_count())
+            abs_paths = []
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(OnnxSlicer._process_single_slice, p): p for p in slices_paths}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        abs_paths.append(result)
+            return sorted(abs_paths)
+
         abs_paths = []
         for path in slices_paths:
-            abs_path = os.path.abspath(path)
-            abs_paths.append(abs_path)
-            try:
-                model = onnx.load(path)
-
-                # Apply ONNX shape inference to infer missing shapes
-                logger.info(f"Applying shape inference to {path}")
-                try:
-                    model_with_shapes = shape_inference.infer_shapes(model)
-                    model = model_with_shapes
-                    logger.info(f"Shape inference successful for {path}")
-                    print(f"Shape inference successful for {path}")
-                except Exception as shape_error:
-                    logger.warning(f"Shape inference failed for {path}: {shape_error}")
-                    print(f"Shape inference failed for {path}: {shape_error}")
-                    # Continue with original model if shape inference fails
-
-                # Concretize any remaining symbolic dims to batch=1 for ezkl
-                model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
-
-                # Validate the model
-                onnx.checker.check_model(model)
-
-                # Save the processed model
-                onnx.save(model, path)
-                logger.info(f"Successfully processed and saved {path}")
-
-            except Exception as e:
-                logger.error(f"Error processing {path}: {e}")
-                continue
-
+            result = OnnxSlicer._process_single_slice(path)
+            if result:
+                abs_paths.append(result)
         return abs_paths
 
-    def slice_model(self, output_path=None, tile_size: int = None):
+    def slice_model(self, output_path=None, tile_size: int = None, parallel: bool = False):
         """
         Run the complete workflow: determine slice points, slice, and optionally tile.
 
         Args:
             output_path: The path to save the slices to.
             tile_size: If set, tile Conv slices with spatial dims > tile_size.
+            parallel: If True, parallelize operations.
 
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
         slice_points = self.determine_slice_points(self.analysis)
-        slices_paths = self.slice(slice_points, self.analysis, output_path)
+        slices_paths = self.slice(slice_points, self.analysis, output_path, parallel=parallel)
 
         tiled_info = {}
         if tile_size is not None:
             slices_dir = output_path or os.path.join(os.path.dirname(self.onnx_path), "slices")
-            tiled_info = autotile_slices(slices_dir, tile_size)
+            tiled_info = autotile_slices(slices_dir, tile_size, parallel=parallel)
             if tiled_info:
                 logger.info(f"Tiled {len(tiled_info)} slices with tile_size={tile_size}")
 

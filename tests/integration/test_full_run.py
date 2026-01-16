@@ -134,21 +134,16 @@ class TestFullRunE2E:
             assert "verification_execution" in res
             assert res["verification_execution"]["success"] is True
 
-    def test_tiled_full_cycle(self, project_root: Path, capfd, jstprove_available):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_tiled_full_run(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd, jstprove_available):
         """Verify end-to-end full cycle with tiling: slice -> compile -> run -> prove -> verify."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiled_e2e"
-        
         # 1. Slice with tiling
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-
         args = SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=str(output_dir),
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
             tile_size=14  # doom input is 28x28, so 14 triggers tiling for 2 slices
@@ -159,13 +154,13 @@ class TestFullRunE2E:
         # We'll force JSTprove for this test to be predictable
         from dsperse.src.compile.compiler import Compiler
         compiler = Compiler()
-        compiler.compile(str(output_dir), layers="jstprove")
+        compiler.compile(str(slices_output_dir), layers="jstprove")
         
         # 3. Run
         input_file = model_dir / "input.json"
         from dsperse.src.run.runner import Runner
         runner = Runner()
-        run_results = runner.run(str(input_file), str(output_dir))
+        run_results = runner.run(str(input_file), str(slices_output_dir))
         
         run_dir = Path(runner.last_run_dir)
         assert run_dir.exists()
@@ -177,12 +172,12 @@ class TestFullRunE2E:
         # 4. Prove
         from dsperse.src.prover import Prover
         prover = Prover()
-        prove_results = prover.prove(str(run_dir), str(output_dir))
+        prove_results = prover.prove(str(run_dir), str(slices_output_dir))
         
         # 5. Verify
         from dsperse.src.verifier import Verifier
         verifier = Verifier()
-        verify_results = verifier.verify(str(run_dir), str(output_dir))
+        verify_results = verifier.verify(str(run_dir), str(slices_output_dir))
         
         # Assertions
         assert run_results["prediction"] is not None
@@ -220,7 +215,3 @@ class TestFullRunE2E:
                  assert verif_exec.get("success"), f"Verification failed for tiled slice {slice_id}: {verif_exec.get('error')}"
                  assert "tile_verifs_info" in verif_exec
                  assert len(verif_exec["tile_verifs_info"]) == 4
-
-        # Clean up
-        if output_dir.exists():
-            shutil.rmtree(output_dir)

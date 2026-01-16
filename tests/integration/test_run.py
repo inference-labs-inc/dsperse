@@ -203,21 +203,16 @@ class TestRunE2E:
         # onnx for 1
         assert "slice_1: onnx" in out
 
-    def test_run_with_tiling(self, project_root: Path, capfd, jstprove_available):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_run_with_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, jstprove_available):
         """9. Verify that running a tiled model works and produces correct run_results.json."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiling_run"
-        
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-
         # 1. Slice with tiling
         slice_model(SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=str(output_dir),
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
             tile_size=14
@@ -225,7 +220,7 @@ class TestRunE2E:
 
         # 2. Compile
         compile_model(SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=None,
             layers=None,
             backend="jstprove"
@@ -234,7 +229,7 @@ class TestRunE2E:
         # 3. Run
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
             force_backend=None,
@@ -265,7 +260,3 @@ class TestRunE2E:
         for t_info in w_exec["tile_exec_infos"]:
             assert t_info["success"] is True
             assert "jstprove" in t_info["method"]
-        
-        # Clean up
-        if output_dir.exists():
-            shutil.rmtree(output_dir)

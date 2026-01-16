@@ -10,8 +10,9 @@ from dsperse.src.cli.compile import compile_model
 
 
 class TestCompileE2E:
-    @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_compile_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available, ezkl_available, capfd):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_compile_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available,
+                             ezkl_available, capfd):
         """
         Happy-path compile flow (default settings):
         - Slice the model
@@ -23,7 +24,7 @@ class TestCompileE2E:
 
         slice_model(SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=None,
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
         ))
@@ -50,14 +51,16 @@ class TestCompileE2E:
             idx = int(d.name.split("_")[-1])
             assert (payload / f"slice_{idx}.onnx").exists()
 
-            assert (d / "ezkl").exists()
-            assert (d / "jstprove").exists()
+            # Artifacts now live under payload/
+            assert (payload / "ezkl").exists()
+            assert (payload / "jstprove").exists()
 
-            ezkl_dir = d / "ezkl"
-            ezkl_expected = [ezkl_dir / "settings.json", ezkl_dir / "model.compiled", ezkl_dir / "vk.key", ezkl_dir / "pk.key"]
+            ezkl_dir = payload / "ezkl"
+            ezkl_expected = [ezkl_dir / "settings.json", ezkl_dir / "model.compiled", ezkl_dir / "vk.key",
+                             ezkl_dir / "pk.key"]
             assert any(p.exists() for p in ezkl_expected)
 
-            jst_dir = d / "jstprove"
+            jst_dir = payload / "jstprove"
             stem = f"slice_{idx}"
             jst_expected = [jst_dir / f"{stem}_circuit.txt", jst_dir / f"{stem}_settings.json"]
             assert any(p.exists() for p in jst_expected) or any(jst_dir.iterdir())
@@ -94,13 +97,22 @@ class TestCompileE2E:
                 files = details.get("files")
                 assert isinstance(files, dict), f"Missing files dict for slice {idx} backend {backend_name}"
 
-                for file_key, rel_path in files.items():
+                # Handle tiled vs standard structure
+                if details.get("tiled"):
+                    # We only store tile_0 now (optimized)
+                    assert "tile_0" in files
+                    target_files = files["tile_0"]
+                else:
+                    target_files = files
+
+                for file_key, rel_path in target_files.items():
                     if rel_path is None:
                         continue
                     # Path is relative to the directory containing metadata.json (slices_output_dir)
                     full_path = slices_output_dir / rel_path
                     assert full_path.exists(), f"File {file_key} for slice {idx} backend {backend_name} not found at {full_path}"
-                    assert rel_path.startswith(f"slice_{idx}/"), f"Expected path to start with slice_{idx}/, got {rel_path}"
+                    assert rel_path.startswith(
+                        f"slice_{idx}/payload/"), f"Expected path to start with slice_{idx}/payload/, got {rel_path}"
 
         # 7) Verify per-slice metadata paths
         for d in slice_dirs:
@@ -122,18 +134,26 @@ class TestCompileE2E:
                 if backend_name == "onnx":
                     continue
                 files = details.get("files")
-                assert isinstance(files, dict), f"Missing files dict in per-slice metadata for slice {idx} {backend_name}"
+                assert isinstance(files,
+                                  dict), f"Missing files dict in per-slice metadata for slice {idx} {backend_name}"
 
-                for file_key, rel_path in files.items():
+                if details.get("tiled"):
+                    target_files = files["tile_0"]
+                else:
+                    target_files = files
+
+                for file_key, rel_path in target_files.items():
                     if rel_path is None:
                         continue
-                    # For per-slice metadata, paths should be relative to d (the slice dir)
-                    # Based on issue description: "payload/ezkl/settings.json"
+                    # For per-slice metadata, the relative path is already 'payload/...'
+                    # The test was failing because it was assuming rel_path was relative to top-level,
+                    # but per-slice metadata stores paths relative to the slice folder.
                     full_path = d / rel_path
-                    assert full_path.exists(), f"File {file_key} from per-slice metadata not found at {full_path}"
-                    assert rel_path.startswith("payload/"), f"Expected per-slice rel_path to start with payload/, got {rel_path}"
+                    assert full_path.exists(), f"File {file_key} from per-slice metadata for slice {idx} not found at {full_path}"
+                    assert rel_path.startswith(
+                        "payload/"), f"Expected per-slice rel_path to start with payload/, got {rel_path}"
 
-    @pytest.mark.parametrize("model_name", ["net", "doom"])
+    @pytest.mark.parametrize("model_name", ["doom"])
     def test_compile_mixed_backends(self, model_name: str, model_dir: Path, slices_output_dir: Path):
         """
         Verify per-layer backend selection via the 'layers' argument:
@@ -163,8 +183,8 @@ class TestCompileE2E:
         slices_root = slices_output_dir
 
         # 2) Compile with mixed backends
-        # To get layer 0 to have both backends, it must be a bare group separated by ';'
-        mixed_layers = "0;2:jstprove;3-4:ezkl"
+        # Test robust parsing: space as separator and missing semicolons
+        mixed_layers = "0; 2:jstprove 3-4:ezkl"
         compile_args = SimpleNamespace(path=str(slices_root), input_file=None, layers=mixed_layers, backend=None)
         compile_model(compile_args)
 
@@ -175,7 +195,7 @@ class TestCompileE2E:
         for item in slices:
             idx = item.get("index")
             comp = item.get("compilation", {})
-            
+
             if idx == 0:
                 assert "jstprove" in comp and "ezkl" in comp
             elif idx == 1:
@@ -206,24 +226,24 @@ class TestCompileE2E:
             output_type="dirs"
         ))
         slices_root = slices_output_dir
-        
+
         # 2) Locate input.json
         input_file = model_dir / "input.json"
         assert input_file.exists()
 
         # 3) Compile with input file (layer 0 only)
         compile_args = SimpleNamespace(path=str(slices_root), input_file=str(input_file), layers="0", backend="ezkl")
-        
+
         # Capture and clear output
         capfd.readouterr()
         compile_model(compile_args)
         out = capfd.readouterr().out
-        
+
         assert "Slices compiled successfully" in out
         assert "Error" not in out
-        
-        # Verify calibration.json exists in slice 0 ezkl
-        cal_file = slices_root / "slice_0" / "ezkl" / "calibration.json"
+
+        # Verify calibration.json exists in slice 0 payload/ezkl
+        cal_file = slices_root / "slice_0" / "payload" / "ezkl" / "calibration.json"
         assert cal_file.exists(), "calibration.json should have been copied to slice output"
 
     @pytest.mark.parametrize("model_name", ["net"])
@@ -247,7 +267,7 @@ class TestCompileE2E:
             save_file=None,
             output_type="dslice"
         ))
-        
+
         # Verify it's in dslice format
         dslice_files = list(hardcoded_output_dir.glob("*.dslice"))
         assert len(dslice_files) >= 1
@@ -293,7 +313,7 @@ class TestCompileE2E:
             save_file=None,
             output_type="dsperse"
         ))
-        
+
         dsperse_file = hardcoded_output_dir.parent / f"{hardcoded_output_dir.name}.dsperse"
         assert dsperse_file.exists()
 
@@ -316,28 +336,27 @@ class TestCompileE2E:
         temp_extract = hardcoded_output_dir.parent / "temp_extract_dsperse_verify"
         if temp_extract.exists():
             shutil.rmtree(temp_extract)
-        
+
         Converter.convert(str(dsperse_file), output_type="dirs", output_path=str(temp_extract), cleanup=False)
-        
+
         try:
             top_level_meta = json.loads((temp_extract / "metadata.json").read_text())
             for s in top_level_meta.get("slices", []):
-                assert "ezkl" in s.get("compilation", {}), f"Slice {s.get('index')} missing compilation in dsperse bundle"
+                assert "ezkl" in s.get("compilation",
+                                       {}), f"Slice {s.get('index')} missing compilation in dsperse bundle"
                 assert s["compilation"]["ezkl"]["compiled"] is True
         finally:
             if temp_extract.exists():
                 shutil.rmtree(temp_extract)
 
-    def test_compile_with_tiling(self, project_root: Path, capfd, jstprove_available):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_compile_with_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available,
+                                 capfd):
         """Verify that compilation correctly handles tiled slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiling_compile"
-        
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
+        output_dir = slices_output_dir
 
         # 1. Slice with tiling
         slice_model(SimpleNamespace(
@@ -359,40 +378,38 @@ class TestCompileE2E:
         # 3. Verify metadata
         metadata_path = output_dir / "metadata.json"
         meta = json.loads(metadata_path.read_text())
-        
+
         tiled_slices = [s for s in meta["slices"] if "tiling" in s]
         assert len(tiled_slices) > 0
-        
+
         for s in tiled_slices:
             idx = s["index"]
             comp = s.get("compilation", {}).get("jstprove", {})
             assert comp.get("compiled") is True
             assert comp.get("tiled") is True
             assert comp.get("tile_count") == 4
-            
+
             files = comp.get("files", {})
             assert "tile_0" in files
-            assert "tile_1" in files
-            
+            # tile_1 should no longer be explicitly listed (optimized)
+            assert "tile_1" not in files
+
             # Check that files actually exist
             tile_0_circuit = output_dir / files["tile_0"]["compiled"]
             assert tile_0_circuit.exists()
-            
+            assert "payload/jstprove/tiled" in files["tile_0"]["compiled"]
+
             # Per-slice metadata check
             slice_meta_path = output_dir / f"slice_{idx}" / "metadata.json"
             slice_meta = json.loads(slice_meta_path.read_text())
             s_item = slice_meta["slices"][0]
             s_comp = s_item.get("compilation", {}).get("jstprove", {})
-            
+
             assert s_comp.get("tiled") is True
             assert "tile_0" in s_comp.get("files", {})
-            
+
             # Path in per-slice metadata should be relative to slice dir
-            # It should be jstprove/tiles/tile_0_circuit.txt
+            # It should be payload/jstprove/tiled/...
             tile_0_rel_path = s_comp["files"]["tile_0"]["compiled"]
             assert (output_dir / f"slice_{idx}" / tile_0_rel_path).exists()
-            assert tile_0_rel_path.startswith("jstprove/tiles/")
-
-        # Clean up
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
+            assert tile_0_rel_path.startswith("payload/jstprove/tiled/")

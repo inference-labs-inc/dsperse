@@ -127,6 +127,11 @@ class OnnxSlicer:
             curr_tileable = is_tileable(curr_node)
             next_tileable = is_tileable(next_node)
 
+            #if the current node is not tileable, and the next node is relu, we can include it in the slice
+            if not curr_tileable and next_node.get("node_type") == "Relu":
+                i = i + 2
+                continue
+
             if curr_tileable != next_tileable:
                 # Transition point: slice before the next node to separate tileable/non-tileable
                 updated_points.add(next_node.get("index"))
@@ -155,6 +160,7 @@ class OnnxSlicer:
         print(f"Original slice points: {slice_points}")
 
         slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
+
         if tile_size:
             slice_points = self.optimize_for_tiling(slice_points, model_metadata)
 

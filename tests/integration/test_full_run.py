@@ -154,7 +154,7 @@ class TestFullRunE2E:
         # We'll force JSTprove for this test to be predictable
         from dsperse.src.compile.compiler import Compiler
         compiler = Compiler()
-        compiler.compile(str(slices_output_dir), layers="jstprove")
+        compiler.compile(str(slices_output_dir), layers="0-4:jstprove; 5:ezkl")
         
         # 3. Run
         input_file = model_dir / "input.json"

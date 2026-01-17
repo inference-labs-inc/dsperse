@@ -121,8 +121,9 @@ class Utils:
 
         filtered = []
         for input_info in slice_inputs:
-            if input_info.name not in initializer_names:
-                filtered.append(input_info.name)
+            name = input_info.name
+            if name and name not in initializer_names:
+                filtered.append(name)
 
         return filtered
 

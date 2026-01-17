@@ -478,9 +478,11 @@ class Compiler:
         return success, file_paths
 
     def _compile_slices(self, dir_path: str, input_file_path: Optional[str] = None, layer_indices=None):
+        print(f"Loading metadata from {dir_path}...")
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
+        print(f"Found {len(metadata.get('slices', []))} slices", flush=True)
 
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
@@ -488,6 +490,7 @@ class Compiler:
         if input_file_path:
             CompilerUtils.run_onnx_inference_chain(slices_data, base_path, input_file_path)
 
+        print(f"Starting compilation phase...", flush=True)
         compiled_count = 0
         skipped_count = 0
         backend_stats: Dict[int, list[str]] = {}
@@ -496,6 +499,7 @@ class Compiler:
         slice_info_map = {}
 
         total_slices = len(slices_data)
+        print(f"Processing {total_slices} slices (layer_indices={layer_indices})...", flush=True)
         for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
                 logger.info(f"Skipping ZK compilation for slice {idx} - will use pure ONNX")
@@ -503,6 +507,7 @@ class Compiler:
                 continue
 
             if slice_data.get("runtime_only"):
+                print(f"  Skipping slice {idx} - runtime_only", flush=True)
                 logger.info(f"Skipping slice {idx} - runtime only (bridge with split/concat)")
                 skipped_count += 1
                 continue
@@ -572,6 +577,7 @@ class Compiler:
             }
 
         if self.parallel > 1 and len(work_items) > 1:
+            print(f"Compiling {len(work_items)} slices with {self.parallel} parallel processes...")
             logger.info(f"Compiling {len(work_items)} slices with {self.parallel} parallel processes...")
             results = []
             with ProcessPoolExecutor(max_workers=self.parallel) as executor:
@@ -585,6 +591,7 @@ class Compiler:
                         logger.error(f"Slice {idx} compilation failed: {e}")
                         results.append({'idx': idx, 'successful_backends': [], 'compilation_blocks': {}, 'errors': [str(e)]})
         else:
+            print(f"Compiling {len(work_items)} slices sequentially...")
             results = [_compile_slice_worker(item) for item in work_items]
 
         for result in results:
@@ -733,8 +740,13 @@ class Compiler:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Path does not exist: {model_path}")
         logger.info(f"Compiling: {model_path}")
+        print(f"Checking model path: {model_path}")
 
-        self.default_backend, self.use_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
+        parsed_backend, parsed_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
+
+        if parsed_backend is not None:
+            self.default_backend = parsed_backend
+            self.use_fallback = parsed_fallback
 
         if layer_indices == "PARSE_COMPLEX":
             self._parse_layer_backends(layers)
@@ -748,11 +760,15 @@ class Compiler:
             else:
                 logger.info("No layers specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx).")
 
+        print(f"Detecting model format...")
         is_sliced, slice_path, type = CompilerUtils.is_sliced_model(model_path)
+        print(f"Model format: {type}, is_sliced: {is_sliced}")
         if is_sliced:
             if type != "dirs":
+                print(f"Converting from {type} to dirs...")
                 slice_path = Converter.convert(model_path, output_type="dirs", cleanup=True)
 
+            print(f"Compiling slices from: {slice_path}")
             self._compile_slices(slice_path, input_file_path=input_file, layer_indices=layer_indices)
 
             if type != "dirs":

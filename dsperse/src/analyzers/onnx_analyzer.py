@@ -364,7 +364,7 @@ class OnnxAnalyzer:
             if start_idx == end_idx:
                 continue
 
-            slice_path = slices_paths[segment_idx] if slices_paths else None
+            slice_path = slices_paths.get(segment_idx) if slices_paths else None
 
             segment_metadata = self._get_segment_metadata(
                 model_metadata,

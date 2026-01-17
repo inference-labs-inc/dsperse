@@ -29,7 +29,8 @@ def _extract_single_slice(spec: Tuple[str, int, List[str], List[str], str]) -> T
         )
         return (segment_idx, file_path)
     except Exception as e:
-        logger.warning(f"extract_model failed for slice {segment_idx}: {e}")
+        err_msg = str(e) if str(e) else f"{type(e).__name__}"
+        logger.warning(f"extract_model failed for slice {segment_idx}: {err_msg} (inputs={input_names}, outputs={output_names})")
         return None
 
 
@@ -469,8 +470,10 @@ class OnnxSlicer:
 
         abs_paths = self.slice_post_process(slice_paths, parallel=parallel)
 
+        abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
+
         tiled_info = {}
-        return abs_paths, tiled_info
+        return abs_paths_dict, tiled_info
 
     @staticmethod
     def _process_single_slice(path: str) -> str | None:
@@ -520,7 +523,7 @@ class OnnxSlicer:
                 abs_paths.append(result)
         return abs_paths
 
-    def slice_model(self, output_path=None, tile_size: int = None, parallel: bool = False):
+    def slice_model(self, output_path=None, max_conv_size: int = None, tile_size: int = None, parallel: bool = False):
         """
         Run the complete workflow: determine slice points, slice, and optionally tile.
 
@@ -530,20 +533,28 @@ class OnnxSlicer:
 
         Args:
             output_path: The path to save the slices to.
-            tile_size: If set, tile Conv slices with spatial dims > tile_size.
+            max_conv_size: Maximum elements per tile. Tile size is calculated dynamically
+                           per-Conv based on channel count: tile_size = sqrt(max_conv_size / channels).
+                           Recommended over tile_size for better ZK circuit sizing.
+            tile_size: Fixed tile size for all Convs (legacy). Ignored if max_conv_size is set.
             parallel: If True, parallelize operations.
 
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
-        slice_points = self.determine_slice_points(self.analysis, tile_size)
+        should_tile = max_conv_size is not None or tile_size is not None
+        slice_points = self.determine_slice_points(self.analysis, tile_size if not max_conv_size else 1)
         slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, parallel=parallel)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
 
-        if tile_size is not None:
-            logger.info(f"Applying tiling transform with tile_size={tile_size}")
-            apply_tiling_to_slices(output_path, tile_size, parallel=parallel)
+        if should_tile:
+            if max_conv_size:
+                logger.info(f"Applying tiling transform with max_conv_size={max_conv_size}")
+                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size, parallel=parallel)
+            else:
+                logger.info(f"Applying tiling transform with tile_size={tile_size}")
+                apply_tiling_to_slices(output_path, tile_size=tile_size, parallel=parallel)
 
         return slices_paths
 

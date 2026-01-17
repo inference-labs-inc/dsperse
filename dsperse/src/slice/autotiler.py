@@ -137,6 +137,56 @@ def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7) -> int | No
     return None
 
 
+def calculate_tile_size_from_max_elements(
+    channels: int,
+    spatial_h: int,
+    spatial_w: int,
+    max_conv_size: int,
+    min_tile: int = 7
+) -> tuple[int | None, str | None]:
+    """
+    Calculate optimal tile size based on max element count constraint.
+
+    The ZK circuit complexity depends on total tensor elements, not just resolution.
+    Given max_conv_size (max elements per tile), calculate the largest tile size
+    such that: channels * tile_h * tile_w <= max_conv_size
+
+    For square tiles: tile_size <= sqrt(max_conv_size / channels)
+
+    Args:
+        channels: Number of channels (C dimension)
+        spatial_h: Input height
+        spatial_w: Input width
+        max_conv_size: Maximum elements allowed per tile
+        min_tile: Minimum tile size (must be > kernel effective size)
+
+    Returns:
+        Tuple of (tile_size, skip_reason):
+        - (tile_size, None) if tiling is possible
+        - (None, "already_fits") if total elements <= max_conv_size
+        - (None, "min_tile_too_large") if required tile_size < min_tile (kernel constraint)
+        - (None, "no_divisor") if no valid tile size divides spatial dim
+    """
+    import math
+
+    total_elements = channels * spatial_h * spatial_w
+    if total_elements <= max_conv_size:
+        return None, "already_fits"
+
+    max_tile_from_constraint = int(math.sqrt(max_conv_size / channels))
+
+    if max_tile_from_constraint < min_tile:
+        return None, "min_tile_too_large"
+
+    target_tile = min(max_tile_from_constraint, spatial_h, spatial_w)
+
+    tile_size = find_tile_size(spatial_h, target_tile, min_tile)
+    if tile_size is None:
+        return None, "no_divisor"
+
+    return tile_size, None
+
+
 def is_tileable(model: onnx.ModelProto) -> bool:
     if len(model.graph.input) > 1:
         return False
@@ -803,10 +853,17 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool 
     return tiled_info
 
 
-def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
+def get_tiling_params(onnx_path: Path, max_conv_size: int = None, tile_size: int = None) -> dict | None:
     """
     Analyze a Conv slice and return tiling parameters if tileable.
-    Returns None if not tileable.
+
+    Args:
+        onnx_path: Path to the ONNX slice
+        max_conv_size: Maximum elements per tile (recommended). Tile size is calculated
+                       dynamically based on channel count: tile_size = sqrt(max_conv_size / channels)
+        tile_size: Fixed tile size (legacy). If both are provided, max_conv_size takes precedence.
+
+    Returns None if not tileable or tiling not needed.
     """
     m = onnx.load(str(onnx_path))
     if not is_tileable(m):
@@ -819,7 +876,7 @@ def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
         return None
 
     _, c_in, h, w = dims
-    if h <= tile_size or h != w:
+    if h != w:
         return None
 
     conv_params = get_conv_params(m)
@@ -834,8 +891,28 @@ def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
 
     halo_h, halo_w = compute_halo(kernel, dilation)
     min_tile = compute_min_tile_size(kernel, dilation)
-    actual_tile_size = find_tile_size(h, tile_size, min_tile)
-    if not actual_tile_size:
+
+    if max_conv_size is not None:
+        actual_tile_size, skip_reason = calculate_tile_size_from_max_elements(c_in, h, w, max_conv_size, min_tile)
+        if actual_tile_size is None:
+            if skip_reason == "already_fits":
+                pass
+            elif skip_reason == "min_tile_too_large":
+                total_elements = c_in * h * w
+                import math
+                needed_tile = int(math.sqrt(max_conv_size / c_in))
+                print(f"  WARNING: Conv {c_in}ch x {h}x{w} ({total_elements} elements) cannot be tiled to fit max_conv_size={max_conv_size}")
+                print(f"           Needed tile_size={needed_tile} but min_tile={min_tile} (kernel constraint)")
+            elif skip_reason == "no_divisor":
+                print(f"  WARNING: Conv {c_in}ch x {h}x{w} - no valid tile size divides spatial dim")
+            return None
+    elif tile_size is not None:
+        if h <= tile_size:
+            return None
+        actual_tile_size = find_tile_size(h, tile_size, min_tile)
+        if not actual_tile_size:
+            return None
+    else:
         return None
 
     tiles_y = h // actual_tile_size
@@ -854,6 +931,9 @@ def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
     out_tile_h = actual_tile_size // sh
     out_tile_w = actual_tile_size // sw
 
+    tile_elements = c_in * actual_tile_size * actual_tile_size
+    total_elements = c_in * h * w
+
     return {
         "input_name": inp.name,
         "output_name": out.name,
@@ -868,6 +948,8 @@ def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
         "num_tiles": num_tiles,
         "out_tile": [out_tile_h, out_tile_w],
         "stride": [sh, sw],
+        "tile_elements": tile_elements,
+        "total_elements": total_elements,
     }
 
 
@@ -907,7 +989,7 @@ def _create_tile_for_conv(args: tuple) -> tuple[int, dict | None]:
     return (conv_idx, tile_info)
 
 
-def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool = False) -> dict:
+def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, tile_size: int = None, parallel: bool = False) -> dict:
     """
     Apply tiling transform to slices, injecting split/concat into bridge slices.
 
@@ -918,7 +1000,10 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel
 
     Args:
         slices_dir: Directory containing sliced model
-        tile_size: Target tile size
+        max_conv_size: Maximum elements per tile (recommended). Tile size is calculated
+                       dynamically per-slice based on channel count.
+                       Formula: tile_size = sqrt(max_conv_size / channels)
+        tile_size: Fixed tile size for all slices (legacy). Ignored if max_conv_size is set.
         parallel: If True, parallelize tile creation
 
     Returns: dict with tiling metadata
@@ -938,6 +1023,14 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel
         print("No slices found in metadata")
         return {}
 
+    if max_conv_size:
+        print(f"Using dynamic tiling with max_conv_size={max_conv_size} elements per tile")
+    elif tile_size:
+        print(f"Using fixed tile_size={tile_size} for all slices")
+    else:
+        print("No tiling parameters specified")
+        return {}
+
     slice_info = []
     for idx, slice_data in enumerate(slices_data):
         slice_dir = slices_dir / f"slice_{idx}"
@@ -947,7 +1040,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel
             slice_info.append({"idx": idx, "type": "missing", "path": None})
             continue
 
-        tiling_params = get_tiling_params(onnx_path, tile_size)
+        tiling_params = get_tiling_params(onnx_path, max_conv_size=max_conv_size, tile_size=tile_size)
         if tiling_params:
             slice_info.append({
                 "idx": idx,
@@ -1007,7 +1100,11 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel
         tile_info = tile_infos[conv_idx]
         tiles_dir = conv_path.parent / "tiles"
 
-        print(f"Tiling Conv slice {conv_idx}...")
+        c_in = tiling["c_in"]
+        tile_sz = tiling["tile_size"]
+        tile_elements = tiling.get("tile_elements", c_in * tile_sz * tile_sz)
+        total_elements = tiling.get("total_elements", c_in * tiling["h"] * tiling["w"])
+        print(f"Tiling Conv slice {conv_idx}: {c_in}ch x {tiling['h']}x{tiling['w']} -> tile_size={tile_sz} ({tiling['num_tiles']} tiles, {tile_elements} elements/tile)")
 
         prev_info = slice_info[i - 1] if i > 0 else None
         next_info = slice_info[i + 1] if i < len(slice_info) - 1 else None

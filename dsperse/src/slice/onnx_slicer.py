@@ -29,7 +29,8 @@ def _extract_single_slice(spec: Tuple[str, int, List[str], List[str], str]) -> T
         )
         return (segment_idx, file_path)
     except Exception as e:
-        logger.warning(f"extract_model failed for slice {segment_idx}: {e}")
+        err_msg = str(e) if str(e) else f"{type(e).__name__}"
+        logger.warning(f"extract_model failed for slice {segment_idx}: {err_msg} (inputs={input_names}, outputs={output_names})")
         return None
 
 

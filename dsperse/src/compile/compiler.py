@@ -508,7 +508,11 @@ class Compiler:
         logger.info(f"Compiling: {model_path}")
         print(f"Checking model path: {model_path}")
 
-        self.default_backend, self.use_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
+        parsed_backend, parsed_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
+
+        if parsed_backend is not None:
+            self.default_backend = parsed_backend
+            self.use_fallback = parsed_fallback
 
         if layer_indices == "PARSE_COMPLEX":
             self._parse_layer_backends(layers)

@@ -391,6 +391,7 @@ class Compiler:
                 skipped_count += 1
                 continue
 
+            print(f"Compiling slice {idx + 1}/{total_slices}...")
             logger.info(f"Starting slice {idx + 1}/{total_slices}...")
             slice_start = time.time()
 
@@ -400,8 +401,10 @@ class Compiler:
             elapsed = time.time() - slice_start
             if successful_backends:
                 compiled_count += 1
+                print(f"  Slice {idx + 1}/{total_slices} done in {elapsed:.1f}s (backends: {', '.join(successful_backends)})")
                 logger.info(f"Completed slice {idx + 1}/{total_slices} in {elapsed:.1f}s (backends: {', '.join(successful_backends)})")
             else:
+                print(f"  Slice {idx + 1}/{total_slices} done in {elapsed:.1f}s (no ZK backend)")
                 logger.info(f"Completed slice {idx + 1}/{total_slices} in {elapsed:.1f}s (no ZK backend)")
             backend_stats[idx] = successful_backends
 

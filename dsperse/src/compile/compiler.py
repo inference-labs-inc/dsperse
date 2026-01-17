@@ -365,7 +365,7 @@ class Compiler:
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        print(f"Found {len(metadata.get('slices', []))} slices")
+        print(f"Found {len(metadata.get('slices', []))} slices", flush=True)
 
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
@@ -375,11 +375,13 @@ class Compiler:
             CompilerUtils.run_onnx_inference_chain(slices_data, base_path, input_file_path)
 
         # Phase 2: Compile layers
+        print(f"Starting compilation phase...", flush=True)
         compiled_count = 0
         skipped_count = 0
         backend_stats: Dict[int, list[str]] = {}
 
         total_slices = len(slices_data)
+        print(f"Processing {total_slices} slices (layer_indices={layer_indices})...", flush=True)
         for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
                 logger.info(f"Skipping ZK compilation for slice {idx} - will use pure ONNX")
@@ -387,11 +389,12 @@ class Compiler:
                 continue
 
             if slice_data.get("runtime_only"):
+                print(f"  Skipping slice {idx} - runtime_only", flush=True)
                 logger.info(f"Skipping slice {idx} - runtime only (bridge with split/concat)")
                 skipped_count += 1
                 continue
 
-            print(f"Compiling slice {idx + 1}/{total_slices}...")
+            print(f"Compiling slice {idx + 1}/{total_slices}...", flush=True)
             logger.info(f"Starting slice {idx + 1}/{total_slices}...")
             slice_start = time.time()
 

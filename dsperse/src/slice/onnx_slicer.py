@@ -469,8 +469,10 @@ class OnnxSlicer:
 
         abs_paths = self.slice_post_process(slice_paths, parallel=parallel)
 
+        abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
+
         tiled_info = {}
-        return abs_paths, tiled_info
+        return abs_paths_dict, tiled_info
 
     @staticmethod
     def _process_single_slice(path: str) -> str | None:

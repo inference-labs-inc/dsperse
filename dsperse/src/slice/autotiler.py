@@ -957,6 +957,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
                 halo_w=halo_w,
                 slice_idx=conv_idx
             )
+            slices_data[prev_info["idx"]]["runtime_only"] = True
         elif prev_info and prev_info["type"] == "conv":
             print(f"  Creating concat+split bridge between Conv {prev_info['idx']} and Conv {conv_idx}")
             prev_tiling = prev_info["tiling"]
@@ -1022,6 +1023,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
                 out_tile_w=out_tile_w,
                 slice_idx=conv_idx
             )
+            slices_data[next_info["idx"]]["runtime_only"] = True
         elif next_info is None or next_info["type"] != "conv":
             print(f"  Creating concat-only bridge after Conv {conv_idx}")
             concat_dir = slices_dir / f"slice_{conv_idx}_concat"

@@ -384,6 +384,11 @@ class Compiler:
                 skipped_count += 1
                 continue
 
+            if slice_data.get("runtime_only"):
+                logger.info(f"Skipping slice {idx} - runtime only (bridge with split/concat)")
+                skipped_count += 1
+                continue
+
             logger.info(f"Starting slice {idx + 1}/{total_slices}...")
             slice_start = time.time()
 

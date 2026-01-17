@@ -111,28 +111,20 @@ class Utils:
 
     @staticmethod
     def filter_inputs(slice_inputs, graph):
-        # Filter input names from slice details
-        slice_filtered_inputs = []
-        for input_info in slice_inputs:
-            # Only include actual inputs that are not weights or biases
-            # Typically, weights and biases have names containing "weight" or "bias"
-            if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
-                    input_info.name in [inp.name for inp in graph.input]):
-                slice_filtered_inputs.append(input_info.name)
-            # Also include intermediate tensors from previous layers
-            elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                slice_filtered_inputs.append(input_info.name)
-        # If there are no inputs after filtering, include the first non-weight/bias input
-        if not slice_filtered_inputs:
-            for input_info in slice_inputs:
-                if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    slice_filtered_inputs.append(input_info.name)
-                    break
+        """
+        Filter slice inputs to exclude weights/biases (initializers), keeping only tensor inputs.
 
-            # If still no inputs, use the first input as a fallback
-            if not slice_filtered_inputs and slice_inputs:
-                slice_filtered_inputs.append(slice_inputs[0].name)
-        return slice_filtered_inputs
+        ONNX extract_model needs input tensor names - not initializer names.
+        Initializers are embedded in the model automatically.
+        """
+        initializer_names = {init.name for init in graph.initializer}
+
+        filtered = []
+        for input_info in slice_inputs:
+            if input_info.name not in initializer_names:
+                filtered.append(input_info.name)
+
+        return filtered
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):

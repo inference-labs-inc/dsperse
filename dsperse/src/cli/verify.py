@@ -13,6 +13,7 @@ from dsperse.src.verifier import Verifier
 from dsperse.src.cli.base import normalize_path, logger, prompt_for_value
 from dsperse.src.utils.utils import Utils
 
+
 def setup_parser(subparsers):
     """
     Set up the argument parser for the verify command.
@@ -28,54 +29,85 @@ def setup_parser(subparsers):
     verify_parser.set_defaults(command='verify')
 
     # Flags-only interface
-    verify_parser.add_argument('--run-dir', '--rd', dest='run_dir', help='The run directory generated when you run the model')
-    verify_parser.add_argument('--slices', '--sd', '-s', dest='slices_path', help='The path to the dslice file, the slice directory, or the dsperse file')
+    verify_parser.add_argument('--run-dir', '--rd', dest='run_dir',
+                               help='The run directory generated when you run the model')
+    verify_parser.add_argument('--slices', '--sd', '-s', dest='slices_path',
+                               help='The path to the dslice file, the slice directory, or the dsperse file')
     verify_parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
                                help='Backend to use. In single-slice mode this is required. In run-root mode, only verify slices whose witness backend matches this choice.')
+    verify_parser.add_argument('--tiles', '-t', dest='tiles',
+                               help='Range of tiles to verify (e.g., "0-2" or "0,1,5"). Only applicable in single-slice mode.')
 
     return verify_parser
+
+
+def parse_tiles_range(tiles_str: str | None) -> range | list[int] | None:
+    """Parse a tile string into a range or list of integers."""
+    if not tiles_str:
+        return None
+
+    if '-' in tiles_str:
+        try:
+            start, end = map(int, tiles_str.split('-'))
+            return range(start, end + 1)
+        except ValueError:
+            return None
+
+    if ',' in tiles_str:
+        try:
+            return [int(x.strip()) for x in tiles_str.split(',')]
+        except ValueError:
+            return None
+
+    try:
+        return [int(tiles_str)]
+    except ValueError:
+        return None
+
 
 def get_all_runs(run_root_dir):
     """
     Get all run directories in the provided runs root directory.
-    
+
     Args:
         run_root_dir (str): Path to the runs root directory (contains metadata.json and run_* subdirs)
-        
+
     Returns:
         list: List of run directories (absolute paths), sorted by name (latest last)
     """
     if not os.path.exists(run_root_dir):
         return []
-    
+
     # Normalize the run root directory to ensure absolute paths
     run_root_dir = normalize_path(run_root_dir)
-    
+
     # Get all run directories sorted by name (which includes timestamp)
     run_dirs = sorted(glob.glob(os.path.join(run_root_dir, "run_*")))
-    
+
     # Ensure all paths are normalized/absolute
     run_dirs = [normalize_path(d) for d in run_dirs]
-    
+
     return run_dirs
+
 
 def get_latest_run(run_root_dir):
     """
     Get the latest run directory in the provided runs root directory.
-    
+
     Args:
         run_root_dir (str): Path to the runs root directory
-        
+
     Returns:
         str: Path to the latest run directory, or None if no runs found
     """
     run_dirs = get_all_runs(run_root_dir)
-    
+
     if not run_dirs:
         return None
-    
+
     # Return the latest run directory
     return run_dirs[-1]
+
 
 def verify_proof(args):
     """
@@ -94,7 +126,8 @@ def verify_proof(args):
     if not run_dir:
         run_dir = prompt_for_value('run-dir', 'Enter the run directory (run/run_<timestamp>)')
     if not slices_path:
-        slices_path = prompt_for_value('slices', 'Enter the slices path (dslice file, slices directory, or dsperse file)')
+        slices_path = prompt_for_value('slices',
+                                       'Enter the slices path (dslice file, slices directory, or dsperse file)')
 
     run_dir = normalize_path(run_dir)
     slices_path = normalize_path(slices_path)
@@ -106,8 +139,11 @@ def verify_proof(args):
     rd = Path(run_dir)
     is_run_root = (rd / 'metadata.json').exists()
     is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
-    if not (is_run_root or is_slice_run):
-        print(f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
+    is_tiled_slice_run = (rd / 'split').exists() or (rd / 'tile_0').exists()
+
+    if not (is_run_root or is_slice_run or is_tiled_slice_run):
+        print(
+            f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
         return
 
     print("verifying...")
@@ -115,11 +151,20 @@ def verify_proof(args):
     try:
         verifier = Verifier()
         start_time = time.time()
-        result = verifier.verify(run_dir, slices_path, backend=getattr(args, 'backend', None))
+
+        # Parse the tile range from CLI args
+        tiles_range = parse_tiles_range(getattr(args, 'tiles', None))
+
+        result = verifier.verify(
+            run_dir,
+            slices_path,
+            backend=getattr(args, 'backend', None),
+            tiles_range=tiles_range
+        )
         elapsed_time = time.time() - start_time
 
         print(f"{Fore.GREEN}✓ Verification completed in {elapsed_time:.2f} seconds!{Style.RESET_ALL}")
-        print(f"Verification saved to run_results.json within the run directory {run_dir}")
+        print(f"Verification results saved to {run_dir}")
         print("\nDone!")
 
         # Print the verification summary

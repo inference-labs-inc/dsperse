@@ -1053,7 +1053,9 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
             "tiles_x": tiling["tiles_x"],
             "halo": tiling["halo"],
             "out_tile": tiling["out_tile"],
-            "tile_path": "payload/tiles/tile.onnx",
+            "tile": {
+                "path": "payload/tiles/tile.onnx",
+            },
         }
 
     with open(metadata_path, "w") as f:

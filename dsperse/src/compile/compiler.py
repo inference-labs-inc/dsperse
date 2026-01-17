@@ -377,17 +377,25 @@ class Compiler:
         skipped_count = 0
         backend_stats: Dict[int, list[str]] = {}
 
+        total_slices = len(slices_data)
         for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
                 logger.info(f"Skipping ZK compilation for slice {idx} - will use pure ONNX")
                 skipped_count += 1
                 continue
 
+            logger.info(f"Starting slice {idx + 1}/{total_slices}...")
+            slice_start = time.time()
+
             slice_dir = CompilerUtils.get_slice_dir(base_path, slice_data, idx)
             successful_backends = self._compile_backends_for_slice(idx, slice_data, base_path, slice_dir)
 
+            elapsed = time.time() - slice_start
             if successful_backends:
                 compiled_count += 1
+                logger.info(f"Completed slice {idx + 1}/{total_slices} in {elapsed:.1f}s (backends: {', '.join(successful_backends)})")
+            else:
+                logger.info(f"Completed slice {idx + 1}/{total_slices} in {elapsed:.1f}s (no ZK backend)")
             backend_stats[idx] = successful_backends
 
             # Save model-level metadata after each slice update

@@ -8,7 +8,7 @@ from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from typing import List, Dict
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slice, ELEMENTWISE_OPS, ELEMENTWISE_OPS
+from dsperse.src.slice.autotiler import autotile_slice, apply_tiling_to_slices, ELEMENTWISE_OPS
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
@@ -140,33 +140,39 @@ class OnnxSlicer:
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
-    def determine_slice_points(self, model_metadata, tile_size=None) -> List[int]:
+    def determine_slice_points(self, model_metadata, tile_size=None, isolate_convs=True) -> List[int]:
         """
         Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
 
         Args:
             model_metadata: The model analysis metadata containing node information.
+            tile_size: If set, optimize slicing for tiling.
+            isolate_convs: If True, each Conv gets its own isolated slice.
 
         Returns:
             List[int]: List of indices representing nodes with parameter details
         """
-        # Find nodes with parameter_details in model_metadata
-        slice_points = []
+        slice_points = set()
+        max_idx = max((n.get("index", 0) for n in model_metadata["nodes"].values()), default=0)
+
         for node_name, node_info in model_metadata["nodes"].items():
             if node_info.get("parameter_details") and node_info["parameter_details"]:
-                slice_points.append(node_info["index"])
+                idx = node_info["index"]
+                slice_points.add(idx)
+                if isolate_convs and node_info.get("node_type") == "Conv":
+                    if idx + 1 <= max_idx:
+                        slice_points.add(idx + 1)
 
-        # Maximize clean slices for JSTprove
-        print(f"Original slice points: {slice_points}")
+        print(f"Original slice points: {sorted(slice_points)}")
 
-        slice_points = self.optimize_jstprove_slices(slice_points, model_metadata)
+        slice_points = self.optimize_jstprove_slices(list(slice_points), model_metadata)
 
         if tile_size:
             slice_points = self.optimize_for_tiling(slice_points, model_metadata)
 
-        slice_points.sort()
+        slice_points = sorted(set(slice_points))
 
-        print(f"optimized slice points: {slice_points}")
+        print(f"Optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points
@@ -412,7 +418,7 @@ class OnnxSlicer:
         # Default fallback
         return ["batch_size", None]
 
-    def slice(self, slice_points: List[int], model_metadata, output_path=None, tile_size: int = None):
+    def slice(self, slice_points: List[int], model_metadata, output_path=None):
         """
         Slice the ONNX model based on the provided slice points.
 
@@ -420,7 +426,6 @@ class OnnxSlicer:
             slice_points: List of indices representing nodes with parameter details
             model_metadata: The model analysis metadata containing node information
             output_path: The path to save the slices to
-            tile_size: If set, tile Conv slices with spatial dims > tile_size
 
         Returns:
             Tuple[List[str], Dict]: Paths to sliced models and tiling metadata
@@ -572,18 +577,6 @@ class OnnxSlicer:
                     logger.error(f"Error creating segment {segment_idx}: {e}")
                     continue
 
-            if tile_size is not None and os.path.exists(file_path):
-                try:
-                    tiles_dir = os.path.join(payload_dir, "tiles")
-                    info = autotile_slice(segment_idx, Path(file_path), tile_size, Path(tiles_dir), nested=True)
-                    if info:
-                        tiled_info[segment_idx] = info
-                        logger.info(f"Tiled slice {segment_idx} successfully")
-                        print(f"  -> Tiled successfully: {info['num_tiles']} tiles")
-                except Exception as e:
-                    logger.error(f"Error tiling slice {segment_idx}: {e}")
-                    print(f"  -> Tiling failed: {e}")
-
         abs_paths = self.slice_post_process(slice_paths)
         return abs_paths, tiled_info
 
@@ -630,6 +623,10 @@ class OnnxSlicer:
         """
         Run the complete workflow: determine slice points, slice, and optionally tile.
 
+        Two-phase approach:
+        1. Slice model (isolating Convs into separate slices)
+        2. Apply tiling transform (inject split/concat into bridge slices)
+
         Args:
             output_path: The path to save the slices to.
             tile_size: If set, tile Conv slices with spatial dims > tile_size.
@@ -638,9 +635,14 @@ class OnnxSlicer:
             Dict[str, Any]: Metadata about the sliced model
         """
         slice_points = self.determine_slice_points(self.analysis, tile_size)
-        slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
+        slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
+
+        if tile_size is not None:
+            logger.info(f"Applying tiling transform with tile_size={tile_size}")
+            apply_tiling_to_slices(output_path, tile_size)
+
         return slices_paths
 
 

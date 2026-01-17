@@ -175,21 +175,16 @@ class TestProveE2E:
         assert found_slice_0, "slice_0 not found in execution_results"
         assert found_slice_1, "slice_1 not found in execution_results"
 
-    def test_prove_with_tiling(self, project_root: Path, capfd, jstprove_available):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_prove_with_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd, jstprove_available):
         """Verify that proving correctly handles tiled slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiling_prove"
-        
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-
         # 1. Slice with tiling
         slice_model(SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=str(output_dir),
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
             tile_size=14
@@ -197,7 +192,7 @@ class TestProveE2E:
 
         # 2. Compile
         compile_model(SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=None,
             layers=None,
             backend="jstprove"
@@ -207,7 +202,7 @@ class TestProveE2E:
         input_file = model_dir / "input.json"
         capfd.readouterr()
         run_inference(SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
             force_backend=None,
@@ -218,7 +213,7 @@ class TestProveE2E:
         
         # 4. Prove
         capfd.readouterr()
-        run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(output_dir), backend="jstprove"))
+        run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(slices_output_dir), backend="jstprove"))
         
         # 5. Verify run_results.json
         run_results = json.loads((run_dir / "run_results.json").read_text())
@@ -238,6 +233,96 @@ class TestProveE2E:
             assert "proof.json" in t_proof["proof_path"]
             assert Path(t_proof["proof_path"]).exists()
 
-        # Clean up
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_prove_tiled_dslice_loop(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
+                                     jstprove_available, capfd):
+        """1) Slices doom with tiling and .dslice, then proves each slice individually using single-slice mode."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        # 1. Slice with tiling and .dslice output
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(hardcoded_output_dir),
+            save_file=None,
+            output_type="dslice",
+            tile_size=14
+        ))
+
+        # 2. Compile with jstprove
+        compile_model(SimpleNamespace(path=str(hardcoded_output_dir), input_file=None, layers=None, backend="jstprove"))
+
+        # 3. Run inference
+        input_file = model_dir / "input.json"
+        run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
+                                      force_backend="jstprove", run_metadata_path=None))
+        run_dir = self._get_run_dir(capfd.readouterr().out)
+
+        # 4. Prove each slice as a 'single slice'
+        # Doom has 6 slices; first 2 are tiled (4 tiles each)
+        for i in range(6):
+            slice_id = f"slice_{i}"
+            dslice_path = hardcoded_output_dir / f"{slice_id}.dslice"
+            run_slice_dir = run_dir / slice_id
+
+            run_proof(SimpleNamespace(run_dir=str(run_slice_dir), slices_path=str(dslice_path), backend="jstprove", tiles=None))
+
+            results = self._verify_prove_artifacts(run_slice_dir)
+            s_res = next(r for r in results["execution_chain"]["execution_results"] if r["slice_id"] == slice_id)
+            p_exec = s_res["proof_execution"]
+
+            assert p_exec["success"] is True
+            if i < 2:  # Tiled slices
+                assert "tile_proofs_info" in p_exec
+                assert len(p_exec["tile_proofs_info"]) == 4
+            else:
+                assert p_exec["proof_file"] is not None
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_prove_partial_tile_ranges_cli(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
+                                           jstprove_available, capfd):
+        """2) Proves specific ranges of tiles for tiled slices using the CLI logic."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        # 1. Slice with tiling (dirs)
+        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(hardcoded_output_dir), save_file=None,
+                                    output_type="dirs", tile_size=14))
+        compile_model(SimpleNamespace(path=str(hardcoded_output_dir), input_file=None, layers=None, backend="jstprove"))
+
+        input_file = model_dir / "input.json"
+        run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
+                                      force_backend="jstprove", run_metadata_path=None))
+        run_dir = self._get_run_dir(capfd.readouterr().out)
+
+        # slice 0: tiles 0-1 batch, tiles 2-3 batch
+        s0_dir = hardcoded_output_dir / "slice_0"
+        s0_run = run_dir / "slice_0"
+
+        # Using run_proof (the CLI entry point)
+        run_proof(SimpleNamespace(run_dir=str(s0_run), slices_path=str(s0_dir), backend="jstprove", tiles="0-1"))
+        res = json.loads((s0_run / "run_results.json").read_text())
+        assert len(res["execution_chain"]["execution_results"][0]["proof_execution"]["tile_proofs_info"]) == 2
+
+        run_proof(SimpleNamespace(run_dir=str(s0_run), slices_path=str(s0_dir), backend="jstprove", tiles="2-3"))
+        res = json.loads((s0_run / "run_results.json").read_text())
+        assert len(res["execution_chain"]["execution_results"][0]["proof_execution"]["tile_proofs_info"]) == 2
+
+        # slice 1: tiles 0-1 batch, tile 2 single, tile 3 single
+        s1_dir = hardcoded_output_dir / "slice_1"
+        s1_run = run_dir / "slice_1"
+
+        run_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles="0,1"))
+        res = json.loads((s1_run / "run_results.json").read_text())
+        assert len(res["execution_chain"]["execution_results"][0]["proof_execution"]["tile_proofs_info"]) == 2
+
+        run_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles="2"))
+        res = json.loads((s1_run / "run_results.json").read_text())
+        tile_info = res["execution_chain"]["execution_results"][0]["proof_execution"]["tile_proofs_info"]
+        assert tile_info[0]["tile_idx"] == 2
+
+        run_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles="3"))
+        res = json.loads((s1_run / "run_results.json").read_text())
+        tile_info = res["execution_chain"]["execution_results"][0]["proof_execution"]["tile_proofs_info"]
+        assert tile_info[0]["tile_idx"] == 3

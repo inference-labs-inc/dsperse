@@ -77,11 +77,96 @@ class RunnerUtils:
         return in_file, out_file
 
     @staticmethod
+    def resolve_relative_path(p: str, base_dir: Path) -> Optional[str]:
+        if not p:
+            return None
+        p_str = str(p)
+        if os.path.isabs(p_str):
+            return p_str
+
+        # Handle the case where p might start with the name of base_dir
+        # (e.g. base_dir='/.../slice_0', p='slice_0/payload/...')
+        sd_name = os.path.basename(os.path.abspath(str(base_dir))) if base_dir else None
+        parts = p_str.split(os.sep)
+        if sd_name and parts and parts[0] == sd_name:
+            parts = parts[1:]
+            p_str = os.path.join(*parts) if parts else ''
+
+        if not base_dir:
+            return os.path.abspath(p_str)
+
+        path = (base_dir / p_str).resolve()
+        if path.exists():
+            return str(path)
+
+        # Fallback to sibling/parent if it doesn't exist (legacy behavior in some tests/backends)
+        alt_path = (base_dir.parent / p_str).resolve()
+        if alt_path.exists():
+            return str(alt_path)
+
+        return str(path)
+
+    @staticmethod
+    def run_onnx_slice(slice_info: dict, input_tensor_path, output_tensor_path, slice_dir: Path = None):
+        """Run ONNX inference for a slice.
+        Accepts `slice_info['path']` possibly as `slice_#/payload/...` or absolute; resolves under `slice_dir` when provided.
+        """
+        from dsperse.src.backends.onnx_models import OnnxModels
+        onnx_path = slice_info.get("path")
+        if onnx_path and not os.path.isabs(str(onnx_path)):
+            onnx_path = RunnerUtils.resolve_relative_path(onnx_path, slice_dir)
+
+        start_time = time.time()
+        success, result = OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
+
+        end_time = time.time()
+        exec_info = {
+            'success': success,
+            'method': 'onnx_only',
+            'execution_time': end_time - start_time,
+            'output_tensor_path': str(output_tensor_path)
+        }
+
+        if success:
+            exec_info['input_file'] = str(input_tensor_path.resolve())
+            exec_info['output_file'] = str(output_tensor_path.resolve())
+
+        return success, result, exec_info
+
+    @staticmethod
+    def run_onnx_multi_input_slice(slice_info: dict, output_file: Path, slice_dir: Path, extra_tensors: dict):
+        """Run ONNX inference for a multi-input slice."""
+        from dsperse.src.backends.onnx_models import OnnxModels
+        onnx_path = slice_info.get("path")
+        if not onnx_path:
+            return False, "No ONNX path in slice_info", {'error': 'missing_path'}
+
+        onnx_path = RunnerUtils.resolve_relative_path(onnx_path, slice_dir)
+
+        if not onnx_path or not Path(onnx_path).exists():
+            return False, f"ONNX file not found: {onnx_path}", {'error': 'file_not_found'}
+
+        start_time = time.time()
+        try:
+            success, result = OnnxModels.run_inference_multi(
+                model_path=onnx_path,
+                extra_tensors=extra_tensors,
+                output_file=output_file
+            )
+        except Exception as e:
+            success, result = False, str(e)
+
+        exec_info = {'success': success, 'method': 'onnx_multi_input', 'execution_time': time.time() - start_time}
+        if not success:
+            exec_info['error'] = result if isinstance(result, str) else 'unknown'
+        return success, result, exec_info
+
+    @staticmethod
     def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
         # Respect optional global forced backend selection
         forced = getattr(runner, 'force_backend', None)
         if forced == 'onnx':
-            return runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            return RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
 
         if node.get("use_circuit"):
             # Detect available compiled circuit backends for this slice
@@ -118,7 +203,7 @@ class RunnerUtils:
                     if ok:
                         return ok, tensor, e_info
                 # Fall back to ONNX
-                ok, tensor, o_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                ok, tensor, o_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
                 o_info["method"] = "jstprove_ezkl_fallback_onnx" if has_ezkl else "jstprove_fallback_onnx"
                 o_info["attempted_jstprove"] = True
                 if len(available_backends) > 1 and has_ezkl:
@@ -153,7 +238,7 @@ class RunnerUtils:
                         ok, tensor, j_info = runner._run_jstprove_slice(j_slice, in_file, out_file, slice_dir)
                         if ok:
                             return ok, tensor, j_info
-                    ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+                    ok, tensor, onnx_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
                     onnx_info["method"] = "ezkl_jstprove_fallback_onnx" if has_jst else "ezkl_fallback_onnx"
                     onnx_info["attempted_ezkl"] = True
                     if len(available_backends) > 1 and has_jst:
@@ -166,11 +251,11 @@ class RunnerUtils:
                 return ok, tensor, result_info
 
             # If no circuit backend appears available, run ONNX
-            ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            ok, tensor, onnx_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
             onnx_info["attempted_ezkl"] = False
             return ok, tensor, onnx_info
 
-        ok, tensor, onnx_info = runner.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+        ok, tensor, onnx_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
         onnx_info["attempted_ezkl"] = False
         return ok, tensor, onnx_info
 

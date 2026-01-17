@@ -184,12 +184,25 @@ class Compiler:
 
     def _parse_layer_backends(self, spec: str):
         """Parse layer-specific backend specification like '0,2:jstprove;3-4:ezkl'"""
+        import re
         # Reset containers for a fresh parse
         self.layer_backends = {}
         self.default_layer_indices = set()
 
+        # Robust parsing: split by semicolon OR space if the next part contains a layer:backend spec
+        # Example: "0; 2:jstprove 3-4:ezkl" -> ["0", "2:jstprove", "3-4:ezkl"]
         parts = spec.split(';')
-        for part in parts:
+        all_parts = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            # Split by whitespace that is followed by a layer-index-pattern and a colon
+            # Pattern matches things like: "0:", "0-2:", "0,2-3:"
+            subparts = re.split(r'\s+(?=\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*:)', p)
+            all_parts.extend(subparts)
+
+        for part in all_parts:
             part = part.strip()
             if not part:
                 continue
@@ -207,6 +220,21 @@ class Compiler:
             if layer_indices:
                 for idx in layer_indices:
                     self.layer_backends[idx] = backend_name
+
+    def _get_backends_to_build(self, idx: int) -> list[str]:
+        backends = []
+        if idx in self.layer_backends:
+            backends.append(self.layer_backends[idx])
+        if idx in self.default_layer_indices:
+            for b in ["jstprove", "ezkl"]:
+                if b not in backends:
+                    backends.append(b)
+        if not backends:
+            if self.default_backend in {"jstprove", "ezkl"} and not self.use_fallback:
+                backends = [self.default_backend]
+            else:
+                backends = ["jstprove", "ezkl"]
+        return backends
 
     def _get_jstprove(self):
         """Lazy initialization of JSTprove backend"""
@@ -247,20 +275,19 @@ class Compiler:
             else:
                 return self._get_ezkl(), "ezkl"
 
-    # Keep backward compatibility properties
-    @property
-    def backend(self):
-        # Return ezkl for backward compatibility
-        return self._get_ezkl()
-
-    @property
-    def backend_name(self):
-        return self.default_backend or "ezkl"
-
-    @property
-    def ezkl(self):
-        return self._get_ezkl()
-
+    # # Keep backward compatibility properties
+    # @property
+    # def backend(self):
+    #     # Return ezkl for backward compatibility
+    #     return self._get_ezkl()
+    #
+    # @property
+    # def backend_name(self):
+    #     return self.default_backend or "ezkl"
+    #
+    # @property
+    # def ezkl(self):
+    #     return self._get_ezkl()
 
     def _compile_slice(self, idx: int, slice_data: dict, base_path: str):
         """
@@ -450,82 +477,6 @@ class Compiler:
         file_paths = CompilerUtils.get_relative_paths(compilation_data, calibration_input, slice_dir)
         return success, file_paths
 
-    def _compile_model(self, model_file_path: str, input_file_path: Optional[str] = None) -> str:
-        """
-        Compile a single ONNX model file (not sliced) with backend fallback support.
-        """
-        if not os.path.isfile(model_file_path):
-            raise ValueError(f"model_path must be a file: {model_file_path}")
-        output_path_root = os.path.splitext(model_file_path)[0]
-        
-        # Build list of backends to try (same logic as _compile_slice)
-        backends_to_try = []
-        if self.default_backend:
-            # Specific backend requested
-            if self.default_backend == "jstprove":
-                jst = self._get_jstprove()
-                if jst:
-                    backends_to_try.append((jst, "jstprove"))
-            else:
-                ezkl = self._get_ezkl()
-                if ezkl:
-                    backends_to_try.append((ezkl, "ezkl"))
-            if self.use_fallback:
-                # Add fallback options
-                if self.default_backend == "jstprove":
-                    ezkl = self._get_ezkl()
-                    if ezkl:
-                        backends_to_try.append((ezkl, "ezkl"))
-                else:
-                    jst = self._get_jstprove()
-                    if jst:
-                        backends_to_try.append((jst, "jstprove"))
-        elif self.use_fallback:
-            # Default fallback: jstprove -> ezkl
-            jst = self._get_jstprove()
-            ezkl = self._get_ezkl()
-            if jst:
-                backends_to_try.append((jst, "jstprove"))
-            if ezkl:
-                backends_to_try.append((ezkl, "ezkl"))
-        else:
-            # No backend specified, no fallback - use EZKL as default
-            ezkl = self._get_ezkl()
-            if ezkl:
-                backends_to_try.append((ezkl, "ezkl"))
-
-        if not backends_to_try:
-            raise RuntimeError("No backends available for compilation")
-
-        # Try each backend until one succeeds
-        for try_backend, try_backend_name in backends_to_try:
-            circuit_folder = os.path.join(os.path.dirname(output_path_root), try_backend_name)
-            os.makedirs(circuit_folder, exist_ok=True)
-            try:
-                logger.info(f"Compiling model with {try_backend_name}...")
-                compilation_data = try_backend.compilation_pipeline(
-                    model_file_path, circuit_folder, input_file_path=input_file_path
-                )
-                success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
-                if success:
-                    logger.info(f"Compilation completed with {try_backend_name}. Output saved to {circuit_folder}")
-                    return circuit_folder
-                else:
-                    if self.use_fallback:
-                        logger.warning(f"{try_backend_name} compilation failed, trying fallback...")
-                    else:
-                        logger.error(f"{try_backend_name} compilation failed.")
-            except Exception as e:
-                if self.use_fallback:
-                    logger.warning(f"{try_backend_name} error: {e}, trying fallback...")
-                else:
-                    logger.error(f"{try_backend_name} error: {e}")
-                if not self.use_fallback:
-                    raise
-
-        raise RuntimeError("All backends failed to compile the model")
-
-
     def _compile_slices(self, dir_path: str, input_file_path: Optional[str] = None, layer_indices=None):
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
@@ -544,9 +495,15 @@ class Compiler:
         work_items = []
         slice_info_map = {}
 
+        total_slices = len(slices_data)
         for idx, slice_data in enumerate(slices_data):
             if layer_indices is not None and idx not in layer_indices:
-                logger.info(f"Skipping ZK compilation for slice {idx} (not in specified layers) - will use pure ONNX at runtime")
+                logger.info(f"Skipping ZK compilation for slice {idx} - will use pure ONNX")
+                skipped_count += 1
+                continue
+
+            if slice_data.get("runtime_only"):
+                logger.info(f"Skipping slice {idx} - runtime only (bridge with split/concat)")
                 skipped_count += 1
                 continue
 
@@ -686,6 +643,81 @@ class Compiler:
         else:
             logger.info(f"Compilation completed. ZK compiled: {compiled_count} slices. Backends used: {summary_str}")
 
+    def _compile_backends_for_slice(self, idx: int, slice_data: dict, base_path: str, slice_dir: str) -> list[str]:
+        """Iterates and compiles backends for a single slice."""
+        tiling_info = slice_data.get('tiling')
+        compilation_slice_data = slice_data
+        if tiling_info:
+            tile_path = CompilerUtils.resolve_tile_path(base_path, slice_dir, tiling_info, idx)
+            if not tile_path:
+                return []
+            compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
+
+        backends_to_build = self._get_backends_to_build(idx)
+        successful_backends = []
+
+        for be in backends_to_build:
+            try:
+                # 1. Output Directory Setup (under payload/)
+                sub_path = os.path.join("payload", be, "tiled" if tiling_info else "")
+                output_dir = os.path.join(slice_dir, sub_path)
+                os.makedirs(output_dir, exist_ok=True)
+
+                # 2. Compile
+                success, file_paths, version = self._run_backend_compilation(be, idx, compilation_slice_data, base_path,
+                                                                             output_dir, slice_dir)
+
+                # 3. Build standardized compilation block
+                comp_block = CompilerUtils.build_compilation_block(be, version, success, file_paths, slice_dir,
+                                                                   tiling_info)
+
+                # 4. Update model-level (in-memory) and slice-level (on-disk) metadata
+                if 'compilation' not in slice_data:
+                    slice_data['compilation'] = {}
+                slice_data['compilation'][be] = comp_block
+
+                slice_meta_path = Path(slice_dir) / "metadata.json"
+                if slice_meta_path.exists():
+                    CompilerUtils.update_slice_metadata(idx, slice_meta_path, success, comp_block, backend_name=be)
+
+                if success:
+                    successful_backends.append(be)
+            except Exception as e:
+                logger.error(f"Slice {idx}: {be} error: {e}")
+
+        # Record ONNX fallback if none succeeded
+        if not successful_backends:
+            onnx_block = {
+                "compiled": True,
+                "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "backend": "onnx",
+                "backend_version": None,
+                "files": {"skipped": True, "reason": "fallback_to_onnx"}
+            }
+            if 'compilation' not in slice_data:
+                slice_data['compilation'] = {}
+            slice_data['compilation']['onnx'] = onnx_block
+
+            slice_meta_path = Path(slice_dir) / "metadata.json"
+            if slice_meta_path.exists():
+                CompilerUtils.update_slice_metadata(idx, slice_meta_path, True, onnx_block, backend_name="onnx")
+
+        return successful_backends
+
+    def _run_backend_compilation(self, be: str, idx: int, slice_data: dict, base_path: str, output_dir: str,
+                                 slice_dir: str):
+        """Dispatches to the specific backend implementation."""
+        if be == "jstprove":
+            success, file_paths = self._compile_jstprove_slice(idx, slice_data, base_path, output_dir=output_dir,
+                                                               slice_dir=slice_dir)
+            version = self._jstprove.get_version() if self._jstprove else None
+        elif be == "ezkl":
+            success, file_paths = self._compile_ezkl_slice(idx, slice_data, base_path, output_dir=output_dir,
+                                                           slice_dir=slice_dir)
+            version = self._ezkl.get_version() if self._ezkl else None
+        else:
+            raise ValueError(f"Unknown backend {be}")
+        return success, file_paths, version
 
     def compile(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None):
         """
@@ -702,29 +734,15 @@ class Compiler:
             raise FileNotFoundError(f"Path does not exist: {model_path}")
         logger.info(f"Compiling: {model_path}")
 
-        # Support both simple layer lists (e.g., "3,20-22") and backend-annotated specs
-        # like "0,2:jstprove;3-4:ezkl". For annotated specs, populate self.layer_backends
-        # and derive indices from it to avoid parse warnings.
-        if layers and layers.lower() in ["jstprove", "ezkl"]:
-            # Simple backend name - use only this backend for all layers
-            self.default_backend = layers.lower()
-            self.use_fallback = False
-            layer_indices = None
-        elif layers and (":" in layers or ";" in layers):
-            # Populate per-layer backend mapping (and collect default indices from bare groups)
+        self.default_backend, self.use_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
+
+        if layer_indices == "PARSE_COMPLEX":
             self._parse_layer_backends(layers)
             layer_indices = sorted(set(self.layer_backends.keys()) | set(self.default_layer_indices))
-            # Enable mixed mode and force using fallback logic to build all requested backends
-            self.use_fallback = True
-            # Re-initialize backend flags based on the updated self.use_fallback
-            self.default_backend = None
-        else:
-            layer_indices = CompilerUtils.parse_layers(layers) if layers else None
 
         if layer_indices:
             logger.info(f"Will compile only layers with indices: {layer_indices}")
         else:
-            # No layers specified: compile ALL layers
             if self.default_backend and not self.use_fallback:
                 logger.info(f"No layers specified. Will compile all layers using only {self.default_backend}.")
             else:
@@ -732,27 +750,23 @@ class Compiler:
 
         is_sliced, slice_path, type = CompilerUtils.is_sliced_model(model_path)
         if is_sliced:
-            # Convert to dirs if needed
             if type != "dirs":
                 slice_path = Converter.convert(model_path, output_type="dirs", cleanup=True)
 
             self._compile_slices(slice_path, input_file_path=input_file, layer_indices=layer_indices)
 
-            # Convert back to original type if needed
             if type != "dirs":
                 slice_path = Converter.convert(slice_path, output_type=type, cleanup=True)
 
             return slice_path
 
-        elif os.path.isfile(model_path) and model_path.lower().endswith('.onnx'):
-            return self._compile_model(model_path, input_file_path=input_file)
         else:
             raise ValueError(f"Invalid model path: {model_path}. Must be either a sliced model or an .onnx file")
 
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     base_paths = {
         1: "../../models/doom",
@@ -771,5 +785,5 @@ if __name__ == "__main__":
     input_file = os.path.join(model_dir, "input.json")
 
     compiler = Compiler()
-    result = compiler.compile(model_path=slices_dir, layers='jstprove')#, input_file=input_file, layers="0-4:ezkl")
+    result = compiler.compile(model_path=slices_dir, input_file=input_file, layers="0-4:jstprove; 5:ezkl")
     print(f"Compilation finished.")

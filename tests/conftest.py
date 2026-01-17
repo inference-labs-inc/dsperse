@@ -118,14 +118,20 @@ def analysis_output_dir(model_dir: Path) -> Path:
 def run_output_dir(model_dir: Path) -> Path:
     """Ensure the <model_dir>/run directory is cleaned before and after tests."""
     run_dir = model_dir / "run"
+    # Also handle the run directory that might appear in tests/models/ when using hardcoded_output_dir
+    tests_models_run = model_dir.parents[0] / "run"
+
     # Pre-clean
-    if run_dir.exists():
-        shutil.rmtree(run_dir, ignore_errors=True)
+    for d in [run_dir, tests_models_run]:
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+
     try:
         yield run_dir
     finally:
-        if run_dir.exists():
-            shutil.rmtree(run_dir, ignore_errors=True)
+        for d in [run_dir, tests_models_run]:
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

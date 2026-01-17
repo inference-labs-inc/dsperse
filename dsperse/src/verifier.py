@@ -125,6 +125,7 @@ def _verify_slice_worker(args: tuple) -> dict:
     result['time_sec'] = time.time() - start
     return result
 
+
 class Verifier:
     """
     Orchestrator for verifying model execution proofs.
@@ -165,7 +166,6 @@ class Verifier:
                 w = entry.get("witness_execution") or {}
                 method = (w.get("method") or "").lower()
                 if method == "tiled_parallel":
-                    # Tiled execution: check first tile to see backend
                     tile_infos = w.get("tile_exec_infos", [])
                     if tile_infos:
                         method = (tile_infos[0].get("method", "") or "").lower()
@@ -202,6 +202,89 @@ class Verifier:
         if meta_backend in ("jstprove", "ezkl"):
             return meta_backend
         return "jstprove"
+
+    def _verify_tile(
+            self,
+            tile_idx: int,
+            slice_id: str,
+            run_path: Path,
+            preferred_backend: str,
+            slice_dir: Path,
+            meta: dict,
+    ) -> tuple[bool, str | None]:
+        """Verify a single tile within a slice."""
+        tile_name = f"tile_{tile_idx}"
+
+        if (run_path / slice_id / tile_name).exists():
+            tile_run_dir = run_path / slice_id / tile_name
+        else:
+            tile_run_dir = run_path / tile_name
+
+        tile_proof_path = tile_run_dir / "proof.json"
+        if not tile_proof_path.exists():
+            logger.warning(f"Proof missing for {slice_id}/{tile_name}, skipping")
+            return False, "proof_missing"
+
+        if preferred_backend == "jstprove":
+            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get(
+                "circuit_path") or meta.get("compiled"))
+            input_path = tile_run_dir / "input.json"
+            output_path = tile_run_dir / "output.json"
+            tile_witness_path = tile_run_dir / "output_witness.bin"
+
+            missing = [p for p in [circuit_path, input_path, output_path, tile_witness_path] if
+                       not p or not Path(p).exists()]
+            if missing:
+                return False, f"Missing files for tile verify: {', '.join(map(str, missing))}"
+            try:
+                ok = self.jstprove_runner.verify(
+                    proof_path=str(tile_proof_path),
+                    circuit_path=str(circuit_path),
+                    input_path=str(input_path),
+                    output_path=str(output_path),
+                    witness_path=str(tile_witness_path),
+                )
+                return ok, None if ok else "verification_failed"
+            except Exception as e:
+                return False, str(e)
+        else:
+            settings_path = Utils.resolve_under_slice(slice_dir,
+                                                      meta.get("ezkl_settings_path") or meta.get("settings_path"))
+            vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+            try:
+                ok = self.ezkl_runner.verify(proof_path=str(tile_proof_path), settings_path=settings_path,
+                                             vk_path=vk_path)
+                return ok, None if ok else "verification_failed"
+            except Exception as e:
+                return False, str(e)
+
+    def _verify_tile_batch(
+            self,
+            slice_id: str,
+            run_path: Path,
+            num_tiles: int,
+            preferred_backend: str,
+            slice_dir: Path,
+            meta: dict,
+            tiles_range: range | list[int] | None = None,
+    ) -> tuple[bool, list[dict]]:
+        """Verify a subset or all tiles for a slice."""
+        target_tiles = tiles_range if tiles_range is not None else range(num_tiles)
+        logger.info(f"Verifying tiled slice {slice_id} (indices: {list(target_tiles)})...")
+        tile_verifs = []
+
+        for tile_idx in target_tiles:
+            start = time.time()
+            ok, res = self._verify_tile(tile_idx, slice_id, run_path, preferred_backend, slice_dir, meta)
+            tile_verifs.append({
+                "tile_idx": tile_idx,
+                "success": ok,
+                "time_sec": time.time() - start,
+                "error": res
+            })
+
+        success = all(v["success"] for v in tile_verifs)
+        return success, tile_verifs
 
     def verify_dirs(self, run_path: str | Path, dirs_path: str | Path, backend: str | None = None) -> dict:
         """Verify proofs for circuit-capable slices (JSTprove and EZKL)."""
@@ -327,151 +410,125 @@ class Verifier:
 
     def verify_dslice(self, run_path: str | Path, dslice_path: str | Path, backend: str | None = None) -> dict:
         temp_dirs = Converter.convert(str(dslice_path), output_type="dirs", cleanup=False)
-
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
         result = self.verify_dirs(run_path, dirs_root, backend=backend)
-
         Converter.convert(str(dirs_root), output_type="dslice", cleanup=False)
-
         return result
 
     def verify_dsperse(self, run_path: str | Path, dsperse_path: str | Path, backend: str | None = None) -> dict:
         temp_dirs = Converter.convert(dsperse_path, output_type="dirs", cleanup=False)
-
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
         result = self.verify_dirs(run_path, dirs_root, backend=backend)
-
         Converter.convert(str(dirs_root), output_type="dsperse", cleanup=False)
-
         return result
 
-    def verify(self, run_path: str | Path, model_path: str | Path, backend: str | None = None) -> dict:
-        """Verify proofs.
-        Supports:
-        - Run-root mode: run_path contains metadata.json (verify across slices using run_results proof paths)
-        - Single-slice mode: run_path contains input.json and output.json (verify proof.json in-place)
-        """
+    def verify(self, run_path: str | Path, model_path: str | Path, backend: str | None = None,
+               tiles_range: range | list[int] | None = None) -> dict:
+        """Verify proofs (supports full runs, packaged formats, and single slices)."""
         run_path = Path(run_path)
-
         is_run_root = (run_path / "metadata.json").exists()
-        is_slice_run = (run_path / "input.json").exists() and (run_path / "output.json").exists()
+        is_slice_run = ((run_path / "input.json").exists() and (run_path / "output.json").exists()) or \
+                       (run_path / "split").exists() or (run_path / "tile_0").exists()
 
         detected = Converter.detect_type(model_path)
 
         if is_run_root:
-            # Normal multi-slice flow
             Utils.load_run_metadata(run_path)
-            if detected == "dslice":
-                return self.verify_dslice(run_path, model_path)
-            if detected == "dsperse":
-                return self.verify_dsperse(run_path, model_path)
-            if detected == "dirs":
-                return self.verify_dirs(run_path, model_path, backend=backend)
-            raise ValueError(f"Unsupported data type for verification: {detected}")
+            if detected == "dslice": return self.verify_dslice(run_path, model_path, backend=backend)
+            if detected == "dsperse": return self.verify_dsperse(run_path, model_path, backend=backend)
+            if detected == "dirs": return self.verify_dirs(run_path, model_path, backend=backend)
+            raise ValueError(f"Unsupported data type: {detected}")
 
         if is_slice_run:
-            # Single-slice mode requires explicit backend
             if backend not in ("jstprove", "ezkl"):
-                raise ValueError("Single-slice verification requires explicit backend: 'jstprove' or 'ezkl'.")
-            # Ensure we operate on directory layout for the provided model/slice path
+                raise ValueError("Single-slice verification requires explicit backend.")
             dirs_model_path = model_path
             if detected != "dirs":
                 dirs_model_path = Converter.convert(str(model_path), output_type="dirs", cleanup=False)
-
-            result = self._verify_single_slice(run_path, dirs_model_path, detected, backend)
-
-            # Convert back to the original packaging if needed
+            result = self._verify_single_slice(run_path, dirs_model_path, detected, backend, tiles_range=tiles_range)
             if detected != "dirs":
-                from dsperse.src.utils.utils import Utils as _Utils
-                root = _Utils.dirs_root_from(Path(dirs_model_path))
-                Converter.convert(str(root), output_type=detected, cleanup=True)
-
+                Converter.convert(str(Utils.dirs_root_from(Path(dirs_model_path))), output_type=detected, cleanup=True)
             return result
 
-        raise FileNotFoundError(f"Run path invalid; expected run-root (metadata.json) or per-slice (input.json + output.json) at {run_path}")
+        raise FileNotFoundError(f"Run path invalid at {run_path}")
 
-    def _verify_single_slice(self, run_path: Path, model_path: str | Path, detected: str, backend: str) -> dict:
-        """Internal: verify exactly one slice using a per-slice run directory.
-        Expects `<run_path>/input.json` and `<run_path>/output.json` and proof.json to exist and `model_path` to
-        resolve to a single-slice metadata source (slice dir or .dslice).
-        Updates/creates `run_results.json` in `run_path`.
-        """
+    def _verify_single_slice(self, run_path: Path, model_path: str | Path, detected: str, backend: str,
+                             tiles_range: range | list[int] | None = None) -> dict:
+        """Internal: verify exactly one slice (detects tiling)."""
         sdir = Path(model_path)
-
-        run_meta = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None, original_format=detected)
+        run_meta = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None,
+                                                        original_format=detected)
         model_slices = (run_meta or {}).get("slices", {})
         if len(model_slices) != 1:
-            raise ValueError(f"Slices path must represent exactly one slice for single-slice verification; found {len(model_slices)} in {model_path}")
+            raise ValueError("Slices path must represent exactly one slice.")
 
         (slice_id, meta), = model_slices.items()
-
+        preferred = (backend or "").lower()
         dirs_root = Utils.dirs_root_from(Path(model_path))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
-        proof_path = Path(run_path) / "proof.json"
-        if not proof_path.exists():
-            raise FileNotFoundError(f"Proof file not found at {proof_path}. Run 'prove' for this slice first.")
 
-        # Use explicitly provided backend (single-slice mode enforces this)
-        preferred = (backend or "").lower()
-
-        start = time.time()
-        success = False
-        error_msg = None
-        method = None
-
-        if preferred == "jstprove":
-            if self.jstprove_runner is None:
-                raise RuntimeError("JSTprove CLI not available; cannot verify JSTprove proof")
-            # Prefer JSTprove-specific circuit path when available
-            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get("circuit_path") or meta.get("compiled"))
-            input_path = Path(run_path) / "input.json"
-            output_path = Path(run_path) / "output.json"
-            wf = self._get_witness_file_from_run(run_path, slice_id)
-            witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
-            missing = [p for p in [circuit_path, input_path, output_path, witness_path] if not p or not Path(p).exists()]
-            if missing:
-                raise FileNotFoundError(f"Missing files for JSTprove verify: {', '.join(map(str, missing))}")
-            success = self.jstprove_runner.verify(
-                proof_path=str(proof_path),
-                circuit_path=str(circuit_path),
-                input_path=str(input_path),
-                output_path=str(output_path),
-                witness_path=str(witness_path),
-            )
-            method = "jstprove_verify"
-        else:
-            # Prefer EZKL-specific fields for single-slice verification
-            vk_path_res = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
-            settings_path_res = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_settings_path") or meta.get("settings_path"))
-            if not vk_path_res or not os.path.exists(vk_path_res):
-                raise FileNotFoundError(f"Verification key not found for {slice_id} at {vk_path_res}")
-            if settings_path_res and not os.path.exists(settings_path_res):
-                raise FileNotFoundError(f"Settings file not found for {slice_id} at {settings_path_res}")
-            success = self.ezkl_runner.verify(
-                proof_path=str(proof_path),
-                settings_path=settings_path_res,
-                vk_path=vk_path_res,
-            )
-            method = "ezkl_verify"
-
-        elapsed = time.time() - start
-
-        verifs = {
-            slice_id: {
-                "success": bool(success),
-                "time_sec": elapsed,
-                "method": method,
-                "attempted_jstprove": preferred == "jstprove",
-                "attempted_ezkl": preferred == "ezkl",
-                "error": None if success else (error_msg or "verification_failed"),
+        tiling = meta.get("tiling")
+        if tiling or tiles_range is not None:
+            num_tiles = tiling["num_tiles"] if tiling else 0
+            start = time.time()
+            success, tile_verifs = self._verify_tile_batch(slice_id, Path(run_path), num_tiles, preferred, slice_dir,
+                                                           meta, tiles_range=tiles_range)
+            elapsed = time.time() - start
+            verifs = {
+                slice_id: {
+                    "success": bool(success),
+                    "time_sec": elapsed,
+                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
+                    "attempted_jstprove": preferred == "jstprove",
+                    "attempted_ezkl": preferred == "ezkl",
+                    "tile_verifs_info": tile_verifs,
+                    "error": None if success else "One or more tiles failed verification",
+                }
             }
-        }
+        else:
+            proof_path = Path(run_path) / "proof.json"
+            if not proof_path.exists(): raise FileNotFoundError(f"Proof file not found at {proof_path}")
+            start = time.time()
+            success = False
+            error_msg = None
+            if preferred == "jstprove":
+                circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get(
+                    "circuit_path") or meta.get("compiled"))
+                input_path, output_path = Path(run_path) / "input.json", Path(run_path) / "output.json"
+                wf = self._get_witness_file_from_run(run_path, slice_id)
+                witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
+                try:
+                    success = self.jstprove_runner.verify(str(proof_path), str(circuit_path), str(input_path),
+                                                          str(output_path), str(witness_path))
+                except Exception as e:
+                    error_msg = str(e)
+            else:
+                vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+                settings_path = Utils.resolve_under_slice(slice_dir,
+                                                          meta.get("ezkl_settings_path") or meta.get("settings_path"))
+                try:
+                    success = self.ezkl_runner.verify(str(proof_path), settings_path=settings_path, vk_path=vk_path)
+                except Exception as e:
+                    error_msg = str(e)
+
+            elapsed = time.time() - start
+            verifs = {
+                slice_id: {
+                    "success": bool(success),
+                    "time_sec": elapsed,
+                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
+                    "attempted_jstprove": preferred == "jstprove",
+                    "attempted_ezkl": preferred == "ezkl",
+                    "error": None if success else (error_msg or "verification_failed"),
+                }
+            }
+
         run_results = Utils.load_run_results(Path(run_path))
-        run_results, verified_count = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
+        run_results, _ = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
         exec_chain = run_results.setdefault("execution_chain", {})
-        if method == "jstprove_verify":
+        if "jstprove" in preferred:
             exec_chain["jstprove_verified_slices"] = int(exec_chain.get("jstprove_verified_slices", 0)) + int(success)
-        elif method == "ezkl_verify":
+        else:
             exec_chain["ezkl_verified_slices"] = int(exec_chain.get("ezkl_verified_slices", 0)) + int(success)
         Utils.save_run_results(Path(run_path), run_results)
         return run_results
@@ -479,7 +536,7 @@ class Verifier:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 2  # Change this to test different models
+    model_choice = 1  # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -491,23 +548,24 @@ if __name__ == "__main__":
     # Get model directory
     model_dir = os.path.abspath(base_paths[model_choice])
     slices_dir = os.path.join(model_dir, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0")  # give a single slice to test
+    slices_dir = os.path.join(slices_dir, "slice_0")  # give a single slice to test
     
     # Get run directory - use the latest run in the model's run directory
     run_dir = os.path.join(model_dir, "run")
-    
+
     # Find the latest run
     run_dirs = sorted([d for d in os.listdir(run_dir) if d.startswith("run_")])
     
     latest_run = run_dirs[-1]
     run_path = os.path.join(run_dir, latest_run)
+    run_path = os.path.join(run_path, "slice_0")
     
     # Initialize verifier
     verifier = Verifier()
     
     # Run verification
     print(f"Verifying run {latest_run} for model {base_paths[model_choice]}...")
-    results = verifier.verify(run_path, slices_dir, backend="jstprove")
+    results = verifier.verify(run_path, slices_dir, backend="jstprove",  tiles_range=[0, 1])
     
     # Display results
     print(f"\nVerification completed!")

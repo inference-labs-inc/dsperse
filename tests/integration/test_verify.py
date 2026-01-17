@@ -190,22 +190,16 @@ class TestVerifyE2E:
         assert found_slice_0, "slice_0 not found in execution_results"
         assert found_slice_1, "slice_1 not found in execution_results"
 
-    def test_verify_with_tiling(self, project_root: Path, capfd, jstprove_available):
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_verify_with_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd, jstprove_available):
         """Verify that verification correctly handles tiled slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        model_dir = project_root / "tests" / "models" / "doom"
-        output_dir = project_root / "tests" / "models" / "doom_tiling_verify"
-        
-        import shutil
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-
         # 1. Slice with tiling
         slice_model(SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=str(output_dir),
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
             tile_size=14
@@ -213,7 +207,7 @@ class TestVerifyE2E:
 
         # 2. Compile
         compile_model(SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=None,
             layers=None,
             backend="jstprove"
@@ -223,7 +217,7 @@ class TestVerifyE2E:
         input_file = model_dir / "input.json"
         capfd.readouterr()
         run_inference(SimpleNamespace(
-            path=str(output_dir),
+            path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
             force_backend=None,
@@ -233,11 +227,11 @@ class TestVerifyE2E:
         run_dir = self._get_run_dir(out)
         
         # 4. Prove
-        run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(output_dir), backend="jstprove"))
+        run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(slices_output_dir), backend="jstprove"))
         
         # 5. Verify
         capfd.readouterr()
-        verify_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(output_dir), backend="jstprove"))
+        verify_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(slices_output_dir), backend="jstprove"))
         
         # 6. Verify run_results.json
         run_results = json.loads((run_dir / "run_results.json").read_text())
@@ -255,6 +249,112 @@ class TestVerifyE2E:
         for t_verif in v_exec["tile_verifs_info"]:
             assert t_verif["success"] is True
 
-        # Clean up
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_verify_tiled_dslice_loop(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
+                                      run_output_dir: Path, jstprove_available, capfd):
+        """1) Slices doom with tiling and .dslice, runs inference, proves single slices, and verifies them."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        # 1. Slice with tiling and .dslice output
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(hardcoded_output_dir),
+            save_file=None,
+            output_type="dslice",
+            tile_size=14
+        ))
+
+        # 2. Compile
+        compile_model(SimpleNamespace(path=str(hardcoded_output_dir), input_file=None, layers=None, backend="jstprove"))
+
+        # 3. Run inference
+        input_file = model_dir / "input.json"
+        run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
+                                      force_backend="jstprove", run_metadata_path=None))
+        run_dir = self._get_run_dir(capfd.readouterr().out)
+
+        # 4. Prove and Verify each slice individually
+        # Doom has 6 slices; first 2 are tiled (4 tiles each at tile_size 14)
+        for i in range(6):
+            slice_id = f"slice_{i}"
+            dslice_path = hardcoded_output_dir / f"{slice_id}.dslice"
+            run_slice_dir = run_dir / slice_id
+
+            # Prove the single slice
+            run_proof(SimpleNamespace(run_dir=str(run_slice_dir), slices_path=str(dslice_path), backend="jstprove",
+                                      tiles=None))
+
+            # Verify the single slice
+            verify_proof(SimpleNamespace(run_dir=str(run_slice_dir), slices_path=str(dslice_path), backend="jstprove",
+                                         tiles=None))
+
+            # Validate the per-slice run results
+            results = self._verify_verify_artifacts(run_slice_dir)
+            exec_results = results["execution_chain"]["execution_results"]
+            s_res = next(r for r in exec_results if r["slice_id"] == slice_id)
+            v_exec = s_res["verification_execution"]
+
+            assert v_exec["success"] is True
+            if i < 2:  # Tiled slices
+                assert "tile_verifs_info" in v_exec
+                assert len(v_exec["tile_verifs_info"]) == 4
+            else:
+                assert "tile_verifs_info" not in v_exec
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_verify_partial_tile_ranges_cli(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
+                                            run_output_dir: Path, jstprove_available, capfd):
+        """2) Proves tiled slices then verifies specific ranges of tiles using CLI logic."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        # 1. Slice with tiling (dirs)
+        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(hardcoded_output_dir), save_file=None,
+                                    output_type="dirs", tile_size=14))
+        compile_model(SimpleNamespace(path=str(hardcoded_output_dir), input_file=None, layers=None, backend="jstprove"))
+
+        # 2. Run inference
+        input_file = model_dir / "input.json"
+        run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
+                                      force_backend="jstprove", run_metadata_path=None))
+        run_dir = self._get_run_dir(capfd.readouterr().out)
+
+        # slice 0: Prove all, then Verify tiles in ranges
+        s0_dir = hardcoded_output_dir / "slice_0"
+        s0_run = run_dir / "slice_0"
+
+        # Prove everything for slice_0 so tiles are ready
+        run_proof(SimpleNamespace(run_dir=str(s0_run), slices_path=str(s0_dir), backend="jstprove", tiles=None))
+
+        # Verify range 0-1
+        verify_proof(SimpleNamespace(run_dir=str(s0_run), slices_path=str(s0_dir), backend="jstprove", tiles="0-1"))
+        res = json.loads((s0_run / "run_results.json").read_text())
+        v_info = res["execution_chain"]["execution_results"][0]["verification_execution"]["tile_verifs_info"]
+        assert len(v_info) == 2
+        assert {v["tile_idx"] for v in v_info} == {0, 1}
+
+        # Verify range 2-3
+        verify_proof(SimpleNamespace(run_dir=str(s0_run), slices_path=str(s0_dir), backend="jstprove", tiles="2-3"))
+        res = json.loads((s0_run / "run_results.json").read_text())
+        v_info = res["execution_chain"]["execution_results"][0]["verification_execution"]["tile_verifs_info"]
+        assert len(v_info) == 2
+        assert {v["tile_idx"] for v in v_info} == {2, 3}
+
+        # slice 1: Prove all, then Verify specific indices via list
+        s1_dir = hardcoded_output_dir / "slice_1"
+        s1_run = run_dir / "slice_1"
+
+        run_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles=None))
+
+        # Verify list [0, 1]
+        verify_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles="0,1"))
+        res = json.loads((s1_run / "run_results.json").read_text())
+        v_info = res["execution_chain"]["execution_results"][0]["verification_execution"]["tile_verifs_info"]
+        assert len(v_info) == 2
+
+        # Verify single index 2
+        verify_proof(SimpleNamespace(run_dir=str(s1_run), slices_path=str(s1_dir), backend="jstprove", tiles="2"))
+        res = json.loads((s1_run / "run_results.json").read_text())
+        v_info = res["execution_chain"]["execution_results"][0]["verification_execution"]["tile_verifs_info"]
+        assert v_info[0]["tile_idx"] == 2

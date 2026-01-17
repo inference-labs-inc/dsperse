@@ -27,6 +27,96 @@ ELEMENTWISE_OPS = {
 }
 
 
+def append_split_to_onnx(
+    onnx_path: Path,
+    split_input_name: str,
+    c_in: int,
+    h: int,
+    w: int,
+    tile_size: int,
+    halo_h: int,
+    halo_w: int,
+    slice_idx: int
+) -> list[str]:
+    """
+    Append split nodes to an existing ONNX model.
+    The split consumes the tensor named `split_input_name` and produces tile outputs.
+    Preserves other outputs if present.
+
+    Returns: list of output tensor names (tile inputs)
+    """
+    model = onnx.load(str(onnx_path))
+    graph = model.graph
+
+    nodes, initializers, output_names, metadata = generate_split_nodes(
+        split_input_name, c_in, h, w, tile_size, halo_h, halo_w, slice_idx, prefix=f"split_{slice_idx}_"
+    )
+
+    for init in initializers:
+        graph.initializer.append(init)
+    for node in nodes:
+        graph.node.append(node)
+
+    tile_with_halo_h, tile_with_halo_w = metadata["tile_with_halo"]
+
+    other_outputs = [out for out in graph.output if out.name != split_input_name]
+    while len(graph.output) > 0:
+        graph.output.pop()
+    for name in output_names:
+        graph.output.append(helper.make_tensor_value_info(
+            name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w]
+        ))
+    for out in other_outputs:
+        graph.output.append(out)
+
+    onnx.save(model, str(onnx_path))
+    return output_names
+
+
+def prepend_concat_to_onnx(
+    onnx_path: Path,
+    concat_output_name: str,
+    num_tiles: int,
+    tiles_y: int,
+    tiles_x: int,
+    c_out: int,
+    out_tile_h: int,
+    out_tile_w: int,
+    slice_idx: int
+) -> list[str]:
+    """
+    Prepend concat nodes to an existing ONNX model.
+    The concat produces tensor named `concat_output_name` from tile outputs.
+    Preserves other inputs (e.g., for residual connections).
+
+    Returns: list of input tensor names (tile outputs)
+    """
+    model = onnx.load(str(onnx_path))
+    graph = model.graph
+
+    nodes, initializers, input_names = generate_concat_nodes(
+        num_tiles, tiles_y, tiles_x, slice_idx, concat_output_name, prefix=f"concat_{slice_idx}_"
+    )
+
+    for init in initializers:
+        graph.initializer.append(init)
+    for node in reversed(nodes):
+        graph.node.insert(0, node)
+
+    other_inputs = [inp for inp in graph.input if inp.name != concat_output_name]
+    while len(graph.input) > 0:
+        graph.input.pop()
+    for name in input_names:
+        graph.input.append(helper.make_tensor_value_info(
+            name, TensorProto.FLOAT, [1, c_out, out_tile_h, out_tile_w]
+        ))
+    for inp in other_inputs:
+        graph.input.append(inp)
+
+    onnx.save(model, str(onnx_path))
+    return input_names
+
+
 def compute_halo(kernel: list[int], dilation: list[int]) -> tuple[int, int]:
     effective_kh = (kernel[0] - 1) * dilation[0] + 1
     effective_kw = (kernel[1] - 1) * dilation[1] + 1
@@ -72,6 +162,83 @@ def get_conv_params(model: onnx.ModelProto) -> dict | None:
     return None
 
 
+def generate_split_nodes(
+    input_name: str,
+    c_in: int,
+    h: int,
+    w: int,
+    tile_size: int,
+    halo_h: int,
+    halo_w: int,
+    slice_idx: int,
+    prefix: str = ""
+) -> tuple[list, list, list[str], dict]:
+    """
+    Generate Pad + Slice nodes for splitting input into tiles.
+
+    Returns: (nodes, initializers, output_names, metadata)
+    """
+    tiles_y = h // tile_size
+    tiles_x = w // tile_size
+    num_tiles = tiles_y * tiles_x
+    tile_with_halo_h = tile_size + 2 * halo_h
+    tile_with_halo_w = tile_size + 2 * halo_w
+
+    nodes = []
+    initializers = []
+    output_names = []
+
+    padded_name = f"{prefix}padded" if prefix else "padded"
+    pads_name = f"{prefix}pads" if prefix else "pads"
+    const_name = f"{prefix}constant_value" if prefix else "constant_value"
+
+    pads_val = [0, 0, halo_h, halo_w, 0, 0, halo_h, halo_w]
+    initializers.append(helper.make_tensor(pads_name, TensorProto.INT64, [8], pads_val))
+    initializers.append(helper.make_tensor(const_name, TensorProto.FLOAT, [], [0.0]))
+
+    nodes.append(helper.make_node(
+        "Pad",
+        inputs=[input_name, pads_name, const_name],
+        outputs=[padded_name],
+        mode="constant"
+    ))
+
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            tile_idx = ty * tiles_x + tx
+            out_name = f"tile_{slice_idx}_{tile_idx}_in"
+            output_names.append(out_name)
+
+            y_start = ty * tile_size
+            x_start = tx * tile_size
+            y_end = y_start + tile_with_halo_h
+            x_end = x_start + tile_with_halo_w
+
+            starts_name = f"{prefix}starts_{tile_idx}"
+            ends_name = f"{prefix}ends_{tile_idx}"
+            axes_name = f"{prefix}axes_{tile_idx}"
+
+            initializers.append(helper.make_tensor(starts_name, TensorProto.INT64, [4], [0, 0, y_start, x_start]))
+            initializers.append(helper.make_tensor(ends_name, TensorProto.INT64, [4], [1, c_in, y_end, x_end]))
+            initializers.append(helper.make_tensor(axes_name, TensorProto.INT64, [4], [0, 1, 2, 3]))
+
+            nodes.append(helper.make_node(
+                "Slice",
+                inputs=[padded_name, starts_name, ends_name, axes_name],
+                outputs=[out_name]
+            ))
+
+    metadata = {
+        "tiles_y": tiles_y,
+        "tiles_x": tiles_x,
+        "num_tiles": num_tiles,
+        "tile_with_halo": [tile_with_halo_h, tile_with_halo_w],
+        "c_in": c_in,
+    }
+
+    return nodes, initializers, output_names, metadata
+
+
 def create_split_slice(
     input_name: str,
     c_in: int,
@@ -90,59 +257,17 @@ def create_split_slice(
     Input: [1, C, H, W]
     Output: N tensors of [1, C, tile_size + 2*halo, tile_size + 2*halo]
     """
-    tiles_y = h // tile_size
-    tiles_x = w // tile_size
-    num_tiles = tiles_y * tiles_x
-    tile_with_halo_h = tile_size + 2 * halo_h
-    tile_with_halo_w = tile_size + 2 * halo_w
+    nodes, initializers, output_names, metadata = generate_split_nodes(
+        input_name, c_in, h, w, tile_size, halo_h, halo_w, slice_idx
+    )
+
+    tile_with_halo_h, tile_with_halo_w = metadata["tile_with_halo"]
 
     X = helper.make_tensor_value_info(input_name, TensorProto.FLOAT, [1, c_in, h, w])
-
-    nodes = []
-    outputs = []
-    initializers = []
-
-    pads_val = [0, 0, halo_h, halo_w, 0, 0, halo_h, halo_w]
-    pads_tensor = helper.make_tensor("pads", TensorProto.INT64, [8], pads_val)
-    initializers.append(pads_tensor)
-
-    constant_value = helper.make_tensor("constant_value", TensorProto.FLOAT, [], [0.0])
-    initializers.append(constant_value)
-
-    nodes.append(helper.make_node(
-        "Pad",
-        inputs=[input_name, "pads", "constant_value"],
-        outputs=["padded"],
-        mode="constant"
-    ))
-
-    for ty in range(tiles_y):
-        for tx in range(tiles_x):
-            tile_idx = ty * tiles_x + tx
-            output_name = f"tile_{slice_idx}_{tile_idx}_in"
-
-            y_start = ty * tile_size
-            x_start = tx * tile_size
-            y_end = y_start + tile_with_halo_h
-            x_end = x_start + tile_with_halo_w
-
-            starts_name = f"starts_{tile_idx}"
-            ends_name = f"ends_{tile_idx}"
-            axes_name = f"axes_{tile_idx}"
-
-            initializers.append(helper.make_tensor(starts_name, TensorProto.INT64, [4], [0, 0, y_start, x_start]))
-            initializers.append(helper.make_tensor(ends_name, TensorProto.INT64, [4], [1, c_in, y_end, x_end]))
-            initializers.append(helper.make_tensor(axes_name, TensorProto.INT64, [4], [0, 1, 2, 3]))
-
-            nodes.append(helper.make_node(
-                "Slice",
-                inputs=["padded", starts_name, ends_name, axes_name],
-                outputs=[output_name]
-            ))
-
-            outputs.append(helper.make_tensor_value_info(
-                output_name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w]
-            ))
+    outputs = [
+        helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w])
+        for name in output_names
+    ]
 
     graph = helper.make_graph(nodes, f"split_slice_{slice_idx}", [X], outputs, initializers)
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
@@ -163,10 +288,8 @@ def create_split_slice(
     return {
         "path": str(onnx_path.resolve()),
         "input_name": input_name,
-        "output_names": [f"tile_{slice_idx}_{i}_in" for i in range(num_tiles)],
-        "tiles_y": tiles_y,
-        "tiles_x": tiles_x,
-        "num_tiles": num_tiles,
+        "output_names": output_names,
+        **metadata,
     }
 
 
@@ -290,6 +413,45 @@ def create_tile_slice(
     }
 
 
+def generate_concat_nodes(
+    num_tiles: int,
+    tiles_y: int,
+    tiles_x: int,
+    slice_idx: int,
+    output_name: str,
+    prefix: str = ""
+) -> tuple[list, list, list[str]]:
+    """
+    Generate Concat nodes for reassembling tile outputs.
+
+    Returns: (nodes, initializers, input_names)
+    """
+    nodes = []
+    initializers = []
+    input_names = [f"tile_{slice_idx}_{i}_out" for i in range(num_tiles)]
+
+    row_outputs = []
+    for ty in range(tiles_y):
+        row_inputs = [f"tile_{slice_idx}_{ty * tiles_x + tx}_out" for tx in range(tiles_x)]
+        row_output = f"{prefix}row_{ty}" if prefix else f"row_{ty}"
+        row_outputs.append(row_output)
+        nodes.append(helper.make_node(
+            "Concat",
+            inputs=row_inputs,
+            outputs=[row_output],
+            axis=3
+        ))
+
+    nodes.append(helper.make_node(
+        "Concat",
+        inputs=row_outputs,
+        outputs=[output_name],
+        axis=2
+    ))
+
+    return nodes, initializers, input_names
+
+
 def create_concat_slice(
     num_tiles: int,
     tiles_y: int,
@@ -308,34 +470,14 @@ def create_concat_slice(
     Input: N tensors of [1, C_out, out_tile_h, out_tile_w]
     Output: [1, C_out, H', W']
     """
-    inputs = []
-    nodes = []
-    initializers = []
+    nodes, initializers, input_names = generate_concat_nodes(
+        num_tiles, tiles_y, tiles_x, slice_idx, output_name
+    )
 
-    for i in range(num_tiles):
-        input_name = f"tile_{slice_idx}_{i}_out"
-        inputs.append(helper.make_tensor_value_info(
-            input_name, TensorProto.FLOAT, [1, c_out, out_tile_h, out_tile_w]
-        ))
-
-    row_outputs = []
-    for ty in range(tiles_y):
-        row_inputs = [f"tile_{slice_idx}_{ty * tiles_x + tx}_out" for tx in range(tiles_x)]
-        row_output = f"row_{ty}"
-        row_outputs.append(row_output)
-        nodes.append(helper.make_node(
-            "Concat",
-            inputs=row_inputs,
-            outputs=[row_output],
-            axis=3
-        ))
-
-    nodes.append(helper.make_node(
-        "Concat",
-        inputs=row_outputs,
-        outputs=[output_name],
-        axis=2
-    ))
+    inputs = [
+        helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, c_out, out_tile_h, out_tile_w])
+        for name in input_names
+    ]
 
     full_h = tiles_y * out_tile_h
     full_w = tiles_x * out_tile_w
@@ -359,7 +501,7 @@ def create_concat_slice(
 
     return {
         "path": str(onnx_path.resolve()),
-        "input_names": [f"tile_{slice_idx}_{i}_out" for i in range(num_tiles)],
+        "input_names": input_names,
         "output_name": output_name,
         "full_shape": [1, c_out, full_h, full_w],
     }
@@ -659,3 +801,337 @@ def autotile_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool 
             }, f, indent=2)
 
     return tiled_info
+
+
+def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
+    """
+    Analyze a Conv slice and return tiling parameters if tileable.
+    Returns None if not tileable.
+    """
+    m = onnx.load(str(onnx_path))
+    if not is_tileable(m):
+        return None
+
+    inp = m.graph.input[0]
+    out = m.graph.output[0]
+    dims = [d.dim_value for d in inp.type.tensor_type.shape.dim]
+    if len(dims) != 4:
+        return None
+
+    _, c_in, h, w = dims
+    if h <= tile_size or h != w:
+        return None
+
+    conv_params = get_conv_params(m)
+    if not conv_params:
+        return None
+
+    kernel = conv_params['kernel']
+    dilation = conv_params['dilation']
+    sh, sw = conv_params['stride']
+    if sh == 0 or sw == 0:
+        return None
+
+    halo_h, halo_w = compute_halo(kernel, dilation)
+    min_tile = compute_min_tile_size(kernel, dilation)
+    actual_tile_size = find_tile_size(h, tile_size, min_tile)
+    if not actual_tile_size:
+        return None
+
+    tiles_y = h // actual_tile_size
+    tiles_x = w // actual_tile_size
+    num_tiles = tiles_y * tiles_x
+
+    weights = None
+    for init in m.graph.initializer:
+        if init.name == conv_params['node'].input[1]:
+            weights = numpy_helper.to_array(init)
+            break
+    if weights is None:
+        return None
+
+    c_out = weights.shape[0]
+    out_tile_h = actual_tile_size // sh
+    out_tile_w = actual_tile_size // sw
+
+    return {
+        "input_name": inp.name,
+        "output_name": out.name,
+        "c_in": c_in,
+        "c_out": c_out,
+        "h": h,
+        "w": w,
+        "tile_size": actual_tile_size,
+        "halo": [halo_h, halo_w],
+        "tiles_y": tiles_y,
+        "tiles_x": tiles_x,
+        "num_tiles": num_tiles,
+        "out_tile": [out_tile_h, out_tile_w],
+        "stride": [sh, sw],
+    }
+
+
+def create_standalone_bridge(
+    nodes_list: list,
+    initializers_list: list,
+    inputs: list,
+    outputs: list,
+    name: str,
+    output_path: Path
+) -> str:
+    """
+    Create a standalone bridge ONNX with the given nodes.
+    Used for edge cases like split-only or concat-only bridges.
+    """
+    graph = helper.make_graph(nodes_list, name, inputs, outputs, initializers_list)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    onnx.save(model, str(output_path))
+    return str(output_path)
+
+
+def _create_tile_for_conv(args: tuple) -> tuple[int, dict | None]:
+    """Helper for parallel tile creation."""
+    conv_idx, conv_path, tile_size = args
+    tiles_dir = Path(conv_path).parent / "tiles"
+    tiles_dir.mkdir(exist_ok=True)
+    tile_info = create_tile_slice(
+        slice_path=Path(conv_path),
+        tile_size=tile_size,
+        slice_idx=conv_idx,
+        output_dir=tiles_dir,
+        nested=True
+    )
+    return (conv_idx, tile_info)
+
+
+def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16, parallel: bool = False) -> dict:
+    """
+    Apply tiling transform to slices, injecting split/concat into bridge slices.
+
+    This implements the two-phase approach:
+    1. Identify tileable Conv slices
+    2. Create tile.onnx for each tileable Conv (can be parallelized)
+    3. Inject split ops into preceding bridges, concat ops into following bridges
+
+    Args:
+        slices_dir: Directory containing sliced model
+        tile_size: Target tile size
+        parallel: If True, parallelize tile creation
+
+    Returns: dict with tiling metadata
+    """
+    slices_dir = Path(slices_dir)
+    metadata_path = slices_dir / "metadata.json"
+
+    if not metadata_path.exists():
+        print(f"No metadata.json found in {slices_dir}")
+        return {}
+
+    with open(metadata_path) as f:
+        metadata = json.load(f)
+
+    slices_data = metadata.get("slices", [])
+    if not slices_data:
+        print("No slices found in metadata")
+        return {}
+
+    slice_info = []
+    for idx, slice_data in enumerate(slices_data):
+        slice_dir = slices_dir / f"slice_{idx}"
+        onnx_path = slice_dir / "payload" / f"slice_{idx}.onnx"
+
+        if not onnx_path.exists():
+            slice_info.append({"idx": idx, "type": "missing", "path": None})
+            continue
+
+        tiling_params = get_tiling_params(onnx_path, tile_size)
+        if tiling_params:
+            slice_info.append({
+                "idx": idx,
+                "type": "conv",
+                "path": onnx_path,
+                "tiling": tiling_params
+            })
+        else:
+            slice_info.append({
+                "idx": idx,
+                "type": "bridge",
+                "path": onnx_path
+            })
+
+    conv_slices = [(i, info) for i, info in enumerate(slice_info) if info["type"] == "conv"]
+    if not conv_slices:
+        print("No tileable Conv slices found")
+        return {}
+
+    tile_infos = {}
+    tile_args = [(info["idx"], str(info["path"]), info["tiling"]["tile_size"]) for _, info in conv_slices]
+
+    if parallel and len(tile_args) > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing
+        max_workers = min(len(tile_args), multiprocessing.cpu_count())
+        print(f"Creating {len(tile_args)} tile models in parallel (workers={max_workers})...")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_create_tile_for_conv, args): args[0] for args in tile_args}
+            for future in as_completed(futures):
+                conv_idx, tile_info = future.result()
+                if tile_info:
+                    tile_infos[conv_idx] = tile_info
+                    print(f"  Created tile for slice {conv_idx}")
+                else:
+                    print(f"  Failed to create tile for slice {conv_idx}")
+    else:
+        for args in tile_args:
+            conv_idx, tile_info = _create_tile_for_conv(args)
+            if tile_info:
+                tile_infos[conv_idx] = tile_info
+            else:
+                print(f"  Failed to create tile for slice {conv_idx}")
+
+    tiled_results = {}
+
+    for i, info in enumerate(slice_info):
+        if info["type"] != "conv":
+            continue
+
+        conv_idx = info["idx"]
+        if conv_idx not in tile_infos:
+            continue
+
+        conv_path = info["path"]
+        tiling = info["tiling"]
+        tile_info = tile_infos[conv_idx]
+        tiles_dir = conv_path.parent / "tiles"
+
+        print(f"Tiling Conv slice {conv_idx}...")
+
+        prev_info = slice_info[i - 1] if i > 0 else None
+        next_info = slice_info[i + 1] if i < len(slice_info) - 1 else None
+
+        halo_h, halo_w = tiling["halo"]
+        out_tile_h, out_tile_w = tiling["out_tile"]
+
+        if prev_info and prev_info["type"] == "bridge":
+            print(f"  Appending split to bridge slice {prev_info['idx']}")
+            append_split_to_onnx(
+                onnx_path=prev_info["path"],
+                split_input_name=tiling["input_name"],
+                c_in=tiling["c_in"],
+                h=tiling["h"],
+                w=tiling["w"],
+                tile_size=tiling["tile_size"],
+                halo_h=halo_h,
+                halo_w=halo_w,
+                slice_idx=conv_idx
+            )
+            slices_data[prev_info["idx"]]["runtime_only"] = True
+        elif prev_info and prev_info["type"] == "conv":
+            print(f"  Creating concat+split bridge between Conv {prev_info['idx']} and Conv {conv_idx}")
+            prev_tiling = prev_info["tiling"]
+            prev_out_tile_h, prev_out_tile_w = prev_tiling["out_tile"]
+
+            glue_dir = slices_dir / f"slice_{prev_info['idx']}_{conv_idx}_glue"
+            glue_dir.mkdir(exist_ok=True)
+            payload_dir = glue_dir / "payload"
+            payload_dir.mkdir(exist_ok=True)
+            glue_path = payload_dir / f"glue_{prev_info['idx']}_{conv_idx}.onnx"
+
+            concat_nodes, concat_init, concat_inputs = generate_concat_nodes(
+                prev_tiling["num_tiles"], prev_tiling["tiles_y"], prev_tiling["tiles_x"],
+                prev_info["idx"], tiling["input_name"], prefix=f"concat_{prev_info['idx']}_"
+            )
+            split_nodes, split_init, split_outputs, split_meta = generate_split_nodes(
+                tiling["input_name"], tiling["c_in"], tiling["h"], tiling["w"],
+                tiling["tile_size"], halo_h, halo_w, conv_idx, prefix=f"split_{conv_idx}_"
+            )
+
+            all_nodes = concat_nodes + split_nodes
+            all_init = concat_init + split_init
+
+            tile_with_halo_h, tile_with_halo_w = split_meta["tile_with_halo"]
+            inputs = [
+                helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, prev_tiling["c_out"], prev_out_tile_h, prev_out_tile_w])
+                for name in concat_inputs
+            ]
+            outputs = [
+                helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, tiling["c_in"], tile_with_halo_h, tile_with_halo_w])
+                for name in split_outputs
+            ]
+
+            create_standalone_bridge(all_nodes, all_init, inputs, outputs, f"glue_{prev_info['idx']}_{conv_idx}", glue_path)
+        else:
+            print(f"  Creating split-only bridge before Conv {conv_idx}")
+            split_dir = slices_dir / f"slice_{conv_idx}_split"
+            split_dir.mkdir(exist_ok=True)
+
+            create_split_slice(
+                input_name=tiling["input_name"],
+                c_in=tiling["c_in"],
+                h=tiling["h"],
+                w=tiling["w"],
+                tile_size=tiling["tile_size"],
+                halo_h=halo_h,
+                halo_w=halo_w,
+                slice_idx=conv_idx,
+                output_dir=split_dir,
+                nested=False
+            )
+
+        if next_info and next_info["type"] == "bridge":
+            print(f"  Prepending concat to bridge slice {next_info['idx']}")
+            prepend_concat_to_onnx(
+                onnx_path=next_info["path"],
+                concat_output_name=tiling["output_name"],
+                num_tiles=tiling["num_tiles"],
+                tiles_y=tiling["tiles_y"],
+                tiles_x=tiling["tiles_x"],
+                c_out=tiling["c_out"],
+                out_tile_h=out_tile_h,
+                out_tile_w=out_tile_w,
+                slice_idx=conv_idx
+            )
+            slices_data[next_info["idx"]]["runtime_only"] = True
+        elif next_info is None or next_info["type"] != "conv":
+            print(f"  Creating concat-only bridge after Conv {conv_idx}")
+            concat_dir = slices_dir / f"slice_{conv_idx}_concat"
+            concat_dir.mkdir(exist_ok=True)
+
+            create_concat_slice(
+                num_tiles=tiling["num_tiles"],
+                tiles_y=tiling["tiles_y"],
+                tiles_x=tiling["tiles_x"],
+                c_out=tiling["c_out"],
+                out_tile_h=out_tile_h,
+                out_tile_w=out_tile_w,
+                slice_idx=conv_idx,
+                output_name=tiling["output_name"],
+                output_dir=concat_dir,
+                nested=False
+            )
+
+        tiled_results[conv_idx] = {
+            "tile_path": str(tiles_dir / "tile.onnx"),
+            "tiling": tiling,
+            "tile_info": tile_info,
+        }
+
+        slices_data[conv_idx]["tiling"] = {
+            "tile_size": tiling["tile_size"],
+            "num_tiles": tiling["num_tiles"],
+            "tiles_y": tiling["tiles_y"],
+            "tiles_x": tiling["tiles_x"],
+            "halo": tiling["halo"],
+            "out_tile": tiling["out_tile"],
+            "tile": {
+                "path": "payload/tiles/tile.onnx",
+            },
+        }
+
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    return tiled_results

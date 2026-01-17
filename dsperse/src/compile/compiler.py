@@ -361,9 +361,11 @@ class Compiler:
 
     def _compile_slices(self, dir_path: str, input_file_path: Optional[str] = None, layer_indices=None):
         # Load metadata
+        print(f"Loading metadata from {dir_path}...")
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
+        print(f"Found {len(metadata.get('slices', []))} slices")
 
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
@@ -498,6 +500,7 @@ class Compiler:
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Path does not exist: {model_path}")
         logger.info(f"Compiling: {model_path}")
+        print(f"Checking model path: {model_path}")
 
         self.default_backend, self.use_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
 
@@ -513,11 +516,15 @@ class Compiler:
             else:
                 logger.info("No layers specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx).")
 
+        print(f"Detecting model format...")
         is_sliced, slice_path, type = CompilerUtils.is_sliced_model(model_path)
+        print(f"Model format: {type}, is_sliced: {is_sliced}")
         if is_sliced:
             if type != "dirs":
+                print(f"Converting from {type} to dirs...")
                 slice_path = Converter.convert(model_path, output_type="dirs", cleanup=True)
 
+            print(f"Compiling slices from: {slice_path}")
             self._compile_slices(slice_path, input_file_path=input_file, layer_indices=layer_indices)
 
             if type != "dirs":

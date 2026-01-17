@@ -157,6 +157,7 @@ def compile_model(args):
     if not target_path:
         target_path = prompt_for_value('path', 'Enter the path to the slices directory or .dsperse file')
     target_path = normalize_path(target_path)
+    print(f"Target path: {target_path}")
 
     # Do not auto-unpack archives here; let the Compiler handle .dslice/.dsperse directly
     target_path_obj = Path(target_path)
@@ -185,6 +186,7 @@ def compile_model(args):
                 logger.warning("compile: 'output' dir provided without adjacent metadata/slices")
 
     # Only verify directory structure when a directory is provided; files are handled by Compiler
+    print(f"Checking directory structure...")
     if target_path_obj.is_dir():
         if not check_model_dir(target_path):
             return
@@ -198,9 +200,11 @@ def compile_model(args):
         backend = layers
 
     # Initialize the Compiler (it supports dirs or model.onnx)
+    print(f"Initializing compiler...")
     try:
         compiler = Compiler(backend=backend)
         logger.info(f"Compiler initialized successfully")
+        print(f"Compiler initialized")
     except RuntimeError as e:
         error_msg = f"Failed to initialize Compiler: {e}"
         print(f"{Fore.RED}Error: {error_msg}{Style.RESET_ALL}")
@@ -217,6 +221,7 @@ def compile_model(args):
         validated_layers = None
     
     # Run the compilation
+    print(f"Starting compilation...")
     ezkl_logger = logging.getLogger('src.backends.ezkl')
     prev_ezkl_level = ezkl_logger.level
     try:

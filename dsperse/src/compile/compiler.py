@@ -524,32 +524,26 @@ class Compiler:
             compilation_slice_data = original_slice_entry
 
             if tiling_info:
-                tiles = tiling_info.get('tiles', [])
-                if tiles:
-                    tile_0 = tiles[0]
-                    tile_path_raw = tile_0.get('path')
-                    if tile_path_raw:
-                        if os.path.isabs(tile_path_raw):
-                            tile_path = tile_path_raw
-                        else:
-                            tile_path = os.path.join(base_path, tile_path_raw)
-                            if not os.path.exists(tile_path):
-                                tile_path = os.path.join(slice_dir, tile_path_raw)
-
-                        if os.path.exists(tile_path):
-                            logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
-                            compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
-                        else:
-                            logger.warning(f"Slice {idx}: Tiled but tile path not found at {tile_path}, skipping")
-                            print(f"[compile] Slice {idx}: tile.onnx not found at {tile_path}, skipping tiled slice")
-                            continue
+                tile_meta = tiling_info.get('tile', {})
+                tile_path_raw = tile_meta.get('path') if tile_meta else None
+                if tile_path_raw:
+                    if os.path.isabs(tile_path_raw):
+                        tile_path = tile_path_raw
                     else:
-                        logger.warning(f"Slice {idx}: Tiled but tile path missing in metadata, skipping")
-                        print(f"[compile] Slice {idx}: tiled but tile path missing, skipping")
+                        tile_path = os.path.join(base_path, tile_path_raw)
+                        if not os.path.exists(tile_path):
+                            tile_path = os.path.join(slice_dir, tile_path_raw)
+
+                    if os.path.exists(tile_path):
+                        logger.info(f"Slice {idx} is tiled ({tiling_info.get('num_tiles')} tiles). Compiling representative tile...")
+                        compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
+                    else:
+                        logger.warning(f"Slice {idx}: Tiled but tile path not found at {tile_path}, skipping")
+                        print(f"[compile] Slice {idx}: tile.onnx not found at {tile_path}, skipping tiled slice")
                         continue
                 else:
-                    logger.warning(f"Slice {idx}: Tiled but tile metadata missing, skipping")
-                    print(f"[compile] Slice {idx}: tiled but no tile metadata, skipping")
+                    logger.warning(f"Slice {idx}: Tiled but tile path missing in metadata, skipping")
+                    print(f"[compile] Slice {idx}: tiled but tile path missing, skipping")
                     continue
 
             backends_to_build: list[str] = []

@@ -607,9 +607,9 @@ class Compiler:
                         original_slice_entry['compilation'] = {}
                     original_slice_entry['compilation'][be] = comp_block
 
-                if slice_meta_path.exists() and file_paths:
+                if slice_meta_path.exists():
                     try:
-                        CompilerUtils.update_slice_metadata(idx, slice_meta_path, comp_block.get('compiled', False), file_paths, backend_name=be, tiling_info=tiling_info)
+                        CompilerUtils.update_slice_metadata(idx, slice_meta_path, comp_block.get('compiled', False), comp_block, backend_name=be)
                     except Exception as e:
                         logger.warning(f"Failed to update slice metadata for slice {idx} backend {be}: {e}")
 

@@ -41,7 +41,7 @@ def append_split_to_onnx(
     """
     Append split nodes to an existing ONNX model.
     The split consumes the tensor named `split_input_name` and produces tile outputs.
-    Preserves other outputs if present.
+    Preserves ALL original outputs (for skip connections).
 
     Returns: list of output tensor names (tile inputs)
     """
@@ -59,14 +59,15 @@ def append_split_to_onnx(
 
     tile_with_halo_h, tile_with_halo_w = metadata["tile_with_halo"]
 
-    other_outputs = [out for out in graph.output if out.name != split_input_name]
+    # Preserve ALL original outputs (including split_input_name for skip connections)
+    original_outputs = list(graph.output)
     while len(graph.output) > 0:
         graph.output.pop()
     for name in output_names:
         graph.output.append(helper.make_tensor_value_info(
             name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w]
         ))
-    for out in other_outputs:
+    for out in original_outputs:
         graph.output.append(out)
 
     onnx.save(model, str(onnx_path))
@@ -89,7 +90,7 @@ def prepend_concat_to_onnx(
     The concat produces tensor named `concat_output_name` from tile outputs.
     Preserves other inputs (e.g., for residual connections).
 
-    Returns: list of input tensor names (tile outputs)
+    Returns: list of ALL input tensor names (tile outputs + skip connections)
     """
     model = onnx.load(str(onnx_path))
     graph = model.graph
@@ -114,7 +115,9 @@ def prepend_concat_to_onnx(
         graph.input.append(inp)
 
     onnx.save(model, str(onnx_path))
-    return input_names
+
+    all_input_names = input_names + [inp.name for inp in other_inputs]
+    return all_input_names
 
 
 def compute_halo(kernel: list[int], dilation: list[int]) -> tuple[int, int]:
@@ -129,10 +132,10 @@ def compute_min_tile_size(kernel: list[int], dilation: list[int]) -> int:
     return max(effective_kh, effective_kw) + 1
 
 
-def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7) -> int | None:
+def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7, stride: int = 1) -> int | None:
     if min_tile <= target < spatial_dim:
         for tile in range(target, min_tile - 1, -1):
-            if spatial_dim % tile == 0:
+            if spatial_dim % tile == 0 and tile % stride == 0:
                 return tile
     return None
 
@@ -197,6 +200,11 @@ def is_tileable(model: onnx.ModelProto) -> bool:
     if conv_params:
         kh, kw = conv_params['kernel']
         if kh % 2 == 0 or kw % 2 == 0:
+            return False
+        pads = conv_params['pads']
+        dilation = conv_params['dilation']
+        halo_h, halo_w = compute_halo([kh, kw], dilation)
+        if pads != [halo_h, halo_w, halo_h, halo_w]:
             return False
     ops = {n.op_type for n in model.graph.node}
     return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
@@ -365,7 +373,6 @@ def create_tile_slice(
     """
     m = onnx.load(slice_path)
     orig_input = m.graph.input[0]
-    orig_output = m.graph.output[0]
     orig_dims = [d.dim_value for d in orig_input.type.tensor_type.shape.dim]
     c_in = orig_dims[1]
 
@@ -698,7 +705,7 @@ def autotile_slice(
     halo_h, halo_w = compute_halo(kernel, dilation)
     min_tile = compute_min_tile_size(kernel, dilation)
 
-    actual_tile_size = find_tile_size(h, tile_size, min_tile)
+    actual_tile_size = find_tile_size(h, tile_size, min_tile, stride=sh)
     if not actual_tile_size:
         return None
 
@@ -917,7 +924,7 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int = None, tile_size: int
     elif tile_size is not None:
         if h <= tile_size:
             return None
-        actual_tile_size = find_tile_size(h, tile_size, min_tile)
+        actual_tile_size = find_tile_size(h, tile_size, min_tile, stride=sh)
         if not actual_tile_size:
             return None
     else:
@@ -1040,7 +1047,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
         return {}
 
     slice_info = []
-    for idx, slice_data in enumerate(slices_data):
+    for idx, _ in enumerate(slices_data):
         slice_dir = slices_dir / f"slice_{idx}"
         onnx_path = slice_dir / "payload" / f"slice_{idx}.onnx"
 
@@ -1118,7 +1125,10 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
         next_info = slice_info[i + 1] if i < len(slice_info) - 1 else None
 
         halo_h, halo_w = tiling["halo"]
-        out_tile_h, out_tile_w = tiling["out_tile"]
+        out_tile_h, out_tile_w = tile_info["conv_out"]
+
+        split_path = None
+        concat_path = None
 
         split_path = None
         concat_path = None
@@ -1141,7 +1151,8 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
         elif prev_info and prev_info["type"] == "conv":
             print(f"  Creating concat+split bridge between Conv {prev_info['idx']} and Conv {conv_idx}")
             prev_tiling = prev_info["tiling"]
-            prev_out_tile_h, prev_out_tile_w = prev_tiling["out_tile"]
+            prev_tile_info = tiled_results[prev_info["idx"]]["tile_info"]
+            prev_out_tile_h, prev_out_tile_w = prev_tile_info["conv_out"]
 
             glue_dir = slices_dir / f"slice_{prev_info['idx']}_{conv_idx}_glue"
             glue_dir.mkdir(exist_ok=True)
@@ -1246,14 +1257,22 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
             "out_tile": tiling["out_tile"],
             "c_out": tiling["c_out"],
             "tile": {
-                "path": "payload/tiles/tile.onnx",
-                "conv_out": tiling["out_tile"],
+                "path": f"slice_{conv_idx}/payload/tiles/tile.onnx",
+                "conv_out": tile_info["conv_out"],
             },
         }
         if split_path:
-            tiling_metadata["split"] = {"path": str(split_path)}
+            try:
+                split_rel = Path(split_path).relative_to(slices_dir)
+            except ValueError:
+                split_rel = split_path
+            tiling_metadata["split"] = {"path": str(split_rel)}
         if concat_path:
-            concat_meta = {"path": str(concat_path)}
+            try:
+                concat_rel = Path(concat_path).relative_to(slices_dir)
+            except ValueError:
+                concat_rel = concat_path
+            concat_meta = {"path": str(concat_rel)}
             if concat_input_names:
                 concat_meta["input_names"] = concat_input_names
             tiling_metadata["concat"] = concat_meta

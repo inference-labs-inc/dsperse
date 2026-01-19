@@ -123,6 +123,35 @@ class OnnxSlicer:
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
+    @staticmethod
+    def isolate_conv(slice_points, model_metadata):
+        """
+        Ensure each Conv layer gets its own isolated slice by adding slice points
+        immediately after each Conv node.
+        
+        Args:
+            slice_points: Current set of slice points
+            model_metadata: The model analysis metadata containing node information
+            
+        Returns:
+            set: Updated set of slice points with Conv isolation
+        """
+        updated_points = set(slice_points)
+        nodes_dict = model_metadata.get("nodes", {})
+
+        max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
+
+        for node_name, node_info in nodes_dict.items():
+            if node_info.get("node_type") == "Conv":
+                idx = node_info.get("index")
+                # Add slice point at the Conv node itself
+                updated_points.add(idx)
+                # Add slice point immediately after the Conv to isolate it
+                if idx + 1 <= max_idx:
+                    updated_points.add(idx + 1)
+
+        return updated_points
+
     def determine_slice_points(self, model_metadata, tile_size=None, isolate_convs=True) -> List[int]:
         """
         Determine the slice points for the model based on nodes with parameter_details in the model_metadata.
@@ -146,7 +175,7 @@ class OnnxSlicer:
                         slice_points.add(idx + 1)
 
         print(f"Original slice points: {sorted(slice_points)}")
-
+        slice_points = self.isolate_conv(slice_points, model_metadata)
         slice_points = self.optimize_jstprove_slices(list(slice_points), model_metadata)
 
         if tile_size:
@@ -238,17 +267,14 @@ class OnnxSlicer:
 
         for inp in segment_node_inputs:
             if inp not in segment_node_outputs:
-                if inp in all_value_infos:
-                    segment_inputs.append(all_value_infos[inp])
-                elif inp in initializer_map:
+                # Check if it's a model input, intermediate value, or an initializer
+                if inp in initializer_map:
+                    # Initializers (weights, biases, running_mean, etc.) are NOT graph inputs
+                    # They will be automatically included by extract_model
                     init = initializer_map[inp]
                     segment_initializers.append(init)
-                    t = onnx.helper.make_tensor_value_info(
-                        inp,
-                        init.data_type,
-                        list(init.dims)
-                    )
-                    segment_inputs.append(t)
+                elif inp in all_value_infos:
+                    segment_inputs.append(all_value_infos[inp])
                 else:
                     inferred_shape = OnnxSlicer._infer_input_shape(inp, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(

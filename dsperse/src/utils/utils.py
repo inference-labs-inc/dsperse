@@ -111,21 +111,35 @@ class Utils:
 
     @staticmethod
     def filter_inputs(slice_inputs, graph):
-        """
-        Filter slice inputs to exclude weights/biases (initializers), keeping only tensor inputs.
+        # Filter input names from slice details
+        # Exclude initializer-like names (weights, biases, running stats, etc.)
+        initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"]
 
-        ONNX extract_model needs input tensor names - not initializer names.
-        Initializers are embedded in the model automatically.
-        """
+        # Get the set of graph.input names that are actual model inputs (not initializers)
+        # Note: in some ONNX models, initializers are also listed in graph.input
         initializer_names = {init.name for init in graph.initializer}
+        model_input_names = {inp.name for inp in graph.input if inp.name not in initializer_names}
 
-        filtered = []
+        slice_filtered_inputs = []
         for input_info in slice_inputs:
             name = input_info.name
-            if name and name not in initializer_names:
-                filtered.append(name)
+            name_lower = name.lower()
 
-        return filtered
+            # Skip if it matches an initializer pattern
+            if any(pattern in name_lower for pattern in initializer_patterns):
+                continue
+
+            # Include if it's a model input or an intermediate tensor
+            # Model inputs are in graph.input but not initializers
+            # Intermediate tensors are everything else (from previous slices)
+            if name in model_input_names or name not in initializer_names:
+                slice_filtered_inputs.append(name)
+
+        # Fallback: if nothing passed the filter, use the first input
+        if not slice_filtered_inputs and slice_inputs:
+            slice_filtered_inputs.append(slice_inputs[0].name)
+
+        return slice_filtered_inputs
 
     @staticmethod
     def _get_original_model_shapes(model_metadata: dict):

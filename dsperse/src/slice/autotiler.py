@@ -956,7 +956,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
         next_info = slice_info[i + 1] if i < len(slice_info) - 1 else None
 
         halo_h, halo_w = tiling["halo"]
-        out_tile_h, out_tile_w = tiling["out_tile"]
+        out_tile_h, out_tile_w = tile_info["conv_out"]
 
         split_path = None
         concat_path = None
@@ -979,7 +979,8 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
         elif prev_info and prev_info["type"] == "conv":
             print(f"  Creating concat+split bridge between Conv {prev_info['idx']} and Conv {conv_idx}")
             prev_tiling = prev_info["tiling"]
-            prev_out_tile_h, prev_out_tile_w = prev_tiling["out_tile"]
+            prev_tile_info = tiled_results[prev_info["idx"]]["tile_info"]
+            prev_out_tile_h, prev_out_tile_w = prev_tile_info["conv_out"]
 
             glue_dir = slices_dir / f"slice_{prev_info['idx']}_{conv_idx}_glue"
             glue_dir.mkdir(exist_ok=True)
@@ -1084,14 +1085,22 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
             "out_tile": tiling["out_tile"],
             "c_out": tiling["c_out"],
             "tile": {
-                "path": "payload/tiles/tile.onnx",
-                "conv_out": tiling["out_tile"],
+                "path": f"slice_{conv_idx}/payload/tiles/tile.onnx",
+                "conv_out": tile_info["conv_out"],
             },
         }
         if split_path:
-            tiling_metadata["split"] = {"path": str(split_path)}
+            try:
+                split_rel = Path(split_path).relative_to(slices_dir)
+            except ValueError:
+                split_rel = split_path
+            tiling_metadata["split"] = {"path": str(split_rel)}
         if concat_path:
-            concat_meta = {"path": str(concat_path)}
+            try:
+                concat_rel = Path(concat_path).relative_to(slices_dir)
+            except ValueError:
+                concat_rel = concat_path
+            concat_meta = {"path": str(concat_rel)}
             if concat_input_names:
                 concat_meta["input_names"] = concat_input_names
             tiling_metadata["concat"] = concat_meta

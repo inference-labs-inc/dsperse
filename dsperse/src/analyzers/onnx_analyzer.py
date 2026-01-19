@@ -516,26 +516,24 @@ class OnnxAnalyzer:
             if output not in segment_dependencies['input']:
                 segment_dependencies['output'].append(output)
                 
-        # Filter input names to exclude weights and biases
+        # Filter input names to exclude initializer parameters (weights, biases, running stats)
+        initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"]
+        initializer_names = {init.name for init in self.onnx_model.graph.initializer}
+        model_input_names = {inp.name for inp in self.onnx_model.graph.input if inp.name not in initializer_names}
+
         filtered_inputs = []
         for input_name in segment_dependencies['input']:
-            # Only include actual inputs that are not weights or biases
-            # Typically, weights and biases have names containing "weight" or "bias"
-            if not any(pattern in input_name.lower() for pattern in ["weight", "bias"]):
-                # Include model inputs and intermediate tensors
-                if input_name in [inp.name for inp in self.onnx_model.graph.input] or input_name.startswith('/'):
-                    filtered_inputs.append(input_name)
-        
-        # If there are no inputs after filtering, include the first non-weight/bias input
-        if not filtered_inputs:
-            for input_name in segment_dependencies['input']:
-                if not any(pattern in input_name.lower() for pattern in ["weight", "bias"]):
-                    filtered_inputs.append(input_name)
-                    break
-            
-            # If still no inputs, use the first input as a fallback
-            if not filtered_inputs and segment_dependencies['input']:
-                filtered_inputs.append(segment_dependencies['input'][0])
+            name_lower = input_name.lower()
+            # Skip if it matches an initializer pattern
+            if any(pattern in name_lower for pattern in initializer_patterns):
+                continue
+            # Include if it's a model input or an intermediate tensor (not an initializer)
+            if input_name in model_input_names or input_name not in initializer_names:
+                filtered_inputs.append(input_name)
+
+        # Fallback: if nothing passed the filter, use the first input
+        if not filtered_inputs and segment_dependencies['input']:
+            filtered_inputs.append(segment_dependencies['input'][0])
         
         segment_dependencies['filtered_inputs'] = filtered_inputs
 

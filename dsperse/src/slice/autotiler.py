@@ -41,7 +41,7 @@ def append_split_to_onnx(
     """
     Append split nodes to an existing ONNX model.
     The split consumes the tensor named `split_input_name` and produces tile outputs.
-    Preserves other outputs if present.
+    Preserves ALL original outputs (for skip connections).
 
     Returns: list of output tensor names (tile inputs)
     """
@@ -59,14 +59,15 @@ def append_split_to_onnx(
 
     tile_with_halo_h, tile_with_halo_w = metadata["tile_with_halo"]
 
-    other_outputs = [out for out in graph.output if out.name != split_input_name]
+    # Preserve ALL original outputs (including split_input_name for skip connections)
+    original_outputs = list(graph.output)
     while len(graph.output) > 0:
         graph.output.pop()
     for name in output_names:
         graph.output.append(helper.make_tensor_value_info(
             name, TensorProto.FLOAT, [1, c_in, tile_with_halo_h, tile_with_halo_w]
         ))
-    for out in other_outputs:
+    for out in original_outputs:
         graph.output.append(out)
 
     onnx.save(model, str(onnx_path))
@@ -89,7 +90,7 @@ def prepend_concat_to_onnx(
     The concat produces tensor named `concat_output_name` from tile outputs.
     Preserves other inputs (e.g., for residual connections).
 
-    Returns: list of input tensor names (tile outputs)
+    Returns: list of ALL input tensor names (tile outputs + skip connections)
     """
     model = onnx.load(str(onnx_path))
     graph = model.graph
@@ -114,7 +115,9 @@ def prepend_concat_to_onnx(
         graph.input.append(inp)
 
     onnx.save(model, str(onnx_path))
-    return input_names
+
+    all_input_names = input_names + [inp.name for inp in other_inputs]
+    return all_input_names
 
 
 def compute_halo(kernel: list[int], dilation: list[int]) -> tuple[int, int]:

@@ -308,18 +308,13 @@ class OnnxSlicer:
         for inp in segment_node_inputs:
             if inp not in segment_node_outputs:
                 # Check if it's a model input, intermediate value, or an initializer
-                if inp in all_value_infos:
-                    segment_inputs.append(all_value_infos[inp])
-                elif inp in initializer_map:
+                if inp in initializer_map:
+                    # Initializers (weights, biases, running_mean, etc.) are NOT graph inputs
+                    # They will be automatically included by extract_model
                     init = initializer_map[inp]
                     segment_initializers.append(init)
-                    # Create a value info for this initializer
-                    t = onnx.helper.make_tensor_value_info(
-                        inp,
-                        init.data_type,
-                        list(init.dims)
-                    )
-                    segment_inputs.append(t)
+                elif inp in all_value_infos:
+                    segment_inputs.append(all_value_infos[inp])
                 else:
                     # For unknown intermediate tensors, we need to infer reasonable shapes
                     # Look at the node that would consume this input to guess the shape

@@ -112,26 +112,33 @@ class Utils:
     @staticmethod
     def filter_inputs(slice_inputs, graph):
         # Filter input names from slice details
+        # Exclude initializer-like names (weights, biases, running stats, etc.)
+        initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"]
+
+        # Get the set of graph.input names that are actual model inputs (not initializers)
+        # Note: in some ONNX models, initializers are also listed in graph.input
+        initializer_names = {init.name for init in graph.initializer}
+        model_input_names = {inp.name for inp in graph.input if inp.name not in initializer_names}
+
         slice_filtered_inputs = []
         for input_info in slice_inputs:
-            # Only include actual inputs that are not weights or biases
-            # Typically, weights and biases have names containing "weight" or "bias"
-            if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
-                    input_info.name in [inp.name for inp in graph.input]):
-                slice_filtered_inputs.append(input_info.name)
-            # Also include intermediate tensors from previous layers
-            elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                slice_filtered_inputs.append(input_info.name)
-        # If there are no inputs after filtering, include the first non-weight/bias input
-        if not slice_filtered_inputs:
-            for input_info in slice_inputs:
-                if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    slice_filtered_inputs.append(input_info.name)
-                    break
+            name = input_info.name
+            name_lower = name.lower()
 
-            # If still no inputs, use the first input as a fallback
-            if not slice_filtered_inputs and slice_inputs:
-                slice_filtered_inputs.append(slice_inputs[0].name)
+            # Skip if it matches an initializer pattern
+            if any(pattern in name_lower for pattern in initializer_patterns):
+                continue
+
+            # Include if it's a model input or an intermediate tensor
+            # Model inputs are in graph.input but not initializers
+            # Intermediate tensors are everything else (from previous slices)
+            if name in model_input_names or name not in initializer_names:
+                slice_filtered_inputs.append(name)
+
+        # Fallback: if nothing passed the filter, use the first input
+        if not slice_filtered_inputs and slice_inputs:
+            slice_filtered_inputs.append(slice_inputs[0].name)
+
         return slice_filtered_inputs
 
     @staticmethod

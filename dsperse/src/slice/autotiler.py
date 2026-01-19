@@ -190,11 +190,15 @@ def calculate_tile_size_from_max_elements(
 def is_tileable(model: onnx.ModelProto) -> bool:
     if len(model.graph.input) > 1:
         return False
-    op_types = [n.op_type for n in model.graph.node]
-    conv_count = op_types.count('Conv')
+    conv_count = sum(1 for n in model.graph.node if n.op_type == "Conv")
     if conv_count != 1:
         return False
-    ops = set(op_types)
+    conv_params = get_conv_params(model)
+    if conv_params:
+        kh, kw = conv_params['kernel']
+        if kh % 2 == 0 or kw % 2 == 0:
+            return False
+    ops = {n.op_type for n in model.graph.node}
     return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
 
 
@@ -614,6 +618,10 @@ def tile_conv_slice(slice_path: Path, tile_size: int, output_path: Path) -> dict
 
     non_conv_ops = [n for n in m.graph.node if n.op_type != "Conv"]
     if non_conv_ops:
+        for init in m.graph.initializer:
+            if init.name not in [conv_node.input[1]] + ([conv_node.input[2]] if len(conv_node.input) > 2 else []):
+                initializers.append(init)
+
         for i, orig_node in enumerate(non_conv_ops):
             new_inputs = []
             for inp in orig_node.input:
@@ -1112,6 +1120,9 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
         halo_h, halo_w = tiling["halo"]
         out_tile_h, out_tile_w = tiling["out_tile"]
 
+        split_path = None
+        concat_path = None
+
         if prev_info and prev_info["type"] == "bridge":
             print(f"  Appending split to bridge slice {prev_info['idx']}")
             append_split_to_onnx(
@@ -1126,6 +1137,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
                 slice_idx=conv_idx
             )
             slices_data[prev_info["idx"]]["runtime_only"] = True
+            split_path = prev_info["path"]
         elif prev_info and prev_info["type"] == "conv":
             print(f"  Creating concat+split bridge between Conv {prev_info['idx']} and Conv {conv_idx}")
             prev_tiling = prev_info["tiling"]
@@ -1160,12 +1172,15 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
             ]
 
             create_standalone_bridge(all_nodes, all_init, inputs, outputs, f"glue_{prev_info['idx']}_{conv_idx}", glue_path)
+            split_path = glue_path
+            if "tiling" in slices_data[prev_info["idx"]]:
+                slices_data[prev_info["idx"]]["tiling"]["concat"] = {"path": str(glue_path), "input_names": concat_inputs}
         else:
             print(f"  Creating split-only bridge before Conv {conv_idx}")
             split_dir = slices_dir / f"slice_{conv_idx}_split"
             split_dir.mkdir(exist_ok=True)
 
-            create_split_slice(
+            split_result = create_split_slice(
                 input_name=tiling["input_name"],
                 c_in=tiling["c_in"],
                 h=tiling["h"],
@@ -1175,12 +1190,14 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
                 halo_w=halo_w,
                 slice_idx=conv_idx,
                 output_dir=split_dir,
-                nested=False
+                nested=True
             )
+            split_path = Path(split_result["path"])
 
+        concat_input_names = None
         if next_info and next_info["type"] == "bridge":
             print(f"  Prepending concat to bridge slice {next_info['idx']}")
-            prepend_concat_to_onnx(
+            concat_input_names = prepend_concat_to_onnx(
                 onnx_path=next_info["path"],
                 concat_output_name=tiling["output_name"],
                 num_tiles=tiling["num_tiles"],
@@ -1192,12 +1209,13 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
                 slice_idx=conv_idx
             )
             slices_data[next_info["idx"]]["runtime_only"] = True
+            concat_path = next_info["path"]
         elif next_info is None or next_info["type"] != "conv":
             print(f"  Creating concat-only bridge after Conv {conv_idx}")
             concat_dir = slices_dir / f"slice_{conv_idx}_concat"
             concat_dir.mkdir(exist_ok=True)
 
-            create_concat_slice(
+            concat_result = create_concat_slice(
                 num_tiles=tiling["num_tiles"],
                 tiles_y=tiling["tiles_y"],
                 tiles_x=tiling["tiles_x"],
@@ -1207,8 +1225,10 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
                 slice_idx=conv_idx,
                 output_name=tiling["output_name"],
                 output_dir=concat_dir,
-                nested=False
+                nested=True
             )
+            concat_path = Path(concat_result["path"])
+            concat_input_names = concat_result["input_names"]
 
         tiled_results[conv_idx] = {
             "tile_path": str(tiles_dir / "tile.onnx"),
@@ -1216,17 +1236,28 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
             "tile_info": tile_info,
         }
 
-        slices_data[conv_idx]["tiling"] = {
+        tiling_metadata = {
+            "slice_idx": conv_idx,
             "tile_size": tiling["tile_size"],
             "num_tiles": tiling["num_tiles"],
             "tiles_y": tiling["tiles_y"],
             "tiles_x": tiling["tiles_x"],
             "halo": tiling["halo"],
             "out_tile": tiling["out_tile"],
+            "c_out": tiling["c_out"],
             "tile": {
                 "path": "payload/tiles/tile.onnx",
+                "conv_out": tiling["out_tile"],
             },
         }
+        if split_path:
+            tiling_metadata["split"] = {"path": str(split_path)}
+        if concat_path:
+            concat_meta = {"path": str(concat_path)}
+            if concat_input_names:
+                concat_meta["input_names"] = concat_input_names
+            tiling_metadata["concat"] = concat_meta
+        slices_data[conv_idx]["tiling"] = tiling_metadata
 
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

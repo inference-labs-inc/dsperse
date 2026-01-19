@@ -423,7 +423,7 @@ class Compiler:
         if tiling_info:
             tile_path = CompilerUtils.resolve_tile_path(base_path, slice_dir, tiling_info, idx)
             if not tile_path:
-                return []
+                raise ValueError(f"Slice {idx}: tiled slice missing tile file. Check tiling metadata.")
             compilation_slice_data = {'path': tile_path, 'relative_path': os.path.relpath(tile_path, base_path)}
 
         backends_to_build = self._get_backends_to_build(idx)

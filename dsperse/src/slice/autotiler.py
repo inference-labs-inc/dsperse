@@ -129,10 +129,10 @@ def compute_min_tile_size(kernel: list[int], dilation: list[int]) -> int:
     return max(effective_kh, effective_kw) + 1
 
 
-def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7) -> int | None:
+def find_tile_size(spatial_dim: int, target: int, min_tile: int = 7, stride: int = 1) -> int | None:
     if min_tile <= target < spatial_dim:
         for tile in range(target, min_tile - 1, -1):
-            if spatial_dim % tile == 0:
+            if spatial_dim % tile == 0 and tile % stride == 0:
                 return tile
     return None
 
@@ -147,6 +147,11 @@ def is_tileable(model: onnx.ModelProto) -> bool:
     if conv_params:
         kh, kw = conv_params['kernel']
         if kh % 2 == 0 or kw % 2 == 0:
+            return False
+        pads = conv_params['pads']
+        dilation = conv_params['dilation']
+        halo_h, halo_w = compute_halo([kh, kw], dilation)
+        if pads != [halo_h, halo_w, halo_h, halo_w]:
             return False
     ops = {n.op_type for n in model.graph.node}
     return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
@@ -315,7 +320,6 @@ def create_tile_slice(
     """
     m = onnx.load(slice_path)
     orig_input = m.graph.input[0]
-    orig_output = m.graph.output[0]
     orig_dims = [d.dim_value for d in orig_input.type.tensor_type.shape.dim]
     c_in = orig_dims[1]
 
@@ -647,7 +651,7 @@ def autotile_slice(
     halo_h, halo_w = compute_halo(kernel, dilation)
     min_tile = compute_min_tile_size(kernel, dilation)
 
-    actual_tile_size = find_tile_size(h, tile_size, min_tile)
+    actual_tile_size = find_tile_size(h, tile_size, min_tile, stride=sh)
     if not actual_tile_size:
         return None
 
@@ -815,7 +819,7 @@ def get_tiling_params(onnx_path: Path, tile_size: int) -> dict | None:
 
     halo_h, halo_w = compute_halo(kernel, dilation)
     min_tile = compute_min_tile_size(kernel, dilation)
-    actual_tile_size = find_tile_size(h, tile_size, min_tile)
+    actual_tile_size = find_tile_size(h, tile_size, min_tile, stride=sh)
     if not actual_tile_size:
         return None
 
@@ -900,7 +904,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, tile_size: int = 16) -> dict:
         return {}
 
     slice_info = []
-    for idx, slice_data in enumerate(slices_data):
+    for idx, _ in enumerate(slices_data):
         slice_dir = slices_dir / f"slice_{idx}"
         onnx_path = slice_dir / "payload" / f"slice_{idx}.onnx"
 

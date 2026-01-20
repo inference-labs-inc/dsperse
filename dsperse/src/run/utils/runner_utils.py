@@ -17,6 +17,16 @@ class RunnerUtils:
     def __init__(self):
         pass
 
+    @staticmethod
+    def extract_output_tensor(result):
+        """Extract output tensor from execution result, checking 'output' then 'logits' keys."""
+        if result is None:
+            return None
+        if isinstance(result, dict):
+            out = result.get('output')
+            return out if out is not None else result.get('logits')
+        return result
+
     # ----- Runtime helpers to keep Runner.run concise -----
     @staticmethod
     def normalize_for_runtime(run_metadata: dict, slices_path: Path) -> tuple[Path, str | None, Path]:

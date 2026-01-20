@@ -417,12 +417,7 @@ class Runner:
                     self, {"use_circuit": True}, tile_meta, tile_in, tile_out, slice_specific_dir
                 )
 
-                output_tensor = None
-                if ok and result is not None:
-                    if isinstance(result, dict):
-                        output_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
-                    else:
-                        output_tensor = result
+                output_tensor = RunnerUtils.extract_output_tensor(result) if ok else None
 
                 if ok and output_tensor is not None:
                     if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
@@ -557,12 +552,9 @@ class Runner:
                         if first_output is not None:
                             final_tensor = first_output
                         else:
-                            final_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
+                            final_tensor = RunnerUtils.extract_output_tensor(result)
                     else:
-                        if isinstance(result, dict):
-                            out_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
-                        else:
-                            out_tensor = result
+                        out_tensor = RunnerUtils.extract_output_tensor(result)
                         if isinstance(out_tensor, torch.Tensor):
                             target_shape = info.get_target_shape()
                             if target_shape:

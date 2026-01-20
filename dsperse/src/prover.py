@@ -167,7 +167,7 @@ class Prover:
     @staticmethod
     def _resolve_slice_artifacts(
         slice_dir: Path,
-        meta: dict,
+        meta: RunSliceMetadata,
         backend: str | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """Resolve circuit, pk, and settings paths under a given slice directory.
@@ -177,20 +177,19 @@ class Prover:
         - Otherwise: use generic fields only
         Returns (circuit_path, pk_path, settings_path), any may be None.
         """
-        m = RunSliceMetadata.from_dict(meta)
         b = (backend or "").lower()
         if b == "ezkl":
-            circuit_rel = m.ezkl_circuit_path or m.circuit_path
-            pk_rel = m.pk_path
-            settings_rel = m.settings_path
+            circuit_rel = meta.ezkl_circuit_path or meta.circuit_path
+            pk_rel = meta.pk_path
+            settings_rel = meta.settings_path
         elif b == "jstprove":
-            circuit_rel = m.jstprove_circuit_path or m.circuit_path
-            pk_rel = m.pk_path
-            settings_rel = m.settings_path
+            circuit_rel = meta.jstprove_circuit_path or meta.circuit_path
+            pk_rel = meta.pk_path
+            settings_rel = meta.settings_path
         else:
-            circuit_rel = m.circuit_path
-            pk_rel = m.pk_path
-            settings_rel = m.settings_path
+            circuit_rel = meta.circuit_path
+            pk_rel = meta.pk_path
+            settings_rel = meta.settings_path
 
         circuit_path = Utils.resolve_under_slice(slice_dir, circuit_rel)
         pk_path = Utils.resolve_under_slice(slice_dir, pk_rel)
@@ -409,13 +408,13 @@ class Prover:
                 return Utils.load_run_results(run_path)
 
         work_items = []
-        for slice_id, meta in slices_iter:
+        for slice_id, meta_raw in slices_iter:
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
-            preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
+            meta = RunSliceMetadata.from_dict(meta_raw)
+            preferred = self._select_proving_backend(Path(run_path), slice_id, meta_raw)
             circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
-            slice_meta = RunSliceMetadata.from_dict(meta)
-            tiling = slice_meta.tiling
+            tiling = meta.tiling
             if tiling:
                 witness_path = None
                 proof_path = None
@@ -543,14 +542,14 @@ class Prover:
         if len(model_slices) != 1:
             raise ValueError(f"Slices path must represent exactly one slice; found {len(model_slices)}")
 
-        (slice_id, meta), = model_slices.items()
+        (slice_id, meta_raw), = model_slices.items()
+        meta = RunSliceMetadata.from_dict(meta_raw)
         preferred = (backend or "").lower()
         dirs_root = Utils.dirs_root_from(Path(model_dir))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
         model_path_res, pk_path_res, settings_path_res = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
-        slice_meta = RunSliceMetadata.from_dict(meta)
-        tiling = slice_meta.tiling
+        tiling = meta.tiling
         if tiling or tiles_range is not None:
             num_tiles = tiling.num_tiles if tiling else 0
             start = time.time()

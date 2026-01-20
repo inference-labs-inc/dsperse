@@ -43,12 +43,12 @@ class OnnxModels:
         result = RunnerUtils.process_final_output(output_tensor)
         result['output_tensors'] = output_tensors
         if output_file:
-            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
+            RunnerUtils.save_to_file_flattened(result['output'], output_file)
         return result
 
     @staticmethod
     def run_inference(input_file: str, model_path: str, output_file: str = None):
-        """Run inference with the ONNX model and return the logits, probabilities, and predictions."""
+        """Run inference with the ONNX model and return raw output tensors."""
         try:
             session = OnnxModels._create_session(model_path)
             input_tensor = RunnerUtils.preprocess_input(input_file)

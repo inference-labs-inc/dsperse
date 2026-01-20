@@ -95,7 +95,7 @@ class Runner:
         return results
 
 
-    def _run_ezkl_slice(self, slice_info: dict, input_tensor_path, output_witness_path, slice_dir: Path = None):
+    def _run_ezkl_slice(self, meta: RunSliceMetadata, input_tensor_path, output_witness_path, slice_dir: Path = None):
         """Run EZKL inference for a slice with fallback to ONNX.
         Accepts paths possibly formatted as `slice_#/payload/...` or `payload/...` and resolves them
         under the provided `slice_dir` if necessary.
@@ -108,7 +108,6 @@ class Runner:
                 'attempted_ezkl': True
             }
 
-        meta = RunSliceMetadata.from_dict(slice_info)
         model_path = meta.circuit_path
         vk_path = meta.vk_path
         settings_path = meta.settings_path
@@ -153,7 +152,7 @@ class Runner:
 
         return success, output_tensor, exec_info
 
-    def _run_jstprove_slice(self, slice_info: dict, input_tensor_path, output_witness_path, slice_dir: Path = None):
+    def _run_jstprove_slice(self, meta: RunSliceMetadata, input_tensor_path, output_witness_path, slice_dir: Path = None):
         """Run JSTprove inference for a slice with fallback to ONNX.
         Accepts paths possibly formatted as `slice_#/payload/...` or `payload/...` and resolves them
         under the provided `slice_dir` if necessary.
@@ -161,7 +160,6 @@ class Runner:
         if self.jstprove_runner is None:
             return False, "JSTprove CLI not available", {'success': False, 'method': 'jstprove_gen_witness', 'error': 'JSTprove CLI not available'}
 
-        meta = RunSliceMetadata.from_dict(slice_info)
         circuit_path = meta.circuit_path
         settings_path = meta.settings_path
 
@@ -285,18 +283,16 @@ class Runner:
                 save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
             self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
 
-    def _run_tiled_slice(self, slice_id: str, slice_info: dict, tensor_cache: dict, run_dir: Path) -> dict:
+    def _run_tiled_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> dict:
         """Run a tiled slice: split (Python) → tiles (ONNX) → concat (Python)."""
-        tiling_raw = slice_info.get("tiling")
-        if not tiling_raw:
+        tiling = meta.tiling
+        if not tiling:
             return {'success': False, 'error': 'missing_tiling_info'}
-        tiling = TilingInfo.from_dict(tiling_raw)
-        meta = RunSliceMetadata.from_dict(slice_info)
 
         input_tensor = self._get_tiled_input_tensor(slice_id, tiling, meta, tensor_cache)
 
         split_time = self._run_tiling_split(slice_id, tiling, input_tensor, run_dir, tensor_cache)
-        tile_time, tile_exec_infos = self._run_tiling_parallel_tiles(slice_id, tiling, slice_info, run_dir, tensor_cache)
+        tile_time, tile_exec_infos = self._run_tiling_parallel_tiles(slice_id, tiling, meta, run_dir, tensor_cache)
         concat_time = self._run_tiling_concat(slice_id, tiling, run_dir, tensor_cache)
 
         total_time = split_time + tile_time + concat_time
@@ -399,7 +395,7 @@ class Runner:
 
         return tile_idx, cache_output_name, ok, output_tensor, t_info
 
-    def _run_tiling_parallel_tiles(self, slice_id: str, tiling: TilingInfo, _slice_info: dict, _run_dir: Path, tensor_cache: dict) -> tuple[float, list]:
+    def _run_tiling_parallel_tiles(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, run_dir: Path, tensor_cache: dict) -> tuple[float, list]:
         import onnxruntime as ort
         import numpy as np
 
@@ -492,7 +488,7 @@ class Runner:
 
             if info.tiling:
                 logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
-                exec_info = self._run_tiled_slice(current_slice_id, info_raw, tensor_cache, run_dir)
+                exec_info = self._run_tiled_slice(current_slice_id, info, tensor_cache, run_dir)
                 ok = exec_info.get('success', False)
                 output_names = info.dependencies.output
                 if ok and output_names:
@@ -510,7 +506,7 @@ class Runner:
                 if use_circuit:
                     in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
                     Utils.write_input(current_tensor, str(in_file))
-                    ok, result, exec_info = RunnerUtils.execute_slice(self, node, info_raw, in_file, out_file, slice_dir)
+                    ok, result, exec_info = RunnerUtils.execute_slice(self, node, info, in_file, out_file, slice_dir)
                 else:
                     if len(filtered_inputs) > 1:
                         missing = [n for n in filtered_inputs if n not in tensor_cache]
@@ -519,7 +515,7 @@ class Runner:
                         extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
                     else:
                         extra_tensors = {input_name: current_tensor}
-                    ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info_raw, None, slice_dir, extra_tensors)
+                    ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
 
                 logger.info(f"[{current_slice_id}] ok={ok}, result type={type(result).__name__}")
                 if ok and result is not None:

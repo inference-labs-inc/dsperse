@@ -2,11 +2,10 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 import time
 
 import torch
-import torch.nn.functional as F
 
 from dsperse.src.metadata.schema import RunSliceMetadata
 from dsperse.src.slice.utils.converter import Converter
@@ -108,12 +107,12 @@ class RunnerUtils:
         return str(path)
 
     @staticmethod
-    def run_onnx_slice(slice_info: dict, input_tensor_path, output_tensor_path, slice_dir: Path = None):
+    def run_onnx_slice(meta: RunSliceMetadata, input_tensor_path, output_tensor_path, slice_dir: Path = None):
         """Run ONNX inference for a slice.
-        Accepts `slice_info['path']` possibly as `slice_#/payload/...` or absolute; resolves under `slice_dir` when provided.
+        Accepts `meta.path` possibly as `slice_#/payload/...` or absolute; resolves under `slice_dir` when provided.
         """
         from dsperse.src.backends.onnx_models import OnnxModels
-        onnx_path = slice_info.get("path")
+        onnx_path = meta.path
         if not onnx_path:
             return False, "No ONNX path in slice_info", {'success': False, 'error': 'missing_path', 'method': 'onnx_only'}
 
@@ -143,10 +142,10 @@ class RunnerUtils:
         return success, result, exec_info
 
     @staticmethod
-    def run_onnx_multi_input_slice(slice_info: dict, output_file: Path, slice_dir: Path, extra_tensors: dict):
+    def run_onnx_multi_input_slice(meta: RunSliceMetadata, output_file: Path, slice_dir: Path, extra_tensors: dict):
         """Run ONNX inference for a multi-input slice."""
         from dsperse.src.backends.onnx_models import OnnxModels
-        onnx_path = slice_info.get("path")
+        onnx_path = meta.path
         if not onnx_path:
             return False, "No ONNX path in slice_info", {'error': 'missing_path'}
 
@@ -171,10 +170,9 @@ class RunnerUtils:
         return success, result, exec_info
 
     @staticmethod
-    def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
+    def execute_slice(runner, node: dict, meta: RunSliceMetadata, in_file: Path, out_file: Path, slice_dir: Path):
         """Execute a slice using best available backend: jstprove -> ezkl -> onnx."""
-        meta = RunSliceMetadata.from_dict(slice_info)
-        slice_id = slice_info.get("index", slice_dir.name if slice_dir else "unknown")
+        slice_id = slice_dir.name if slice_dir else "unknown"
         forced = getattr(runner, 'force_backend', None)
 
         has_jst = bool(meta.jstprove_circuit_path) and getattr(runner, "jstprove_runner", None)
@@ -189,36 +187,36 @@ class RunnerUtils:
 
         if forced == 'onnx':
             logger.info(f"[{slice_id}] Running with ONNX (forced)")
-            return RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            return RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
 
         if forced == 'jstprove' and has_jst:
             logger.info(f"[{slice_id}] Running with JSTprove (forced)")
-            j_slice = RunnerUtils._prepare_jstprove_slice(slice_info)
-            return runner._run_jstprove_slice(j_slice, in_file, out_file, slice_dir)
+            j_meta = RunnerUtils._prepare_jstprove_meta(meta)
+            return runner._run_jstprove_slice(j_meta, in_file, out_file, slice_dir)
 
         if forced == 'ezkl' and has_ezkl:
             logger.info(f"[{slice_id}] Running with EZKL (forced)")
-            e_slice = RunnerUtils._prepare_ezkl_slice(slice_info)
-            return runner._run_ezkl_slice(e_slice, in_file, out_file, slice_dir)
+            e_meta = RunnerUtils._prepare_ezkl_meta(meta)
+            return runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
 
         if has_jst:
             logger.info(f"[{slice_id}] Running with JSTprove (available: {available})")
-            j_slice = RunnerUtils._prepare_jstprove_slice(slice_info)
-            ok, tensor, j_info = runner._run_jstprove_slice(j_slice, in_file, out_file, slice_dir)
+            j_meta = RunnerUtils._prepare_jstprove_meta(meta)
+            ok, tensor, j_info = runner._run_jstprove_slice(j_meta, in_file, out_file, slice_dir)
             if ok:
                 return ok, tensor, j_info
             logger.warning(f"[{slice_id}] JSTprove failed, trying fallback...")
 
             if has_ezkl:
                 logger.info(f"[{slice_id}] Falling back to EZKL")
-                e_slice = RunnerUtils._prepare_ezkl_slice(slice_info)
-                ok, tensor, e_info = runner._run_ezkl_slice(e_slice, in_file, out_file, slice_dir)
+                e_meta = RunnerUtils._prepare_ezkl_meta(meta)
+                ok, tensor, e_info = runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
                 if ok:
                     return ok, tensor, e_info
                 logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
 
             logger.info(f"[{slice_id}] Falling back to ONNX")
-            ok, tensor, o_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            ok, tensor, o_info = RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
             o_info["method"] = "jstprove_fallback_onnx"
             o_info["attempted_jstprove"] = True
             o_info["attempted_ezkl"] = has_ezkl
@@ -226,43 +224,31 @@ class RunnerUtils:
 
         if has_ezkl:
             logger.info(f"[{slice_id}] Running with EZKL (available: {available})")
-            e_slice = RunnerUtils._prepare_ezkl_slice(slice_info)
-            ok, tensor, e_info = runner._run_ezkl_slice(e_slice, in_file, out_file, slice_dir)
+            e_meta = RunnerUtils._prepare_ezkl_meta(meta)
+            ok, tensor, e_info = runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
             if ok:
                 return ok, tensor, e_info
             logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
-            ok, tensor, o_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+            ok, tensor, o_info = RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
             o_info["method"] = "ezkl_fallback_onnx"
             o_info["attempted_ezkl"] = True
             return ok, tensor, o_info
 
         logger.info(f"[{slice_id}] Running with ONNX (no ZK circuits available)")
-        ok, tensor, onnx_info = RunnerUtils.run_onnx_slice(slice_info, in_file, out_file, slice_dir)
+        ok, tensor, onnx_info = RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
         return ok, tensor, onnx_info
 
     @staticmethod
-    def _prepare_jstprove_slice(slice_info: dict) -> dict:
-        """Prepare slice_info dict with JSTprove-specific paths."""
-        meta = RunSliceMetadata.from_dict(slice_info)
-        j_slice = dict(slice_info)
-        j_slice["circuit_path"] = meta.jstprove_circuit_path or meta.circuit_path
-        if meta.settings_path:
-            j_slice["settings_path"] = meta.settings_path
-        return j_slice
+    def _prepare_jstprove_meta(meta: RunSliceMetadata) -> RunSliceMetadata:
+        """Prepare metadata with JSTprove-specific circuit path."""
+        from dataclasses import replace
+        return replace(meta, circuit_path=meta.jstprove_circuit_path or meta.circuit_path)
 
     @staticmethod
-    def _prepare_ezkl_slice(slice_info: dict) -> dict:
-        """Prepare slice_info dict with EZKL-specific paths."""
-        meta = RunSliceMetadata.from_dict(slice_info)
-        e_slice = dict(slice_info)
-        e_slice["circuit_path"] = meta.ezkl_circuit_path or meta.circuit_path
-        if meta.settings_path:
-            e_slice["settings_path"] = meta.settings_path
-        if meta.vk_path:
-            e_slice["vk_path"] = meta.vk_path
-        if meta.pk_path:
-            e_slice["pk_path"] = meta.pk_path
-        return e_slice
+    def _prepare_ezkl_meta(meta: RunSliceMetadata) -> RunSliceMetadata:
+        """Prepare metadata with EZKL-specific circuit path."""
+        from dataclasses import replace
+        return replace(meta, circuit_path=meta.ezkl_circuit_path or meta.circuit_path)
 
     @staticmethod
     def _get_file_path() -> str:
@@ -311,22 +297,8 @@ class RunnerUtils:
         
     @staticmethod
     def process_final_output(torch_tensor):
-        """Process the final output of the model."""
-        # Apply softmax to get probabilities if not already applied
-        if len(torch_tensor.shape) != 2:  # Ensure raw output is 2D [batch_size, num_classes]
-            logger.debug(f"Warning: Raw output shape {torch_tensor.shape} is not as expected. Reshaping to [1, -1].")
-            torch_tensor = torch_tensor.reshape(1, -1)
-
-        probabilities = F.softmax(torch_tensor, dim=1)
-        predicted_action = torch.argmax(probabilities, dim=1).item()
-
-        result = {
-            "logits": torch_tensor,
-            "probabilities": probabilities,
-            "predicted_action": predicted_action
-        }
-
-        return result
+        """Return raw output tensor. Model-specific post-processing is caller's responsibility."""
+        return {"output": torch_tensor}
 
     @staticmethod
     def get_segments(slices_directory):
@@ -414,25 +386,21 @@ class RunnerUtils:
         return False, None
 
     @staticmethod
-    def filter_tensor(current_slice_metadata: Union[dict, RunSliceMetadata], tensor, strict: bool = True):
-        logits = tensor["logits"]
-
-        if isinstance(current_slice_metadata, dict):
-            current_slice_metadata = RunSliceMetadata.from_dict(current_slice_metadata)
-
-        output_shape = current_slice_metadata.output_shape
+    def filter_tensor(meta: RunSliceMetadata, tensor, strict: bool = True):
+        output = tensor["output"]
+        output_shape = meta.output_shape
         if output_shape:
-            shape_ok = RunnerUtils.check_expected_shape(logits, output_shape, tensor_name="logits")
+            shape_ok = RunnerUtils.check_expected_shape(output, output_shape, tensor_name="output")
             if not shape_ok and strict:
                 expected = output_shape[0] if output_shape else output_shape
                 raise ValueError(
-                    f"Shape mismatch: got {list(logits.shape)} ({logits.numel()} elements), "
+                    f"Shape mismatch: got {list(output.shape)} ({output.numel()} elements), "
                     f"expected {expected}"
                 )
         else:
             logger.debug("Output shape metadata not found for shape check.")
 
-        return logits
+        return output
 
     @staticmethod
     def check_expected_shape(tensor, expected_shape_data, tensor_name="tensor"):

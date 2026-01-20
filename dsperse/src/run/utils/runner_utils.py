@@ -197,7 +197,8 @@ class RunnerUtils:
         if forced == 'ezkl' and has_ezkl:
             logger.info(f"[{slice_id}] Running with EZKL (forced)")
             e_meta = RunnerUtils._prepare_ezkl_meta(meta)
-            return runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
+            ezkl_in = RunnerUtils._flatten_input_for_ezkl(in_file)
+            return runner._run_ezkl_slice(e_meta, ezkl_in, out_file, slice_dir)
 
         if has_jst:
             logger.info(f"[{slice_id}] Running with JSTprove (available: {available})")
@@ -210,7 +211,8 @@ class RunnerUtils:
             if has_ezkl:
                 logger.info(f"[{slice_id}] Falling back to EZKL")
                 e_meta = RunnerUtils._prepare_ezkl_meta(meta)
-                ok, tensor, e_info = runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
+                ezkl_in = RunnerUtils._flatten_input_for_ezkl(in_file)
+                ok, tensor, e_info = runner._run_ezkl_slice(e_meta, ezkl_in, out_file, slice_dir)
                 if ok:
                     return ok, tensor, e_info
                 logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
@@ -225,7 +227,8 @@ class RunnerUtils:
         if has_ezkl:
             logger.info(f"[{slice_id}] Running with EZKL (available: {available})")
             e_meta = RunnerUtils._prepare_ezkl_meta(meta)
-            ok, tensor, e_info = runner._run_ezkl_slice(e_meta, in_file, out_file, slice_dir)
+            ezkl_in = RunnerUtils._flatten_input_for_ezkl(in_file)
+            ok, tensor, e_info = runner._run_ezkl_slice(e_meta, ezkl_in, out_file, slice_dir)
             if ok:
                 return ok, tensor, e_info
             logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
@@ -249,6 +252,19 @@ class RunnerUtils:
         """Prepare metadata with EZKL-specific circuit path."""
         from dataclasses import replace
         return replace(meta, circuit_path=meta.ezkl_circuit_path or meta.circuit_path)
+
+    @staticmethod
+    def _flatten_input_for_ezkl(in_file: Path) -> Path:
+        """Create flattened rank-2 input file for EZKL, return path to it."""
+        import json
+        with open(in_file, 'r') as f:
+            data = json.load(f)
+        tensor = torch.tensor(data.get("input_data", data.get("input", [])))
+        flattened = tensor.flatten().tolist()
+        ezkl_file = in_file.parent / "input_ezkl.json"
+        with open(ezkl_file, 'w') as f:
+            json.dump({"input_data": [flattened]}, f)
+        return ezkl_file
 
     @staticmethod
     def _get_file_path() -> str:

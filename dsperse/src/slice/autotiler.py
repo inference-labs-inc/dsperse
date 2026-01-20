@@ -18,6 +18,7 @@ from pathlib import Path
 import onnx
 from onnx import helper, TensorProto, numpy_helper
 
+from dsperse.src.metadata.schema import TilingInfo, TileInfo
 from dsperse.src.utils.utils import save_onnx_model
 
 ELEMENTWISE_OPS = {
@@ -364,25 +365,25 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
             "tile_info": tile_info,
         }
 
-        tiling_metadata = {
-            "slice_idx": idx,
-            "tile_size": tile_sz,
-            "num_tiles": tiling_params["num_tiles"],
-            "tiles_y": tiling_params["tiles_y"],
-            "tiles_x": tiling_params["tiles_x"],
-            "halo": tiling_params["halo"],
-            "out_tile": tiling_params["out_tile"],
-            "stride": tiling_params["stride"],
-            "c_in": tiling_params["c_in"],
-            "c_out": tiling_params["c_out"],
-            "input_name": tiling_params["input_name"],
-            "output_name": tiling_params["output_name"],
-            "tile": {
-                "path": f"slice_{idx}/payload/tiles/tile.onnx",
-                "conv_out": tile_info["conv_out"],
-            },
-        }
-        slices_data[idx]["tiling"] = tiling_metadata
+        tiling_metadata = TilingInfo(
+            slice_idx=idx,
+            tile_size=tile_sz,
+            num_tiles=tiling_params["num_tiles"],
+            tiles_y=tiling_params["tiles_y"],
+            tiles_x=tiling_params["tiles_x"],
+            halo=tuple(tiling_params["halo"]),
+            out_tile=tuple(tiling_params["out_tile"]),
+            stride=tuple(tiling_params["stride"]),
+            c_in=tiling_params["c_in"],
+            c_out=tiling_params["c_out"],
+            input_name=tiling_params["input_name"],
+            output_name=tiling_params["output_name"],
+            tile=TileInfo(
+                path=f"slice_{idx}/payload/tiles/tile.onnx",
+                conv_out=tuple(tile_info["conv_out"]),
+            ),
+        )
+        slices_data[idx]["tiling"] = tiling_metadata.to_dict()
 
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

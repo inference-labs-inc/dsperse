@@ -6,6 +6,8 @@ from pathlib import Path
 import torch
 import onnx
 
+from dsperse.src.metadata.schema import ModelMetadata, RunSliceMetadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -162,19 +164,15 @@ class Utils:
         Returns:
             dict: Dictionary mapping tensor names to their shapes
         """
+        meta = ModelMetadata.from_dict(model_metadata)
         shapes = {}
 
-        # Extract shapes from input_shape
-        input_shape = model_metadata.get("input_shape", [])
-        if input_shape and len(input_shape) > 0:
-            shapes["input"] = input_shape[0]
+        if meta.input_shape and len(meta.input_shape) > 0:
+            shapes["input"] = meta.input_shape[0]
 
-        # Extract shapes from output_shapes
-        output_shapes = model_metadata.get("output_shapes", [])
-        if output_shapes and len(output_shapes) > 0:
-            shapes["output"] = output_shapes[0]
+        if meta.output_shapes and len(meta.output_shapes) > 0:
+            shapes["output"] = meta.output_shapes[0]
 
-        # Extract shapes from nodes if available
         nodes = model_metadata.get("nodes", {})
         for node_name, node_info in nodes.items():
             if "parameter_details" in node_info:
@@ -256,12 +254,13 @@ class Utils:
         Prefer `use_circuit` flag; otherwise check presence of compiled circuit + keys.
         """
         slices = (metadata or {}).get("slices", {})
-        for sid, meta in slices.items():
-            use_circuit = bool(meta.get("use_circuit"))
-            circuit_path = meta.get("circuit_path") or meta.get("compiled")
-            pk_path = meta.get("pk_path")
+        for sid, meta_raw in slices.items():
+            m = RunSliceMetadata.from_dict(meta_raw)
+            use_circuit = bool(meta_raw.get("use_circuit"))
+            circuit_path = m.circuit_path
+            pk_path = m.pk_path
             if use_circuit or (circuit_path and pk_path):
-                yield sid, meta
+                yield sid, meta_raw
 
     @staticmethod
     def resolve_under_slice(slice_dir: Path, rel_or_abs: str | None) -> str | None:

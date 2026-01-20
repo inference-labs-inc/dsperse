@@ -2,12 +2,13 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import time
 
 import torch
 import torch.nn.functional as F
 
+from dsperse.src.metadata.schema import RunSliceMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.torch_utils import ModelUtils
 
@@ -172,11 +173,12 @@ class RunnerUtils:
     @staticmethod
     def execute_slice(runner, node: dict, slice_info: dict, in_file: Path, out_file: Path, slice_dir: Path):
         """Execute a slice using best available backend: jstprove -> ezkl -> onnx."""
+        meta = RunSliceMetadata.from_dict(slice_info)
         slice_id = slice_info.get("index", slice_dir.name if slice_dir else "unknown")
         forced = getattr(runner, 'force_backend', None)
 
-        has_jst = bool(slice_info.get("jstprove_circuit_path")) and getattr(runner, "jstprove_runner", None)
-        has_ezkl = bool(slice_info.get("ezkl_circuit_path"))
+        has_jst = bool(meta.jstprove_circuit_path) and getattr(runner, "jstprove_runner", None)
+        has_ezkl = bool(meta.ezkl_circuit_path)
 
         available = []
         if has_jst:
@@ -241,23 +243,25 @@ class RunnerUtils:
     @staticmethod
     def _prepare_jstprove_slice(slice_info: dict) -> dict:
         """Prepare slice_info dict with JSTprove-specific paths."""
+        meta = RunSliceMetadata.from_dict(slice_info)
         j_slice = dict(slice_info)
-        j_slice["circuit_path"] = slice_info.get("jstprove_circuit_path") or slice_info.get("circuit_path")
-        if slice_info.get("jstprove_settings_path"):
-            j_slice["settings_path"] = slice_info.get("jstprove_settings_path")
+        j_slice["circuit_path"] = meta.jstprove_circuit_path or meta.circuit_path
+        if meta.settings_path:
+            j_slice["settings_path"] = meta.settings_path
         return j_slice
 
     @staticmethod
     def _prepare_ezkl_slice(slice_info: dict) -> dict:
         """Prepare slice_info dict with EZKL-specific paths."""
+        meta = RunSliceMetadata.from_dict(slice_info)
         e_slice = dict(slice_info)
-        e_slice["circuit_path"] = slice_info.get("ezkl_circuit_path") or slice_info.get("circuit_path")
-        if slice_info.get("ezkl_settings_path"):
-            e_slice["settings_path"] = slice_info.get("ezkl_settings_path")
-        if slice_info.get("ezkl_vk_path"):
-            e_slice["vk_path"] = slice_info.get("ezkl_vk_path")
-        if slice_info.get("ezkl_pk_path"):
-            e_slice["pk_path"] = slice_info.get("ezkl_pk_path")
+        e_slice["circuit_path"] = meta.ezkl_circuit_path or meta.circuit_path
+        if meta.settings_path:
+            e_slice["settings_path"] = meta.settings_path
+        if meta.vk_path:
+            e_slice["vk_path"] = meta.vk_path
+        if meta.pk_path:
+            e_slice["pk_path"] = meta.pk_path
         return e_slice
 
     @staticmethod
@@ -410,14 +414,17 @@ class RunnerUtils:
         return False, None
 
     @staticmethod
-    def filter_tensor(current_slice_metadata, tensor, strict: bool = True):
+    def filter_tensor(current_slice_metadata: Union[dict, RunSliceMetadata], tensor, strict: bool = True):
         logits = tensor["logits"]
 
-        output_shape = current_slice_metadata.get("output_shape")
-        if output_shape is not None:
+        if isinstance(current_slice_metadata, dict):
+            current_slice_metadata = RunSliceMetadata.from_dict(current_slice_metadata)
+
+        output_shape = current_slice_metadata.output_shape
+        if output_shape:
             shape_ok = RunnerUtils.check_expected_shape(logits, output_shape, tensor_name="logits")
             if not shape_ok and strict:
-                expected = output_shape[0] if isinstance(output_shape, list) and output_shape else output_shape
+                expected = output_shape[0] if output_shape else output_shape
                 raise ValueError(
                     f"Shape mismatch: got {list(logits.shape)} ({logits.numel()} elements), "
                     f"expected {expected}"

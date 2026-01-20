@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from dsperse.src.metadata.schema import SliceMetadata, Compilation, Dependencies, TilingInfo
 from dsperse.src.utils.utils import Utils
 from dsperse.src.slice.utils.converter import Converter
 
@@ -62,14 +63,14 @@ class RunnerAnalyzer:
         - per-slice processing when `slices_data` entries contain a path to a per-slice
           metadata.json (i.e., discovered from slice_* directories)
         """
+        if isinstance(slices_data, dict):
+            slices_data = [slices_data]
 
-        # Normalize input to a list
-        if len(slices_data[0]) == 3:
-            if isinstance(slices_data, dict):
-                slices_data = [slices_data]
+        first = slices_data[0] if slices_data else {}
+        is_per_slice = isinstance(first, dict) and "slice_metadata" in first and "layers" not in first
+        if is_per_slice:
             return RunnerAnalyzer._process_slices_per_slice(slices_dir, slices_data)
-        else:
-            return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
+        return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
 
     @staticmethod
     def _process_slices_model(slices_dir: Path, slices_list: list[dict]) -> dict:
@@ -82,111 +83,78 @@ class RunnerAnalyzer:
         for item in slices_list:
             if not isinstance(item, dict):
                 continue
-            idx = item.get("index")
-            slice_key = f"slice_{idx}"
 
-            # Normalize ONNX path to 'slice_#/payload/...'
-            rel_from_meta = item.get("relative_path") or item.get("path")
+            meta = SliceMetadata.from_dict(item)
+            slice_key = f"slice_{meta.index}"
+
+            rel_from_meta = meta.relative_path or meta.path
             rel_payload = RunnerAnalyzer.rel_from_payload(rel_from_meta) or rel_from_meta
             onnx_path = RunnerAnalyzer.with_slice_prefix(rel_payload, slice_key)
-
-            # Shapes and dependencies
-            tensor_shape = (item.get("shape") or {}).get("tensor_shape") or {}
-            input_shape = tensor_shape.get("input")
-            output_shape = tensor_shape.get("output")
-            dependencies = item.get("dependencies") or {}
-            parameters = item.get("parameters", 0)
-            tiling = item.get("tiling")
-
-            # Check for compilation info (JSTprove first, then EZKL)
-            compilation = item.get("compilation") or {}
-            jst_comp = compilation.get("jstprove") or {}
-            ezkl_comp = compilation.get("ezkl") or {}
-            
-            # Prefer JSTprove if available, otherwise EZKL
-            if jst_comp.get("compiled"):
-                backend = "jstprove"
-                compiled_flag = True
-                if jst_comp.get("tiled"):
-                    files = jst_comp.get("files", {}).get("tile_0", {})
-                else:
-                    files = jst_comp.get("files") or {}
-                # Accept both keys: prefer 'compiled' (current), fallback to legacy 'circuit'
-                compiled_rel = files.get("compiled") or files.get("circuit")
-                settings_rel = files.get("settings")
-                pk_rel = None
-                vk_rel = None
-            else:
-                backend = "ezkl"
-                compiled_flag = bool(ezkl_comp.get("compiled", False))
-                if ezkl_comp.get("tiled"):
-                    files = ezkl_comp.get("files", {}).get("tile_0", {})
-                else:
-                    files = ezkl_comp.get("files") or {}
-                # Accept both keys: 'compiled_circuit' and legacy 'compiled'
-                compiled_rel = files.get("compiled_circuit") or files.get("compiled")
-                settings_rel = files.get("settings")
-                pk_rel = files.get("pk_key")
-                vk_rel = files.get("vk_key")
 
             def _norm(rel: Optional[str]) -> Optional[str]:
                 if not rel:
                     return None
                 return RunnerAnalyzer.with_slice_prefix(RunnerAnalyzer.rel_from_payload(rel) or rel, slice_key)
 
+            jst = meta.compilation.jstprove
+            ezkl = meta.compilation.ezkl
+
+            if jst.compiled:
+                backend = "jstprove"
+                compiled_flag = True
+                compiled_rel = jst.files.compiled
+                settings_rel = jst.files.settings
+                pk_rel = None
+                vk_rel = None
+            else:
+                backend = "ezkl"
+                compiled_flag = ezkl.compiled
+                compiled_rel = ezkl.files.compiled
+                settings_rel = ezkl.files.settings
+                pk_rel = ezkl.files.pk_key
+                vk_rel = ezkl.files.vk_key
+
             circuit_path = _norm(compiled_rel)
             settings_path = _norm(settings_rel)
             pk_path = _norm(pk_rel)
             vk_path = _norm(vk_rel)
 
-            # Also compute alternate backend circuit paths to enable multi-level fallbacks in run-metadata
-            if jst_comp.get("tiled"):
-                jst_files = jst_comp.get("files", {}).get("tile_0", {})
-            else:
-                jst_files = (jst_comp or {}).get("files") or {}
-                
-            if ezkl_comp.get("tiled"):
-                ezkl_files = ezkl_comp.get("files", {}).get("tile_0", {})
-            else:
-                ezkl_files = (ezkl_comp or {}).get("files") or {}
-
-            jst_circuit_rel = jst_files.get("compiled") or jst_files.get("circuit")
-            ezkl_circuit_rel = ezkl_files.get("compiled_circuit") or ezkl_files.get("compiled")
-            jstprove_circuit_path = _norm(jst_circuit_rel)
-            ezkl_circuit_path = _norm(ezkl_circuit_rel)
-
-            # Per-backend auxiliary artifact paths (for runtime backend switching)
-            jstprove_settings_path = _norm(jst_files.get("settings")) if jst_files else None
-            ezkl_settings_path = _norm(ezkl_files.get("settings")) if ezkl_files else None
-            ezkl_pk_path = _norm(ezkl_files.get("pk_key")) if ezkl_files else None
-            ezkl_vk_path = _norm(ezkl_files.get("vk_key")) if ezkl_files else None
+            jstprove_circuit_path = _norm(jst.files.compiled)
+            ezkl_circuit_path = _norm(ezkl.files.compiled)
+            jstprove_settings_path = _norm(jst.files.settings)
+            ezkl_settings_path = _norm(ezkl.files.settings)
+            ezkl_pk_path = _norm(ezkl.files.pk_key)
+            ezkl_vk_path = _norm(ezkl.files.vk_key)
 
             slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
+            tiling_dict = meta.tiling.to_dict() if meta.tiling else None
 
             slices[slice_key] = {
                 "path": onnx_path,
-                "input_shape": input_shape,
-                "output_shape": output_shape,
+                "input_shape": meta.input_shape,
+                "output_shape": meta.output_shape,
                 "ezkl_compatible": True,
                 "ezkl": bool(compiled_flag),
                 "backend": backend,
-                "circuit_size": 0,  # unknown without touching filesystem; keep 0
-                "dependencies": dependencies,
-                "parameters": parameters,
+                "circuit_size": 0,
+                "dependencies": {
+                    "input": meta.dependencies.input,
+                    "output": meta.dependencies.output,
+                    "filtered_inputs": meta.dependencies.filtered_inputs,
+                },
+                "parameters": meta.parameters,
                 "circuit_path": circuit_path,
                 "settings_path": settings_path,
                 "vk_path": vk_path,
                 "pk_path": pk_path,
                 "slice_metadata_path": slice_meta_rel,
-                # extra paths for multi-level fallback planning
                 "jstprove_circuit_path": jstprove_circuit_path,
                 "ezkl_circuit_path": ezkl_circuit_path,
-                # per-backend aux artifacts
                 "jstprove_settings_path": jstprove_settings_path,
                 "ezkl_settings_path": ezkl_settings_path,
                 "ezkl_pk_path": ezkl_pk_path,
                 "ezkl_vk_path": ezkl_vk_path,
-                "tiling": tiling,
+                "tiling": tiling_dict,
             }
 
         return slices
@@ -202,117 +170,76 @@ class RunnerAnalyzer:
         for entry in slices_data_list:
             meta_path = entry.get("slice_metadata")
             parent_dir = os.path.dirname(entry.get("path")).split(os.sep)[0]
-            
+
             try:
                 with open(meta_path, "r") as f:
-                    meta = json.load(f)
+                    raw_meta = json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to load slice metadata at {meta_path}: {e}")
                 continue
 
-            # Expect standard format with single slice in meta["slices"][0]
-            slice = (meta.get("slices"))[0]
+            slice_raw = (raw_meta.get("slices") or [])[0]
+            meta = SliceMetadata.from_dict(slice_raw)
+            slice_key = f"slice_{meta.index}"
 
-            idx = slice.get("index")
-            slice_key = f"slice_{idx}"
+            onnx_path = os.path.join(parent_dir, meta.relative_path)
 
-            # Normalize ONNX path
-            onnx_path = os.path.join(parent_dir, slice.get("relative_path"))
+            def _join(rel: Optional[str]) -> Optional[str]:
+                return os.path.join(parent_dir, rel) if rel else None
 
-            # Shapes and dependencies
-            tensor_shape = (slice.get("shape") or {}).get("tensor_shape") or {}
-            input_shape = tensor_shape.get("input")
-            output_shape = tensor_shape.get("output")
-            dependencies = slice.get("dependencies") or {}
-            parameters = slice.get("parameters", 0)
-            tiling = slice.get("tiling")
+            jst = meta.compilation.jstprove
+            ezkl = meta.compilation.ezkl
 
-            # Check for compilation info (JSTprove first, then EZKL)
-            compilation = slice.get("compilation") or {}
-            jst_comp = compilation.get("jstprove") or {}
-            ezkl_comp = compilation.get("ezkl") or {}
-            
-            if jst_comp.get("compiled"):
+            if jst.compiled:
                 backend = "jstprove"
                 compiled_flag = True
-                if jst_comp.get("tiled"):
-                    files = jst_comp.get("files", {}).get("tile_0", {})
-                else:
-                    files = jst_comp.get("files") or {}
-                if files:
-                    circuit_rel = files.get("compiled") or files.get("circuit")
-                    circuit_path = os.path.join(parent_dir, circuit_rel) if circuit_rel else None
-                    settings_rel = files.get("settings")
-                    settings_path = os.path.join(parent_dir, settings_rel) if settings_rel else None
-                else:
-                    circuit_path = None
-                    settings_path = None
+                circuit_path = _join(jst.files.compiled)
+                settings_path = _join(jst.files.settings)
                 pk_path = None
                 vk_path = None
             else:
                 backend = "ezkl"
-                compiled_flag = bool(ezkl_comp.get("compiled", False))
-                if ezkl_comp.get("tiled"):
-                    files = ezkl_comp.get("files", {}).get("tile_0", {})
-                else:
-                    files = ezkl_comp.get("files") or {}
-                if files:
-                    circuit_path = os.path.join(parent_dir, files.get("compiled_circuit") or files.get("compiled"))
-                    settings_path = os.path.join(parent_dir, files.get("settings"))
-                    pk_path = os.path.join(parent_dir, files.get("pk_key"))
-                    vk_path = os.path.join(parent_dir, files.get("vk_key"))
-                else:
-                    circuit_path = None
-                    settings_path = None
-                    pk_path = None
-                    vk_path = None
+                compiled_flag = ezkl.compiled
+                circuit_path = _join(ezkl.files.compiled)
+                settings_path = _join(ezkl.files.settings)
+                pk_path = _join(ezkl.files.pk_key)
+                vk_path = _join(ezkl.files.vk_key)
 
-            # Compute alternate backend circuit paths (slice-prefixed) for multi-level fallback
-            if jst_comp.get("tiled"):
-                jst_files = jst_comp.get("files", {}).get("tile_0", {})
-            else:
-                jst_files = (jst_comp or {}).get("files") or {}
-                
-            if ezkl_comp.get("tiled"):
-                ezkl_files = ezkl_comp.get("files", {}).get("tile_0", {})
-            else:
-                ezkl_files = (ezkl_comp or {}).get("files") or {}
+            jstprove_circuit_path = _join(jst.files.compiled)
+            ezkl_circuit_path = _join(ezkl.files.compiled)
+            jstprove_settings_path = _join(jst.files.settings)
+            ezkl_settings_path = _join(ezkl.files.settings)
+            ezkl_pk_path = _join(ezkl.files.pk_key)
+            ezkl_vk_path = _join(ezkl.files.vk_key)
 
-            jst_rel = jst_files.get("compiled") or jst_files.get("circuit")
-            ezkl_rel = ezkl_files.get("compiled_circuit") or ezkl_files.get("compiled")
-            jstprove_circuit_path = os.path.join(parent_dir, jst_rel) if jst_rel else None
-            ezkl_circuit_path = os.path.join(parent_dir, ezkl_rel) if ezkl_rel else None
-
-            # Per-backend aux artifacts for runtime switching
-            jstprove_settings_path = os.path.join(parent_dir, jst_files.get("settings")) if jst_files and jst_files.get("settings") else None
-            ezkl_settings_path = os.path.join(parent_dir, ezkl_files.get("settings")) if ezkl_files and ezkl_files.get("settings") else None
-            ezkl_pk_path = os.path.join(parent_dir, ezkl_files.get("pk_key")) if ezkl_files and ezkl_files.get("pk_key") else None
-            ezkl_vk_path = os.path.join(parent_dir, ezkl_files.get("vk_key")) if ezkl_files and ezkl_files.get("vk_key") else None
+            tiling_dict = meta.tiling.to_dict() if meta.tiling else None
 
             slices[slice_key] = {
                 "path": onnx_path,
-                "input_shape": input_shape,
-                "output_shape": output_shape,
+                "input_shape": meta.input_shape,
+                "output_shape": meta.output_shape,
                 "ezkl_compatible": True,
                 "ezkl": bool(compiled_flag),
                 "backend": backend,
                 "circuit_size": 0,
-                "dependencies": dependencies,
-                "parameters": parameters,
+                "dependencies": {
+                    "input": meta.dependencies.input,
+                    "output": meta.dependencies.output,
+                    "filtered_inputs": meta.dependencies.filtered_inputs,
+                },
+                "parameters": meta.parameters,
                 "circuit_path": circuit_path,
                 "settings_path": settings_path,
                 "vk_path": vk_path,
                 "pk_path": pk_path,
                 "slice_metadata_path": meta_path,
-                # extra paths for multi-level fallback planning
                 "jstprove_circuit_path": jstprove_circuit_path,
                 "ezkl_circuit_path": ezkl_circuit_path,
-                # per-backend aux artifacts
                 "jstprove_settings_path": jstprove_settings_path,
                 "ezkl_settings_path": ezkl_settings_path,
                 "ezkl_pk_path": ezkl_pk_path,
                 "ezkl_vk_path": ezkl_vk_path,
-                "tiling": tiling,
+                "tiling": tiling_dict,
             }
 
         return slices
@@ -361,8 +288,9 @@ class RunnerAnalyzer:
             ezkl_circuit = meta.get('ezkl_circuit_path')
             has_circuit = circuit_path is not None and circuit_path != ""
             has_keys = (meta.get('pk_path') is not None) and (meta.get('vk_path') is not None)
-            # JSTprove doesn't require pk/vk keys; EZKL does
-            use_circuit = bool(meta.get('ezkl')) and has_circuit and (backend == 'jstprove' or has_keys)
+            has_jst = bool(jst_circuit) or (backend == 'jstprove' and has_circuit)
+            has_ezkl = bool(ezkl_circuit) or (bool(meta.get('ezkl')) and has_circuit and has_keys)
+            use_circuit = has_jst or has_ezkl
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
             # Build ordered fallbacks: prefer EZKL circuit (when primary is JSTprove), then ONNX

@@ -8,6 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
+from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
@@ -37,7 +38,8 @@ def _prove_slice_worker(args: tuple) -> dict:
     start = time.time()
 
     if tiling_info:
-        num_tiles = tiling_info.get("num_tiles", 0)
+        tiling = TilingInfo.from_dict(tiling_info)
+        num_tiles = tiling.num_tiles
         if num_tiles == 0:
             raise ValueError(f"tiling_info missing 'num_tiles' for slice {slice_id}")
         tile_results = []
@@ -175,19 +177,20 @@ class Prover:
         - Otherwise: use generic fields only
         Returns (circuit_path, pk_path, settings_path), any may be None.
         """
+        m = RunSliceMetadata.from_dict(meta)
         b = (backend or "").lower()
         if b == "ezkl":
-            circuit_rel = meta.get("ezkl_circuit_path") or meta.get("circuit_path") or meta.get("compiled")
-            pk_rel = meta.get("ezkl_pk_path") or meta.get("pk_path")
-            settings_rel = meta.get("ezkl_settings_path") or meta.get("settings_path")
+            circuit_rel = m.ezkl_circuit_path or m.circuit_path
+            pk_rel = m.pk_path
+            settings_rel = m.settings_path
         elif b == "jstprove":
-            circuit_rel = meta.get("jstprove_circuit_path") or meta.get("circuit_path") or meta.get("compiled")
-            pk_rel = meta.get("pk_path")
-            settings_rel = meta.get("jstprove_settings_path") or meta.get("settings_path")
+            circuit_rel = m.jstprove_circuit_path or m.circuit_path
+            pk_rel = m.pk_path
+            settings_rel = m.settings_path
         else:
-            circuit_rel = meta.get("circuit_path") or meta.get("compiled")
-            pk_rel = meta.get("pk_path")
-            settings_rel = meta.get("settings_path")
+            circuit_rel = m.circuit_path
+            pk_rel = m.pk_path
+            settings_rel = m.settings_path
 
         circuit_path = Utils.resolve_under_slice(slice_dir, circuit_rel)
         pk_path = Utils.resolve_under_slice(slice_dir, pk_rel)
@@ -411,7 +414,8 @@ class Prover:
             preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
             circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
-            tiling = meta.get("tiling")
+            slice_meta = RunSliceMetadata.from_dict(meta)
+            tiling = slice_meta.tiling
             if tiling:
                 witness_path = None
                 proof_path = None
@@ -432,7 +436,7 @@ class Prover:
                     logger.warning(f"Skipping {slice_id}: compiled circuit not found ({circuit_path})")
                     continue
 
-            work_items.append((slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling, str(run_path), str(slice_dir)))
+            work_items.append((slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling.to_dict() if tiling else None, str(run_path), str(slice_dir)))
 
         total = len(work_items)
 
@@ -545,9 +549,10 @@ class Prover:
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
         model_path_res, pk_path_res, settings_path_res = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
-        tiling = meta.get("tiling")
+        slice_meta = RunSliceMetadata.from_dict(meta)
+        tiling = slice_meta.tiling
         if tiling or tiles_range is not None:
-            num_tiles = tiling["num_tiles"] if tiling else 0
+            num_tiles = tiling.num_tiles if tiling else 0
             start = time.time()
             success, method, tile_results = self._prove_tile_batch(
                 slice_id, Path(run_path), num_tiles, preferred, str(model_path_res), pk_path_res, settings_path_res,

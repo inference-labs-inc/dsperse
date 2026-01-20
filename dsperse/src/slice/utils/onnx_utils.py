@@ -7,6 +7,7 @@ from pathlib import Path
 import onnx
 import logging
 
+from dsperse.src.metadata.schema import SliceMetadata, ModelMetadata, SliceShape, TensorShape, WeightShape, TilingInfo
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -156,65 +157,60 @@ class OnnxUtils:
                 logger.warning(f"ONNX payload not found for index {idx} under {payload_dir}")
                 continue
 
-            tensor_shape = (seg.get("shape", {}) or {}).get("tensor_shape", {}) if isinstance(seg, dict) else {}
-            input_shapes = tensor_shape.get("input") or seg.get("input_shape") or seg.get("input_shapes") or []
-            output_shapes = tensor_shape.get("output") or seg.get("output_shape") or seg.get("output_shapes") or []
+            orig_slice = SliceMetadata.from_dict({**seg, "index": seg.get("index", idx)})
+            input_shapes = orig_slice.shape.tensor_shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
+            output_shapes = orig_slice.shape.tensor_shape.output or seg.get("output_shape") or seg.get("output_shapes") or []
 
-            single_slice_entry = dict(seg)
-            single_slice_entry["index"] = idx
-            single_slice_entry["filename"] = expected_filename
-            single_slice_entry["path"] = str(desired_path)
-            single_slice_entry["relative_path"] = str(desired_path.relative_to(root).relative_to("slice_" + str(idx)))
-            single_slice_entry["dsperse_version"] = dsperse_ver
-            single_slice_entry["opset_version"] = opset_version
+            tiling = orig_slice.tiling
+            if tiling:
+                tiling_dict = Utils.relativize_tiling_info(tiling.to_dict(), root_dir=slice_dir, base_dir=root)
+                tiling = TilingInfo.from_dict(tiling_dict)
 
-            # Relativize tiling info paths to the slice directory
-            if "tiling" in single_slice_entry:
-                single_slice_entry["tiling"] = Utils.relativize_tiling_info(
-                    single_slice_entry["tiling"], root_dir=slice_dir, base_dir=root
-                )
-
-
-            if "shape" not in single_slice_entry or not single_slice_entry["shape"]:
-                single_slice_entry["shape"] = {
-                    "weight_shape": {
-                        "input": [],
-                        "output": []
-                    },
-                    "tensor_shape": {
-                        "input": input_shapes,
-                        "output": output_shapes,
-                    },
-                }
-            else:
-                single_slice_entry["shape"].setdefault("tensor_shape", {
-                    "input": input_shapes,
-                    "output": output_shapes,
-                })
-
-            single_meta = {
-                "original_model": original_model,
-                "model_type": model_type,
-                "total_parameters": single_slice_entry.get("parameters", 0),
-                "input_shape": meta.get("input_shape", input_shapes),
-                "output_shapes": meta.get("output_shapes", output_shapes),
-                "slice_points": [single_slice_entry.get("index")] if single_slice_entry.get("index") is not None else [],
-                "slices": [single_slice_entry],
-            }
+            shape = SliceShape(
+                tensor_shape=TensorShape(input=input_shapes, output=output_shapes),
+                weight_shape=orig_slice.shape.weight_shape if orig_slice.shape.weight_shape else WeightShape(),
+            )
 
             slice_metadata_path = slice_dir / "metadata.json"
+
+            updated_slice = SliceMetadata(
+                index=idx,
+                filename=expected_filename,
+                path=str(desired_path),
+                relative_path=str(desired_path.relative_to(root).relative_to("slice_" + str(idx))),
+                parameters=orig_slice.parameters,
+                shape=shape,
+                dependencies=orig_slice.dependencies,
+                layers=orig_slice.layers,
+                tiling=tiling,
+                compilation=orig_slice.compilation,
+                dsperse_version=dsperse_ver,
+                opset_version=opset_version,
+                slice_metadata=str(slice_metadata_path.resolve()),
+                slice_metadata_relative_path=str(slice_metadata_path.relative_to(root)),
+            )
+
+            model_meta = ModelMetadata(
+                original_model=original_model or "",
+                model_type=model_type,
+                total_parameters=updated_slice.parameters,
+                input_shape=meta.get("input_shape", input_shapes),
+                output_shapes=meta.get("output_shapes", output_shapes),
+                slice_points=[idx],
+                slices=[updated_slice],
+            )
+
             try:
-                with open(slice_metadata_path, "w") as mf:
-                    json.dump(single_meta, mf, indent=2)
+                model_meta.save(slice_metadata_path)
             except Exception as e:
                 logger.warning(f"Failed to write slice metadata for {slice_dir}: {e}")
 
-            seg["path"] = str(desired_path)
+            seg["path"] = updated_slice.path
             seg["relative_path"] = str(desired_path.relative_to(root))
-            seg["slice_metadata"] = str(slice_metadata_path.resolve())
-            seg["slice_metadata_relative_path"] = str(slice_metadata_path.relative_to(root))
-            seg["dsperse_version"] = dsperse_ver
-            seg["opset_version"] = opset_version
+            seg["slice_metadata"] = updated_slice.slice_metadata
+            seg["slice_metadata_relative_path"] = updated_slice.slice_metadata_relative_path
+            seg["dsperse_version"] = updated_slice.dsperse_version
+            seg["opset_version"] = updated_slice.opset_version
             
 
         Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)

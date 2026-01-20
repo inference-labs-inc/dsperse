@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
+from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
@@ -37,7 +38,8 @@ def _verify_slice_worker(args: tuple) -> dict:
     start = time.time()
 
     if tiling_info:
-        num_tiles = tiling_info["num_tiles"]
+        tiling = TilingInfo.from_dict(tiling_info)
+        num_tiles = tiling.num_tiles
         tile_verifs = []
         method = None
 
@@ -225,9 +227,9 @@ class Verifier:
             logger.warning(f"Proof missing for {slice_id}/{tile_name}, skipping")
             return False, "proof_missing"
 
+        m = RunSliceMetadata.from_dict(meta)
         if preferred_backend == "jstprove":
-            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get(
-                "circuit_path") or meta.get("compiled"))
+            circuit_path = Utils.resolve_under_slice(slice_dir, m.jstprove_circuit_path or m.circuit_path)
             input_path = tile_run_dir / "input.json"
             output_path = tile_run_dir / "output.json"
             tile_witness_path = tile_run_dir / "output_witness.bin"
@@ -248,9 +250,8 @@ class Verifier:
             except Exception as e:
                 return False, str(e)
         else:
-            settings_path = Utils.resolve_under_slice(slice_dir,
-                                                      meta.get("ezkl_settings_path") or meta.get("settings_path"))
-            vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+            settings_path = Utils.resolve_under_slice(slice_dir, m.settings_path)
+            vk_path = Utils.resolve_under_slice(slice_dir, m.vk_path)
             try:
                 ok = self.ezkl_runner.verify(proof_path=str(tile_proof_path), settings_path=settings_path,
                                              vk_path=vk_path)
@@ -335,11 +336,12 @@ class Verifier:
         for slice_id, meta in slices_iter:
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
             preferred = self._select_verification_backend(run_path, slice_id, meta)
-            tiling = meta.get("tiling")
+            slice_meta = RunSliceMetadata.from_dict(meta)
+            tiling = slice_meta.tiling
 
-            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
-            settings_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_settings_path") or meta.get("settings_path"))
-            vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+            circuit_path = Utils.resolve_under_slice(slice_dir, slice_meta.circuit_path)
+            settings_path = Utils.resolve_under_slice(slice_dir, slice_meta.settings_path)
+            vk_path = Utils.resolve_under_slice(slice_dir, slice_meta.vk_path)
 
             if tiling:
                 proof_path = None
@@ -369,7 +371,7 @@ class Verifier:
                         logger.warning(f"Skipping {slice_id}: verification key not found ({vk_path})")
                         continue
 
-            work_items.append((slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling, str(run_path), str(slice_dir)))
+            work_items.append((slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling.to_dict() if tiling else None, str(run_path), str(slice_dir)))
 
         total = len(work_items)
 
@@ -467,9 +469,10 @@ class Verifier:
         dirs_root = Utils.dirs_root_from(Path(model_path))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
 
-        tiling = meta.get("tiling")
+        slice_meta = RunSliceMetadata.from_dict(meta)
+        tiling = slice_meta.tiling
         if tiling or tiles_range is not None:
-            num_tiles = tiling["num_tiles"] if tiling else 0
+            num_tiles = tiling.num_tiles if tiling else 0
             start = time.time()
             success, tile_verifs = self._verify_tile_batch(slice_id, Path(run_path), num_tiles, preferred, slice_dir,
                                                            meta, tiles_range=tiles_range)
@@ -492,8 +495,7 @@ class Verifier:
             success = False
             error_msg = None
             if preferred == "jstprove":
-                circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("jstprove_circuit_path") or meta.get(
-                    "circuit_path") or meta.get("compiled"))
+                circuit_path = Utils.resolve_under_slice(slice_dir, slice_meta.jstprove_circuit_path or slice_meta.circuit_path)
                 input_path, output_path = Path(run_path) / "input.json", Path(run_path) / "output.json"
                 wf = self._get_witness_file_from_run(run_path, slice_id)
                 witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
@@ -503,9 +505,8 @@ class Verifier:
                 except Exception as e:
                     error_msg = str(e)
             else:
-                vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
-                settings_path = Utils.resolve_under_slice(slice_dir,
-                                                          meta.get("ezkl_settings_path") or meta.get("settings_path"))
+                vk_path = Utils.resolve_under_slice(slice_dir, slice_meta.vk_path)
+                settings_path = Utils.resolve_under_slice(slice_dir, slice_meta.settings_path)
                 try:
                     success = self.ezkl_runner.verify(str(proof_path), settings_path=settings_path, vk_path=vk_path)
                 except Exception as e:

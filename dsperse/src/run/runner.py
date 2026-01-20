@@ -506,20 +506,25 @@ class Runner:
             else:
                 filtered_inputs = [n for n in info.get("dependencies", {}).get("filtered_inputs", []) if n]
                 output_names = info.get("dependencies", {}).get("output", [])
+                node = nodes[current_slice_id]
 
-                if not filtered_inputs:
-                    extra_tensors = {}
-                    ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
-                elif len(filtered_inputs) > 1:
-                    missing = [n for n in filtered_inputs if n not in tensor_cache]
-                    if missing:
-                        raise ValueError(f"Missing input tensors for {current_slice_id}: {missing}")
-                    extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
-                    ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
+                input_name = filtered_inputs[0] if filtered_inputs else "input"
+                current_tensor = tensor_cache.get(input_name, input_tensor)
+
+                use_circuit = node.get("use_circuit") and self.force_backend != 'onnx'
+
+                if use_circuit:
+                    in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
+                    Utils.write_input(current_tensor, str(in_file))
+                    ok, result, exec_info = RunnerUtils.execute_slice(self, node, info, in_file, out_file, slice_dir)
                 else:
-                    input_name = filtered_inputs[0]
-                    current_tensor = tensor_cache.get(input_name, input_tensor)
-                    extra_tensors = {input_name: current_tensor}
+                    if len(filtered_inputs) > 1:
+                        missing = [n for n in filtered_inputs if n not in tensor_cache]
+                        if missing:
+                            raise ValueError(f"Missing input tensors for {current_slice_id}: {missing}")
+                        extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
+                    else:
+                        extra_tensors = {input_name: current_tensor}
                     ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
 
                 if ok and result:
@@ -531,6 +536,11 @@ class Runner:
                     else:
                         out_tensor = result.get('logits', result) if isinstance(result, dict) else result
                         if isinstance(out_tensor, torch.Tensor):
+                            expected_shape = info.get("output_shape")
+                            if expected_shape and len(expected_shape) > 0:
+                                target_shape = [d if isinstance(d, int) else 1 for d in expected_shape[0]]
+                                if out_tensor.numel() == torch.prod(torch.tensor(target_shape)).item():
+                                    out_tensor = out_tensor.reshape(target_shape)
                             for oname in output_names:
                                 tensor_cache[oname] = out_tensor
                             final_tensor = out_tensor

@@ -60,6 +60,7 @@ class OnnxSlicer:
         """Run model with dummy input to capture all intermediate tensor shapes."""
         import onnxruntime as ort
         import numpy as np
+        import tempfile
 
         all_tensor_names = []
         for node in self.onnx_model.graph.node:
@@ -74,29 +75,31 @@ class OnnxSlicer:
                 new_output = trace_model.graph.output.add()
                 new_output.name = tensor_name
 
-        trace_path = "/tmp/trace_model.onnx"
-        onnx.save(trace_model, trace_path)
+        fd, trace_path = tempfile.mkstemp(suffix=".onnx")
+        os.close(fd)
+        try:
+            onnx.save(trace_model, trace_path)
 
-        session = ort.InferenceSession(trace_path, providers=['CPUExecutionProvider'])
+            session = ort.InferenceSession(trace_path, providers=['CPUExecutionProvider'])
 
-        inputs = {}
-        for inp in session.get_inputs():
-            shape = [dim if isinstance(dim, int) else 1 for dim in inp.shape]
-            dtype = np.float32
-            if 'int64' in inp.type:
-                dtype = np.int64
-            elif 'int32' in inp.type:
-                dtype = np.int32
-            inputs[inp.name] = np.random.randn(*shape).astype(dtype)
-            self.traced_shapes[inp.name] = shape
+            inputs = {}
+            for inp in session.get_inputs():
+                shape = [dim if isinstance(dim, int) else 1 for dim in inp.shape]
+                dtype = np.float32
+                if 'int64' in inp.type:
+                    dtype = np.int64
+                elif 'int32' in inp.type:
+                    dtype = np.int32
+                inputs[inp.name] = np.random.randn(*shape).astype(dtype)
+                self.traced_shapes[inp.name] = shape
 
-        outputs = session.run(None, inputs)
-        output_names = [o.name for o in session.get_outputs()]
-        for name, arr in zip(output_names, outputs):
-            self.traced_shapes[name] = list(arr.shape)
-            self.traced_dtypes[name] = arr.dtype
-
-        os.remove(trace_path)
+            outputs = session.run(None, inputs)
+            output_names = [o.name for o in session.get_outputs()]
+            for name, arr in zip(output_names, outputs):
+                self.traced_shapes[name] = list(arr.shape)
+                self.traced_dtypes[name] = arr.dtype
+        finally:
+            os.remove(trace_path)
         print(f"Shape trace complete: captured {len(self.traced_shapes)} tensor shapes")
 
     @staticmethod

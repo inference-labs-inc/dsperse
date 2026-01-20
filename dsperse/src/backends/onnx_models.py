@@ -66,11 +66,13 @@ class OnnxModels:
             session = OnnxModels._create_session(model_path)
             model_inputs = session.get_inputs()
             if len(model_inputs) == 1:
-                input_name = model_inputs[0].name
+                inp = model_inputs[0]
+                input_name = inp.name
+                dtype = OnnxModels._parse_onnx_type(inp.type)
                 if isinstance(input_tensor, torch.Tensor):
-                    arr = input_tensor.detach().cpu().numpy().astype(np.float32)
+                    arr = input_tensor.detach().cpu().numpy().astype(dtype)
                 else:
-                    arr = np.asarray(input_tensor, dtype=np.float32)
+                    arr = np.asarray(input_tensor, dtype=dtype)
                 input_dict = {input_name: arr}
             else:
                 input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)

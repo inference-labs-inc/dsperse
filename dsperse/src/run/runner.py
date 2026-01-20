@@ -397,7 +397,7 @@ class Runner:
 
         return tile_idx, cache_output_name, ok, output_tensor, t_info
 
-    def _run_tiling_parallel_tiles(self, slice_id: str, tiling: dict, slice_info: dict, run_dir: Path, tensor_cache: dict) -> tuple[float, list]:
+    def _run_tiling_parallel_tiles(self, slice_id: str, tiling: dict, _slice_info: dict, _run_dir: Path, tensor_cache: dict) -> tuple[float, list]:
         import onnxruntime as ort
         import numpy as np
 
@@ -408,10 +408,8 @@ class Runner:
 
         tile_start = time.time()
 
-        # Create ONE session for all tiles (major optimization)
         session = ort.InferenceSession(str(tile_onnx_path))
         input_name = session.get_inputs()[0].name
-        output_names = [o.name for o in session.get_outputs()]
 
         tile_exec_infos = []
         for tile_idx in range(num_tiles):
@@ -525,7 +523,7 @@ class Runner:
                         extra_tensors = {input_name: current_tensor}
                     ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
 
-                if ok and result:
+                if ok and result is not None:
                     if isinstance(result, dict) and 'output_tensors' in result:
                         for oname, tensor in result['output_tensors'].items():
                             tensor_cache[oname] = tensor
@@ -598,7 +596,7 @@ if __name__ == "__main__":
     results = runner.run(input_json, slice_path=slices_dir)#, backend="onnx")
 
     # Display results
-    print(f"\nPrediction: {results['prediction']}")
+    print(f"\nOutput shape: {results['tensor_shape']}")
     print("Execution summary:")
     for slice_id, info in results["slice_results"].items():
         print(f"  {slice_id}: {info['method']}")

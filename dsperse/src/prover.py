@@ -37,7 +37,9 @@ def _prove_slice_worker(args: tuple) -> dict:
     start = time.time()
 
     if tiling_info:
-        num_tiles = tiling_info["num_tiles"]
+        num_tiles = tiling_info.get("num_tiles", 0)
+        if num_tiles == 0:
+            raise ValueError(f"tiling_info missing 'num_tiles' for slice {slice_id}")
         tile_results = []
         method = None
 

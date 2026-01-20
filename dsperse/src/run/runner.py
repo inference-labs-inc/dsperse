@@ -49,9 +49,6 @@ class Runner:
             self.jstprove_runner = None
             logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
-        self.tiled_info = None
-
-
     def run(self, input_json_path, slice_path: str, output_path: str = None, backend: str | None = None) -> dict:
         """Run inference through the chain using run/metadata.json.
 

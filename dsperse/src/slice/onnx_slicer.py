@@ -140,10 +140,12 @@ class OnnxSlicer:
             next_supported = is_supported(next_node)
 
             if curr_supported != next_supported:
-                updated_points.add(next_node.get("index"))
+                idx = next_node.get("index")
+                if idx is not None:
+                    updated_points.add(idx)
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
-        return [p for p in updated_points if p <= max_idx]
+        return [p for p in updated_points if p is not None and p <= max_idx]
 
     @staticmethod
     def optimize_for_tiling(slice_points: List[int], model_metadata: Dict) -> List[int]:
@@ -156,20 +158,26 @@ class OnnxSlicer:
             node_type = node.get("node_type")
             return node_type == "Conv" or node_type in ELEMENTWISE_OPS
 
+        skip_next = False
         for i in range(len(sorted_nodes) - 1):
+            if skip_next:
+                skip_next = False
+                continue
+
             curr_node = sorted_nodes[i]
             next_node = sorted_nodes[i+1]
 
             curr_tileable = is_tileable(curr_node)
             next_tileable = is_tileable(next_node)
 
-            #if the current node is not tileable, and the next node is relu, we can include it in the slice
             if not curr_tileable and next_node.get("node_type") == "Relu":
-                i = i + 2
+                skip_next = True
                 continue
 
             if curr_tileable != next_tileable:
-                updated_points.add(next_node.get("index"))
+                idx = next_node.get("index")
+                if idx is not None:
+                    updated_points.add(idx)
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
@@ -195,9 +203,9 @@ class OnnxSlicer:
         for node_name, node_info in nodes_dict.items():
             if node_info.get("node_type") == "Conv":
                 idx = node_info.get("index")
-                # Add slice point at the Conv node itself
+                if idx is None:
+                    continue
                 updated_points.add(idx)
-                # Add slice point immediately after the Conv to isolate it
                 if idx + 1 <= max_idx:
                     updated_points.add(idx + 1)
 
@@ -226,7 +234,8 @@ class OnnxSlicer:
                         slice_points.add(idx + 1)
 
         print(f"Original slice points: {sorted(slice_points)}")
-        slice_points = self.isolate_conv(slice_points, model_metadata)
+        if isolate_convs:
+            slice_points = self.isolate_conv(slice_points, model_metadata)
         slice_points = self.optimize_jstprove_slices(list(slice_points), model_metadata)
 
         if tile_size:

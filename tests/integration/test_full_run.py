@@ -181,8 +181,8 @@ class TestFullRunE2E:
         assert run_dir.exists()
 
         # Check that tiled slices were executed (method should be "tiled")
-        exec_results = run_results.get("execution_chain", {}).get("execution_results", [])
-        tiled_slices = [e for e in exec_results if e.get("witness_execution", {}).get("method") == "tiled"]
+        slice_results = run_results.get("slice_results", {})
+        tiled_slices = [s for s in slice_results.values() if s.get("method") == "tiled"]
         assert len(tiled_slices) >= 1, "At least one slice should be tiled"
 
         # 4. Prove

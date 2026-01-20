@@ -5,16 +5,40 @@ This module provides a backend for generating ZK proofs using the JSTprove CLI.
 import json
 import os
 import subprocess
+import tempfile
 import torch
 import logging
 import onnx
+import numpy as np
+from onnx import numpy_helper
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
 from dsperse.src.constants import JSTPROVE_COMMAND
 
-# Configure logger
 logger = logging.getLogger(__name__)
+
+
+def _add_zero_bias_to_conv(model: onnx.ModelProto) -> onnx.ModelProto:
+    """Add zero bias to Conv nodes that don't have one (JSTprove requires 3 inputs)."""
+    for node in model.graph.node:
+        if node.op_type == "Conv" and len(node.input) == 2:
+            weight_name = node.input[1]
+            weight_init = next((i for i in model.graph.initializer if i.name == weight_name), None)
+            if weight_init is None:
+                continue
+
+            weight_arr = numpy_helper.to_array(weight_init)
+            out_channels = weight_arr.shape[0]
+
+            node_id = node.name or node.output[0] if node.output else weight_name
+            bias_name = f"{node_id}_zero_bias"
+            zero_bias = np.zeros(out_channels, dtype=np.float32)
+            bias_init = numpy_helper.from_array(zero_bias, name=bias_name)
+            model.graph.initializer.append(bias_init)
+            node.input.append(bias_name)
+
+    return model
 
 JSTPROVE_SUPPORTED_OPS = {
     # "Add", "Clip", "BatchNormalization", "Div", "Sub",
@@ -318,7 +342,7 @@ class JSTprove:
         self,
         model_path: Union[str, Path],
         circuit_path: Union[str, Path],
-        settings_path: Optional[Union[str, Path]] = None  # Kept for backward compatibility but not used
+        settings_path: Optional[Union[str, Path]] = None
     ) -> Tuple[bool, Optional[str]]:
         """
         Compile a circuit from an ONNX model using JSTprove.
@@ -331,20 +355,23 @@ class JSTprove:
         Returns:
             Tuple of (success: bool, error: Optional[str])
         """
-        # Normalize paths
         model_path = Path(model_path)
         circuit_path = Path(circuit_path)
 
-        # Validate required files exist
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        # Create output directory if it doesn't exist
         circuit_path.parent.mkdir(parents=True, exist_ok=True)
 
+        model = onnx.load(str(model_path))
+        model = _add_zero_bias_to_conv(model)
+
+        fd, preprocessed_path = tempfile.mkstemp(suffix=".onnx")
+        os.close(fd)
         try:
+            onnx.save(model, preprocessed_path)
             self._run_command("compile", [
-                "-m", str(model_path),
+                "-m", preprocessed_path,
                 "-c", str(circuit_path),
             ])
             return True, None
@@ -352,6 +379,9 @@ class JSTprove:
             error_msg = f"Circuit compilation failed: {e}"
             logger.error(error_msg)
             return False, error_msg
+        finally:
+            if os.path.exists(preprocessed_path):
+                os.remove(preprocessed_path)
 
     def circuitization_pipeline(
         self,

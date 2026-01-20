@@ -5,6 +5,7 @@ Orchestration for verifying proofs.
 import os
 import time
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
@@ -15,15 +16,129 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 
+def _verify_slice_worker(args: tuple) -> dict:
+    """
+    Worker function for parallel verification.
+    Must be module-level for pickling by ProcessPoolExecutor.
+    """
+    (slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling_info, run_path, slice_dir) = args
+
+    result = {
+        'slice_id': slice_id,
+        'success': False,
+        'method': None,
+        'time_sec': 0,
+        'error': None,
+        'attempted_jstprove': preferred == "jstprove",
+        'attempted_ezkl': preferred == "ezkl",
+        'tile_verifs_info': None
+    }
+
+    start = time.time()
+
+    if tiling_info:
+        num_tiles = tiling_info["num_tiles"]
+        tile_verifs = []
+        method = None
+
+        for tile_idx in range(num_tiles):
+            tile_name = f"tile_{tile_idx}"
+            tile_run_dir = Path(run_path) / slice_id / tile_name
+            tile_proof_path = tile_run_dir / "proof.json"
+
+            if not tile_proof_path.exists():
+                tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": "proof_missing"})
+                continue
+
+            try:
+                if preferred == "jstprove":
+                    from dsperse.src.backends.jstprove import JSTprove
+                    tile_input_path = tile_run_dir / "input.json"
+                    tile_output_path = tile_run_dir / "output.json"
+                    tile_witness_path = tile_run_dir / "output_witness.bin"
+
+                    missing = [p for p in [circuit_path, tile_input_path, tile_output_path, tile_witness_path] if not p or not Path(p).exists()]
+                    if missing:
+                        tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": f"Missing files: {', '.join(map(str, missing))}"})
+                        continue
+
+                    backend = JSTprove()
+                    ok = backend.verify(
+                        proof_path=str(tile_proof_path),
+                        circuit_path=str(circuit_path),
+                        input_path=str(tile_input_path),
+                        output_path=str(tile_output_path),
+                        witness_path=str(tile_witness_path),
+                    )
+                    method = "jstprove_verify"
+                else:
+                    from dsperse.src.backends.ezkl import EZKL
+                    backend = EZKL()
+                    ok = backend.verify(
+                        proof_path=str(tile_proof_path),
+                        settings_path=settings_path,
+                        vk_path=vk_path,
+                    )
+                    method = "ezkl_verify"
+
+                tile_verifs.append({"tile_idx": tile_idx, "success": ok, "error": None})
+            except Exception as e:
+                tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": str(e)})
+
+        result['success'] = all(v["success"] for v in tile_verifs)
+        result['method'] = method
+        result['tile_verifs_info'] = tile_verifs
+        result['error'] = None if result['success'] else "One or more tiles failed verification"
+    else:
+        try:
+            if preferred == "jstprove":
+                from dsperse.src.backends.jstprove import JSTprove
+                missing = [p for p in [circuit_path, input_path, output_path, witness_path] if not p or not Path(p).exists()]
+                if missing:
+                    result['error'] = f"Missing files for JSTprove verify: {', '.join(map(str, missing))}"
+                    result['method'] = "jstprove_verify"
+                else:
+                    backend = JSTprove()
+                    ok = backend.verify(
+                        proof_path=str(proof_path),
+                        circuit_path=str(circuit_path),
+                        input_path=str(input_path),
+                        output_path=str(output_path),
+                        witness_path=str(witness_path),
+                    )
+                    result['success'] = ok
+                    result['method'] = "jstprove_verify"
+            else:
+                from dsperse.src.backends.ezkl import EZKL
+                backend = EZKL()
+                ok = backend.verify(
+                    proof_path=str(proof_path),
+                    settings_path=settings_path,
+                    vk_path=vk_path,
+                )
+                result['success'] = ok
+                result['method'] = "ezkl_verify"
+        except Exception as e:
+            result['error'] = str(e)
+            result['method'] = f"{preferred}_verify"
+
+    result['time_sec'] = time.time() - start
+    return result
+
+
 class Verifier:
     """
     Orchestrator for verifying model execution proofs.
     """
 
-    def __init__(self):
+    def __init__(self, parallel: int = 1):
         """
         Initialize the verifier.
+
+        Args:
+            parallel: Number of parallel processes for verification (default: 1)
         """
+        self.parallel = max(1, parallel)
         try:
             self.ezkl_runner = EZKL()
         except RuntimeError:
@@ -189,7 +304,6 @@ class Verifier:
             pass
 
         verifs: dict[str, dict] = {}
-        total = 0
         jst_verified = 0
         ezkl_verified = 0
 
@@ -217,87 +331,76 @@ class Verifier:
                 logger.info(f"No slices found with witness backend '{backend}' to verify under run {run_path}.")
                 return run_results
 
+        work_items = []
         for slice_id, meta in slices_iter:
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
             preferred = self._select_verification_backend(run_path, slice_id, meta)
-
-            start = time.time()
             tiling = meta.get("tiling")
+
+            circuit_path = Utils.resolve_under_slice(slice_dir, meta.get("circuit_path") or meta.get("compiled"))
+            settings_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_settings_path") or meta.get("settings_path"))
+            vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
+
             if tiling:
-                total += 1
-                success, tile_verifs = self._verify_tile_batch(
-                    slice_id, Path(run_path), tiling["num_tiles"], preferred, slice_dir, meta
-                )
-                elapsed = time.time() - start
-                verifs[slice_id] = {
-                    "success": bool(success),
-                    "time_sec": elapsed,
-                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "tile_verifs_info": tile_verifs,
-                    "error": None if success else "One or more tiles failed verification",
-                }
-                if success:
-                    if preferred == "jstprove":
-                        jst_verified += 1
-                    else:
-                        ezkl_verified += 1
+                proof_path = None
+                input_path = None
+                output_path = None
+                witness_path = None
             else:
                 if slice_id in proof_paths_by_slice:
                     proof_path = Path(proof_paths_by_slice[slice_id])
                 else:
                     proof_path = Path(run_path) / slice_id / "proof.json"
+
                 if not proof_path.exists():
                     logger.warning(f"Skipping {slice_id}: proof not found at {proof_path}")
                     continue
 
-                total += 1
-                success = False
-                error_msg = None
-                if preferred == "jstprove":
-                    if self.jstprove_runner is None:
-                        error_msg = "JSTprove CLI not available"
-                    else:
-                        circuit_path = Utils.resolve_under_slice(slice_dir,
-                                                                 meta.get("circuit_path") or meta.get("compiled"))
-                        input_path = Path(run_path) / slice_id / "input.json"
-                        output_path = Path(run_path) / slice_id / "output.json"
-                        wf = self._get_witness_file_from_run(run_path, slice_id)
-                        witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
-                        try:
-                            success = self.jstprove_runner.verify(
-                                proof_path=str(proof_path), circuit_path=str(circuit_path),
-                                input_path=str(input_path), output_path=str(output_path), witness_path=str(witness_path)
-                            )
-                        except Exception as e:
-                            error_msg = str(e)
-                    if success: jst_verified += 1
-                else:
-                    settings_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_settings_path") or meta.get(
-                        "settings_path"))
-                    vk_path = Utils.resolve_under_slice(slice_dir, meta.get("ezkl_vk_path") or meta.get("vk_path"))
-                    if vk_path and os.path.exists(vk_path):
-                        try:
-                            success = self.ezkl_runner.verify(proof_path=str(proof_path), settings_path=settings_path,
-                                                              vk_path=vk_path)
-                        except Exception as e:
-                            error_msg = str(e)
-                    else:
-                        error_msg = "vk missing"
-                    if success: ezkl_verified += 1
+                input_path = Path(run_path) / slice_id / "input.json"
+                output_path = Path(run_path) / slice_id / "output.json"
+                wf = self._get_witness_file_from_run(run_path, slice_id)
+                witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
 
-                elapsed = time.time() - start
-                verifs[slice_id] = {
-                    "success": bool(success),
-                    "time_sec": elapsed,
-                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "error": None if success else (error_msg or "verification_failed"),
-                }
+                if preferred == "ezkl":
+                    if not settings_path or not os.path.exists(settings_path):
+                        logger.warning(f"Skipping {slice_id}: settings file not found ({settings_path})")
+                        continue
+                    if not vk_path or not os.path.exists(vk_path):
+                        logger.warning(f"Skipping {slice_id}: verification key not found ({vk_path})")
+                        continue
 
-        run_results, _ = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
+            work_items.append((slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling, str(run_path), str(slice_dir)))
+
+        total = len(work_items)
+
+        if self.parallel > 1 and len(work_items) > 1:
+            logger.info(f"Verifying {len(work_items)} slices with {self.parallel} parallel processes...")
+            results = []
+            with ProcessPoolExecutor(max_workers=self.parallel) as executor:
+                futures = {executor.submit(_verify_slice_worker, item): item[0] for item in work_items}
+                for future in as_completed(futures):
+                    slice_id = futures[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"Slice {slice_id} verification failed: {e}")
+                        results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
+        else:
+            results = [_verify_slice_worker(item) for item in work_items]
+
+        for result in results:
+            slice_id = result['slice_id']
+            verifs[slice_id] = result
+
+            if result['success']:
+                method = result.get('method')
+                if method == "jstprove_verify":
+                    jst_verified += 1
+                elif method == "ezkl_verify":
+                    ezkl_verified += 1
+
+        run_results, verified_count = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
         exec_chain = run_results.setdefault("execution_chain", {})
         exec_chain["jstprove_verified_slices"] = int(jst_verified)
         exec_chain["ezkl_verified_slices"] = int(ezkl_verified)

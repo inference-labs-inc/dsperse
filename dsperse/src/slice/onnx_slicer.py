@@ -1,19 +1,39 @@
 import os
 import os.path
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import onnx
 from onnx import shape_inference
 import logging
 from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
-from typing import List, Dict
+from typing import List, Dict, Tuple, Any
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slice, apply_tiling_to_slices, ELEMENTWISE_OPS
+from dsperse.src.slice.autotiler import apply_tiling_to_slices, ELEMENTWISE_OPS
+from dsperse.src.slice.tensor_graph import TensorGraph
+from dsperse.src.utils.utils import save_onnx_model
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
-# Configure logger
 logger = logging.getLogger(__name__)
+
+
+def _extract_single_slice(spec: Tuple[str, int, List[str], List[str], str]) -> Tuple[int, str] | None:
+    onnx_path, segment_idx, input_names, output_names, file_path = spec
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        extract_model(
+            input_path=onnx_path,
+            output_path=file_path,
+            input_names=input_names,
+            output_names=output_names
+        )
+        return (segment_idx, file_path)
+    except Exception as e:
+        err_msg = str(e) if str(e) else f"{type(e).__name__}"
+        logger.warning(f"extract_model failed for slice {segment_idx}: {err_msg} (inputs={input_names}, outputs={output_names})")
+        return None
 
 
 class OnnxSlicer:
@@ -22,37 +42,75 @@ class OnnxSlicer:
         self.onnx_model = onnx.load(onnx_path)
         self.model_metadata = None
         self.slice_points = None
+        self.traced_shapes = {}
+        self.traced_dtypes = {}
 
-        # Apply shape inference to the original model
-        print("🔧 Applying shape inference to original model for better slicing...")
-        try:
-            self.onnx_model = shape_inference.infer_shapes(self.onnx_model)
-            print("✅ Shape inference applied successfully to original model")
-        except Exception as e:
-            print(f"⚠️  Shape inference failed on original model: {e}, continuing with original model")
+        print("Running shape trace with dummy input...")
+        self._trace_shapes()
+        self._apply_traced_shapes(self.onnx_model, self.traced_shapes, self.traced_dtypes)
+
+        traced_model_path = self.onnx_path.replace('.onnx', '_traced.onnx')
+        onnx.save(self.onnx_model, traced_model_path)
+        self.onnx_path = traced_model_path
 
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)
 
+    def _trace_shapes(self):
+        """Run model with dummy input to capture all intermediate tensor shapes."""
+        import onnxruntime as ort
+        import numpy as np
+
+        all_tensor_names = []
+        for node in self.onnx_model.graph.node:
+            for out in node.output:
+                all_tensor_names.append(out)
+
+        trace_model = onnx.ModelProto()
+        trace_model.CopyFrom(self.onnx_model)
+        existing_outputs = {o.name for o in trace_model.graph.output}
+        for tensor_name in all_tensor_names:
+            if tensor_name not in existing_outputs:
+                new_output = trace_model.graph.output.add()
+                new_output.name = tensor_name
+
+        trace_path = "/tmp/trace_model.onnx"
+        onnx.save(trace_model, trace_path)
+
+        session = ort.InferenceSession(trace_path, providers=['CPUExecutionProvider'])
+
+        inputs = {}
+        for inp in session.get_inputs():
+            shape = [dim if isinstance(dim, int) else 1 for dim in inp.shape]
+            dtype = np.float32
+            if 'int64' in inp.type:
+                dtype = np.int64
+            elif 'int32' in inp.type:
+                dtype = np.int32
+            inputs[inp.name] = np.random.randn(*shape).astype(dtype)
+            self.traced_shapes[inp.name] = shape
+
+        outputs = session.run(None, inputs)
+        output_names = [o.name for o in session.get_outputs()]
+        for name, arr in zip(output_names, outputs):
+            self.traced_shapes[name] = list(arr.shape)
+            self.traced_dtypes[name] = arr.dtype
+
+        os.remove(trace_path)
+        print(f"Shape trace complete: captured {len(self.traced_shapes)} tensor shapes")
+
     @staticmethod
     def _concretize_symbolic_dims(model: onnx.ModelProto, value: int = 1) -> onnx.ModelProto:
-        """
-        Replace any symbolic tensor dimensions (dim_param) with a concrete dim_value.
-        Defaults to 1, which is safe for non-batched execution and ezkl.
-        """
         def fix_vi(vi):
             ttype = vi.type.tensor_type
             if not ttype.HasField("shape"):
                 return
             for dim in ttype.shape.dim:
-                # If dim has a symbolic name or unspecified value, set to concrete value
                 if dim.dim_param:
                     dim.dim_param = ""
                     dim.dim_value = value
                 elif not dim.HasField("dim_value"):
-                    # Some dims might be neither param nor value; make them concrete
                     dim.dim_value = value
-        # Fix inputs, outputs, and intermediate value_infos
         for vi in list(model.graph.input):
             fix_vi(vi)
         for vo in list(model.graph.output):
@@ -63,17 +121,6 @@ class OnnxSlicer:
 
     @staticmethod
     def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
-        """
-        Adjust slice points to maximize slices containing only JSTprove-supported operations.
-        Slices at transitions between supported and unsupported operations.
-
-        Args:
-            slice_points: Current list of node indices for slicing.
-            model_metadata: The model analysis metadata containing node information.
-
-        Returns:
-            List[int]: Updated list of slice points.
-        """
         updated_points = set(slice_points)
         nodes_dict = model_metadata.get("nodes", {})
 
@@ -90,27 +137,13 @@ class OnnxSlicer:
             next_supported = is_supported(next_node)
 
             if curr_supported != next_supported:
-                # Transition point: slice before the next node to separate supported/unsupported
                 updated_points.add(next_node.get("index"))
 
-        # Ensure we don't slice past the last node index
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
-
     @staticmethod
     def optimize_for_tiling(slice_points: List[int], model_metadata: Dict) -> List[int]:
-        """
-        Adjust slice points to maximize slices containing only tiling-supported operations.
-        Slices at transitions between supported and unsupported operations.
-
-        Args:
-            slice_points: Current list of node indices for slicing.
-            model_metadata: The model analysis metadata containing node information.
-
-        Returns:
-            List[int]: Updated list of slice points.
-        """
         updated_points = set(slice_points)
         nodes_dict = model_metadata.get("nodes", {})
 
@@ -133,10 +166,8 @@ class OnnxSlicer:
                 continue
 
             if curr_tileable != next_tileable:
-                # Transition point: slice before the next node to separate tileable/non-tileable
                 updated_points.add(next_node.get("index"))
 
-        # Ensure we don't slice past the last node index
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
         return [p for p in updated_points if p <= max_idx]
 
@@ -183,7 +214,6 @@ class OnnxSlicer:
         """
         slice_points = set()
         max_idx = max((n.get("index", 0) for n in model_metadata["nodes"].values()), default=0)
-
         for node_name, node_info in model_metadata["nodes"].items():
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 idx = node_info["index"]
@@ -207,28 +237,14 @@ class OnnxSlicer:
         return slice_points
 
     def _slice_setup(self, model_metadata, output_path=None):
-        """
-        Set up the necessary data structures for slicing.
-
-        Args:
-            model_metadata: The model analysis metadata containing node information
-
-        Returns:
-            tuple: (graph, node_map, node_type_index_map, initializer_map, value_info_map,
-                    index_to_node_name, index_to_segment_name, output_dir)
-        """
-        # Create output directory
         output_path = os.path.join(os.path.dirname(self.onnx_path), "slices") if output_path is None else output_path
         if not os.path.exists(output_path):
             os.makedirs(output_path, exist_ok=True)
 
-        # Get the graph from the ONNX model
         graph = self.onnx_model.graph
 
-        # Create maps for node lookup
         node_map = {node.name: node for node in graph.node}
 
-        # Also create a map with just the op_type and index to handle name mismatches
         node_type_index_map = {}
         for i, node in enumerate(graph.node):
             key = f"{node.op_type}_{i}"
@@ -239,7 +255,6 @@ class OnnxSlicer:
         value_info_map.update({vi.name: vi for vi in graph.input})
         value_info_map.update({vi.name: vi for vi in graph.output})
 
-        # Create a map of node indices to node names
         index_to_node_name = {}
         index_to_segment_name = {}
         for node_name, node_info in model_metadata["nodes"].items():
@@ -252,21 +267,6 @@ class OnnxSlicer:
     @staticmethod
     def _get_nodes(start_idx, end_idx, index_to_node_name, index_to_segment_name, node_map, node_type_index_map,
                    segment_idx):
-        """
-        Collect nodes for a specific slice.
-
-        Args:
-            start_idx: Start index of the slice
-            end_idx: End index of the slice
-            index_to_node_name: Map of node indices to node names
-            index_to_segment_name: Map of node indices to segment names
-            node_map: Map of node names to nodes
-            node_type_index_map: Map of node type and index to nodes
-            segment_idx: Index of the current segment
-
-        Returns:
-            list: List of nodes for this slice
-        """
         segment_nodes = []
         for idx in range(start_idx, end_idx):
             if idx in index_to_node_name:
@@ -274,14 +274,12 @@ class OnnxSlicer:
                 if node_name in node_map:
                     segment_nodes.append(node_map[node_name])
                 else:
-                    # Try to find the node using segment name (op_type_index)
                     segment_name = index_to_segment_name.get(idx)
                     if segment_name in node_type_index_map:
                         segment_nodes.append(node_type_index_map[segment_name])
                     else:
                         logger.warning(f"Node {node_name} (index {idx}) not found in the ONNX model")
 
-        # Skip if no nodes in this slice
         if not segment_nodes:
             logger.warning(f"No nodes found for segment {segment_idx} (indices {start_idx}-{end_idx - 1})")
 
@@ -289,64 +287,55 @@ class OnnxSlicer:
 
     @staticmethod
     def _get_segment_details(segment_nodes, graph, initializer_map, future_inputs=None):
-        """
-        Determine inputs, outputs, and initializers for a segment.
-
-        Args:
-            segment_nodes: List of nodes in the segment
-            graph: ONNX graph
-            initializer_map: Map of initializer names to initializers
-            future_inputs: Set of tensor names needed by future segments (must be outputs if produced here)
-
-        Returns:
-            tuple: (segment_inputs, segment_outputs, segment_initializers)
-        """
         future_inputs = future_inputs or set()
         segment_inputs = []
         segment_outputs = []
         segment_initializers = []
 
-        # Build a complete map of all value infos including intermediate outputs
         all_value_infos = {}
 
-        # Add model inputs
         for input_info in graph.input:
             all_value_infos[input_info.name] = input_info
 
-        # Add model outputs
         for output_info in graph.output:
             all_value_infos[output_info.name] = output_info
 
-        # Add any intermediate value infos
         for value_info in graph.value_info:
             all_value_infos[value_info.name] = value_info
 
-        # Get all outputs from nodes in this segment
+        constant_producers = {}
+        for node in graph.node:
+            if node.op_type == "Constant":
+                for output in node.output:
+                    for attr in node.attribute:
+                        if attr.name == "value":
+                            constant_producers[output] = attr.t
+
         segment_node_outputs = set()
         for node in segment_nodes:
             for output in node.output:
                 segment_node_outputs.add(output)
 
-        # Get all inputs from nodes in this segment
         segment_node_inputs = set()
         for node in segment_nodes:
             for inp in node.input:
-                segment_node_inputs.add(inp)
+                if inp:
+                    segment_node_inputs.add(inp)
 
-        # Inputs are those that are used by nodes in this segment but not produced by any node in this segment
         for inp in segment_node_inputs:
             if inp not in segment_node_outputs:
-                # Check if it's a model input, intermediate value, or an initializer
                 if inp in initializer_map:
-                    # Initializers (weights, biases, running_mean, etc.) are NOT graph inputs
-                    # They will be automatically included by extract_model
                     init = initializer_map[inp]
+                    segment_initializers.append(init)
+                elif inp in constant_producers:
+                    tensor = constant_producers[inp]
+                    init = onnx.TensorProto()
+                    init.CopyFrom(tensor)
+                    init.name = inp
                     segment_initializers.append(init)
                 elif inp in all_value_infos:
                     segment_inputs.append(all_value_infos[inp])
                 else:
-                    # For unknown intermediate tensors, we need to infer reasonable shapes
-                    # Look at the node that would consume this input to guess the shape
                     inferred_shape = OnnxSlicer._infer_input_shape(inp, segment_nodes)
                     t = onnx.helper.make_tensor_value_info(
                         inp,
@@ -355,10 +344,6 @@ class OnnxSlicer:
                     )
                     segment_inputs.append(t)
 
-        # Outputs are tensors that:
-        # 1. Are produced by this segment but not consumed within it, OR
-        # 2. Are model outputs, OR
-        # 3. Are needed by future segments (even if consumed within this segment)
         model_output_names = {o.name for o in graph.output}
         for out in segment_node_outputs:
             consumed_internally = any(out in node.input for node in segment_nodes)
@@ -380,69 +365,47 @@ class OnnxSlicer:
 
     @staticmethod
     def _infer_input_shape(input_name, segment_nodes):
-        """
-        Infer a reasonable shape for an input tensor based on the nodes that consume it.
-        """
         for node in segment_nodes:
             if input_name in node.input:
                 if node.op_type == "Conv":
-                    # Conv expects 4D input: [batch, channels, height, width]
                     return ["batch_size", None, None, None]
                 elif node.op_type == "Gemm":
-                    # Gemm expects 2D input: [batch, features]
                     return ["batch_size", None]
                 elif node.op_type in ["Relu", "Tanh", "Sigmoid", "LeakyRelu", "BatchNormalization", "LayerNormalization"]:
-                    # Activation functions and normalization preserve input shape
                     return ["batch_size", None, None, None]
                 elif node.op_type in ["Add", "Mul", "Sub", "Div"]:
-                    # Element-wise operations preserve shape
                     return ["batch_size", None, None, None]
                 elif node.op_type == "GlobalAveragePool":
-                    # Global average pooling expects 4D input
                     return ["batch_size", None, None, None]
                 elif node.op_type == "AveragePool":
-                    # Average pooling expects 4D input
                     return ["batch_size", None, None, None]
 
-        # Default fallback for unknown cases
         return ["batch_size", None]
 
     @staticmethod
     def _infer_output_shape(output_name, segment_nodes):
-        """
-        Infer a reasonable shape for an output tensor based on the node that produces it.
-        """
         for node in segment_nodes:
             if output_name in node.output:
                 if node.op_type == "Conv":
-                    # Conv output is 4D: [batch, out_channels, height, width]
                     return ["batch_size", None, None, None]
                 elif node.op_type == "Gemm":
-                    # Gemm output is 2D: [batch, out_features]
                     return ["batch_size", None]
                 elif node.op_type in ["Relu", "Tanh", "Sigmoid", "LeakyRelu", "BatchNormalization", "LayerNormalization"]:
-                    # Activation functions and normalization preserve input shape
                     return ["batch_size", None, None, None]
                 elif node.op_type in ["Add", "Mul", "Sub", "Div"]:
-                    # Element-wise operations preserve shape
                     return ["batch_size", None, None, None]
                 elif node.op_type == "GlobalAveragePool":
-                    # Global average pooling reduces spatial dimensions to 1x1
                     return ["batch_size", None, 1, 1]
                 elif node.op_type == "AveragePool":
-                    # Average pooling preserves batch and channel dimensions
                     return ["batch_size", None, None, None]
                 elif node.op_type == "Flatten":
-                    # Flatten converts to 2D: [batch, features]
                     return ["batch_size", None]
                 elif node.op_type == "Reshape":
-                    # Reshape output depends on the target shape
                     return ["batch_size", None]
 
-        # Default fallback
         return ["batch_size", None]
 
-    def slice(self, slice_points: List[int], model_metadata, output_path=None):
+    def slice(self, slice_points: List[int], model_metadata, output_path=None, parallel: bool = False):
         """
         Slice the ONNX model based on the provided slice points.
 
@@ -450,18 +413,17 @@ class OnnxSlicer:
             slice_points: List of indices representing nodes with parameter details
             model_metadata: The model analysis metadata containing node information
             output_path: The path to save the slices to
+            parallel: If True, parallelize extraction and post-processing
 
         Returns:
             Tuple[List[str], Dict]: Paths to sliced models and tiling metadata
         """
-        # Error handling
         if not slice_points:
             raise ValueError("No slice points provided.")
 
         if not model_metadata or "nodes" not in model_metadata:
             raise ValueError("Invalid model metadata. Please run 'analyze()' first.")
 
-        # Apply shape inference to the original model
         logger.info("Applying shape inference to original model...")
         try:
             self.onnx_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(self.onnx_model)
@@ -469,20 +431,18 @@ class OnnxSlicer:
         except Exception as e:
             logger.warning(f"Shape inference failed on original model: {e}, continuing with original model")
 
-        # Set up slicing environment
+        tensor_graph = TensorGraph(self.onnx_path)
+        logger.info(f"Built tensor graph: {tensor_graph}")
+
         (graph, node_map, node_type_index_map, initializer_map, value_info_map,
          index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
 
-        # Add the end of the model as a final slice point
         max_index = max(node_info["index"] for node_info in model_metadata["nodes"].values())
-        # Always add max_index + 1 to ensure we create a segment for the last node
         if max_index + 1 not in slice_points:
             slice_points.append(max_index + 1)
 
-        # Sort slice points to ensure they're in order
         slice_points.sort()
 
-        # Pre-compute inputs needed by each segment to identify cross-segment dependencies
         segment_inputs_map = {}
         for i in range(len(slice_points)):
             seg_idx = i - 1
@@ -502,148 +462,197 @@ class OnnxSlicer:
                         seg_inputs.add(inp)
             segment_inputs_map[seg_idx] = seg_inputs
 
-        # Store paths to sliced models
-        slice_paths = []
-        tiled_info = {}
+        slice_specs = []
+        fallback_data = {}
 
-        # Process each segment
         for i in range(len(slice_points)):
             segment_idx = i - 1
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
 
-            # Skip if start and end are the same
             if start_idx == end_idx:
                 continue
 
-            # Get nodes for this segment
             segment_nodes = self._get_nodes(start_idx, end_idx, index_to_node_name,
                                             index_to_segment_name, node_map, node_type_index_map, segment_idx)
 
-            # Skip if no nodes in this segment
             if not segment_nodes:
                 continue
 
-            # Compute inputs needed by all future segments
             future_inputs = set()
             for future_idx in segment_inputs_map:
                 if future_idx > segment_idx:
                     future_inputs.update(segment_inputs_map[future_idx])
 
-            # Get segment details
             segment_inputs, segment_outputs, segment_initializers = self._get_segment_details(
                 segment_nodes, graph, initializer_map, future_inputs)
 
-            # Save the segment model in dslice-style folder layout: slice_X/payload/slice_X.onnx (zero-based)
             save_path = os.path.join(output_path, f"slice_{segment_idx}")
-            if not os.path.exists(save_path):
-                os.makedirs(save_path, exist_ok=True)
             payload_dir = os.path.join(save_path, "payload")
-            os.makedirs(payload_dir, exist_ok=True)
             file_path = os.path.join(payload_dir, f"slice_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
             output_names = [output_info.name for output_info in segment_outputs]
 
-            # Use extract_model to create the segment
+            spec = (self.onnx_path, segment_idx, input_names, output_names, file_path)
+            slice_specs.append(spec)
+
+            fallback_data[segment_idx] = {
+                'segment_nodes': segment_nodes,
+                'segment_inputs': segment_inputs,
+                'segment_outputs': segment_outputs,
+                'segment_initializers': segment_initializers,
+                'file_path': file_path,
+            }
+
+            logger.info(f"Prepared slice {segment_idx}: {input_names} -> {output_names}")
+
+        extracted = {}
+        failed_indices = []
+
+        if parallel and len(slice_specs) > 1:
+            max_workers = min(len(slice_specs), multiprocessing.cpu_count())
+            print(f"Extracting {len(slice_specs)} slices in parallel (workers={max_workers})...")
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_extract_single_slice, spec): spec[1] for spec in slice_specs}
+                for future in as_completed(futures):
+                    segment_idx = futures[future]
+                    result = future.result()
+                    if result:
+                        idx, path = result
+                        extracted[idx] = path
+                        print(f"  Extracted slice {idx}")
+                    else:
+                        failed_indices.append(segment_idx)
+        else:
+            print(f"Extracting {len(slice_specs)} slices sequentially...")
+            for spec in slice_specs:
+                result = _extract_single_slice(spec)
+                if result:
+                    idx, path = result
+                    extracted[idx] = path
+                    print(f"  Extracted slice {idx}")
+                else:
+                    failed_indices.append(spec[1])
+
+        for segment_idx in failed_indices:
+            data = fallback_data[segment_idx]
+            file_path = data['file_path']
             try:
-                logger.info(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
-                print(f"Extracting slice {segment_idx}: {input_names} -> {output_names}")
-                # Extract the model directly to final path
-                extract_model(
-                    input_path=self.onnx_path,
-                    output_path=file_path,
-                    input_names=input_names,
-                    output_names=output_names
+                print(f"  Fallback: building slice {segment_idx} manually...")
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                segment_graph = onnx.helper.make_graph(
+                    data['segment_nodes'],
+                    f"segment_{segment_idx}_graph",
+                    data['segment_inputs'],
+                    data['segment_outputs'],
+                    data['segment_initializers']
                 )
-
-                # Apply shape inference to extracted segment
-                try:
-                    extracted_model = onnx.load(file_path)
-                    extracted_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(extracted_model)
-                    extracted_model = self._concretize_symbolic_dims(extracted_model, value=1)
-                    onnx.save(extracted_model, file_path)
-                    logger.info(f"Shape inference applied successfully to extracted slice {segment_idx}")
-                except Exception as e:
-                    logger.warning(f"Shape inference failed on extracted slice {segment_idx}: {e}")
-                    print(f"Shape inference failed on extracted slice {segment_idx}: {e}")
-
-                slice_paths.append(file_path)
-
+                segment_model = onnx.helper.make_model(segment_graph)
+                segment_model = self._concretize_symbolic_dims(segment_model, value=1)
+                save_onnx_model(segment_model, file_path)
+                extracted[segment_idx] = file_path
             except Exception as e:
-                try:
-                    logger.info(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
-                    print(f"Error extracting slice, trying to create it instead {segment_idx}: {e}")
-                    segment_graph = onnx.helper.make_graph(
-                        segment_nodes,
-                        f"segment_{segment_idx}_graph",
-                        segment_inputs,
-                        segment_outputs,
-                        segment_initializers
-                    )
+                logger.error(f"Fallback failed for segment {segment_idx}: {e}")
 
-                    # Create a model from the graph
-                    segment_model = onnx.helper.make_model(segment_graph)
+        slice_paths = [extracted[idx] for idx in sorted(extracted.keys())]
 
-                    # Apply shape inference to each segment
-                    try:
-                        segment_model = symbolic_shape_infer.SymbolicShapeInference.infer_shapes(segment_model)
-                        logger.info(f"Shape inference applied successfully to segment {segment_idx}")
-                    except Exception as e:
-                        logger.warning(f"Shape inference failed on segment {segment_idx}: {e}")
-                        print(f"Shape inference failed on segment {segment_idx}: {e}")
+        abs_paths = self.slice_post_process(slice_paths, parallel=parallel, traced_shapes=self.traced_shapes)
 
-                    segment_model = self._concretize_symbolic_dims(segment_model, value=1)
-                    onnx.save(segment_model, file_path)
-                    slice_paths.append(file_path)
+        abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
 
-                except Exception as e:
-                    logger.error(f"Error creating segment {segment_idx}: {e}")
-                    continue
-
-        abs_paths = self.slice_post_process(slice_paths)
-        return abs_paths, tiled_info
+        tiled_info = {}
+        return abs_paths_dict, tiled_info, tensor_graph
 
     @staticmethod
-    def slice_post_process(slices_paths):
-        """
-        Post-process sliced models with shape inference and validation.
-        """
-        abs_paths = []
-        for path in slices_paths:
-            abs_path = os.path.abspath(path)
-            abs_paths.append(abs_path)
-            try:
-                model = onnx.load(path)
+    def _process_single_slice(path: str, traced_shapes: dict = None) -> str | None:
+        abs_path = os.path.abspath(path)
+        try:
+            model = onnx.load(path)
 
-                # Apply ONNX shape inference to infer missing shapes
-                logger.info(f"Applying shape inference to {path}")
-                try:
-                    model_with_shapes = shape_inference.infer_shapes(model)
-                    model = model_with_shapes
-                    logger.info(f"Shape inference successful for {path}")
-                    print(f"Shape inference successful for {path}")
-                except Exception as shape_error:
-                    logger.warning(f"Shape inference failed for {path}: {shape_error}")
-                    print(f"Shape inference failed for {path}: {shape_error}")
-                    # Continue with original model if shape inference fails
-
-                # Concretize any remaining symbolic dims to batch=1 for ezkl
+            if traced_shapes:
+                OnnxSlicer._apply_traced_shapes(model, traced_shapes)
+            else:
                 model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
 
-                # Validate the model
-                onnx.checker.check_model(model)
+            onnx.checker.check_model(model)
+            save_onnx_model(model, path)
+            return abs_path
+        except Exception as e:
+            logger.error(f"Error processing {path}: {e}")
+            return None
 
-                # Save the processed model
-                onnx.save(model, path)
-                logger.info(f"Successfully processed and saved {path}")
+    @staticmethod
+    def _apply_traced_shapes(model: onnx.ModelProto, traced_shapes: dict, traced_dtypes: dict = None):
+        """Apply traced runtime shapes to model inputs/outputs/intermediates."""
+        import numpy as np
+        from onnx import helper, TensorProto
 
-            except Exception as e:
-                logger.error(f"Error processing {path}: {e}")
-                continue
+        dtype_map = {
+            np.dtype('float32'): TensorProto.FLOAT,
+            np.dtype('float64'): TensorProto.DOUBLE,
+            np.dtype('int32'): TensorProto.INT32,
+            np.dtype('int64'): TensorProto.INT64,
+            np.dtype('bool'): TensorProto.BOOL,
+        }
+
+        def get_onnx_dtype(name):
+            if traced_dtypes and name in traced_dtypes:
+                return dtype_map.get(traced_dtypes[name], TensorProto.FLOAT)
+            return TensorProto.FLOAT
+
+        def set_shape(value_info, shape):
+            value_info.type.tensor_type.shape.ClearField('dim')
+            for dim_val in shape:
+                dim = value_info.type.tensor_type.shape.dim.add()
+                dim.dim_value = dim_val
+
+        existing_names = set()
+        for inp in model.graph.input:
+            existing_names.add(inp.name)
+            if inp.name in traced_shapes:
+                set_shape(inp, traced_shapes[inp.name])
+
+        for out in model.graph.output:
+            existing_names.add(out.name)
+            if out.name in traced_shapes:
+                set_shape(out, traced_shapes[out.name])
+
+        for vi in model.graph.value_info:
+            existing_names.add(vi.name)
+            if vi.name in traced_shapes:
+                set_shape(vi, traced_shapes[vi.name])
+
+        for name, shape in traced_shapes.items():
+            if name not in existing_names:
+                onnx_dtype = get_onnx_dtype(name)
+                vi = helper.make_tensor_value_info(name, onnx_dtype, shape)
+                model.graph.value_info.append(vi)
+
+    @staticmethod
+    def slice_post_process(slices_paths, parallel: bool = False, traced_shapes: dict = None):
+        """Post-process sliced models with traced shape application."""
+        if parallel and len(slices_paths) > 1:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            import multiprocessing
+            max_workers = min(len(slices_paths), multiprocessing.cpu_count())
+            abs_paths = []
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(OnnxSlicer._process_single_slice, p, traced_shapes): p for p in slices_paths}
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
+                        abs_paths.append(result)
+            return sorted(abs_paths)
+
+        abs_paths = []
+        for path in slices_paths:
+            result = OnnxSlicer._process_single_slice(path, traced_shapes)
+            if result:
+                abs_paths.append(result)
         return abs_paths
 
-    def slice_model(self, output_path=None, tile_size: int = None):
+    def slice_model(self, output_path=None, max_conv_size: int = None, tile_size: int = None, parallel: bool = False):
         """
         Run the complete workflow: determine slice points, slice, and optionally tile.
 
@@ -653,28 +662,35 @@ class OnnxSlicer:
 
         Args:
             output_path: The path to save the slices to.
-            tile_size: If set, tile Conv slices with spatial dims > tile_size.
+            max_conv_size: Maximum elements per tile. Tile size is calculated dynamically
+                           per-Conv based on channel count: tile_size = sqrt(max_conv_size / channels).
+                           Recommended over tile_size for better ZK circuit sizing.
+            tile_size: Fixed tile size for all Convs (legacy). Ignored if max_conv_size is set.
+            parallel: If True, parallelize operations.
 
         Returns:
             Dict[str, Any]: Metadata about the sliced model
         """
-        slice_points = self.determine_slice_points(self.analysis, tile_size)
-        slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path)
+        should_tile = max_conv_size is not None or tile_size is not None
+        slice_points = self.determine_slice_points(self.analysis, tile_size if not max_conv_size else 1)
+        slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, parallel=parallel)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
 
-        if tile_size is not None:
-            logger.info(f"Applying tiling transform with tile_size={tile_size}")
-            apply_tiling_to_slices(output_path, tile_size)
+        if should_tile:
+            if max_conv_size:
+                logger.info(f"Applying tiling transform with max_conv_size={max_conv_size}")
+                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size, parallel=parallel, tensor_graph=tensor_graph)
+            else:
+                logger.info(f"Applying tiling transform with tile_size={tile_size}")
+                apply_tiling_to_slices(output_path, tile_size=tile_size, parallel=parallel, tensor_graph=tensor_graph)
 
         return slices_paths
 
 
 if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 2 # Change this to test different models
+    model_choice = 1
 
-    # Model configurations
     base_paths = {
         1: "../../models/doom",
         2: "../../models/net",

@@ -14,8 +14,6 @@ from dsperse.src.slice.utils.converter import Converter
 logger = logging.getLogger(__name__)
 
 class RunnerAnalyzer:
-    SIZE_LIMIT = 1000 * 1024 * 1024  # 1000MB
-
     def __init__(self):
         """Stateless analyzer. Use static methods."""
         pass

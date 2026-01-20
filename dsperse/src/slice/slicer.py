@@ -55,14 +55,18 @@ class Slicer:
         return Slicer(OnnxSlicer(model_path, save_path))
 
 
-    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs", tile_size: Optional[int] = None):
+    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs", max_conv_size: Optional[int] = None, tile_size: Optional[int] = None, parallel: bool = False):
         """
         Slice the model using the appropriate slicer implementation, then optionally convert output.
 
         Args:
             output_path: Directory to save the sliced model
             output_type: One of {'dsperse', 'dslice', 'dirs'}
-            tile_size: If set, tile Conv slices with spatial dims > tile_size
+            max_conv_size: Maximum elements per Conv tile. Tile size is calculated dynamically
+                           per-Conv based on channel count: tile_size = sqrt(max_conv_size / channels).
+                           Recommended over tile_size for better ZK circuit sizing.
+            tile_size: Fixed tile size for all Convs (legacy). Ignored if max_conv_size is set.
+            parallel: If True, parallelize slicing operations
 
         Returns:
             The result of the slicing operation (list of slice paths from slicer_impl)
@@ -71,7 +75,7 @@ class Slicer:
             raise ValueError("output_path must be provided for slicing")
 
         logger.info(f"Slicing model to output path: {output_path}")
-        result = self.slicer_impl.slice_model(output_path=output_path, tile_size=tile_size)
+        result = self.slicer_impl.slice_model(output_path=output_path, max_conv_size=max_conv_size, tile_size=tile_size, parallel=parallel)
 
         if output_type != "dirs":
             Converter.convert(output_path, output_type)

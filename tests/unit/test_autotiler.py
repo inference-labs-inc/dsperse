@@ -415,3 +415,246 @@ class TestInvalidTileSize:
 
         result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
         assert result is None
+
+
+class TestCriticalEdgeCases:
+    """Tests for edge cases that would silently produce wrong results if broken."""
+
+    def _run_onnx(self, model_path, input_data):
+        sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        input_name = sess.get_inputs()[0].name
+        return sess.run(None, {input_name: input_data})[0]
+
+    def _run_tiled(self, tiled_info, input_data):
+        split_path = tiled_info["split"]["path"]
+        split_sess = ort.InferenceSession(split_path, providers=["CPUExecutionProvider"])
+        split_input_name = split_sess.get_inputs()[0].name
+        tile_inputs = split_sess.run(None, {split_input_name: input_data})
+
+        tile_outputs = []
+        for i, tile_info in enumerate(tiled_info["tiles"]):
+            tile_sess = ort.InferenceSession(tile_info["path"], providers=["CPUExecutionProvider"])
+            tile_input_name = tile_sess.get_inputs()[0].name
+            tile_out = tile_sess.run(None, {tile_input_name: tile_inputs[i]})[0]
+            tile_outputs.append(tile_out)
+
+        concat_path = tiled_info["concat"]["path"]
+        concat_sess = ort.InferenceSession(concat_path, providers=["CPUExecutionProvider"])
+        concat_inputs = {f"tile_{tiled_info['slice_idx']}_{i}_out": tile_outputs[i]
+                         for i in range(len(tile_outputs))}
+        return concat_sess.run(None, concat_inputs)[0]
+
+    def test_multiple_conv_rejected(self, tmp_path):
+        """Multiple Conv layers must be rejected - halo calc would be wrong."""
+        c_in, c_mid, c_out = 3, 8, 16
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, 64, 64])
+
+        np.random.seed(42)
+        W1 = numpy_helper.from_array(
+            np.random.randn(c_mid, c_in, 3, 3).astype(np.float32), "W1")
+        W2 = numpy_helper.from_array(
+            np.random.randn(c_out, c_mid, 3, 3).astype(np.float32), "W2")
+
+        nodes = [
+            helper.make_node("Conv", ["X", "W1"], ["conv1_out"], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+            helper.make_node("Relu", ["conv1_out"], ["relu_out"]),
+            helper.make_node("Conv", ["relu_out", "W2"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+        ]
+
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, 64, 64])
+        graph = helper.make_graph(nodes, "two_conv", [X], [Y], [W1, W2])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        tiled_dir = tmp_path / "tiled"
+        tiled_dir.mkdir()
+
+        result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
+        assert result is None, "Multiple Conv layers should be rejected"
+
+    def test_boundary_pixels_exact(self, tmp_path):
+        """Boundary pixels at tile edges must be exactly correct, not just close."""
+        c_in, c_out, spatial = 1, 1, 32
+        tile_size = 16
+
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+
+        np.random.seed(999)
+        w_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        np.random.seed(888)
+        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
+
+        expected = self._run_onnx(model_path, input_data)
+
+        tiled_dir = tmp_path / "tiled"
+        tiled_dir.mkdir()
+        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
+        assert tiled_info is not None
+
+        actual = self._run_tiled(tiled_info, input_data)
+
+        # Check boundary pixels explicitly (where tiles meet)
+        boundary_h = tile_size  # row where tiles meet
+        boundary_w = tile_size  # col where tiles meet
+
+        # Pixels at tile boundaries
+        np.testing.assert_array_equal(
+            actual[0, :, boundary_h-1:boundary_h+1, :],
+            expected[0, :, boundary_h-1:boundary_h+1, :],
+            err_msg="Horizontal tile boundary pixels differ"
+        )
+        np.testing.assert_array_equal(
+            actual[0, :, :, boundary_w-1:boundary_w+1],
+            expected[0, :, :, boundary_w-1:boundary_w+1],
+            err_msg="Vertical tile boundary pixels differ"
+        )
+
+        # Corner where 4 tiles meet
+        np.testing.assert_array_equal(
+            actual[0, :, boundary_h-1:boundary_h+1, boundary_w-1:boundary_w+1],
+            expected[0, :, boundary_h-1:boundary_h+1, boundary_w-1:boundary_w+1],
+            err_msg="Corner pixels where 4 tiles meet differ"
+        )
+
+    def test_stride_tile_size_compatibility(self, tmp_path):
+        """Tile size must be compatible with stride for correct output stitching."""
+        c_in, c_out, spatial = 3, 8, 64
+        stride = 2
+        tile_size = 16  # 16 / 2 = 8, evenly divisible
+
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+
+        np.random.seed(42)
+        w_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[3, 3], strides=[stride, stride], pads=[1, 1, 1, 1])
+        out_spatial = spatial // stride
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
+
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        np.random.seed(123)
+        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
+
+        expected = self._run_onnx(model_path, input_data)
+
+        tiled_dir = tmp_path / "tiled"
+        tiled_dir.mkdir()
+        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
+        assert tiled_info is not None
+
+        actual = self._run_tiled(tiled_info, input_data)
+
+        assert actual.shape == expected.shape, f"Shape mismatch: {actual.shape} vs {expected.shape}"
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
+
+    def test_large_kernel_halo_correctness(self, tmp_path):
+        """Large kernels need larger halos - verify boundary correctness."""
+        c_in, c_out, spatial = 1, 1, 64
+        kernel = 7
+        tile_size = 16
+
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+
+        np.random.seed(42)
+        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+
+        padding = kernel // 2
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[kernel, kernel],
+                                pads=[padding, padding, padding, padding])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        np.random.seed(777)
+        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
+
+        expected = self._run_onnx(model_path, input_data)
+
+        tiled_dir = tmp_path / "tiled"
+        tiled_dir.mkdir()
+        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
+        assert tiled_info is not None
+        assert tiled_info["halo"] == [3, 3], f"Expected halo [3,3] for 7x7 kernel, got {tiled_info['halo']}"
+
+        actual = self._run_tiled(tiled_info, input_data)
+
+        # Strict equality at boundaries
+        boundary = tile_size
+        np.testing.assert_array_equal(
+            actual[0, :, boundary-1:boundary+1, :],
+            expected[0, :, boundary-1:boundary+1, :],
+            err_msg="7x7 kernel: horizontal boundary differs"
+        )
+
+    def test_dilated_conv_halo_correctness(self, tmp_path):
+        """Dilated convolutions have larger effective kernels - verify halo."""
+        c_in, c_out, spatial = 1, 1, 64
+        kernel, dilation = 3, 2  # effective kernel = 5
+        tile_size = 16
+
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+
+        np.random.seed(42)
+        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+
+        effective_k = (kernel - 1) * dilation + 1
+        padding = effective_k // 2
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[kernel, kernel],
+                                dilations=[dilation, dilation],
+                                pads=[padding, padding, padding, padding])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        np.random.seed(666)
+        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
+
+        expected = self._run_onnx(model_path, input_data)
+
+        tiled_dir = tmp_path / "tiled"
+        tiled_dir.mkdir()
+        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
+        assert tiled_info is not None
+        assert tiled_info["halo"] == [2, 2], f"Expected halo [2,2] for dilated 3x3, got {tiled_info['halo']}"
+
+        actual = self._run_tiled(tiled_info, input_data)
+
+        np.testing.assert_array_equal(actual, expected,
+                                       err_msg="Dilated conv output differs")

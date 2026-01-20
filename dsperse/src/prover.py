@@ -4,6 +4,7 @@ Orchestration for various provers.
 import logging
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
@@ -14,15 +15,138 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 
+def _prove_slice_worker(args: tuple) -> dict:
+    """
+    Worker function for parallel proof generation.
+    Must be module-level for pickling by ProcessPoolExecutor.
+    """
+    (slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling_info, run_path, slice_dir) = args
+
+    result = {
+        'slice_id': slice_id,
+        'success': False,
+        'method': None,
+        'proof_path': str(proof_path) if not tiling_info else None,
+        'time_sec': 0,
+        'error': None,
+        'attempted_jstprove': preferred == "jstprove",
+        'attempted_ezkl': preferred == "ezkl",
+        'tile_proofs_info': None
+    }
+
+    start = time.time()
+
+    if tiling_info:
+        num_tiles = tiling_info["num_tiles"]
+        tile_results = []
+        method = None
+
+        for tile_idx in range(num_tiles):
+            tile_name = f"tile_{tile_idx}"
+            tile_run_dir = Path(run_path) / slice_id / tile_name
+
+            if preferred == "jstprove":
+                tile_witness_path = tile_run_dir / "output_witness.bin"
+            else:
+                tile_witness_path = tile_run_dir / "output.json"
+
+            tile_proof_path = Path(run_path) / slice_id / tile_name / "proof.json"
+            os.makedirs(tile_proof_path.parent, exist_ok=True)
+
+            if not tile_witness_path.exists():
+                tile_results.append({"tile_idx": tile_idx, "success": False, "error": "witness_missing"})
+                continue
+
+            if not circuit_path or not os.path.exists(circuit_path):
+                tile_results.append({"tile_idx": tile_idx, "success": False, "error": "circuit_missing"})
+                continue
+
+            try:
+                if preferred == "jstprove":
+                    from dsperse.src.backends.jstprove import JSTprove
+                    backend = JSTprove()
+                    ok, res = backend.prove(
+                        witness_path=str(tile_witness_path),
+                        circuit_path=str(circuit_path),
+                        proof_path=str(tile_proof_path),
+                    )
+                    method = "jstprove_prove"
+                else:
+                    from dsperse.src.backends.ezkl import EZKL
+                    backend = EZKL()
+                    ok, res = backend.prove(
+                        witness_path=str(tile_witness_path),
+                        model_path=str(circuit_path),
+                        proof_path=str(tile_proof_path),
+                        pk_path=str(pk_path) if pk_path else None,
+                        settings_path=settings_path,
+                    )
+                    method = "ezkl_prove"
+
+                tile_results.append({
+                    "tile_idx": tile_idx,
+                    "success": ok,
+                    "proof_path": str(tile_proof_path),
+                    "error": None if ok else str(res)
+                })
+            except Exception as e:
+                tile_results.append({"tile_idx": tile_idx, "success": False, "error": str(e)})
+
+        result['success'] = all(r["success"] for r in tile_results)
+        result['method'] = method
+        result['tile_proofs_info'] = tile_results
+        result['error'] = None if result['success'] else "One or more tiles failed to prove"
+    else:
+        os.makedirs(Path(proof_path).parent, exist_ok=True)
+        try:
+            if preferred == "jstprove":
+                from dsperse.src.backends.jstprove import JSTprove
+                backend = JSTprove()
+                ok, res = backend.prove(
+                    witness_path=str(witness_path),
+                    circuit_path=str(circuit_path),
+                    proof_path=str(proof_path),
+                )
+                result['success'] = ok
+                result['method'] = "jstprove_prove"
+                result['error'] = None if ok else str(res)
+            else:
+                if not pk_path or not os.path.exists(pk_path):
+                    result['error'] = f"Proving key not found at {pk_path}"
+                else:
+                    from dsperse.src.backends.ezkl import EZKL
+                    backend = EZKL()
+                    ok, res = backend.prove(
+                        witness_path=str(witness_path),
+                        model_path=str(circuit_path),
+                        proof_path=str(proof_path),
+                        pk_path=str(pk_path),
+                        settings_path=settings_path,
+                    )
+                    result['success'] = ok
+                    result['method'] = "ezkl_prove"
+                    result['error'] = None if ok else str(res)
+        except Exception as e:
+            result['error'] = str(e)
+            result['method'] = f"{preferred}_prove"
+
+    result['time_sec'] = time.time() - start
+    return result
+
+
 class Prover:
     """
     Orchestrator for proving model execution slices.
     """
 
-    def __init__(self):
+    def __init__(self, parallel: int = 1):
         """
         Initialize the prover.
+
+        Args:
+            parallel: Number of parallel processes for proof generation (default: 1)
         """
+        self.parallel = max(1, parallel)
         try:
             self.ezkl_runner = EZKL()
         except RuntimeError:
@@ -178,14 +302,10 @@ class Prover:
 
         # Determine path layout: run_path/slice_id/tile_N (run-root) or run_path/tile_N (single-slice)
         if (run_path / slice_id / tile_name).exists():
-            # Run-root mode
             tile_run_dir = run_path / slice_id / tile_name
-            # Utils.proof_output_path expects slice_id/tile_name to build the hierarchy
             proof_rel_path = os.path.join(slice_id, tile_name)
         else:
-            # Single-slice mode
             tile_run_dir = run_path / tile_name
-            # If we are already inside the slice run dir, we only want the tile_N part
             proof_rel_path = tile_name
 
         if preferred_backend == "jstprove":
@@ -256,7 +376,6 @@ class Prover:
         metadata = Utils.load_run_metadata(run_path)
 
         proofs: dict[str, dict] = {}
-        total = 0
         proved_jst = 0
         proved_ezkl = 0
 
@@ -284,30 +403,16 @@ class Prover:
             if not slices_iter:
                 return Utils.load_run_results(run_path)
 
+        work_items = []
         for slice_id, meta in slices_iter:
-            total += 1
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
             preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
             circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
             tiling = meta.get("tiling")
             if tiling:
-                start = time.time()
-                success, method, tile_results = self._prove_tile_batch(
-                    slice_id, Path(run_path), tiling["num_tiles"], preferred, str(circuit_path), pk_path, settings_path,
-                    output_path
-                )
-                elapsed = time.time() - start
-                proofs[slice_id] = {
-                    "success": success,
-                    "proof_path": None,
-                    "time_sec": elapsed,
-                    "method": method or "unknown",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "tile_proofs_info": tile_results,
-                    "error": None if success else "One or more tiles failed to prove",
-                }
+                witness_path = None
+                proof_path = None
             else:
                 if preferred == "jstprove":
                     wf = self._get_witness_file_from_run(Path(run_path), slice_id)
@@ -320,32 +425,43 @@ class Prover:
                     continue
 
                 proof_path = Utils.proof_output_path(run_path, slice_id, output_path)
-                os.makedirs(proof_path.parent, exist_ok=True)
 
                 if not circuit_path or not os.path.exists(circuit_path):
                     logger.warning(f"Skipping {slice_id}: compiled circuit not found ({circuit_path})")
                     continue
 
-                start = time.time()
-                success, method, result = self._prove_with_backend(
-                    preferred, Path(witness_path), str(circuit_path), Path(proof_path), pk_path, settings_path
-                )
-                elapsed = time.time() - start
+            work_items.append((slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling, str(run_path), str(slice_dir)))
 
-                proofs[slice_id] = {
-                    "success": success,
-                    "proof_path": str(proof_path),
-                    "time_sec": elapsed,
-                    "method": method or "unknown",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "error": None if success else (str(result) if result is not None else "Unknown error"),
-                }
-            if success:
+        total = len(work_items)
+
+        if self.parallel > 1 and len(work_items) > 1:
+            logger.info(f"Proving {len(work_items)} slices with {self.parallel} parallel processes...")
+            results = []
+            with ProcessPoolExecutor(max_workers=self.parallel) as executor:
+                futures = {executor.submit(_prove_slice_worker, item): item[0] for item in work_items}
+                for future in as_completed(futures):
+                    slice_id = futures[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"Slice {slice_id} proving failed: {e}")
+                        results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
+        else:
+            results = [_prove_slice_worker(item) for item in work_items]
+
+        for result in results:
+            slice_id = result['slice_id']
+            proofs[slice_id] = result
+
+            if result['success']:
+                method = result.get('method')
                 if method == "jstprove_prove":
                     proved_jst += 1
                 elif method == "ezkl_prove":
                     proved_ezkl += 1
+            else:
+                logger.error(f"Proof failed for {slice_id}: {result.get('error')}")
 
         run_results = Utils.load_run_results(run_path)
         run_results, _ = Utils.merge_execution_into_run_results(run_results, proofs, "proof")

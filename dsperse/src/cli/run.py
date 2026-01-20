@@ -170,8 +170,9 @@ def run_inference(args):
 
         # Print the result
         print(f"\n{Fore.YELLOW}Results:{Style.RESET_ALL}")
-        print(f"Prediction: {result.get('prediction', 'N/A')}")
-        print(f"Final Probabilities: {result.get('probabilities')[0] if result.get('probabilities') else 'N/A'}")
+        tensor_shape = result.get('tensor_shape')
+        if tensor_shape:
+            print(f"Output shape: {tensor_shape}")
 
         # Print method information for each slice
         slice_results = result.get('slice_results', {})

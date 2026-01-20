@@ -28,7 +28,7 @@ class OnnxModels:
         return ort.InferenceSession(model_path, opts)
 
     @staticmethod
-    def _process_outputs(session: ort.InferenceSession, raw_output: list, output_file: str) -> dict:
+    def _process_outputs(session: ort.InferenceSession, raw_output: list, output_file: str = None) -> dict:
         """Convert raw ONNX outputs to result dict with tensors."""
         model_outputs = session.get_outputs()
         if not model_outputs:
@@ -42,16 +42,38 @@ class OnnxModels:
         output_tensor = output_tensors[first_output_name].float()
         result = RunnerUtils.process_final_output(output_tensor)
         result['output_tensors'] = output_tensors
-        RunnerUtils.save_to_file_flattened(result['logits'], output_file)
+        if output_file:
+            RunnerUtils.save_to_file_flattened(result['logits'], output_file)
         return result
 
     @staticmethod
-    def run_inference(input_file: str, model_path: str, output_file: str):
+    def run_inference(input_file: str, model_path: str, output_file: str = None):
         """Run inference with the ONNX model and return the logits, probabilities, and predictions."""
         try:
             session = OnnxModels._create_session(model_path)
             input_tensor = RunnerUtils.preprocess_input(input_file)
             input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
+            raw_output = session.run(None, input_dict)
+            return True, OnnxModels._process_outputs(session, raw_output, output_file)
+        except Exception as e:
+            logger.exception("Error during inference")
+            return False, str(e)
+
+    @staticmethod
+    def run_inference_tensor(input_tensor: torch.Tensor, model_path: str, output_file: str = None):
+        """Run inference with tensor input directly (no file I/O for input)."""
+        try:
+            session = OnnxModels._create_session(model_path)
+            model_inputs = session.get_inputs()
+            if len(model_inputs) == 1:
+                input_name = model_inputs[0].name
+                if isinstance(input_tensor, torch.Tensor):
+                    arr = input_tensor.detach().cpu().numpy().astype(np.float32)
+                else:
+                    arr = np.asarray(input_tensor, dtype=np.float32)
+                input_dict = {input_name: arr}
+            else:
+                input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
             raw_output = session.run(None, input_dict)
             return True, OnnxModels._process_outputs(session, raw_output, output_file)
         except Exception as e:
@@ -73,7 +95,7 @@ class OnnxModels:
         return np.float32
 
     @staticmethod
-    def run_inference_multi(model_path: str, extra_tensors: dict, output_file: str):
+    def run_inference_multi(model_path: str, extra_tensors: dict, output_file: str = None):
         """Run inference with multiple named inputs. All inputs must be provided in extra_tensors."""
         try:
             session = OnnxModels._create_session(model_path)
@@ -88,13 +110,10 @@ class OnnxModels:
                 arr = t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
                 arr = arr.astype(OnnxModels._parse_onnx_type(model_input.type))
 
-                expected_rank = len(model_input.shape)
-                if arr.ndim != expected_rank:
-                    raise ValueError(f"Rank mismatch for {name}: got {arr.ndim}D, expected {expected_rank}D")
-
-                for i, (got, expected) in enumerate(zip(arr.shape, model_input.shape)):
-                    if isinstance(expected, int) and got != expected:
-                        raise ValueError(f"Dim {i} mismatch for {name}: got {got}, expected {expected}")
+                expected_shape = model_input.shape
+                expected_rank = len(expected_shape)
+                if expected_rank > 0 and arr.ndim != expected_rank:
+                    logger.warning(f"Rank mismatch for {name}: got {arr.ndim}D, expected {expected_rank}D - using actual shape")
 
                 input_dict[name] = arr
 

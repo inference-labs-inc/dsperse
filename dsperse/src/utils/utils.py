@@ -4,9 +4,19 @@ import os
 import time
 from pathlib import Path
 import torch
+import onnx
 
-# Configure logger
 logger = logging.getLogger(__name__)
+
+
+def save_onnx_model(model: onnx.ModelProto, path: str | Path, opset_version: int = 18):
+    """Save ONNX model with compatible IR version (9) and specified opset."""
+    model.ir_version = 9
+    if model.opset_import:
+        for opset in model.opset_import:
+            if opset.domain == "" or opset.domain == "ai.onnx":
+                opset.version = opset_version
+    onnx.save(model, str(path))
 
 
 class Utils:

@@ -10,7 +10,9 @@ from dsperse.src.analyzers.onnx_analyzer import OnnxAnalyzer
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from typing import List, Dict, Tuple, Any
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.autotiler import autotile_slice, apply_tiling_to_slices, ELEMENTWISE_OPS
+from dsperse.src.slice.autotiler import apply_tiling_to_slices, ELEMENTWISE_OPS
+from dsperse.src.slice.tensor_graph import TensorGraph
+from dsperse.src.utils.utils import save_onnx_model
 from onnx.utils import extract_model
 from onnxruntime.tools import symbolic_shape_infer
 
@@ -40,16 +42,62 @@ class OnnxSlicer:
         self.onnx_model = onnx.load(onnx_path)
         self.model_metadata = None
         self.slice_points = None
+        self.traced_shapes = {}
+        self.traced_dtypes = {}
 
-        print("Applying shape inference to original model for better slicing...")
-        try:
-            self.onnx_model = shape_inference.infer_shapes(self.onnx_model)
-            print("Shape inference applied successfully to original model")
-        except Exception as e:
-            print(f"Shape inference failed on original model: {e}, continuing with original model")
+        print("Running shape trace with dummy input...")
+        self._trace_shapes()
+        self._apply_traced_shapes(self.onnx_model, self.traced_shapes, self.traced_dtypes)
+
+        traced_model_path = self.onnx_path.replace('.onnx', '_traced.onnx')
+        onnx.save(self.onnx_model, traced_model_path)
+        self.onnx_path = traced_model_path
 
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=save_path)
+
+    def _trace_shapes(self):
+        """Run model with dummy input to capture all intermediate tensor shapes."""
+        import onnxruntime as ort
+        import numpy as np
+
+        all_tensor_names = []
+        for node in self.onnx_model.graph.node:
+            for out in node.output:
+                all_tensor_names.append(out)
+
+        trace_model = onnx.ModelProto()
+        trace_model.CopyFrom(self.onnx_model)
+        existing_outputs = {o.name for o in trace_model.graph.output}
+        for tensor_name in all_tensor_names:
+            if tensor_name not in existing_outputs:
+                new_output = trace_model.graph.output.add()
+                new_output.name = tensor_name
+
+        trace_path = "/tmp/trace_model.onnx"
+        onnx.save(trace_model, trace_path)
+
+        session = ort.InferenceSession(trace_path, providers=['CPUExecutionProvider'])
+
+        inputs = {}
+        for inp in session.get_inputs():
+            shape = [dim if isinstance(dim, int) else 1 for dim in inp.shape]
+            dtype = np.float32
+            if 'int64' in inp.type:
+                dtype = np.int64
+            elif 'int32' in inp.type:
+                dtype = np.int32
+            inputs[inp.name] = np.random.randn(*shape).astype(dtype)
+            self.traced_shapes[inp.name] = shape
+
+        outputs = session.run(None, inputs)
+        output_names = [o.name for o in session.get_outputs()]
+        for name, arr in zip(output_names, outputs):
+            self.traced_shapes[name] = list(arr.shape)
+            self.traced_dtypes[name] = arr.dtype
+
+        os.remove(trace_path)
+        print(f"Shape trace complete: captured {len(self.traced_shapes)} tensor shapes")
 
     @staticmethod
     def _concretize_symbolic_dims(model: onnx.ModelProto, value: int = 1) -> onnx.ModelProto:
@@ -255,6 +303,14 @@ class OnnxSlicer:
         for value_info in graph.value_info:
             all_value_infos[value_info.name] = value_info
 
+        constant_producers = {}
+        for node in graph.node:
+            if node.op_type == "Constant":
+                for output in node.output:
+                    for attr in node.attribute:
+                        if attr.name == "value":
+                            constant_producers[output] = attr.t
+
         segment_node_outputs = set()
         for node in segment_nodes:
             for output in node.output:
@@ -263,15 +319,19 @@ class OnnxSlicer:
         segment_node_inputs = set()
         for node in segment_nodes:
             for inp in node.input:
-                segment_node_inputs.add(inp)
+                if inp:
+                    segment_node_inputs.add(inp)
 
         for inp in segment_node_inputs:
             if inp not in segment_node_outputs:
-                # Check if it's a model input, intermediate value, or an initializer
                 if inp in initializer_map:
-                    # Initializers (weights, biases, running_mean, etc.) are NOT graph inputs
-                    # They will be automatically included by extract_model
                     init = initializer_map[inp]
+                    segment_initializers.append(init)
+                elif inp in constant_producers:
+                    tensor = constant_producers[inp]
+                    init = onnx.TensorProto()
+                    init.CopyFrom(tensor)
+                    init.name = inp
                     segment_initializers.append(init)
                 elif inp in all_value_infos:
                     segment_inputs.append(all_value_infos[inp])
@@ -370,6 +430,9 @@ class OnnxSlicer:
             logger.info("Shape inference applied successfully to original model")
         except Exception as e:
             logger.warning(f"Shape inference failed on original model: {e}, continuing with original model")
+
+        tensor_graph = TensorGraph(self.onnx_path)
+        logger.info(f"Built tensor graph: {tensor_graph}")
 
         (graph, node_map, node_type_index_map, initializer_map, value_info_map,
          index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
@@ -487,55 +550,95 @@ class OnnxSlicer:
                 )
                 segment_model = onnx.helper.make_model(segment_graph)
                 segment_model = self._concretize_symbolic_dims(segment_model, value=1)
-                onnx.save(segment_model, file_path)
+                save_onnx_model(segment_model, file_path)
                 extracted[segment_idx] = file_path
             except Exception as e:
                 logger.error(f"Fallback failed for segment {segment_idx}: {e}")
 
         slice_paths = [extracted[idx] for idx in sorted(extracted.keys())]
 
-        abs_paths = self.slice_post_process(slice_paths, parallel=parallel)
+        abs_paths = self.slice_post_process(slice_paths, parallel=parallel, traced_shapes=self.traced_shapes)
 
         abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
 
         tiled_info = {}
-        return abs_paths_dict, tiled_info
+        return abs_paths_dict, tiled_info, tensor_graph
 
     @staticmethod
-    def _process_single_slice(path: str) -> str | None:
+    def _process_single_slice(path: str, traced_shapes: dict = None) -> str | None:
         abs_path = os.path.abspath(path)
         try:
             model = onnx.load(path)
-            logger.info(f"Applying shape inference to {path}")
-            try:
-                model_with_shapes = shape_inference.infer_shapes(model)
-                model = model_with_shapes
-                logger.info(f"Shape inference successful for {path}")
-                print(f"Shape inference successful for {path}")
-            except Exception as shape_error:
-                logger.warning(f"Shape inference failed for {path}: {shape_error}")
-                print(f"Shape inference failed for {path}: {shape_error}")
-            model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
+
+            if traced_shapes:
+                OnnxSlicer._apply_traced_shapes(model, traced_shapes)
+            else:
+                model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
+
             onnx.checker.check_model(model)
-            onnx.save(model, path)
-            logger.info(f"Successfully processed and saved {path}")
+            save_onnx_model(model, path)
             return abs_path
         except Exception as e:
             logger.error(f"Error processing {path}: {e}")
             return None
 
     @staticmethod
-    def slice_post_process(slices_paths, parallel: bool = False):
-        """
-        Post-process sliced models with shape inference and validation.
-        """
+    def _apply_traced_shapes(model: onnx.ModelProto, traced_shapes: dict, traced_dtypes: dict = None):
+        """Apply traced runtime shapes to model inputs/outputs/intermediates."""
+        import numpy as np
+        from onnx import helper, TensorProto
+
+        dtype_map = {
+            np.dtype('float32'): TensorProto.FLOAT,
+            np.dtype('float64'): TensorProto.DOUBLE,
+            np.dtype('int32'): TensorProto.INT32,
+            np.dtype('int64'): TensorProto.INT64,
+            np.dtype('bool'): TensorProto.BOOL,
+        }
+
+        def get_onnx_dtype(name):
+            if traced_dtypes and name in traced_dtypes:
+                return dtype_map.get(traced_dtypes[name], TensorProto.FLOAT)
+            return TensorProto.FLOAT
+
+        def set_shape(value_info, shape):
+            value_info.type.tensor_type.shape.ClearField('dim')
+            for dim_val in shape:
+                dim = value_info.type.tensor_type.shape.dim.add()
+                dim.dim_value = dim_val
+
+        existing_names = set()
+        for inp in model.graph.input:
+            existing_names.add(inp.name)
+            if inp.name in traced_shapes:
+                set_shape(inp, traced_shapes[inp.name])
+
+        for out in model.graph.output:
+            existing_names.add(out.name)
+            if out.name in traced_shapes:
+                set_shape(out, traced_shapes[out.name])
+
+        for vi in model.graph.value_info:
+            existing_names.add(vi.name)
+            if vi.name in traced_shapes:
+                set_shape(vi, traced_shapes[vi.name])
+
+        for name, shape in traced_shapes.items():
+            if name not in existing_names:
+                onnx_dtype = get_onnx_dtype(name)
+                vi = helper.make_tensor_value_info(name, onnx_dtype, shape)
+                model.graph.value_info.append(vi)
+
+    @staticmethod
+    def slice_post_process(slices_paths, parallel: bool = False, traced_shapes: dict = None):
+        """Post-process sliced models with traced shape application."""
         if parallel and len(slices_paths) > 1:
             from concurrent.futures import ProcessPoolExecutor, as_completed
             import multiprocessing
             max_workers = min(len(slices_paths), multiprocessing.cpu_count())
             abs_paths = []
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(OnnxSlicer._process_single_slice, p): p for p in slices_paths}
+                futures = {executor.submit(OnnxSlicer._process_single_slice, p, traced_shapes): p for p in slices_paths}
                 for future in as_completed(futures):
                     result = future.result()
                     if result:
@@ -544,7 +647,7 @@ class OnnxSlicer:
 
         abs_paths = []
         for path in slices_paths:
-            result = OnnxSlicer._process_single_slice(path)
+            result = OnnxSlicer._process_single_slice(path, traced_shapes)
             if result:
                 abs_paths.append(result)
         return abs_paths
@@ -570,17 +673,17 @@ class OnnxSlicer:
         """
         should_tile = max_conv_size is not None or tile_size is not None
         slice_points = self.determine_slice_points(self.analysis, tile_size if not max_conv_size else 1)
-        slices_paths, tiled_info = self.slice(slice_points, self.analysis, output_path, parallel=parallel)
+        slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, parallel=parallel)
 
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
 
         if should_tile:
             if max_conv_size:
                 logger.info(f"Applying tiling transform with max_conv_size={max_conv_size}")
-                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size, parallel=parallel)
+                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size, parallel=parallel, tensor_graph=tensor_graph)
             else:
                 logger.info(f"Applying tiling transform with tile_size={tile_size}")
-                apply_tiling_to_slices(output_path, tile_size=tile_size, parallel=parallel)
+                apply_tiling_to_slices(output_path, tile_size=tile_size, parallel=parallel, tensor_graph=tensor_graph)
 
         return slices_paths
 

@@ -21,6 +21,7 @@ dependencies = [
   "tqdm~=4.67.1",
   "onnxruntime==1.21.0",
   "colorama~=0.4.6",
+  "onnxslim>=0.1.82",
 ]
 
 [project.scripts]

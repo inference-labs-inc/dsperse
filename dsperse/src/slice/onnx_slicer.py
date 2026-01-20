@@ -191,7 +191,7 @@ class OnnxSlicer:
                     updated_points.add(idx)
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
-        return [p for p in updated_points if p <= max_idx]
+        return [p for p in updated_points if p is not None and p <= max_idx]
 
     @staticmethod
     def isolate_conv(slice_points, model_metadata):
@@ -211,7 +211,7 @@ class OnnxSlicer:
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
 
-        for node_name, node_info in nodes_dict.items():
+        for _node_name, node_info in nodes_dict.items():
             if node_info.get("node_type") == "Conv":
                 idx = node_info.get("index")
                 if idx is None:
@@ -236,7 +236,7 @@ class OnnxSlicer:
         """
         slice_points = set()
         max_idx = max((n.get("index", 0) for n in model_metadata["nodes"].values()), default=0)
-        for node_name, node_info in model_metadata["nodes"].items():
+        for _node_name, node_info in model_metadata["nodes"].items():
             if node_info.get("parameter_details") and node_info["parameter_details"]:
                 idx = node_info["index"]
                 slice_points.add(idx)
@@ -457,7 +457,7 @@ class OnnxSlicer:
         tensor_graph = TensorGraph(self.onnx_path)
         logger.info(f"Built tensor graph: {tensor_graph}")
 
-        (graph, node_map, node_type_index_map, initializer_map, value_info_map,
+        (graph, node_map, node_type_index_map, initializer_map, _value_info_map,
          index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
 
         max_index = max(node_info["index"] for node_info in model_metadata["nodes"].values())
@@ -612,6 +612,7 @@ class OnnxSlicer:
         from onnx import helper, TensorProto
 
         dtype_map = {
+            np.dtype('float16'): TensorProto.FLOAT16,
             np.dtype('float32'): TensorProto.FLOAT,
             np.dtype('float64'): TensorProto.DOUBLE,
             np.dtype('int32'): TensorProto.INT32,

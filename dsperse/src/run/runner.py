@@ -315,10 +315,6 @@ class Runner:
         input_name = tiling.get("input_name") or slice_info.get("dependencies", {}).get("filtered_inputs", ["input"])[0]
         input_tensor = tensor_cache.get(input_name)
         if input_tensor is None:
-            model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
-            input_tensor = tensor_cache.get(model_input_name)
-
-        if input_tensor is None:
             raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_id}")
         return input_tensor
 
@@ -482,7 +478,9 @@ class Runner:
         self.last_run_dir = run_dir
 
         input_tensor = Utils.read_input(input_json_path)
-        model_input_name = self.run_metadata.get("input_shape", [{}])[0].get("name", "images")
+        first_slice_info = self.run_metadata["slices"].get(head, {})
+        first_slice_inputs = first_slice_info.get("dependencies", {}).get("filtered_inputs", [])
+        model_input_name = first_slice_inputs[0] if first_slice_inputs else "input"
         tensor_cache = {model_input_name: input_tensor}
 
         current_slice_id = head

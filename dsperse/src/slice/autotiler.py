@@ -268,11 +268,10 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int = None, tile_size: int
 
     tiles_y = h // actual_tile_size
     tiles_x = w // actual_tile_size
-
-    if tiles_y < 2 or tiles_x < 2:
-        return None
-
     num_tiles = tiles_y * tiles_x
+
+    if num_tiles < 2:
+        return None
 
     weights = None
     for init in m.graph.initializer:

@@ -85,12 +85,23 @@ class OnnxSlicer:
             inputs = {}
             for inp in session.get_inputs():
                 shape = [dim if isinstance(dim, int) else 1 for dim in inp.shape]
-                dtype = np.float32
-                if 'int64' in inp.type:
+                inp_type = inp.type.lower()
+                if 'float16' in inp_type:
+                    dtype = np.float16
+                elif 'double' in inp_type or 'float64' in inp_type:
+                    dtype = np.float64
+                elif 'int64' in inp_type:
                     dtype = np.int64
-                elif 'int32' in inp.type:
+                elif 'int32' in inp_type:
                     dtype = np.int32
-                inputs[inp.name] = np.random.randn(*shape).astype(dtype)
+                elif 'bool' in inp_type:
+                    dtype = np.bool_
+                else:
+                    dtype = np.float32
+                if dtype == np.bool_:
+                    inputs[inp.name] = np.random.randint(0, 2, shape).astype(dtype)
+                else:
+                    inputs[inp.name] = np.random.randn(*shape).astype(dtype)
                 self.traced_shapes[inp.name] = shape
 
             outputs = session.run(None, inputs)
@@ -569,7 +580,7 @@ class OnnxSlicer:
 
         slice_paths = [extracted[idx] for idx in sorted(extracted.keys())]
 
-        abs_paths = self.slice_post_process(slice_paths, parallel=parallel, traced_shapes=self.traced_shapes)
+        abs_paths = self.slice_post_process(slice_paths, parallel=parallel, traced_shapes=self.traced_shapes, traced_dtypes=self.traced_dtypes)
 
         abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
 
@@ -577,13 +588,13 @@ class OnnxSlicer:
         return abs_paths_dict, tiled_info, tensor_graph
 
     @staticmethod
-    def _process_single_slice(path: str, traced_shapes: dict = None) -> str | None:
+    def _process_single_slice(path: str, traced_shapes: dict = None, traced_dtypes: dict = None) -> str | None:
         abs_path = os.path.abspath(path)
         try:
             model = onnx.load(path)
 
             if traced_shapes:
-                OnnxSlicer._apply_traced_shapes(model, traced_shapes)
+                OnnxSlicer._apply_traced_shapes(model, traced_shapes, traced_dtypes)
             else:
                 model = OnnxSlicer._concretize_symbolic_dims(model, value=1)
 
@@ -642,24 +653,26 @@ class OnnxSlicer:
                 model.graph.value_info.append(vi)
 
     @staticmethod
-    def slice_post_process(slices_paths, parallel: bool = False, traced_shapes: dict = None):
-        """Post-process sliced models with traced shape application."""
+    def slice_post_process(slices_paths, parallel: bool = False, traced_shapes: dict = None, traced_dtypes: dict = None):
+        """Post-process sliced models with traced shape and dtype application."""
         if parallel and len(slices_paths) > 1:
             from concurrent.futures import ProcessPoolExecutor, as_completed
             import multiprocessing
             max_workers = min(len(slices_paths), multiprocessing.cpu_count())
-            abs_paths = []
+            results = [None] * len(slices_paths)
+            path_to_idx = {p: i for i, p in enumerate(slices_paths)}
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(OnnxSlicer._process_single_slice, p, traced_shapes): p for p in slices_paths}
+                futures = {executor.submit(OnnxSlicer._process_single_slice, p, traced_shapes, traced_dtypes): p for p in slices_paths}
                 for future in as_completed(futures):
+                    original_path = futures[future]
                     result = future.result()
                     if result:
-                        abs_paths.append(result)
-            return sorted(abs_paths)
+                        results[path_to_idx[original_path]] = result
+            return [r for r in results if r is not None]
 
         abs_paths = []
         for path in slices_paths:
-            result = OnnxSlicer._process_single_slice(path, traced_shapes)
+            result = OnnxSlicer._process_single_slice(path, traced_shapes, traced_dtypes)
             if result:
                 abs_paths.append(result)
         return abs_paths

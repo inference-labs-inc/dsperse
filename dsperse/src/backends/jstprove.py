@@ -33,7 +33,7 @@ def _add_zero_bias_to_conv(model: onnx.ModelProto) -> onnx.ModelProto:
 
             node_id = node.name or node.output[0] if node.output else weight_name
             bias_name = f"{node_id}_zero_bias"
-            zero_bias = np.zeros(out_channels, dtype=np.float32)
+            zero_bias = np.zeros(out_channels, dtype=weight_arr.dtype)
             bias_init = numpy_helper.from_array(zero_bias, name=bias_name)
             model.graph.initializer.append(bias_init)
             node.input.append(bias_name)
@@ -83,7 +83,7 @@ class JSTprove:
 
             for inp in model.graph.input:
                 shape = [d.dim_value for d in inp.type.tensor_type.shape.dim]
-                if len(shape) >= 2 and shape[1] >= JSTprove.MAX_CHANNEL_SIZE:
+                if len(shape) >= 2 and shape[1] > JSTprove.MAX_CHANNEL_SIZE:
                     return False, {f"CHANNEL_SIZE_TOO_LARGE({shape[1]})"}
 
             return True, set()

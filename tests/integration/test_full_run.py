@@ -188,12 +188,12 @@ class TestFullRunE2E:
         # 4. Prove
         from dsperse.src.prover import Prover
         prover = Prover()
-        prove_results = prover.prove(str(run_dir), str(slices_output_dir))
+        prover.prove(str(run_dir), str(slices_output_dir))
 
         # 5. Verify
         from dsperse.src.verifier import Verifier
         verifier = Verifier()
-        verify_results = verifier.verify(str(run_dir), str(slices_output_dir))
+        verifier.verify(str(run_dir), str(slices_output_dir))
 
         # Assertions - output key instead of prediction
         assert run_results.get("output") is not None

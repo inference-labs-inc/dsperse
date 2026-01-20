@@ -457,7 +457,7 @@ class OnnxSlicer:
 
         segment_inputs_map = {}
         for i in range(len(slice_points)):
-            seg_idx = i - 1
+            seg_idx = i
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
             if start_idx == end_idx:
@@ -478,7 +478,7 @@ class OnnxSlicer:
         fallback_data = {}
 
         for i in range(len(slice_points)):
-            segment_idx = i - 1
+            segment_idx = i
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
 

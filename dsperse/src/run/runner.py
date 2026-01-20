@@ -5,9 +5,7 @@ Runner for EzKL Circuit and ONNX Inference
 import json
 import logging
 import os
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import torch
@@ -367,68 +365,6 @@ class Runner:
         logger.info(f"Split {slice_id} completed in {split_time:.3f}s, produced {num_tiles} tiles")
         return split_time
 
-    def _run_single_tile(self, tile_idx: int, slice_id: str, slice_info: dict, tiling: TilingInfo, tile_onnx_path: str, run_dir: Path, tensor_cache: dict, cache_lock: threading.Lock):
-        slice_idx = tiling.slice_idx
-        cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
-        cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
-
-        tile_run_dir = run_dir / slice_id / f"tile_{tile_idx}"
-        tile_run_dir.mkdir(parents=True, exist_ok=True)
-        tile_in = tile_run_dir / "input.json"
-        tile_out = tile_run_dir / "output.json"
-
-        tile_tensor = tensor_cache.get(cache_input_name)
-        if tile_tensor is None:
-            raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
-        Utils.write_input(tile_tensor, str(tile_in))
-
-        tile_slice_info = dict(slice_info)
-        tile_slice_info["path"] = tile_onnx_path
-
-        comp = slice_info.get("compilation", {})
-        jst_comp = comp.get("jstprove", {})
-        ezkl_comp = comp.get("ezkl", {})
-        tile_key = f"tile_{tile_idx}"
-        if jst_comp.get("compiled") and jst_comp.get("files", {}).get(tile_key):
-            tile_slice_info["jstprove_circuit_path"] = jst_comp["files"][tile_key].get("compiled")
-            tile_slice_info["settings_path"] = jst_comp["files"][tile_key].get("settings")
-        if ezkl_comp.get("compiled") and ezkl_comp.get("files", {}).get(tile_key):
-            tile_slice_info["ezkl_circuit_path"] = ezkl_comp["files"][tile_key].get("compiled")
-            tile_slice_info["vk_path"] = ezkl_comp["files"][tile_key].get("vk")
-            tile_slice_info["settings_path"] = ezkl_comp["files"][tile_key].get("settings")
-
-        tile_node_info = {"use_circuit": True}
-        tile_meta = RunSliceMetadata.from_dict(tile_slice_info)
-
-        slice_specific_dir = self.slices_path / slice_id
-        ok, result, t_info = RunnerUtils.execute_slice(
-            self, tile_node_info, tile_meta, tile_in, tile_out, slice_specific_dir
-        )
-
-        output_tensor = None
-        if ok and result is not None:
-            if isinstance(result, dict) and 'output_tensors' in result:
-                output_tensor = result['output_tensors'].get("tile_out")
-                if output_tensor is None and result['output_tensors']:
-                    output_tensor = list(result['output_tensors'].values())[0]
-            else:
-                output_tensor = result.get('logits', result) if isinstance(result, dict) else result
-
-            if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
-                c_out = tiling.c_out
-                h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
-                if c_out and h_out and w_out:
-                    expected_numel = 1 * c_out * h_out * w_out
-                    if output_tensor.numel() == expected_numel:
-                        output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
-                        logger.debug(f"Reshaped tile {tile_idx} output to [1, {c_out}, {h_out}, {w_out}]")
-
-        if ok and output_tensor is not None:
-            with cache_lock:
-                tensor_cache[cache_output_name] = output_tensor
-
-        return tile_idx, cache_output_name, ok, output_tensor, t_info
-
     def _run_tiling_parallel_tiles(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, run_dir: Path, tensor_cache: dict) -> tuple[float, list]:
         import onnxruntime as ort
         import numpy as np
@@ -437,6 +373,11 @@ class Runner:
         tile_info = tiling.tile
         tile_onnx_path = RunnerUtils.resolve_relative_path(tile_info.path, self.slices_path) if tile_info else None
         slice_idx = tiling.slice_idx
+
+        if tile_onnx_path is None or not Path(tile_onnx_path).exists():
+            raise ValueError(
+                f"Tile ONNX path not found for {slice_id} (slice_idx={slice_idx}, num_tiles={num_tiles}): {tile_onnx_path}"
+            )
 
         has_jst = bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
         has_ezkl = bool(meta.ezkl_circuit_path)

@@ -22,7 +22,7 @@ def _verify_slice_worker(args: tuple) -> dict:
     Worker function for parallel verification.
     Must be module-level for pickling by ProcessPoolExecutor.
     """
-    (slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling_info, run_path, slice_dir) = args
+    (slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling_info, run_path, _slice_dir) = args
 
     result = {
         'slice_id': slice_id,
@@ -228,6 +228,8 @@ class Verifier:
             return False, "proof_missing"
 
         if preferred_backend == "jstprove":
+            if self.jstprove_runner is None:
+                return False, "jstprove_unavailable"
             circuit_path = Utils.resolve_under_slice(slice_dir, meta.jstprove_circuit_path or meta.circuit_path)
             input_path = tile_run_dir / "input.json"
             output_path = tile_run_dir / "output.json"
@@ -249,6 +251,8 @@ class Verifier:
             except Exception as e:
                 return False, str(e)
         else:
+            if self.ezkl_runner is None:
+                return False, "ezkl_unavailable"
             settings_path = Utils.resolve_under_slice(slice_dir, meta.settings_path)
             vk_path = Utils.resolve_under_slice(slice_dir, meta.vk_path)
             try:
@@ -470,8 +474,11 @@ class Verifier:
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
 
         tiling = meta.tiling
-        if tiling or tiles_range is not None:
-            num_tiles = tiling.num_tiles if tiling else 0
+        if tiles_range is not None and not tiling:
+            logger.warning(f"tiles_range provided for non-tiled slice {slice_id}; ignoring")
+            tiles_range = None
+        if tiling:
+            num_tiles = tiling.num_tiles
             start = time.time()
             success, tile_verifs = self._verify_tile_batch(slice_id, Path(run_path), num_tiles, preferred, slice_dir,
                                                            meta, tiles_range=tiles_range)

@@ -214,7 +214,7 @@ def create_tile_slice(
     }
 
 
-def get_tiling_params(onnx_path: Path, max_conv_size: int = None, tile_size: int = None) -> dict | None:
+def get_tiling_params(onnx_path: Path, max_conv_size: int | None = None, tile_size: int | None = None) -> dict | None:
     """
     Analyze a Conv slice and return tiling parameters if tileable.
     Returns None if not tileable or tiling not needed.
@@ -303,7 +303,7 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int = None, tile_size: int
     }
 
 
-def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, tile_size: int = None, parallel: bool = False, tensor_graph=None) -> dict:
+def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int | None = None, tile_size: int | None = None, _parallel: bool = False, _tensor_graph=None) -> dict:
     """
     Apply tiling to Conv slices. Creates tile ONNX models and updates metadata.
 
@@ -335,7 +335,7 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int = None, ti
 
     tiled_results = {}
 
-    for idx, slice_meta in enumerate(slices_data):
+    for idx, _slice_meta in enumerate(slices_data):
         slice_dir = slices_dir / f"slice_{idx}"
         onnx_path = slice_dir / "payload" / f"slice_{idx}.onnx"
 

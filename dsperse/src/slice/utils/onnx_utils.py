@@ -202,8 +202,8 @@ class OnnxUtils:
 
             try:
                 model_meta.save(slice_metadata_path)
-            except Exception as e:
-                logger.warning(f"Failed to write slice metadata for {slice_dir}: {e}")
+            except (OSError, IOError, PermissionError) as e:
+                logger.exception(f"Failed to write slice metadata to {slice_metadata_path} for {slice_dir}: {e}")
 
             seg["path"] = updated_slice.path
             seg["relative_path"] = str(desired_path.relative_to(root))

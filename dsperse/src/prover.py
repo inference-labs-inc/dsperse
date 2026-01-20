@@ -550,8 +550,11 @@ class Prover:
         model_path_res, pk_path_res, settings_path_res = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
         tiling = meta.tiling
-        if tiling or tiles_range is not None:
-            num_tiles = tiling.num_tiles if tiling else 0
+        if tiles_range is not None and not tiling:
+            logger.warning(f"tiles_range provided for non-tiled slice {slice_id}; ignoring")
+            tiles_range = None
+        if tiling:
+            num_tiles = tiling.num_tiles
             start = time.time()
             success, method, tile_results = self._prove_tile_batch(
                 slice_id, Path(run_path), num_tiles, preferred, str(model_path_res), pk_path_res, settings_path_res,

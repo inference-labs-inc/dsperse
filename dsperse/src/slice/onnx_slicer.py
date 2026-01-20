@@ -467,8 +467,8 @@ class OnnxSlicer:
         slice_points.sort()
 
         segment_inputs_map = {}
+        seg_idx = 0
         for i in range(len(slice_points)):
-            seg_idx = i
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
             if start_idx == end_idx:
@@ -484,12 +484,13 @@ class OnnxSlicer:
                     if inp not in seg_outputs and inp not in initializer_map:
                         seg_inputs.add(inp)
             segment_inputs_map[seg_idx] = seg_inputs
+            seg_idx += 1
 
         slice_specs = []
         fallback_data = {}
 
+        segment_idx = 0
         for i in range(len(slice_points)):
-            segment_idx = i
             start_idx = slice_points[i - 1] if i > 0 else 0
             end_idx = slice_points[i]
 
@@ -529,6 +530,7 @@ class OnnxSlicer:
             }
 
             logger.info(f"Prepared slice {segment_idx}: {input_names} -> {output_names}")
+            segment_idx += 1
 
         extracted = {}
         failed_indices = []

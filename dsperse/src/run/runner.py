@@ -206,7 +206,7 @@ class Runner:
         model_path = self.run_metadata.get("model_path", "unknown")
         slice_results = results.get("slice_results", {})
 
-        # Count execution methods
+        # Count execution methods (tiled slices count as 1 if any tiles used that backend)
         ezkl_complete = sum(
             1 for r in slice_results.values()
             if r.get("method") == "ezkl_gen_witness"
@@ -215,6 +215,16 @@ class Runner:
             1 for r in slice_results.values()
             if r.get("method") == "jstprove_gen_witness"
         )
+        jstprove_tiled_slices = sum(
+            1 for r in slice_results.values()
+            if r.get("method") == "tiled" and r.get("jstprove_tiles", 0) > 0
+        )
+        ezkl_tiled_slices = sum(
+            1 for r in slice_results.values()
+            if r.get("method") == "tiled" and r.get("ezkl_tiles", 0) > 0
+        )
+        jstprove_complete += jstprove_tiled_slices
+        ezkl_complete += ezkl_tiled_slices
         total_slices = len(slice_results)
 
         # Build execution results
@@ -297,6 +307,11 @@ class Runner:
 
         total_time = split_time + tile_time + concat_time
 
+        jst_tiles = sum(1 for t in tile_exec_infos if t.get('method') == 'jstprove_gen_witness')
+        ezkl_tiles = sum(1 for t in tile_exec_infos if t.get('method') == 'ezkl_gen_witness')
+        attempted_jstprove = jst_tiles > 0
+        attempted_ezkl = ezkl_tiles > 0
+
         return {
             'success': True,
             'method': 'tiled',
@@ -307,6 +322,10 @@ class Runner:
             'concat_time': concat_time,
             'tile_exec_infos': tile_exec_infos,
             'tiling': tiling.to_dict(),
+            'attempted_jstprove': attempted_jstprove,
+            'attempted_ezkl': attempted_ezkl,
+            'jstprove_tiles': jst_tiles,
+            'ezkl_tiles': ezkl_tiles,
         }
 
     def _get_tiled_input_tensor(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, tensor_cache: dict) -> torch.Tensor:
@@ -365,10 +384,25 @@ class Runner:
 
         tile_slice_info = dict(slice_info)
         tile_slice_info["path"] = tile_onnx_path
-        tile_node_info = {"use_circuit": True}
 
+        comp = slice_info.get("compilation", {})
+        jst_comp = comp.get("jstprove", {})
+        ezkl_comp = comp.get("ezkl", {})
+        tile_key = f"tile_{tile_idx}"
+        if jst_comp.get("compiled") and jst_comp.get("files", {}).get(tile_key):
+            tile_slice_info["jstprove_circuit_path"] = jst_comp["files"][tile_key].get("compiled")
+            tile_slice_info["settings_path"] = jst_comp["files"][tile_key].get("settings")
+        if ezkl_comp.get("compiled") and ezkl_comp.get("files", {}).get(tile_key):
+            tile_slice_info["ezkl_circuit_path"] = ezkl_comp["files"][tile_key].get("compiled")
+            tile_slice_info["vk_path"] = ezkl_comp["files"][tile_key].get("vk")
+            tile_slice_info["settings_path"] = ezkl_comp["files"][tile_key].get("settings")
+
+        tile_node_info = {"use_circuit": True}
+        tile_meta = RunSliceMetadata.from_dict(tile_slice_info)
+
+        slice_specific_dir = self.slices_path / slice_id
         ok, result, t_info = RunnerUtils.execute_slice(
-            self, tile_node_info, tile_slice_info, tile_in, tile_out, self.slices_path
+            self, tile_node_info, tile_meta, tile_in, tile_out, slice_specific_dir
         )
 
         output_tensor = None
@@ -404,32 +438,88 @@ class Runner:
         tile_onnx_path = RunnerUtils.resolve_relative_path(tile_info.path, self.slices_path) if tile_info else None
         slice_idx = tiling.slice_idx
 
+        has_jst = bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
+        has_ezkl = bool(meta.ezkl_circuit_path)
+
         tile_start = time.time()
-
-        session = ort.InferenceSession(str(tile_onnx_path))
-        input_name = session.get_inputs()[0].name
-
         tile_exec_infos = []
-        for tile_idx in range(num_tiles):
-            cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
-            cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
 
-            tile_tensor = tensor_cache.get(cache_input_name)
-            if tile_tensor is None:
-                raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
+        if has_jst or has_ezkl:
+            backend_name = "jstprove" if has_jst else "ezkl"
+            logger.info(f"Running {num_tiles} tiles with {backend_name} circuits")
+            slice_specific_dir = self.slices_path / slice_id
 
-            if isinstance(tile_tensor, torch.Tensor):
-                input_arr = tile_tensor.detach().cpu().numpy().astype(np.float32)
-            else:
-                input_arr = np.asarray(tile_tensor, dtype=np.float32)
+            for tile_idx in range(num_tiles):
+                cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
+                cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
 
-            outputs = session.run(None, {input_name: input_arr})
-            output_arr = outputs[0]
+                tile_tensor = tensor_cache.get(cache_input_name)
+                if tile_tensor is None:
+                    raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
 
-            output_tensor = torch.from_numpy(output_arr)
-            tensor_cache[cache_output_name] = output_tensor
+                tile_run_dir = run_dir / slice_id / f"tile_{tile_idx}"
+                tile_run_dir.mkdir(parents=True, exist_ok=True)
+                tile_in = tile_run_dir / "input.json"
+                tile_out = tile_run_dir / "output.json"
+                Utils.write_input(tile_tensor, str(tile_in))
 
-            tile_exec_infos.append({'tile_idx': tile_idx, 'success': True})
+                tile_meta = RunSliceMetadata(
+                    path=str(tile_onnx_path),
+                    jstprove_circuit_path=meta.jstprove_circuit_path,
+                    ezkl_circuit_path=meta.ezkl_circuit_path,
+                    settings_path=meta.settings_path,
+                    vk_path=meta.vk_path,
+                    dependencies=meta.dependencies,
+                )
+
+                ok, result, t_info = RunnerUtils.execute_slice(
+                    self, {"use_circuit": True}, tile_meta, tile_in, tile_out, slice_specific_dir
+                )
+
+                output_tensor = None
+                if ok and result is not None:
+                    if isinstance(result, dict):
+                        output_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
+                    else:
+                        output_tensor = result
+
+                if ok and output_tensor is not None:
+                    if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
+                        c_out = tiling.c_out
+                        h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
+                        if c_out and h_out and w_out:
+                            expected_numel = 1 * c_out * h_out * w_out
+                            if output_tensor.numel() == expected_numel:
+                                output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
+                    tensor_cache[cache_output_name] = output_tensor
+                    tile_exec_infos.append({'tile_idx': tile_idx, 'success': True, 'method': t_info.get('method', 'unknown')})
+                else:
+                    tile_exec_infos.append({'tile_idx': tile_idx, 'success': False, 'error': t_info.get('error', 'unknown')})
+                    raise RuntimeError(f"Tile {tile_idx} execution failed: {t_info.get('error', 'unknown')}")
+        else:
+            session = ort.InferenceSession(str(tile_onnx_path))
+            input_name = session.get_inputs()[0].name
+
+            for tile_idx in range(num_tiles):
+                cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
+                cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
+
+                tile_tensor = tensor_cache.get(cache_input_name)
+                if tile_tensor is None:
+                    raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
+
+                if isinstance(tile_tensor, torch.Tensor):
+                    input_arr = tile_tensor.detach().cpu().numpy().astype(np.float32)
+                else:
+                    input_arr = np.asarray(tile_tensor, dtype=np.float32)
+
+                outputs = session.run(None, {input_name: input_arr})
+                output_arr = outputs[0]
+
+                output_tensor = torch.from_numpy(output_arr)
+                tensor_cache[cache_output_name] = output_tensor
+
+                tile_exec_infos.append({'tile_idx': tile_idx, 'success': True, 'method': 'onnx'})
 
         tile_time = time.time() - tile_start
         logger.info(f"All {num_tiles} tiles completed in {tile_time:.2f}s ({tile_time / num_tiles * 1000:.1f}ms avg)")

@@ -523,9 +523,15 @@ class Runner:
                         for oname, tensor in result['output_tensors'].items():
                             tensor_cache[oname] = tensor
                         first_output = list(result['output_tensors'].values())[0] if result['output_tensors'] else None
-                        final_tensor = first_output if first_output is not None else result.get('logits')
+                        if first_output is not None:
+                            final_tensor = first_output
+                        else:
+                            final_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
                     else:
-                        out_tensor = result.get('logits', result) if isinstance(result, dict) else result
+                        if isinstance(result, dict):
+                            out_tensor = result.get('output') if result.get('output') is not None else result.get('logits')
+                        else:
+                            out_tensor = result
                         if isinstance(out_tensor, torch.Tensor):
                             target_shape = info.get_target_shape()
                             if target_shape:

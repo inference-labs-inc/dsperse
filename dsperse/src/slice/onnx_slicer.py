@@ -580,11 +580,7 @@ class OnnxSlicer:
             except Exception as e:
                 logger.error(f"Fallback failed for segment {segment_idx}: {e}")
 
-        slice_paths = [extracted[idx] for idx in sorted(extracted.keys())]
-
-        abs_paths = self.slice_post_process(slice_paths, parallel=parallel, traced_shapes=self.traced_shapes, traced_dtypes=self.traced_dtypes)
-
-        abs_paths_dict = {idx: abs_paths[i] for i, idx in enumerate(sorted(extracted.keys())) if i < len(abs_paths)}
+        abs_paths_dict = self.slice_post_process(extracted, parallel=parallel, traced_shapes=self.traced_shapes, traced_dtypes=self.traced_dtypes)
 
         tiled_info = {}
         return abs_paths_dict, tiled_info, tensor_graph
@@ -656,29 +652,38 @@ class OnnxSlicer:
                 model.graph.value_info.append(vi)
 
     @staticmethod
-    def slice_post_process(slices_paths, parallel: bool = False, traced_shapes: dict = None, traced_dtypes: dict = None):
-        """Post-process sliced models with traced shape and dtype application."""
-        if parallel and len(slices_paths) > 1:
+    def slice_post_process(extracted: dict, parallel: bool = False, traced_shapes: dict = None, traced_dtypes: dict = None) -> dict:
+        """Post-process sliced models with traced shape and dtype application.
+
+        Args:
+            extracted: Dict mapping segment_idx -> file_path
+            parallel: If True, parallelize processing
+            traced_shapes: Dict of traced tensor shapes
+            traced_dtypes: Dict of traced tensor dtypes
+
+        Returns:
+            Dict mapping segment_idx -> processed absolute path (failed entries omitted)
+        """
+        if parallel and len(extracted) > 1:
             from concurrent.futures import ProcessPoolExecutor, as_completed
             import multiprocessing
-            max_workers = min(len(slices_paths), multiprocessing.cpu_count())
-            results = [None] * len(slices_paths)
-            path_to_idx = {p: i for i, p in enumerate(slices_paths)}
+            max_workers = min(len(extracted), multiprocessing.cpu_count())
+            results = {}
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(OnnxSlicer._process_single_slice, p, traced_shapes, traced_dtypes): p for p in slices_paths}
+                futures = {executor.submit(OnnxSlicer._process_single_slice, path, traced_shapes, traced_dtypes): idx for idx, path in extracted.items()}
                 for future in as_completed(futures):
-                    original_path = futures[future]
+                    segment_idx = futures[future]
                     result = future.result()
                     if result:
-                        results[path_to_idx[original_path]] = result
-            return [r for r in results if r is not None]
+                        results[segment_idx] = result
+            return results
 
-        abs_paths = []
-        for path in slices_paths:
+        results = {}
+        for segment_idx, path in extracted.items():
             result = OnnxSlicer._process_single_slice(path, traced_shapes, traced_dtypes)
             if result:
-                abs_paths.append(result)
-        return abs_paths
+                results[segment_idx] = result
+        return results
 
     def slice_model(self, output_path=None, max_conv_size: int = None, tile_size: int = None, parallel: bool = False):
         """

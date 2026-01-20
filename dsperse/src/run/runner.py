@@ -529,11 +529,12 @@ class Runner:
                     else:
                         out_tensor = result.get('logits', result) if isinstance(result, dict) else result
                         if isinstance(out_tensor, torch.Tensor):
-                            expected_shape = info.get("output_shape")
+                            expected_shape = info.get("shape", {}).get("tensor_shape", {}).get("output")
                             if expected_shape and len(expected_shape) > 0:
                                 target_shape = [d if isinstance(d, int) else 1 for d in expected_shape[0]]
                                 if out_tensor.numel() == torch.prod(torch.tensor(target_shape)).item():
                                     out_tensor = out_tensor.reshape(target_shape)
+                                    logger.debug(f"Reshaped output to {target_shape}")
                             for oname in output_names:
                                 tensor_cache[oname] = out_tensor
                             final_tensor = out_tensor

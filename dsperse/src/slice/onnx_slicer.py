@@ -106,7 +106,7 @@ class OnnxSlicer:
 
             outputs = session.run(None, inputs)
             output_names = [o.name for o in session.get_outputs()]
-            for name, arr in zip(output_names, outputs):
+            for name, arr in zip(output_names, outputs, strict=True):
                 self.traced_shapes[name] = list(arr.shape)
                 self.traced_dtypes[name] = arr.dtype
         finally:

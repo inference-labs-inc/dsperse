@@ -113,8 +113,14 @@ class RunnerUtils:
         """
         from dsperse.src.backends.onnx_models import OnnxModels
         onnx_path = slice_info.get("path")
-        if onnx_path and not os.path.isabs(str(onnx_path)):
+        if not onnx_path:
+            return False, "No ONNX path in slice_info", {'success': False, 'error': 'missing_path', 'method': 'onnx_only'}
+
+        if not os.path.isabs(str(onnx_path)):
             onnx_path = RunnerUtils.resolve_relative_path(onnx_path, slice_dir)
+
+        if not onnx_path or not Path(onnx_path).exists():
+            return False, f"ONNX file not found: {onnx_path}", {'success': False, 'error': 'file_not_found', 'method': 'onnx_only'}
 
         start_time = time.time()
         success, result = OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
@@ -130,6 +136,8 @@ class RunnerUtils:
         if success:
             exec_info['input_file'] = str(input_tensor_path.resolve())
             exec_info['output_file'] = str(output_tensor_path.resolve())
+        else:
+            exec_info['error'] = result if isinstance(result, str) else 'inference_failed'
 
         return success, result, exec_info
 

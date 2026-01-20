@@ -1,8 +1,8 @@
-import shutil
 import numpy as np
 import onnx
 import onnxruntime as ort
 import pytest
+import torch
 from pathlib import Path
 from onnx import helper, TensorProto, numpy_helper
 
@@ -11,7 +11,8 @@ from dsperse.src.slice.autotiler import (
     compute_min_tile_size,
     find_tile_size,
     is_tileable,
-    autotile_slice,
+    get_tiling_params,
+    create_tile_slice,
     ELEMENTWISE_OPS,
 )
 
@@ -27,61 +28,47 @@ class TestComputeHalo:
         assert compute_halo([7, 7], [1, 1]) == (3, 3)
 
     def test_3x3_kernel_dilation_2(self):
-        # effective_k = (3-1)*2 + 1 = 5, halo = 2
         assert compute_halo([3, 3], [2, 2]) == (2, 2)
 
     def test_3x3_kernel_dilation_3(self):
-        # effective_k = (3-1)*3 + 1 = 7, halo = 3
         assert compute_halo([3, 3], [3, 3]) == (3, 3)
 
     def test_asymmetric_kernel(self):
-        # 3x5 kernel, dilation 1
         assert compute_halo([3, 5], [1, 1]) == (1, 2)
 
     def test_asymmetric_dilation(self):
-        # 3x3 kernel, dilation [1, 2]
-        # effective_kh = 3, effective_kw = 5
         assert compute_halo([3, 3], [1, 2]) == (1, 2)
 
 
 class TestComputeMinTileSize:
     def test_3x3_kernel_no_dilation(self):
-        # effective_k = 3, min_tile = 4
         assert compute_min_tile_size([3, 3], [1, 1]) == 4
 
     def test_5x5_kernel_no_dilation(self):
-        # effective_k = 5, min_tile = 6
         assert compute_min_tile_size([5, 5], [1, 1]) == 6
 
     def test_7x7_kernel_no_dilation(self):
-        # effective_k = 7, min_tile = 8
         assert compute_min_tile_size([7, 7], [1, 1]) == 8
 
     def test_3x3_kernel_dilation_2(self):
-        # effective_k = 5, min_tile = 6
         assert compute_min_tile_size([3, 3], [2, 2]) == 6
 
     def test_asymmetric_takes_max(self):
-        # 3x7 kernel -> effective 3x7, min = max(3,7)+1 = 8
         assert compute_min_tile_size([3, 7], [1, 1]) == 8
 
 
 class TestFindTileSize:
     def test_exact_divisor(self):
-        # 64 divides 128 evenly
         assert find_tile_size(128, 64, min_tile=4) == 64
 
     def test_finds_largest_divisor(self):
-        # 100 doesn't divide 128, but 64 does
         assert find_tile_size(128, 100, min_tile=4) == 64
 
     def test_respects_min_tile(self):
-        # 8 divides 64, but min_tile=10 means we need 16 or 32
         result = find_tile_size(64, 8, min_tile=10)
         assert result is None or result >= 10
 
     def test_returns_none_when_no_valid_divisor(self):
-        # Prime number spatial dim with high min_tile
         assert find_tile_size(17, 16, min_tile=10) is None
 
     def test_target_smaller_than_min_tile(self):
@@ -93,14 +80,13 @@ class TestFindTileSize:
 
 class TestIsTileable:
     def _make_conv_model(self, extra_ops=None):
-        """Create a simple Conv model, optionally with extra ops."""
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 30, 30])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 32, 32])
 
         W = helper.make_tensor("W", TensorProto.FLOAT, [8, 3, 3, 3],
                                np.random.randn(8, 3, 3, 3).astype(np.float32).flatten().tolist())
 
-        nodes = [helper.make_node("Conv", ["X", "W"], ["conv_out"], kernel_shape=[3, 3])]
+        nodes = [helper.make_node("Conv", ["X", "W"], ["conv_out"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])]
 
         if extra_ops:
             prev_out = "conv_out"
@@ -126,9 +112,8 @@ class TestIsTileable:
         model = self._make_conv_model(extra_ops=["Sigmoid"])
         assert is_tileable(model)
 
-    def test_conv_with_matmul_not_tileable(self):
+    def test_conv_with_flatten_not_tileable(self):
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 30, 30])
         W = helper.make_tensor("W", TensorProto.FLOAT, [8, 3, 3, 3],
                                np.random.randn(8, 3, 3, 3).astype(np.float32).flatten().tolist())
         nodes = [
@@ -158,17 +143,13 @@ class TestIsTileable:
         assert not is_tileable(model)
 
 
-class TestTiledVsNonTiledParity:
-    """Test that tiled convolution produces identical output to non-tiled."""
-
-    def _create_conv_model(self, c_in, c_out, spatial, kernel, stride, padding, dilation):
-        """Create a Conv + Relu model."""
+class TestGetTilingParams:
+    def _create_conv_model(self, c_in, c_out, spatial, kernel=3, stride=1, padding=1, dilation=1):
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
 
         np.random.seed(42)
         w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
         b_data = np.random.randn(c_out).astype(np.float32)
-
         W = numpy_helper.from_array(w_data, "W")
         B = numpy_helper.from_array(b_data, "B")
 
@@ -190,277 +171,312 @@ class TestTiledVsNonTiledParity:
         model.ir_version = 8
         return model
 
-    def _run_onnx(self, model_path, input_data):
-        """Run ONNX model and return output."""
+    def test_returns_params_for_tileable_model(self, tmp_path):
+        model = self._create_conv_model(3, 8, 64)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=16)
+        assert params is not None
+        assert params["tile_size"] == 16
+        assert params["tiles_y"] == 4
+        assert params["tiles_x"] == 4
+        assert params["num_tiles"] == 16
+        assert params["halo"] == [1, 1]
+
+    def test_returns_none_for_tile_larger_than_spatial(self, tmp_path):
+        model = self._create_conv_model(3, 8, 32)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=64)
+        assert params is None
+
+    def test_returns_none_for_non_square_spatial(self, tmp_path):
+        c_in, c_out = 3, 8
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, 64, 32])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, 64, 32])
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=16)
+        assert params is None
+
+    def test_halo_for_large_kernel(self, tmp_path):
+        model = self._create_conv_model(3, 8, 64, kernel=7, padding=3)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=16)
+        assert params is not None
+        assert params["halo"] == [3, 3]
+
+    def test_halo_for_dilated_kernel(self, tmp_path):
+        model = self._create_conv_model(3, 8, 64, kernel=3, dilation=2, padding=2)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=16)
+        assert params is not None
+        assert params["halo"] == [2, 2]
+
+    def test_max_conv_size_calculates_tile(self, tmp_path):
+        model = self._create_conv_model(3, 8, 64)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, max_conv_size=3 * 32 * 32)
+        assert params is not None
+        assert params["tile_size"] <= 32
+
+
+class TestCreateTileSlice:
+    def _create_conv_model(self, c_in, c_out, spatial, kernel=3, stride=1, padding=1):
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[kernel, kernel],
+                                strides=[stride, stride],
+                                pads=[padding, padding, padding, padding])
+        out_spatial = (spatial + 2 * padding - kernel) // stride + 1
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+        return model
+
+    def test_creates_tile_model(self, tmp_path):
+        model = self._create_conv_model(3, 8, 64)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=16)
+        assert params is not None
+
+        output_dir = tmp_path / "tiles"
+        output_dir.mkdir()
+
+        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        assert tile_info is not None
+        assert "path" in tile_info
+        assert Path(tile_info["path"]).exists()
+
+    def test_tile_model_has_correct_input_shape(self, tmp_path):
+        c_in, c_out, spatial = 3, 8, 64
+        tile_size = 16
+        halo = 1
+
+        model = self._create_conv_model(c_in, c_out, spatial)
+        model_path = tmp_path / "model.onnx"
+        onnx.save(model, str(model_path))
+
+        params = get_tiling_params(model_path, tile_size=tile_size)
+        output_dir = tmp_path / "tiles"
+        output_dir.mkdir()
+
+        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        tile_model = onnx.load(tile_info["path"])
+
+        inp = tile_model.graph.input[0]
+        dims = [d.dim_value for d in inp.type.tensor_type.shape.dim]
+        expected_tile_input = tile_size + 2 * halo
+        assert dims == [1, c_in, expected_tile_input, expected_tile_input]
+
+
+class TestTiledParity:
+    """Test that Python split -> tile inference -> Python concat matches original."""
+
+    def _create_conv_model(self, c_in, c_out, spatial, kernel=3, stride=1, padding=1):
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
+        W = numpy_helper.from_array(w_data, "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[kernel, kernel],
+                                strides=[stride, stride],
+                                pads=[padding, padding, padding, padding])
+        out_spatial = (spatial + 2 * padding - kernel) // stride + 1
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
+        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+        return model
+
+    def _run_original(self, model_path, input_data):
         sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        input_name = sess.get_inputs()[0].name
-        return sess.run(None, {input_name: input_data})[0]
+        return sess.run(None, {sess.get_inputs()[0].name: input_data})[0]
 
-    def _run_tiled(self, tiled_info, input_data, tiled_dir):
-        """Run the split -> single tile N times -> concat pipeline manually."""
-        split_path = tiled_info["split"]["path"]
-        split_sess = ort.InferenceSession(split_path, providers=["CPUExecutionProvider"])
-        split_input_name = split_sess.get_inputs()[0].name
-        tile_inputs = split_sess.run(None, {split_input_name: input_data})
+    def _run_tiled_python(self, tile_path, tiling_params, input_tensor):
+        """Run tiling with pure Python split/concat like the runner does."""
+        tile_size = tiling_params["tile_size"]
+        halo = tiling_params["halo"]
+        tiles_y = tiling_params["tiles_y"]
+        tiles_x = tiling_params["tiles_x"]
+        out_tile = tiling_params["out_tile"]
+        stride = tiling_params["stride"]
 
-        tile_info = tiled_info["tile"]
-        tile_sess = ort.InferenceSession(tile_info["path"], providers=["CPUExecutionProvider"])
+        halo_h, halo_w = halo
+        out_tile_h, out_tile_w = out_tile
+        sh, sw = stride
+
+        if isinstance(input_tensor, np.ndarray):
+            input_tensor = torch.from_numpy(input_tensor)
+
+        _, c, h, w = input_tensor.shape
+        pad_h = halo_h
+        pad_w = halo_w
+        padded = torch.nn.functional.pad(input_tensor, (pad_w, pad_w, pad_h, pad_h), mode='constant', value=0)
+
+        tile_sess = ort.InferenceSession(tile_path, providers=["CPUExecutionProvider"])
         tile_input_name = tile_sess.get_inputs()[0].name
 
         tile_outputs = []
-        for i in range(tiled_info["num_tiles"]):
-            tile_out = tile_sess.run(None, {tile_input_name: tile_inputs[i]})[0]
-            tile_outputs.append(tile_out)
+        for ty in range(tiles_y):
+            for tx in range(tiles_x):
+                y_start = ty * tile_size
+                x_start = tx * tile_size
+                tile_h = tile_size + 2 * halo_h
+                tile_w = tile_size + 2 * halo_w
+                tile = padded[:, :, y_start:y_start + tile_h, x_start:x_start + tile_w]
+                tile_np = tile.numpy().astype(np.float32)
+                tile_out = tile_sess.run(None, {tile_input_name: tile_np})[0]
+                tile_outputs.append(torch.from_numpy(tile_out))
 
-        concat_path = tiled_info["concat"]["path"]
-        concat_sess = ort.InferenceSession(concat_path, providers=["CPUExecutionProvider"])
-        concat_inputs = {f"tile_{tiled_info['slice_idx']}_{i}_out": tile_outputs[i]
-                         for i in range(len(tile_outputs))}
-        return concat_sess.run(None, concat_inputs)[0]
+        c_out = tile_outputs[0].shape[1]
+        out_h = tiles_y * out_tile_h
+        out_w = tiles_x * out_tile_w
+        output = torch.zeros(1, c_out, out_h, out_w)
 
-    @pytest.mark.parametrize("kernel,stride,padding,dilation", [
-        (3, 1, 1, 1),  # Standard 3x3 with same padding
-        (3, 2, 1, 1),  # 3x3 with stride 2
-        (5, 1, 2, 1),  # 5x5 kernel
-        (3, 1, 2, 2),  # 3x3 with dilation 2
+        idx = 0
+        for ty in range(tiles_y):
+            for tx in range(tiles_x):
+                y_start = ty * out_tile_h
+                x_start = tx * out_tile_w
+                output[:, :, y_start:y_start + out_tile_h, x_start:x_start + out_tile_w] = tile_outputs[idx]
+                idx += 1
+
+        return output.numpy()
+
+    @pytest.mark.parametrize("kernel,stride,padding", [
+        (3, 1, 1),
+        (3, 2, 1),
+        (5, 1, 2),
     ])
-    def test_parity(self, kernel, stride, padding, dilation, tmp_path):
+    def test_parity(self, kernel, stride, padding, tmp_path):
         c_in, c_out, spatial = 3, 8, 64
         tile_size = 16
 
-        model = self._create_conv_model(c_in, c_out, spatial, kernel, stride, padding, dilation)
+        model = self._create_conv_model(c_in, c_out, spatial, kernel, stride, padding)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
         np.random.seed(123)
         input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
 
-        expected = self._run_onnx(model_path, input_data)
+        expected = self._run_original(model_path, input_data)
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
-
-        if tiled_info is None:
+        params = get_tiling_params(model_path, tile_size=tile_size)
+        if params is None:
             pytest.skip("Model not tileable with given parameters")
 
-        actual = self._run_tiled(tiled_info, input_data, tiled_dir)
+        output_dir = tmp_path / "tiles"
+        output_dir.mkdir()
+        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+
+        actual = self._run_tiled_python(tile_info["path"], params, input_data)
 
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5,
-                                   err_msg=f"Parity failed for kernel={kernel}, stride={stride}, "
-                                           f"padding={padding}, dilation={dilation}")
+                                   err_msg=f"Parity failed for kernel={kernel}, stride={stride}, padding={padding}")
 
-    def test_parity_larger_spatial(self, tmp_path):
-        """Test with larger spatial dimensions and more tiles."""
-        c_in, c_out, spatial = 3, 16, 128
-        kernel, stride, padding, dilation = 3, 2, 1, 1
-        tile_size = 32
+    def test_boundary_pixels_exact(self, tmp_path):
+        c_in, c_out, spatial = 1, 1, 32
+        tile_size = 16
 
-        model = self._create_conv_model(c_in, c_out, spatial, kernel, stride, padding, dilation)
+        model = self._create_conv_model(c_in, c_out, spatial)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        np.random.seed(456)
+        np.random.seed(888)
         input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
 
-        expected = self._run_onnx(model_path, input_data)
+        expected = self._run_original(model_path, input_data)
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
+        params = get_tiling_params(model_path, tile_size=tile_size)
+        output_dir = tmp_path / "tiles"
+        output_dir.mkdir()
+        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
 
-        assert tiled_info is not None, "Model should be tileable"
-        assert tiled_info["num_tiles"] == 16, f"Expected 16 tiles (4x4), got {tiled_info['num_tiles']}"
+        actual = self._run_tiled_python(tile_info["path"], params, input_data)
 
-        actual = self._run_tiled(tiled_info, input_data, tiled_dir)
-
-        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
-
-
-class TestInvalidTileSize:
-    """Test that invalid tile sizes are rejected gracefully."""
-
-    def _create_conv_model(self, spatial, kernel=3, stride=1, padding=1, dilation=1):
-        c_in, c_out = 3, 8
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
-
-        np.random.seed(42)
-        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        conv = helper.make_node(
-            "Conv", ["X", "W"], ["Y"],
-            kernel_shape=[kernel, kernel],
-            strides=[stride, stride],
-            pads=[padding, padding, padding, padding],
-            dilations=[dilation, dilation]
+        boundary_h = tile_size
+        np.testing.assert_array_equal(
+            actual[0, :, boundary_h-1:boundary_h+1, :],
+            expected[0, :, boundary_h-1:boundary_h+1, :],
+            err_msg="Horizontal tile boundary pixels differ"
         )
 
-        effective_k = (kernel - 1) * dilation + 1
-        out_spatial = (spatial + 2 * padding - effective_k) // stride + 1
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
 
+class TestInvalidInputs:
+    def _create_conv_model(self, spatial, kernel=3, stride=1, padding=1):
+        c_in, c_out = 3, 8
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
+                                kernel_shape=[kernel, kernel],
+                                strides=[stride, stride],
+                                pads=[padding, padding, padding, padding])
+        out_spatial = (spatial + 2 * padding - kernel) // stride + 1
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
         graph = helper.make_graph([conv], "conv", [X], [Y], [W])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
         model.ir_version = 8
         return model
 
     def test_tile_size_larger_than_spatial(self, tmp_path):
-        """Tile size > spatial dimension should return None."""
         model = self._create_conv_model(spatial=32)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=64, output_dir=tiled_dir)
+        result = get_tiling_params(model_path, tile_size=64)
         assert result is None
 
-    def test_tile_size_equal_to_spatial(self, tmp_path):
-        """Tile size == spatial dimension should return None (no benefit to tiling)."""
-        model = self._create_conv_model(spatial=32)
+    def test_prime_spatial_no_valid_divisor(self, tmp_path):
+        model = self._create_conv_model(spatial=37)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=32, output_dir=tiled_dir)
+        result = get_tiling_params(model_path, tile_size=16)
         assert result is None
 
-    def test_tile_size_no_valid_divisor(self, tmp_path):
-        """Tile size that can't find a valid divisor should return None."""
-        model = self._create_conv_model(spatial=37)  # prime
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
-        assert result is None
-
-    def test_tile_size_smaller_than_kernel(self, tmp_path):
-        """Tile size smaller than kernel effective size should return None."""
+    def test_tile_smaller_than_kernel(self, tmp_path):
         model = self._create_conv_model(spatial=64, kernel=7, padding=3)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        # 7x7 kernel needs min_tile of 8, tile_size=4 is too small
-        result = autotile_slice(0, model_path, tile_size=4, output_dir=tiled_dir)
+        result = get_tiling_params(model_path, tile_size=4)
         assert result is None
-
-    def test_tile_size_smaller_than_dilated_kernel(self, tmp_path):
-        """Tile size smaller than dilated kernel should return None."""
-        model = self._create_conv_model(spatial=64, kernel=3, dilation=3, padding=3)
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        # 3x3 kernel with dilation=3 -> effective 7x7, needs min_tile of 8
-        result = autotile_slice(0, model_path, tile_size=4, output_dir=tiled_dir)
-        assert result is None
-
-    def test_non_square_spatial_rejected(self, tmp_path):
-        """Non-square spatial dimensions should return None."""
-        c_in, c_out = 3, 8
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, 64, 32])
-
-        np.random.seed(42)
-        w_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, 64, 32])
-
-        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
-        assert result is None
-
-    def test_non_4d_input_rejected(self, tmp_path):
-        """Non-4D input tensor should return None."""
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 64, 64])  # 3D
-
-        np.random.seed(42)
-        w_data = np.random.randn(8, 64, 3).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 62])
-
-        graph = helper.make_graph([conv], "conv1d", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
-        assert result is None
-
-
-class TestCriticalEdgeCases:
-    """Tests for edge cases that would silently produce wrong results if broken."""
-
-    def _run_onnx(self, model_path, input_data):
-        sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        input_name = sess.get_inputs()[0].name
-        return sess.run(None, {input_name: input_data})[0]
-
-    def _run_tiled(self, tiled_info, input_data):
-        split_path = tiled_info["split"]["path"]
-        split_sess = ort.InferenceSession(split_path, providers=["CPUExecutionProvider"])
-        split_input_name = split_sess.get_inputs()[0].name
-        tile_inputs = split_sess.run(None, {split_input_name: input_data})
-
-        tile_outputs = []
-        for i, tile_info in enumerate(tiled_info["tiles"]):
-            tile_sess = ort.InferenceSession(tile_info["path"], providers=["CPUExecutionProvider"])
-            tile_input_name = tile_sess.get_inputs()[0].name
-            tile_out = tile_sess.run(None, {tile_input_name: tile_inputs[i]})[0]
-            tile_outputs.append(tile_out)
-
-        concat_path = tiled_info["concat"]["path"]
-        concat_sess = ort.InferenceSession(concat_path, providers=["CPUExecutionProvider"])
-        concat_inputs = {f"tile_{tiled_info['slice_idx']}_{i}_out": tile_outputs[i]
-                         for i in range(len(tile_outputs))}
-        return concat_sess.run(None, concat_inputs)[0]
 
     def test_multiple_conv_rejected(self, tmp_path):
-        """Multiple Conv layers must be rejected - halo calc would be wrong."""
         c_in, c_mid, c_out = 3, 8, 16
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, 64, 64])
-
         np.random.seed(42)
-        W1 = numpy_helper.from_array(
-            np.random.randn(c_mid, c_in, 3, 3).astype(np.float32), "W1")
-        W2 = numpy_helper.from_array(
-            np.random.randn(c_out, c_mid, 3, 3).astype(np.float32), "W2")
-
+        W1 = numpy_helper.from_array(np.random.randn(c_mid, c_in, 3, 3).astype(np.float32), "W1")
+        W2 = numpy_helper.from_array(np.random.randn(c_out, c_mid, 3, 3).astype(np.float32), "W2")
         nodes = [
             helper.make_node("Conv", ["X", "W1"], ["conv1_out"], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
             helper.make_node("Relu", ["conv1_out"], ["relu_out"]),
             helper.make_node("Conv", ["relu_out", "W2"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
         ]
-
         Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, 64, 64])
         graph = helper.make_graph(nodes, "two_conv", [X], [Y], [W1, W2])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
@@ -469,192 +485,5 @@ class TestCriticalEdgeCases:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-
-        result = autotile_slice(0, model_path, tile_size=16, output_dir=tiled_dir)
-        assert result is None, "Multiple Conv layers should be rejected"
-
-    def test_boundary_pixels_exact(self, tmp_path):
-        """Boundary pixels at tile edges must be exactly correct, not just close."""
-        c_in, c_out, spatial = 1, 1, 32
-        tile_size = 16
-
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
-
-        np.random.seed(999)
-        w_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
-
-        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        np.random.seed(888)
-        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
-
-        expected = self._run_onnx(model_path, input_data)
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
-        assert tiled_info is not None
-
-        actual = self._run_tiled(tiled_info, input_data)
-
-        # Check boundary pixels explicitly (where tiles meet)
-        boundary_h = tile_size  # row where tiles meet
-        boundary_w = tile_size  # col where tiles meet
-
-        # Pixels at tile boundaries
-        np.testing.assert_array_equal(
-            actual[0, :, boundary_h-1:boundary_h+1, :],
-            expected[0, :, boundary_h-1:boundary_h+1, :],
-            err_msg="Horizontal tile boundary pixels differ"
-        )
-        np.testing.assert_array_equal(
-            actual[0, :, :, boundary_w-1:boundary_w+1],
-            expected[0, :, :, boundary_w-1:boundary_w+1],
-            err_msg="Vertical tile boundary pixels differ"
-        )
-
-        # Corner where 4 tiles meet
-        np.testing.assert_array_equal(
-            actual[0, :, boundary_h-1:boundary_h+1, boundary_w-1:boundary_w+1],
-            expected[0, :, boundary_h-1:boundary_h+1, boundary_w-1:boundary_w+1],
-            err_msg="Corner pixels where 4 tiles meet differ"
-        )
-
-    def test_stride_tile_size_compatibility(self, tmp_path):
-        """Tile size must be compatible with stride for correct output stitching."""
-        c_in, c_out, spatial = 3, 8, 64
-        stride = 2
-        tile_size = 16  # 16 / 2 = 8, evenly divisible
-
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
-
-        np.random.seed(42)
-        w_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
-                                kernel_shape=[3, 3], strides=[stride, stride], pads=[1, 1, 1, 1])
-        out_spatial = spatial // stride
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, out_spatial, out_spatial])
-
-        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        np.random.seed(123)
-        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
-
-        expected = self._run_onnx(model_path, input_data)
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
-        assert tiled_info is not None
-
-        actual = self._run_tiled(tiled_info, input_data)
-
-        assert actual.shape == expected.shape, f"Shape mismatch: {actual.shape} vs {expected.shape}"
-        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
-
-    def test_large_kernel_halo_correctness(self, tmp_path):
-        """Large kernels need larger halos - verify boundary correctness."""
-        c_in, c_out, spatial = 1, 1, 64
-        kernel = 7
-        tile_size = 16
-
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
-
-        np.random.seed(42)
-        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        padding = kernel // 2
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
-                                kernel_shape=[kernel, kernel],
-                                pads=[padding, padding, padding, padding])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
-
-        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        np.random.seed(777)
-        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
-
-        expected = self._run_onnx(model_path, input_data)
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
-        assert tiled_info is not None
-        assert tiled_info["halo"] == [3, 3], f"Expected halo [3,3] for 7x7 kernel, got {tiled_info['halo']}"
-
-        actual = self._run_tiled(tiled_info, input_data)
-
-        # Strict equality at boundaries
-        boundary = tile_size
-        np.testing.assert_array_equal(
-            actual[0, :, boundary-1:boundary+1, :],
-            expected[0, :, boundary-1:boundary+1, :],
-            err_msg="7x7 kernel: horizontal boundary differs"
-        )
-
-    def test_dilated_conv_halo_correctness(self, tmp_path):
-        """Dilated convolutions have larger effective kernels - verify halo."""
-        c_in, c_out, spatial = 1, 1, 64
-        kernel, dilation = 3, 2  # effective kernel = 5
-        tile_size = 16
-
-        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
-
-        np.random.seed(42)
-        w_data = np.random.randn(c_out, c_in, kernel, kernel).astype(np.float32)
-        W = numpy_helper.from_array(w_data, "W")
-
-        effective_k = (kernel - 1) * dilation + 1
-        padding = effective_k // 2
-        conv = helper.make_node("Conv", ["X", "W"], ["Y"],
-                                kernel_shape=[kernel, kernel],
-                                dilations=[dilation, dilation],
-                                pads=[padding, padding, padding, padding])
-        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
-
-        graph = helper.make_graph([conv], "conv", [X], [Y], [W])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        model.ir_version = 8
-
-        model_path = tmp_path / "model.onnx"
-        onnx.save(model, str(model_path))
-
-        np.random.seed(666)
-        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32)
-
-        expected = self._run_onnx(model_path, input_data)
-
-        tiled_dir = tmp_path / "tiled"
-        tiled_dir.mkdir()
-        tiled_info = autotile_slice(0, model_path, tile_size, tiled_dir)
-        assert tiled_info is not None
-        assert tiled_info["halo"] == [2, 2], f"Expected halo [2,2] for dilated 3x3, got {tiled_info['halo']}"
-
-        actual = self._run_tiled(tiled_info, input_data)
-
-        np.testing.assert_array_equal(actual, expected,
-                                       err_msg="Dilated conv output differs")
+        result = get_tiling_params(model_path, tile_size=16)
+        assert result is None

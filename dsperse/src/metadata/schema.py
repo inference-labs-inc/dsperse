@@ -307,12 +307,19 @@ class RunSliceMetadata:
     tiling: Optional[TilingInfo] = None
     backend: str = "onnx"
     ezkl: bool = False
+    ezkl_compatible: bool = True
+    circuit_size: int = 0
     circuit_path: Optional[str] = None
     settings_path: Optional[str] = None
     vk_path: Optional[str] = None
     pk_path: Optional[str] = None
     jstprove_circuit_path: Optional[str] = None
     ezkl_circuit_path: Optional[str] = None
+    jstprove_settings_path: Optional[str] = None
+    ezkl_settings_path: Optional[str] = None
+    ezkl_pk_path: Optional[str] = None
+    ezkl_vk_path: Optional[str] = None
+    slice_metadata_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "RunSliceMetadata":
@@ -325,12 +332,19 @@ class RunSliceMetadata:
             tiling=TilingInfo.from_dict(d.get("tiling")),
             backend=d.get("backend", "onnx"),
             ezkl=d.get("ezkl", False),
+            ezkl_compatible=d.get("ezkl_compatible", True),
+            circuit_size=d.get("circuit_size", 0),
             circuit_path=d.get("circuit_path"),
             settings_path=d.get("settings_path"),
             vk_path=d.get("vk_path"),
             pk_path=d.get("pk_path"),
             jstprove_circuit_path=d.get("jstprove_circuit_path"),
             ezkl_circuit_path=d.get("ezkl_circuit_path"),
+            jstprove_settings_path=d.get("jstprove_settings_path"),
+            ezkl_settings_path=d.get("ezkl_settings_path"),
+            ezkl_pk_path=d.get("ezkl_pk_path"),
+            ezkl_vk_path=d.get("ezkl_vk_path"),
+            slice_metadata_path=d.get("slice_metadata_path"),
         )
 
     def to_dict(self) -> dict:
@@ -395,3 +409,107 @@ class ModelMetadata:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
+
+
+@dataclass
+class TileResult:
+    """Result of a single tile operation (proving/verification/execution)."""
+    tile_idx: int
+    success: bool
+    error: Optional[str] = None
+    method: Optional[str] = None
+    time_sec: float = 0.0
+    proof_path: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = {"tile_idx": self.tile_idx, "success": self.success}
+        if self.error is not None:
+            d["error"] = self.error
+        if self.method is not None:
+            d["method"] = self.method
+        if self.time_sec > 0:
+            d["time_sec"] = self.time_sec
+        if self.proof_path is not None:
+            d["proof_path"] = self.proof_path
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TileResult":
+        return cls(
+            tile_idx=d.get("tile_idx", 0),
+            success=d.get("success", False),
+            error=d.get("error"),
+            method=d.get("method"),
+            time_sec=d.get("time_sec", 0.0),
+            proof_path=d.get("proof_path"),
+        )
+
+
+@dataclass
+class ExecutionInfo:
+    """Execution info for witness generation. Only includes fields that are actually read by consumers."""
+    method: str
+    success: bool = False
+    error: Optional[str] = None
+    witness_file: Optional[str] = None
+    tiles: list["TileResult"] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        d = {"method": self.method, "success": self.success}
+        if self.error is not None:
+            d["error"] = self.error
+        if self.witness_file is not None:
+            d["witness_file"] = self.witness_file
+        if self.tiles:
+            d["tile_exec_infos"] = [t.to_dict() for t in self.tiles]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ExecutionInfo":
+        tiles_raw = d.get("tiles") or d.get("tile_exec_infos") or []
+        return cls(
+            method=d.get("method", "unknown"),
+            success=d.get("success", False),
+            error=d.get("error"),
+            witness_file=d.get("witness_file") or d.get("witness_path"),
+            tiles=[TileResult.from_dict(t) for t in tiles_raw],
+        )
+
+
+@dataclass
+class SliceResult:
+    """Result of a slice-level operation (proving/verification/execution)."""
+    slice_id: str
+    success: bool
+    method: Optional[str] = None
+    error: Optional[str] = None
+    proof_path: Optional[str] = None
+    time_sec: float = 0.0
+    tiles: list[TileResult] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        d = {"slice_id": self.slice_id, "success": self.success}
+        if self.method is not None:
+            d["method"] = self.method
+        if self.error is not None:
+            d["error"] = self.error
+        if self.proof_path is not None:
+            d["proof_path"] = self.proof_path
+        if self.time_sec > 0:
+            d["time_sec"] = self.time_sec
+        if self.tiles:
+            d["tiles"] = [t.to_dict() for t in self.tiles]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SliceResult":
+        tiles_raw = d.get("tiles") or d.get("tile_proofs_info") or d.get("tile_verifs_info") or []
+        return cls(
+            slice_id=d.get("slice_id", ""),
+            success=d.get("success", False),
+            method=d.get("method"),
+            error=d.get("error"),
+            proof_path=d.get("proof_path"),
+            time_sec=d.get("time_sec", 0.0),
+            tiles=[TileResult.from_dict(t) for t in tiles_raw],
+        )

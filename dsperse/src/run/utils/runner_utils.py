@@ -7,7 +7,7 @@ import time
 
 import torch
 
-from dsperse.src.metadata.schema import RunSliceMetadata
+from dsperse.src.metadata.schema import ExecutionInfo, RunSliceMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.torch_utils import ModelUtils
 
@@ -124,30 +124,21 @@ class RunnerUtils:
         from dsperse.src.backends.onnx_models import OnnxModels
         onnx_path = meta.path
         if not onnx_path:
-            return False, "No ONNX path in slice_info", {'success': False, 'error': 'missing_path', 'method': 'onnx_only'}
+            return False, "No ONNX path in slice_info", ExecutionInfo(method='onnx_only', success=False, error='missing_path')
 
         if not os.path.isabs(str(onnx_path)):
             onnx_path = RunnerUtils.resolve_relative_path(onnx_path, slice_dir)
 
         if not onnx_path or not Path(onnx_path).exists():
-            return False, f"ONNX file not found: {onnx_path}", {'success': False, 'error': 'file_not_found', 'method': 'onnx_only'}
+            return False, f"ONNX file not found: {onnx_path}", ExecutionInfo(method='onnx_only', success=False, error='file_not_found')
 
-        start_time = time.time()
         success, result = OnnxModels.run_inference(model_path=onnx_path, input_file=input_tensor_path, output_file=output_tensor_path)
 
-        end_time = time.time()
-        exec_info = {
-            'success': success,
-            'method': 'onnx_only',
-            'execution_time': end_time - start_time,
-            'output_tensor_path': str(output_tensor_path)
-        }
-
-        if success:
-            exec_info['input_file'] = str(input_tensor_path.resolve())
-            exec_info['output_file'] = str(output_tensor_path.resolve())
-        else:
-            exec_info['error'] = result if isinstance(result, str) else 'inference_failed'
+        exec_info = ExecutionInfo(
+            method='onnx_only',
+            success=success,
+            error=None if success else (result if isinstance(result, str) else 'inference_failed'),
+        )
 
         return success, result, exec_info
 
@@ -157,14 +148,13 @@ class RunnerUtils:
         from dsperse.src.backends.onnx_models import OnnxModels
         onnx_path = meta.path
         if not onnx_path:
-            return False, "No ONNX path in slice_info", {'error': 'missing_path'}
+            return False, "No ONNX path in slice_info", ExecutionInfo(method='onnx_multi_input', success=False, error='missing_path')
 
         onnx_path = RunnerUtils.resolve_relative_path(onnx_path, slice_dir)
 
         if not onnx_path or not Path(onnx_path).exists():
-            return False, f"ONNX file not found: {onnx_path}", {'error': 'file_not_found'}
+            return False, f"ONNX file not found: {onnx_path}", ExecutionInfo(method='onnx_multi_input', success=False, error='file_not_found')
 
-        start_time = time.time()
         try:
             success, result = OnnxModels.run_inference_multi(
                 model_path=onnx_path,
@@ -174,19 +164,21 @@ class RunnerUtils:
         except Exception as e:
             success, result = False, str(e)
 
-        exec_info = {'success': success, 'method': 'onnx_multi_input', 'execution_time': time.time() - start_time}
-        if not success:
-            exec_info['error'] = result if isinstance(result, str) else 'unknown'
+        exec_info = ExecutionInfo(
+            method='onnx_multi_input',
+            success=success,
+            error=None if success else (result if isinstance(result, str) else 'unknown'),
+        )
         return success, result, exec_info
 
     @staticmethod
-    def execute_slice(runner, node: dict, meta: RunSliceMetadata, in_file: Path, out_file: Path, slice_dir: Path):
+    def execute_slice(runner, meta: RunSliceMetadata, in_file: Path, out_file: Path, slice_dir: Path):
         """Execute a slice using best available backend: jstprove -> ezkl -> onnx."""
         slice_id = slice_dir.name if slice_dir else "unknown"
         forced = getattr(runner, 'force_backend', None)
 
         has_jst = bool(meta.jstprove_circuit_path) and getattr(runner, "jstprove_runner", None)
-        has_ezkl = bool(meta.ezkl_circuit_path)
+        has_ezkl = bool(meta.ezkl_circuit_path) and bool(meta.vk_path)
 
         available = []
         if has_jst:
@@ -230,8 +222,6 @@ class RunnerUtils:
             logger.info(f"[{slice_id}] Falling back to ONNX")
             ok, tensor, o_info = RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
             o_info["method"] = "jstprove_fallback_onnx"
-            o_info["attempted_jstprove"] = True
-            o_info["attempted_ezkl"] = has_ezkl
             return ok, tensor, o_info
 
         if has_ezkl:
@@ -244,7 +234,6 @@ class RunnerUtils:
             logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
             ok, tensor, o_info = RunnerUtils.run_onnx_slice(meta, in_file, out_file, slice_dir)
             o_info["method"] = "ezkl_fallback_onnx"
-            o_info["attempted_ezkl"] = True
             return ok, tensor, o_info
 
         logger.info(f"[{slice_id}] Running with ONNX (no ZK circuits available)")

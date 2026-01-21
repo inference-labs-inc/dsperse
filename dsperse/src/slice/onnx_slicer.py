@@ -713,10 +713,10 @@ class OnnxSlicer:
         if should_tile:
             if max_conv_size:
                 logger.info(f"Applying tiling transform with max_conv_size={max_conv_size}")
-                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size, parallel=parallel, tensor_graph=tensor_graph)
+                apply_tiling_to_slices(output_path, max_conv_size=max_conv_size)
             else:
                 logger.info(f"Applying tiling transform with tile_size={tile_size}")
-                apply_tiling_to_slices(output_path, tile_size=tile_size, parallel=parallel, tensor_graph=tensor_graph)
+                apply_tiling_to_slices(output_path, tile_size=tile_size)
 
         return slices_paths
 

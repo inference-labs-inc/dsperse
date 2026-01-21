@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.metadata.schema import RunSliceMetadata
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 logger = logging.getLogger(__name__)
@@ -474,8 +475,9 @@ class CompilerUtils:
                     next_calibration_path = os.path.join(next_slice_output_path, "calibration.json")
 
                     logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
+                    slice_meta = RunSliceMetadata(path=slice_path)
                     success, _tensor, exec_info = RunnerUtils.run_onnx_slice(
-                        slice_info={"path": slice_path},
+                        slice_meta,
                         input_tensor_path=Path(current_input),
                         output_tensor_path=Path(next_calibration_path)
                     )

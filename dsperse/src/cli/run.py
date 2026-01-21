@@ -179,7 +179,8 @@ def run_inference(args):
         if slice_results:
             print("\nSlice Methods:")
             for slice_name, slice_info in slice_results.items():
-                print(f"{slice_name}: {slice_info.get('method', 'N/A')}")
+                method = slice_info.method if hasattr(slice_info, 'method') else slice_info.get('method', 'N/A')
+                print(f"{slice_name}: {method}")
 
         # Print execution summary if present
         try:

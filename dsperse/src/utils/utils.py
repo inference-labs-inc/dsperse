@@ -250,16 +250,17 @@ class Utils:
 
     @staticmethod
     def iter_circuit_slices(metadata: dict):
-        """Yield (slice_id, slice_meta) for slices that have circuit and pk present.
-        Prefer `use_circuit` flag; otherwise check presence of compiled circuit + keys.
+        """Yield (slice_id, slice_meta) for slices that can be proved.
+        Includes: use_circuit flag set, tiled slices, JSTprove circuits, or EZKL circuits with pk.
         """
         slices = (metadata or {}).get("slices", {})
         for sid, meta_raw in slices.items():
             m = RunSliceMetadata.from_dict(meta_raw)
             use_circuit = bool(meta_raw.get("use_circuit"))
-            circuit_path = m.circuit_path
-            pk_path = m.pk_path
-            if use_circuit or (circuit_path and pk_path):
+            has_tiling = m.tiling is not None
+            has_jstprove = bool(m.jstprove_circuit_path)
+            has_ezkl_with_pk = bool(m.ezkl_circuit_path) and bool(m.pk_path or m.ezkl_pk_path)
+            if use_circuit or has_tiling or has_jstprove or has_ezkl_with_pk:
                 yield sid, meta_raw
 
     @staticmethod
@@ -338,25 +339,23 @@ class Utils:
 
         for sid, info in execution_data.items():
             # Build execution entry based on type
+            tiles = info.get("tiles") or info.get("tile_proofs_info") or info.get("tile_verifs_info")
             if execution_type == "proof":
                 exec_entry = {
                     "proof_file": info.get("proof_path"),
                     "success": bool(info.get("success")),
-                    # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
-                if "tile_proofs_info" in info:
-                    exec_entry["tile_proofs_info"] = info["tile_proofs_info"]
+                if tiles:
+                    exec_entry["tile_proofs_info"] = tiles
             elif execution_type == "verification":
                 exec_entry = {
-                    # Keep a simple boolean while also storing success
                     "verified": bool(info.get("success")),
                     "success": bool(info.get("success")),
-                    # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
-                if "tile_verifs_info" in info:
-                    exec_entry["tile_verifs_info"] = info["tile_verifs_info"]
+                if tiles:
+                    exec_entry["tile_verifs_info"] = tiles
             else:
                 raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
 

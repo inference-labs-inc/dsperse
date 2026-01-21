@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from dsperse.src.metadata.schema import SliceMetadata, Compilation, Dependencies, TilingInfo
+from dsperse.src.metadata.schema import SliceMetadata, RunSliceMetadata, Compilation, Dependencies, TilingInfo
 from dsperse.src.utils.utils import Utils
 from dsperse.src.slice.utils.converter import Converter
 
@@ -73,12 +73,12 @@ class RunnerAnalyzer:
         return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
 
     @staticmethod
-    def _process_slices_model(slices_dir: Path, slices_list: list[dict]) -> dict:
+    def _process_slices_model(slices_dir: Path, slices_list: list[dict]) -> dict[str, RunSliceMetadata]:
         """
         Build slices dict using model-level metadata entries from slices/metadata.json.
         Trust the provided metadata; do not perform filesystem checks.
         """
-        slices: dict[str, dict] = {}
+        slices: dict[str, RunSliceMetadata] = {}
 
         for item in slices_list:
             if not isinstance(item, dict):
@@ -97,7 +97,7 @@ class RunnerAnalyzer:
                 return RunnerAnalyzer.with_slice_prefix(RunnerAnalyzer.rel_from_payload(rel) or rel, slice_key)
 
             jst = meta.compilation.jstprove
-            ezkl = meta.compilation.ezkl
+            ezkl_comp = meta.compilation.ezkl
 
             if jst.compiled:
                 backend = "jstprove"
@@ -108,11 +108,11 @@ class RunnerAnalyzer:
                 vk_rel = None
             else:
                 backend = "ezkl"
-                compiled_flag = ezkl.compiled
-                compiled_rel = ezkl.files.compiled
-                settings_rel = ezkl.files.settings
-                pk_rel = ezkl.files.pk_key
-                vk_rel = ezkl.files.vk_key
+                compiled_flag = ezkl_comp.compiled
+                compiled_rel = ezkl_comp.files.compiled
+                settings_rel = ezkl_comp.files.settings
+                pk_rel = ezkl_comp.files.pk_key
+                vk_rel = ezkl_comp.files.vk_key
 
             circuit_path = _norm(compiled_rel)
             settings_path = _norm(settings_rel)
@@ -120,52 +120,47 @@ class RunnerAnalyzer:
             vk_path = _norm(vk_rel)
 
             jstprove_circuit_path = _norm(jst.files.compiled)
-            ezkl_circuit_path = _norm(ezkl.files.compiled)
+            ezkl_circuit_path = _norm(ezkl_comp.files.compiled)
             jstprove_settings_path = _norm(jst.files.settings)
-            ezkl_settings_path = _norm(ezkl.files.settings)
-            ezkl_pk_path = _norm(ezkl.files.pk_key)
-            ezkl_vk_path = _norm(ezkl.files.vk_key)
+            ezkl_settings_path = _norm(ezkl_comp.files.settings)
+            ezkl_pk_path = _norm(ezkl_comp.files.pk_key)
+            ezkl_vk_path = _norm(ezkl_comp.files.vk_key)
 
             slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
-            tiling_dict = meta.tiling.to_dict() if meta.tiling else None
 
-            slices[slice_key] = {
-                "path": onnx_path,
-                "input_shape": meta.input_shape,
-                "output_shape": meta.output_shape,
-                "ezkl_compatible": True,
-                "ezkl": bool(compiled_flag),
-                "backend": backend,
-                "circuit_size": 0,
-                "dependencies": {
-                    "input": meta.dependencies.input,
-                    "output": meta.dependencies.output,
-                    "filtered_inputs": meta.dependencies.filtered_inputs,
-                },
-                "parameters": meta.parameters,
-                "circuit_path": circuit_path,
-                "settings_path": settings_path,
-                "vk_path": vk_path,
-                "pk_path": pk_path,
-                "slice_metadata_path": slice_meta_rel,
-                "jstprove_circuit_path": jstprove_circuit_path,
-                "ezkl_circuit_path": ezkl_circuit_path,
-                "jstprove_settings_path": jstprove_settings_path,
-                "ezkl_settings_path": ezkl_settings_path,
-                "ezkl_pk_path": ezkl_pk_path,
-                "ezkl_vk_path": ezkl_vk_path,
-                "tiling": tiling_dict,
-            }
+            slices[slice_key] = RunSliceMetadata(
+                path=onnx_path or "",
+                input_shape=meta.input_shape,
+                output_shape=meta.output_shape,
+                ezkl_compatible=True,
+                ezkl=bool(compiled_flag),
+                backend=backend,
+                circuit_size=0,
+                dependencies=meta.dependencies,
+                parameters=meta.parameters,
+                circuit_path=circuit_path,
+                settings_path=settings_path,
+                vk_path=vk_path,
+                pk_path=pk_path,
+                slice_metadata_path=slice_meta_rel,
+                jstprove_circuit_path=jstprove_circuit_path,
+                ezkl_circuit_path=ezkl_circuit_path,
+                jstprove_settings_path=jstprove_settings_path,
+                ezkl_settings_path=ezkl_settings_path,
+                ezkl_pk_path=ezkl_pk_path,
+                ezkl_vk_path=ezkl_vk_path,
+                tiling=meta.tiling,
+            )
 
         return slices
 
     @staticmethod
-    def _process_slices_per_slice(slices_dir: Path, slices_data_list: list[dict]) -> dict:
+    def _process_slices_per_slice(slices_dir: Path, slices_data_list: list[dict]) -> dict[str, RunSliceMetadata]:
         """
         Build slices dict by reading each per-slice metadata.json referenced by entries.
         Trust the provided metadata for each slice; do not perform filesystem checks.
         """
-        slices: dict[str, dict] = {}
+        slices: dict[str, RunSliceMetadata] = {}
 
         for entry in slices_data_list:
             meta_path = entry.get("slice_metadata")
@@ -188,7 +183,7 @@ class RunnerAnalyzer:
                 return os.path.join(parent_dir, rel) if rel else None
 
             jst = meta.compilation.jstprove
-            ezkl = meta.compilation.ezkl
+            ezkl_comp = meta.compilation.ezkl
 
             if jst.compiled:
                 backend = "jstprove"
@@ -199,48 +194,42 @@ class RunnerAnalyzer:
                 vk_path = None
             else:
                 backend = "ezkl"
-                compiled_flag = ezkl.compiled
-                circuit_path = _join(ezkl.files.compiled)
-                settings_path = _join(ezkl.files.settings)
-                pk_path = _join(ezkl.files.pk_key)
-                vk_path = _join(ezkl.files.vk_key)
+                compiled_flag = ezkl_comp.compiled
+                circuit_path = _join(ezkl_comp.files.compiled)
+                settings_path = _join(ezkl_comp.files.settings)
+                pk_path = _join(ezkl_comp.files.pk_key)
+                vk_path = _join(ezkl_comp.files.vk_key)
 
             jstprove_circuit_path = _join(jst.files.compiled)
-            ezkl_circuit_path = _join(ezkl.files.compiled)
+            ezkl_circuit_path = _join(ezkl_comp.files.compiled)
             jstprove_settings_path = _join(jst.files.settings)
-            ezkl_settings_path = _join(ezkl.files.settings)
-            ezkl_pk_path = _join(ezkl.files.pk_key)
-            ezkl_vk_path = _join(ezkl.files.vk_key)
+            ezkl_settings_path = _join(ezkl_comp.files.settings)
+            ezkl_pk_path = _join(ezkl_comp.files.pk_key)
+            ezkl_vk_path = _join(ezkl_comp.files.vk_key)
 
-            tiling_dict = meta.tiling.to_dict() if meta.tiling else None
-
-            slices[slice_key] = {
-                "path": onnx_path,
-                "input_shape": meta.input_shape,
-                "output_shape": meta.output_shape,
-                "ezkl_compatible": True,
-                "ezkl": bool(compiled_flag),
-                "backend": backend,
-                "circuit_size": 0,
-                "dependencies": {
-                    "input": meta.dependencies.input,
-                    "output": meta.dependencies.output,
-                    "filtered_inputs": meta.dependencies.filtered_inputs,
-                },
-                "parameters": meta.parameters,
-                "circuit_path": circuit_path,
-                "settings_path": settings_path,
-                "vk_path": vk_path,
-                "pk_path": pk_path,
-                "slice_metadata_path": meta_path,
-                "jstprove_circuit_path": jstprove_circuit_path,
-                "ezkl_circuit_path": ezkl_circuit_path,
-                "jstprove_settings_path": jstprove_settings_path,
-                "ezkl_settings_path": ezkl_settings_path,
-                "ezkl_pk_path": ezkl_pk_path,
-                "ezkl_vk_path": ezkl_vk_path,
-                "tiling": tiling_dict,
-            }
+            slices[slice_key] = RunSliceMetadata(
+                path=onnx_path,
+                input_shape=meta.input_shape,
+                output_shape=meta.output_shape,
+                ezkl_compatible=True,
+                ezkl=bool(compiled_flag),
+                backend=backend,
+                circuit_size=0,
+                dependencies=meta.dependencies,
+                parameters=meta.parameters,
+                circuit_path=circuit_path,
+                settings_path=settings_path,
+                vk_path=vk_path,
+                pk_path=pk_path,
+                slice_metadata_path=meta_path,
+                jstprove_circuit_path=jstprove_circuit_path,
+                ezkl_circuit_path=ezkl_circuit_path,
+                jstprove_settings_path=jstprove_settings_path,
+                ezkl_settings_path=ezkl_settings_path,
+                ezkl_pk_path=ezkl_pk_path,
+                ezkl_vk_path=ezkl_vk_path,
+                tiling=meta.tiling,
+            )
 
         return slices
 
@@ -254,50 +243,49 @@ class RunnerAnalyzer:
         execution_chain = RunnerAnalyzer._build_execution_chain(slices)
         circuit_slices = RunnerAnalyzer._build_circuit_slices(slices)
         overall_security = RunnerAnalyzer._calculate_security(slices)
+        slices_dict = {k: v.to_dict() for k, v in slices.items()}
         return {
             "overall_security": overall_security,
-            "slices": slices,
+            "slices": slices_dict,
             "execution_chain": execution_chain,
             "circuit_slices": circuit_slices,
         }
 
     @staticmethod
-    def _build_execution_chain(slices: dict):
+    def _build_execution_chain(slices: dict[str, RunSliceMetadata]):
         """
         Build the execution chain with proper node connections and fallback mapping,
         using new slice_* ids and per-slice metadata.
         Note: artifact paths in run metadata may be 'slice_#/payload/...'; we should not
         perform filesystem existence checks here. Trust the computed 'ezkl' flag.
         """
-        # Order slices by numeric index extracted from key 'slice_#'
         ordered_keys = sorted(slices.keys(), key=lambda k: int(str(k).split('_')[-1])) if slices else []
 
         execution_chain = {
             "head": ordered_keys[0] if ordered_keys else None,
             "nodes": {},
-            # Map from primary path to an ordered list of fallback paths (e.g., [ezkl_circuit, onnx])
             "fallback_map": {}
         }
 
         for i, slice_key in enumerate(ordered_keys):
-            meta = slices.get(slice_key, {})
-            circuit_path = meta.get('circuit_path')
-            onnx_path = meta.get('path')
-            backend = meta.get('backend', 'ezkl')
-            jst_circuit = meta.get('jstprove_circuit_path')
-            ezkl_circuit = meta.get('ezkl_circuit_path')
+            meta = slices.get(slice_key)
+            if meta is None:
+                continue
+            circuit_path = meta.circuit_path
+            onnx_path = meta.path
+            backend = meta.backend or 'ezkl'
+            jst_circuit = meta.jstprove_circuit_path
+            ezkl_circuit = meta.ezkl_circuit_path
             has_circuit = circuit_path is not None and circuit_path != ""
-            has_keys = (meta.get('pk_path') is not None) and (meta.get('vk_path') is not None)
+            has_keys = (meta.pk_path is not None) and (meta.vk_path is not None)
             has_jst = bool(jst_circuit) or (backend == 'jstprove' and has_circuit)
-            has_ezkl = bool(ezkl_circuit) or (bool(meta.get('ezkl')) and has_circuit and has_keys)
+            has_ezkl = bool(ezkl_circuit) or (meta.ezkl and has_circuit and has_keys)
             use_circuit = has_jst or has_ezkl
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
-            # Build ordered fallbacks: prefer EZKL circuit (when primary is JSTprove), then ONNX
             fallbacks = []
             if backend == 'jstprove' and ezkl_circuit:
                 fallbacks.append(ezkl_circuit)
-            # Always ensure ONNX is the last fallback
             if onnx_path:
                 fallbacks.append(onnx_path)
 
@@ -312,7 +300,6 @@ class RunnerAnalyzer:
                 "backend": backend
             }
 
-            # Populate fallback_map with ordered list
             if use_circuit and circuit_path:
                 execution_chain["fallback_map"][circuit_path] = fallbacks
             elif onnx_path:
@@ -321,14 +308,13 @@ class RunnerAnalyzer:
         return execution_chain
 
     @staticmethod
-    def _build_circuit_slices(slices):
+    def _build_circuit_slices(slices: dict[str, RunSliceMetadata]):
         """
         Build dictionary tracking which slices use circuits.
         """
         circuit_slices = {}
         for slice_key, slice_data in slices.items():
-            # Trust the computed 'ezkl' flag which already considers compiled, keys, and size limits
-            circuit_slices[slice_key] = bool(slice_data.get("ezkl", False))
+            circuit_slices[slice_key] = slice_data.ezkl
 
         return circuit_slices
 
@@ -339,11 +325,11 @@ class RunnerAnalyzer:
         return ec.get("head"), ec.get("nodes") or {}
 
     @staticmethod
-    def _calculate_security(slices):
+    def _calculate_security(slices: dict[str, RunSliceMetadata]):
         if not slices:
             return 0.0
         total_slices = len(slices)
-        circuit_slices = sum(1 for slice_data in slices.values() if slice_data.get("ezkl", False))
+        circuit_slices = sum(1 for slice_data in slices.values() if slice_data.ezkl)
         return round((circuit_slices / total_slices) * 100, 1)
 
     @staticmethod
@@ -479,9 +465,10 @@ class RunnerAnalyzer:
         head_nodes = RunnerAnalyzer._build_execution_chain(slices)
         circuit_slices = RunnerAnalyzer._build_circuit_slices(slices)
         overall_security = RunnerAnalyzer._calculate_security(slices)
+        slices_dict = {k: v.to_dict() for k, v in slices.items()}
         return {
             "overall_security": overall_security,
-            "slices": slices,
+            "slices": slices_dict,
             "execution_chain": head_nodes,
             "circuit_slices": circuit_slices,
         }

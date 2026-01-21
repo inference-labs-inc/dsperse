@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
-from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata
+from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata, TileResult, SliceResult
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
@@ -24,16 +24,7 @@ def _verify_slice_worker(args: tuple) -> dict:
     """
     (slice_id, preferred, proof_path, circuit_path, settings_path, vk_path, input_path, output_path, witness_path, tiling_info, run_path, _slice_dir) = args
 
-    result = {
-        'slice_id': slice_id,
-        'success': False,
-        'method': None,
-        'time_sec': 0,
-        'error': None,
-        'attempted_jstprove': preferred == "jstprove",
-        'attempted_ezkl': preferred == "ezkl",
-        'tile_verifs_info': None
-    }
+    result = SliceResult(slice_id=slice_id, success=False)
 
     start = time.time()
 
@@ -49,7 +40,7 @@ def _verify_slice_worker(args: tuple) -> dict:
             tile_proof_path = tile_run_dir / "proof.json"
 
             if not tile_proof_path.exists():
-                tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": "proof_missing"})
+                tile_verifs.append(TileResult(tile_idx=tile_idx, success=False, error="proof_missing"))
                 continue
 
             try:
@@ -61,7 +52,7 @@ def _verify_slice_worker(args: tuple) -> dict:
 
                     missing = [p for p in [circuit_path, tile_input_path, tile_output_path, tile_witness_path] if not p or not Path(p).exists()]
                     if missing:
-                        tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": f"Missing files: {', '.join(map(str, missing))}"})
+                        tile_verifs.append(TileResult(tile_idx=tile_idx, success=False, error=f"Missing files: {', '.join(map(str, missing))}"))
                         continue
 
                     backend = JSTprove()
@@ -83,22 +74,22 @@ def _verify_slice_worker(args: tuple) -> dict:
                     )
                     method = "ezkl_verify"
 
-                tile_verifs.append({"tile_idx": tile_idx, "success": ok, "error": None})
+                tile_verifs.append(TileResult(tile_idx=tile_idx, success=ok, method=method))
             except Exception as e:
-                tile_verifs.append({"tile_idx": tile_idx, "success": False, "error": str(e)})
+                tile_verifs.append(TileResult(tile_idx=tile_idx, success=False, error=str(e)))
 
-        result['success'] = all(v["success"] for v in tile_verifs)
-        result['method'] = method
-        result['tile_verifs_info'] = tile_verifs
-        result['error'] = None if result['success'] else "One or more tiles failed verification"
+        result.success = all(v.success for v in tile_verifs)
+        result.method = method
+        result.tiles = tile_verifs
+        result.error = None if result.success else "One or more tiles failed verification"
     else:
         try:
             if preferred == "jstprove":
                 from dsperse.src.backends.jstprove import JSTprove
                 missing = [p for p in [circuit_path, input_path, output_path, witness_path] if not p or not Path(p).exists()]
                 if missing:
-                    result['error'] = f"Missing files for JSTprove verify: {', '.join(map(str, missing))}"
-                    result['method'] = "jstprove_verify"
+                    result.error = f"Missing files for JSTprove verify: {', '.join(map(str, missing))}"
+                    result.method = "jstprove_verify"
                 else:
                     backend = JSTprove()
                     ok = backend.verify(
@@ -108,8 +99,8 @@ def _verify_slice_worker(args: tuple) -> dict:
                         output_path=str(output_path),
                         witness_path=str(witness_path),
                     )
-                    result['success'] = ok
-                    result['method'] = "jstprove_verify"
+                    result.success = ok
+                    result.method = "jstprove_verify"
             else:
                 from dsperse.src.backends.ezkl import EZKL
                 backend = EZKL()
@@ -118,14 +109,14 @@ def _verify_slice_worker(args: tuple) -> dict:
                     settings_path=settings_path,
                     vk_path=vk_path,
                 )
-                result['success'] = ok
-                result['method'] = "ezkl_verify"
+                result.success = ok
+                result.method = "ezkl_verify"
         except Exception as e:
-            result['error'] = str(e)
-            result['method'] = f"{preferred}_verify"
+            result.error = str(e)
+            result.method = f"{preferred}_verify"
 
-    result['time_sec'] = time.time() - start
-    return result
+    result.time_sec = time.time() - start
+    return result.to_dict()
 
 
 class Verifier:
@@ -195,12 +186,12 @@ class Verifier:
         return None
 
     @staticmethod
-    def _select_verification_backend(run_path: Path, slice_id: str, meta: dict) -> str:
+    def _select_verification_backend(run_path: Path, slice_id: str, meta: RunSliceMetadata) -> str:
         """Prefer the backend that produced the witness; else meta backend; default jstprove."""
         from_run = Verifier._get_witness_backend_from_run(run_path, slice_id)
         if from_run in ("jstprove", "ezkl"):
             return from_run
-        meta_backend = (meta.get("backend") or "").lower()
+        meta_backend = (meta.backend or "").lower()
         if meta_backend in ("jstprove", "ezkl"):
             return meta_backend
         return "jstprove"
@@ -338,8 +329,8 @@ class Verifier:
         work_items = []
         for slice_id, meta_raw in slices_iter:
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
-            preferred = self._select_verification_backend(run_path, slice_id, meta_raw)
             meta = RunSliceMetadata.from_dict(meta_raw)
+            preferred = self._select_verification_backend(run_path, slice_id, meta)
             tiling = meta.tiling
 
             circuit_path = Utils.resolve_under_slice(slice_dir, meta.circuit_path)
@@ -390,7 +381,7 @@ class Verifier:
                         results.append(result)
                     except Exception as e:
                         logger.error(f"Slice {slice_id} verification failed: {e}")
-                        results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
+                        results.append(SliceResult(slice_id=slice_id, success=False, error=str(e)).to_dict())
         else:
             results = [_verify_slice_worker(item) for item in work_items]
 
@@ -484,15 +475,14 @@ class Verifier:
                                                            meta, tiles_range=tiles_range)
             elapsed = time.time() - start
             verifs = {
-                slice_id: {
-                    "success": bool(success),
-                    "time_sec": elapsed,
-                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "tile_verifs_info": tile_verifs,
-                    "error": None if success else "One or more tiles failed verification",
-                }
+                slice_id: SliceResult(
+                    slice_id=slice_id,
+                    success=bool(success),
+                    time_sec=elapsed,
+                    method="jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
+                    tiles=[TileResult.from_dict(t) if isinstance(t, dict) else t for t in tile_verifs],
+                    error=None if success else "One or more tiles failed verification",
+                ).to_dict()
             }
         else:
             proof_path = Path(run_path) / "proof.json"
@@ -520,14 +510,13 @@ class Verifier:
 
             elapsed = time.time() - start
             verifs = {
-                slice_id: {
-                    "success": bool(success),
-                    "time_sec": elapsed,
-                    "method": "jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
-                    "attempted_jstprove": preferred == "jstprove",
-                    "attempted_ezkl": preferred == "ezkl",
-                    "error": None if success else (error_msg or "verification_failed"),
-                }
+                slice_id: SliceResult(
+                    slice_id=slice_id,
+                    success=bool(success),
+                    time_sec=elapsed,
+                    method="jstprove_verify" if preferred == "jstprove" else "ezkl_verify",
+                    error=None if success else (error_msg or "verification_failed"),
+                ).to_dict()
             }
 
         run_results = Utils.load_run_results(Path(run_path))

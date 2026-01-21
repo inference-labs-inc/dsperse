@@ -303,7 +303,7 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int | None = None, tile_si
     }
 
 
-def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int | None = None, tile_size: int | None = None, _parallel: bool = False, _tensor_graph=None) -> dict:
+def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int | None = None, tile_size: int | None = None) -> dict:
     """
     Apply tiling to Conv slices. Creates tile ONNX models and updates metadata.
 
@@ -384,6 +384,16 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int | None = N
             ),
         )
         slices_data[idx]["tiling"] = tiling_metadata.to_dict()
+
+        slice_meta_path = slice_dir / "metadata.json"
+        if slice_meta_path.exists():
+            with open(slice_meta_path, "r") as f:
+                slice_meta = json.load(f)
+            slice_slices = slice_meta.get("slices", [])
+            if slice_slices:
+                slice_slices[0]["tiling"] = tiling_metadata.to_dict()
+            with open(slice_meta_path, "w") as f:
+                json.dump(slice_meta, f, indent=2)
 
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

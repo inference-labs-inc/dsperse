@@ -31,6 +31,15 @@ def _verify_slice_worker(args: tuple) -> dict:
     if tiling_info:
         tiling = TilingInfo.from_dict(tiling_info)
         num_tiles = tiling.num_tiles
+
+        if num_tiles <= 0:
+            result.success = False
+            result.method = None
+            result.tiles = []
+            result.error = "no_tiles"
+            result.time_sec = time.time() - start
+            return result.to_dict()
+
         tile_verifs = []
         method = None
 

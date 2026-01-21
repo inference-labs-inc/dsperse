@@ -315,8 +315,9 @@ class Runner:
                 f"Tile ONNX path not found for {slice_id} (slice_idx={slice_idx}, num_tiles={num_tiles}): {tile_onnx_path}"
             )
 
-        has_jst = bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
-        has_ezkl = bool(meta.ezkl_circuit_path)
+        effective_backend = self.force_backend if self.force_backend else "auto"
+        has_jst = effective_backend in ("jstprove", "auto") and bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
+        has_ezkl = effective_backend in ("ezkl", "auto") and bool(meta.ezkl_circuit_path)
 
         tile_start = time.time()
         tile_exec_infos = []

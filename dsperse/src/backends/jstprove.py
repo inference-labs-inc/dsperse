@@ -56,13 +56,10 @@ class JSTprove:
     DEFAULT_FLAGS = ["--no-banner"]
     SUPPORTED_OPS = JSTPROVE_SUPPORTED_OPS
 
-    MAX_CHANNEL_SIZE = 320
-
     @staticmethod
     def is_compatible(model_path: Union[str, Path]) -> Tuple[bool, set]:
         """
-        Check if an ONNX model contains only JSTprove-supported operations
-        and has input channel size <= MAX_CHANNEL_SIZE.
+        Check if an ONNX model contains only JSTprove-supported operations.
 
         Args:
             model_path: Path to the ONNX model file
@@ -80,12 +77,6 @@ class JSTprove:
             unsupported = ops - JSTPROVE_SUPPORTED_OPS
             if unsupported:
                 return False, unsupported
-
-            for inp in model.graph.input:
-                shape = [d.dim_value for d in inp.type.tensor_type.shape.dim]
-                if len(shape) >= 2 and shape[1] > JSTprove.MAX_CHANNEL_SIZE:
-                    return False, {f"CHANNEL_SIZE_TOO_LARGE({shape[1]})"}
-
             return True, set()
         except Exception as e:
             logger.warning(f"Failed to check JSTprove compatibility: {e}")

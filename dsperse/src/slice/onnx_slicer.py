@@ -194,6 +194,37 @@ class OnnxSlicer:
         return [p for p in updated_points if p is not None and p <= max_idx]
 
     @staticmethod
+    def filter_constant_only_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
+        """Remove slice points that would create constant-only slices (no inputs)."""
+        if not slice_points:
+            return slice_points
+
+        nodes_dict = model_metadata.get("nodes", {})
+        nodes_by_idx = {n.get("index"): n for n in nodes_dict.values()}
+        max_idx = max(nodes_by_idx.keys(), default=0)
+
+        sorted_points = sorted(slice_points)
+        points_to_remove = set()
+
+        for i, end_idx in enumerate(sorted_points):
+            start_idx = sorted_points[i - 1] if i > 0 else 0
+
+            all_constant = True
+            for idx in range(start_idx, end_idx):
+                node = nodes_by_idx.get(idx)
+                if node and node.get("node_type") != "Constant":
+                    all_constant = False
+                    break
+
+            if all_constant and start_idx != end_idx:
+                points_to_remove.add(end_idx)
+
+        filtered = [p for p in sorted_points if p not in points_to_remove]
+        if points_to_remove:
+            logger.info(f"Merged {len(points_to_remove)} constant-only slices")
+        return filtered
+
+    @staticmethod
     def isolate_conv(slice_points, model_metadata):
         """
         Ensure each Conv layer gets its own isolated slice by adding slice points
@@ -252,6 +283,7 @@ class OnnxSlicer:
         if tile_size:
             slice_points = self.optimize_for_tiling(slice_points, model_metadata)
 
+        slice_points = self.filter_constant_only_slices(slice_points, model_metadata)
         slice_points = sorted(set(slice_points))
 
         print(f"Optimized slice points: {slice_points}")

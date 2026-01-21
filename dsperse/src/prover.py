@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
-from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata, TileResult, SliceResult
+from dsperse.src.metadata.schema import TilingInfo, RunSliceMetadata, TileResult, SliceResult, Backend, ExecutionMethod, ExecutionChain, RunMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.utils.utils import Utils
@@ -43,7 +43,7 @@ def _prove_slice_worker(args: tuple) -> dict:
             tile_name = f"tile_{tile_idx}"
             tile_run_dir = Path(run_path) / slice_id / tile_name
 
-            if preferred == "jstprove":
+            if preferred == Backend.JSTPROVE:
                 tile_witness_path = tile_run_dir / "output_witness.bin"
             else:
                 tile_witness_path = tile_run_dir / "output.json"
@@ -60,7 +60,7 @@ def _prove_slice_worker(args: tuple) -> dict:
                 continue
 
             try:
-                if preferred == "jstprove":
+                if preferred == Backend.JSTPROVE:
                     from dsperse.src.backends.jstprove import JSTprove
                     backend = JSTprove()
                     ok, res = backend.prove(
@@ -68,7 +68,7 @@ def _prove_slice_worker(args: tuple) -> dict:
                         circuit_path=str(circuit_path),
                         proof_path=str(tile_proof_path),
                     )
-                    method = "jstprove_prove"
+                    method = ExecutionMethod.JSTPROVE_PROVE
                 else:
                     from dsperse.src.backends.ezkl import EZKL
                     backend = EZKL()
@@ -79,7 +79,7 @@ def _prove_slice_worker(args: tuple) -> dict:
                         pk_path=str(pk_path) if pk_path else None,
                         settings_path=settings_path,
                     )
-                    method = "ezkl_prove"
+                    method = ExecutionMethod.EZKL_PROVE
 
                 tile_results.append(TileResult(
                     tile_idx=tile_idx,
@@ -98,7 +98,7 @@ def _prove_slice_worker(args: tuple) -> dict:
     else:
         os.makedirs(Path(proof_path).parent, exist_ok=True)
         try:
-            if preferred == "jstprove":
+            if preferred == Backend.JSTPROVE:
                 from dsperse.src.backends.jstprove import JSTprove
                 backend = JSTprove()
                 ok, res = backend.prove(
@@ -107,7 +107,7 @@ def _prove_slice_worker(args: tuple) -> dict:
                     proof_path=str(proof_path),
                 )
                 result.success = ok
-                result.method = "jstprove_prove"
+                result.method = ExecutionMethod.JSTPROVE_PROVE
                 result.error = None if ok else str(res)
             else:
                 if not pk_path or not os.path.exists(pk_path):
@@ -123,11 +123,11 @@ def _prove_slice_worker(args: tuple) -> dict:
                         settings_path=settings_path,
                     )
                     result.success = ok
-                    result.method = "ezkl_prove"
+                    result.method = ExecutionMethod.EZKL_PROVE
                     result.error = None if ok else str(res)
         except Exception as e:
             result.error = str(e)
-            result.method = f"{preferred}_prove"
+            result.method = ExecutionMethod.JSTPROVE_PROVE if preferred == Backend.JSTPROVE else ExecutionMethod.EZKL_PROVE
 
     result.time_sec = time.time() - start
     return result.to_dict()
@@ -173,11 +173,11 @@ class Prover:
         Returns (circuit_path, pk_path, settings_path), any may be None.
         """
         b = (backend or "").lower()
-        if b == "ezkl":
+        if b == Backend.EZKL:
             circuit_rel = meta.ezkl_circuit_path or meta.circuit_path
             pk_rel = meta.pk_path
             settings_rel = meta.settings_path
-        elif b == "jstprove":
+        elif b == Backend.JSTPROVE:
             circuit_rel = meta.jstprove_circuit_path or meta.circuit_path
             pk_rel = meta.pk_path
             settings_rel = meta.settings_path
@@ -205,32 +205,29 @@ class Prover:
             rr = Utils.load_run_results(run_path)
         except Exception:
             return None
-        exec_chain = (rr or {}).get("execution_chain") or {}
-        exec_results = exec_chain.get("execution_results") or []
-        for entry in exec_results:
-            if entry.get("slice_id") == slice_id:
-                w = entry.get("witness_execution") or {}
-                method = (w.get("method") or "").lower()
-                if method in ("tiled_parallel", "tiled"):
-                    tile_infos = w.get("tile_exec_infos", [])
-                    if tile_infos:
-                        method = (tile_infos[0].get("method", "") or "").lower()
-
-                if method.startswith("jstprove"):
-                    return "jstprove"
-                if method.startswith("ezkl"):
-                    return "ezkl"
+        exec_chain = ExecutionChain.from_dict((rr or {}).get("execution_chain"))
+        entry = exec_chain.get_result_for_slice(slice_id)
+        if not entry or not entry.witness_execution:
+            return None
+        w = entry.witness_execution
+        method = (w.method or "").lower()
+        if method == ExecutionMethod.TILED and w.tiles:
+            method = (w.tiles[0].method or "").lower()
+        if method.startswith(Backend.JSTPROVE):
+            return Backend.JSTPROVE
+        if method.startswith(Backend.EZKL):
+            return Backend.EZKL
         return None
 
     def _select_proving_backend(self, run_path: Path, slice_id: str, meta: RunSliceMetadata) -> str:
         """Choose proving backend with this priority: witness backend → meta backend → jstprove."""
         from_run = self._get_witness_backend_from_run(run_path, slice_id)
-        if from_run in ("jstprove", "ezkl"):
+        if from_run in (Backend.JSTPROVE, Backend.EZKL):
             return from_run
         meta_backend = (meta.backend or "").lower()
-        if meta_backend in ("jstprove", "ezkl"):
+        if meta_backend in (Backend.JSTPROVE, Backend.EZKL):
             return meta_backend
-        return "jstprove"
+        return Backend.JSTPROVE
 
     @staticmethod
     def _get_witness_file_from_run(run_path: Path, slice_id: str) -> str | None:
@@ -239,14 +236,11 @@ class Prover:
             rr = Utils.load_run_results(run_path)
         except Exception:
             return None
-        exec_chain = (rr or {}).get("execution_chain") or {}
-        exec_results = exec_chain.get("execution_results") or []
-        for entry in exec_results:
-            if entry.get("slice_id") == slice_id:
-                w = entry.get("witness_execution") or {}
-                wf = w.get("witness_file") or w.get("witness_path")
-                return wf
-        return None
+        exec_chain = ExecutionChain.from_dict((rr or {}).get("execution_chain"))
+        entry = exec_chain.get_result_for_slice(slice_id)
+        if not entry or not entry.witness_execution:
+            return None
+        return entry.witness_execution.witness_file
 
     def _prove_with_backend(
         self,
@@ -258,21 +252,21 @@ class Prover:
         settings_path: str | None,
     ) -> tuple[bool, str, str | Path | None]:
         """Dispatch to the requested backend. Returns (success, method, result_or_error)."""
-        if backend == "jstprove":
+        if backend == Backend.JSTPROVE:
             if self.jstprove_runner is None:
-                return False, "jstprove_prove", "JSTprove CLI not available"
+                return False, ExecutionMethod.JSTPROVE_PROVE, "JSTprove CLI not available"
             try:
                 ok, res = self.jstprove_runner.prove(
                     witness_path=str(witness_path),
                     circuit_path=str(circuit_path),
                     proof_path=str(proof_path),
                 )
-                return ok, "jstprove_prove", res
+                return ok, ExecutionMethod.JSTPROVE_PROVE, res
             except Exception as e:
-                return False, "jstprove_prove", str(e)
+                return False, ExecutionMethod.JSTPROVE_PROVE, str(e)
 
         if not pk_path or not os.path.exists(pk_path):
-            return False, "ezkl_prove", f"Proving key not found at {pk_path}"
+            return False, ExecutionMethod.EZKL_PROVE, f"Proving key not found at {pk_path}"
         try:
             ok, res = self.ezkl_runner.prove(
                 witness_path=str(witness_path),
@@ -281,9 +275,9 @@ class Prover:
                 pk_path=str(pk_path),
                 settings_path=settings_path,
             )
-            return ok, "ezkl_prove", res
+            return ok, ExecutionMethod.EZKL_PROVE, res
         except Exception as e:
-            return False, "ezkl_prove", str(e)
+            return False, ExecutionMethod.EZKL_PROVE, str(e)
 
     def _prove_tile(
         self,
@@ -307,7 +301,7 @@ class Prover:
             tile_run_dir = run_path / tile_name
             proof_rel_path = tile_name
 
-        if preferred_backend == "jstprove":
+        if preferred_backend == Backend.JSTPROVE:
             tile_witness_path = tile_run_dir / "output_witness.bin"
         else:
             tile_witness_path = tile_run_dir / "output.json"
@@ -372,27 +366,18 @@ class Prover:
         """Prove all circuit-capable slices given a slices directory layout."""
         run_path = Path(run_path)
         dirs_path = Utils.dirs_root_from(Path(dirs_path))
-        metadata = Utils.load_run_metadata(run_path)
+        metadata = RunMetadata.from_dict(Utils.load_run_metadata(run_path))
 
         proofs: dict[str, dict] = {}
         proved_jst = 0
         proved_ezkl = 0
 
-        nodes = ((metadata or {}).get("execution_chain") or {}).get("nodes", {})
-        all_slices = (metadata or {}).get("slices", {})
-        slices_iter = [(sid, all_slices.get(sid, {})) for sid, node in nodes.items() if node.get("use_circuit")]
-
-        if not slices_iter:
-            try:
-                slices_iter = list(Utils.iter_circuit_slices(metadata))
-            except Exception:
-                slices_iter = []
-
+        slices_iter = list(metadata.iter_circuit_slices())
         if not slices_iter:
             logger.warning(f"No circuit-capable slices found to prove under run {run_path}.")
             return Utils.load_run_results(run_path)
 
-        if backend in ("jstprove", "ezkl"):
+        if backend in (Backend.JSTPROVE, Backend.EZKL):
             filtered = []
             for slice_id, meta in slices_iter:
                 wb = self._get_witness_backend_from_run(Path(run_path), slice_id)
@@ -403,9 +388,8 @@ class Prover:
                 return Utils.load_run_results(run_path)
 
         work_items = []
-        for slice_id, meta_raw in slices_iter:
+        for slice_id, meta in slices_iter:
             slice_dir = Utils.slice_dirs_path(dirs_path, slice_id)
-            meta = RunSliceMetadata.from_dict(meta_raw)
             preferred = self._select_proving_backend(Path(run_path), slice_id, meta)
             circuit_path, pk_path, settings_path = self._resolve_slice_artifacts(slice_dir, meta, preferred)
 
@@ -414,7 +398,7 @@ class Prover:
                 witness_path = None
                 proof_path = None
             else:
-                if preferred == "jstprove":
+                if preferred == Backend.JSTPROVE:
                     wf = self._get_witness_file_from_run(Path(run_path), slice_id)
                     witness_path = Path(wf) if wf else (Path(run_path) / slice_id / "output_witness.bin")
                 else:
@@ -456,9 +440,9 @@ class Prover:
 
             if result['success']:
                 method = result.get('method')
-                if method == "jstprove_prove":
+                if method == ExecutionMethod.JSTPROVE_PROVE:
                     proved_jst += 1
-                elif method == "ezkl_prove":
+                elif method == ExecutionMethod.EZKL_PROVE:
                     proved_ezkl += 1
             else:
                 logger.error(f"Proof failed for {slice_id}: {result.get('error')}")
@@ -513,7 +497,7 @@ class Prover:
             raise ValueError(f"Unsupported data type: {detected}")
 
         if is_slice_run:
-            if backend not in ("jstprove", "ezkl"):
+            if backend not in (Backend.JSTPROVE, Backend.EZKL):
                 raise ValueError("Single-slice proving requires explicit backend: 'jstprove' or 'ezkl'.")
             dirs_model_path = model_dir
             if detected != "dirs":
@@ -530,15 +514,14 @@ class Prover:
                             tiles_range: range | list[int] | None = None) -> dict:
         """Internal: prove exactly one slice (detects tiling)."""
         sdir = Path(model_dir)
-        run_meta = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None,
-                                                        original_format=detected)
-        model_slices = (run_meta or {}).get("slices", {})
+        run_meta_dict = RunnerAnalyzer.generate_run_metadata(Path(sdir if sdir.is_dir() else Path(sdir)), save_path=None,
+                                                              original_format=detected)
+        run_meta = RunMetadata.from_dict(run_meta_dict)
 
-        if len(model_slices) != 1:
-            raise ValueError(f"Slices path must represent exactly one slice; found {len(model_slices)}")
+        if len(run_meta.slices) != 1:
+            raise ValueError(f"Slices path must represent exactly one slice; found {len(run_meta.slices)}")
 
-        (slice_id, meta_raw), = model_slices.items()
-        meta = RunSliceMetadata.from_dict(meta_raw)
+        (slice_id, meta), = run_meta.slices.items()
         preferred = (backend or "").lower()
         dirs_root = Utils.dirs_root_from(Path(model_dir))
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
@@ -573,7 +556,7 @@ class Prover:
             proof_path = Path(run_path) / "proof.json"
             proof_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if preferred == "jstprove":
+            if preferred == Backend.JSTPROVE:
                 wf = self._get_witness_file_from_run(run_path, slice_id)
                 witness_path = Path(wf) if wf else (Path(run_path) / "output_witness.bin")
             else:
@@ -601,9 +584,9 @@ class Prover:
         run_results = Utils.load_run_results(Path(run_path))
         run_results, _ = Utils.merge_execution_into_run_results(run_results, proofs, "proof")
         exec_chain = run_results.setdefault("execution_chain", {})
-        if method == "jstprove_prove":
+        if method == ExecutionMethod.JSTPROVE_PROVE:
             exec_chain["jstprove_proved_slices"] = int(exec_chain.get("jstprove_proved_slices", 0)) + 1
-        elif method == "ezkl_prove":
+        elif method == ExecutionMethod.EZKL_PROVE:
             exec_chain["ezkl_proved_slices"] = int(exec_chain.get("ezkl_proved_slices", 0)) + 1
 
         if int(exec_chain.get("ezkl_witness_slices", 0) or 0) == 0:

@@ -15,7 +15,7 @@ from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, Dependencies, ExecutionInfo, TileResult
+from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -97,7 +97,7 @@ class Runner:
         """Run EZKL inference for a slice with fallback to ONNX."""
         if self.ezkl_runner is None:
             return False, "EZKL CLI not available", ExecutionInfo(
-                method='ezkl_gen_witness', success=False, error='EZKL CLI not available'
+                method=ExecutionMethod.EZKL_GEN_WITNESS, success=False, error='EZKL CLI not available'
             )
 
         model_path = meta.circuit_path
@@ -124,7 +124,7 @@ class Runner:
             output_tensor = str(e)
 
         exec_info = ExecutionInfo(
-            method='ezkl_gen_witness',
+            method=ExecutionMethod.EZKL_GEN_WITNESS,
             success=success,
             error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"),
             witness_file=str(output_witness_path),
@@ -136,7 +136,7 @@ class Runner:
         """Run JSTprove inference for a slice with fallback to ONNX."""
         if self.jstprove_runner is None:
             return False, "JSTprove CLI not available", ExecutionInfo(
-                method='jstprove_gen_witness', success=False, error='JSTprove CLI not available'
+                method=ExecutionMethod.JSTPROVE_GEN_WITNESS, success=False, error='JSTprove CLI not available'
             )
 
         circuit_path = meta.circuit_path
@@ -156,7 +156,7 @@ class Runner:
             witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
 
         exec_info = ExecutionInfo(
-            method='jstprove_gen_witness',
+            method=ExecutionMethod.JSTPROVE_GEN_WITNESS,
             success=success,
             error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown JSTprove error"),
             witness_file=str(witness_file_path),
@@ -166,7 +166,7 @@ class Runner:
 
     def _save_inference_output(self, results, output_path):
         """Save inference_output.json with execution details."""
-        model_path = self.run_metadata.get("model_path", "unknown")
+        model_path = self.run_metadata.model_path or "unknown"
         slice_results = results.get("slice_results", {})
 
         def _get_method(r):
@@ -180,10 +180,10 @@ class Runner:
         def _count_tile_method(tiles, method_prefix):
             return sum(1 for t in tiles if (t.method if isinstance(t, TileResult) else t.get("method", "")).startswith(method_prefix))
 
-        ezkl_complete = sum(1 for r in slice_results.values() if _get_method(r) == "ezkl_gen_witness")
-        jstprove_complete = sum(1 for r in slice_results.values() if _get_method(r) == "jstprove_gen_witness")
-        jstprove_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == "tiled" and _count_tile_method(_get_tiles(r), "jstprove") > 0)
-        ezkl_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == "tiled" and _count_tile_method(_get_tiles(r), "ezkl") > 0)
+        ezkl_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.EZKL_GEN_WITNESS)
+        jstprove_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.JSTPROVE_GEN_WITNESS)
+        jstprove_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.TILED and _count_tile_method(_get_tiles(r), Backend.JSTPROVE) > 0)
+        ezkl_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.TILED and _count_tile_method(_get_tiles(r), Backend.EZKL) > 0)
         jstprove_complete += jstprove_tiled_slices
         ezkl_complete += ezkl_tiled_slices
         total_slices = len(slice_results)
@@ -232,7 +232,7 @@ class Runner:
     def _generate_run_metadata(self, format: str = "dirs"):
         if self._provided_run_metadata_path:
             with open(self._provided_run_metadata_path, 'r') as f:
-                self.run_metadata = json.load(f)
+                self.run_metadata = RunMetadata.from_dict(json.load(f))
         else:
             if self._save_metadata_path:
                 save_path = Path(self._save_metadata_path)
@@ -242,13 +242,13 @@ class Runner:
                 if base_dir.name == "slices":
                     base_dir = base_dir.parent
                 save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
-            self.run_metadata = RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format)
+            self.run_metadata = RunMetadata.from_dict(RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format))
 
     def _run_tiled_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> ExecutionInfo:
         """Run a tiled slice: split (Python) → tiles (ONNX) → concat (Python)."""
         tiling = meta.tiling
         if not tiling:
-            return ExecutionInfo(method='tiled', success=False, error='missing_tiling_info')
+            return ExecutionInfo(method=ExecutionMethod.TILED, success=False, error='missing_tiling_info')
 
         input_tensor = self._get_tiled_input_tensor(slice_id, tiling, meta, tensor_cache)
 
@@ -257,7 +257,7 @@ class Runner:
         self._run_tiling_concat(slice_id, tiling, run_dir, tensor_cache)
 
         return ExecutionInfo(
-            method='tiled',
+            method=ExecutionMethod.TILED,
             success=True,
             tiles=tile_results,
         )
@@ -315,15 +315,15 @@ class Runner:
                 f"Tile ONNX path not found for {slice_id} (slice_idx={slice_idx}, num_tiles={num_tiles}): {tile_onnx_path}"
             )
 
-        effective_backend = self.force_backend if self.force_backend else "auto"
-        has_jst = effective_backend in ("jstprove", "auto") and bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
-        has_ezkl = effective_backend in ("ezkl", "auto") and bool(meta.ezkl_circuit_path)
+        effective_backend = self.force_backend if self.force_backend else Backend.AUTO
+        has_jst = effective_backend in (Backend.JSTPROVE, Backend.AUTO) and bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
+        has_ezkl = effective_backend in (Backend.EZKL, Backend.AUTO) and bool(meta.ezkl_circuit_path)
 
         tile_start = time.time()
         tile_exec_infos = []
 
         if has_jst or has_ezkl:
-            backend_name = "jstprove" if has_jst else "ezkl"
+            backend_name = Backend.JSTPROVE if has_jst else Backend.EZKL
             logger.info(f"Running {num_tiles} tiles with {backend_name} circuits")
             slice_specific_dir = self.slices_path / slice_id
 
@@ -395,7 +395,7 @@ class Runner:
                 output_tensor = torch.from_numpy(output_arr)
                 tensor_cache[cache_output_name] = output_tensor
 
-                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method='onnx'))
+                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=ExecutionMethod.ONNX_ONLY))
 
         tile_time = time.time() - tile_start
         logger.info(f"All {num_tiles} tiles completed in {tile_time:.2f}s ({tile_time / num_tiles * 1000:.1f}ms avg)")
@@ -432,14 +432,15 @@ class Runner:
 
 
     def _run(self, output_path=None, input_json_path=None):
-        head, nodes = RunnerAnalyzer.get_execution_chain(self.run_metadata)
+        exec_chain = self.run_metadata.execution_chain
+        head = exec_chain.head
+        nodes = exec_chain.nodes
         run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
         self.last_run_dir = run_dir
 
         input_tensor = Utils.read_input(input_json_path)
-        first_slice_raw = self.run_metadata["slices"].get(head, {})
-        first_slice_meta = RunSliceMetadata.from_dict(first_slice_raw)
-        first_slice_inputs = first_slice_meta.dependencies.filtered_inputs
+        first_slice_meta = self.run_metadata.get_slice(head)
+        first_slice_inputs = first_slice_meta.dependencies.filtered_inputs if first_slice_meta else []
         model_input_name = first_slice_inputs[0] if first_slice_inputs else "input"
         tensor_cache = {model_input_name: input_tensor}
 
@@ -448,8 +449,7 @@ class Runner:
         final_tensor = None
 
         while current_slice_id:
-            info_raw = self.run_metadata["slices"][current_slice_id]
-            info = RunSliceMetadata.from_dict(info_raw)
+            info = self.run_metadata.get_slice(current_slice_id)
             slice_dir = self.slices_path
 
             if info.tiling:
@@ -467,7 +467,7 @@ class Runner:
                 input_name = filtered_inputs[0] if filtered_inputs else "input"
                 current_tensor = tensor_cache.get(input_name, input_tensor)
 
-                use_circuit = node.get("use_circuit") and self.force_backend != 'onnx'
+                use_circuit = node.use_circuit and self.force_backend != Backend.ONNX
 
                 if use_circuit:
                     in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
@@ -512,7 +512,7 @@ class Runner:
             if not ok:
                 err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get('error', 'unknown')
                 raise Exception(f"Inference failed for {current_slice_id}: {err}")
-            current_slice_id = nodes[current_slice_id].get("next")
+            current_slice_id = nodes[current_slice_id].next
 
         if final_tensor is None:
             if slice_results:

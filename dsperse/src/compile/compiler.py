@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.compile.utils.compiler_utils import CompilerUtils
+from dsperse.src.metadata.schema import Backend
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
@@ -65,7 +66,7 @@ def _compile_slice_worker(args: tuple) -> dict:
 
             calibration_input = os.path.join(output_dir, "calibration.json") if os.path.exists(os.path.join(output_dir, "calibration.json")) else None
 
-            if be == "jstprove":
+            if be == Backend.JSTPROVE:
                 from dsperse.src.backends.jstprove import JSTprove
                 compatible, unsupported_ops = JSTprove.is_compatible(slice_path)
                 if not compatible:
@@ -76,7 +77,7 @@ def _compile_slice_worker(args: tuple) -> dict:
                     slice_path, output_dir, input_file_path=calibration_input
                 )
                 version = backend_instance.get_version() if hasattr(backend_instance, 'get_version') else None
-            elif be == "ezkl":
+            elif be == Backend.EZKL:
                 from dsperse.src.backends.ezkl import EZKL
                 backend_instance = EZKL()
                 compilation_data = backend_instance.compilation_pipeline(
@@ -226,14 +227,14 @@ class Compiler:
         if idx in self.layer_backends:
             backends.append(self.layer_backends[idx])
         if idx in self.default_layer_indices:
-            for b in ["jstprove", "ezkl"]:
+            for b in [Backend.JSTPROVE, Backend.EZKL]:
                 if b not in backends:
                     backends.append(b)
         if not backends:
-            if self.default_backend in {"jstprove", "ezkl"} and not self.use_fallback:
+            if self.default_backend in {Backend.JSTPROVE, Backend.EZKL} and not self.use_fallback:
                 backends = [self.default_backend]
             else:
-                backends = ["jstprove", "ezkl"]
+                backends = [Backend.JSTPROVE, Backend.EZKL]
         return backends
 
     def _get_jstprove(self):
@@ -261,33 +262,19 @@ class Compiler:
         # Check if layer has specific backend assigned
         if layer_idx in self.layer_backends:
             backend_name = self.layer_backends[layer_idx]
-            if backend_name == "jstprove":
-                return self._get_jstprove(), "jstprove"
+            if backend_name == Backend.JSTPROVE:
+                return self._get_jstprove(), Backend.JSTPROVE
             else:
-                return self._get_ezkl(), "ezkl"
+                return self._get_ezkl(), Backend.EZKL
         elif self.default_backend is None:
             # Default: try both backends (will be handled in fallback logic)
             return None, None
         else:
             # Simple backend specified
-            if self.default_backend == "jstprove":
-                return self._get_jstprove(), "jstprove"
+            if self.default_backend == Backend.JSTPROVE:
+                return self._get_jstprove(), Backend.JSTPROVE
             else:
-                return self._get_ezkl(), "ezkl"
-
-    # # Keep backward compatibility properties
-    # @property
-    # def backend(self):
-    #     # Return ezkl for backward compatibility
-    #     return self._get_ezkl()
-    #
-    # @property
-    # def backend_name(self):
-    #     return self.default_backend or "ezkl"
-    #
-    # @property
-    # def ezkl(self):
-    #     return self._get_ezkl()
+                return self._get_ezkl(), Backend.EZKL
 
     def _compile_slice(self, idx: int, slice_data: dict, base_path: str):
         """
@@ -321,28 +308,28 @@ class Compiler:
             backends_to_try = [(backend, backend_name)]
             if self.use_fallback:
                 # Add fallback: try other backend, then onnx
-                if backend_name == "jstprove":
+                if backend_name == Backend.JSTPROVE:
                     ezkl = self._get_ezkl()
                     if ezkl:
-                        backends_to_try.append((ezkl, "ezkl"))
-                elif backend_name == "ezkl":
+                        backends_to_try.append((ezkl, Backend.EZKL))
+                elif backend_name == Backend.EZKL:
                     jst = self._get_jstprove()
                     if jst:
-                        backends_to_try.append((jst, "jstprove"))
-                backends_to_try.append((None, "onnx"))
+                        backends_to_try.append((jst, Backend.JSTPROVE))
+                backends_to_try.append((None, Backend.ONNX))
         elif self.use_fallback:
             # No specific backend for this layer, use default fallback chain
             # (jstprove -> ezkl -> onnx)
             jst = self._get_jstprove()
             ezkl = self._get_ezkl()
             if jst:
-                backends_to_try.append((jst, "jstprove"))
+                backends_to_try.append((jst, Backend.JSTPROVE))
             if ezkl:
-                backends_to_try.append((ezkl, "ezkl"))
-            backends_to_try.append((None, "onnx"))
+                backends_to_try.append((ezkl, Backend.EZKL))
+            backends_to_try.append((None, Backend.ONNX))
         else:
             # No backend specified and no fallback - skip compilation (use pure ONNX)
-            backends_to_try = [(None, "onnx")]
+            backends_to_try = [(None, Backend.ONNX)]
 
         success = False
         compilation_data = {}
@@ -353,7 +340,7 @@ class Compiler:
                 # Skip compilation - will use onnx at runtime
                 logger.info(f"Slice {idx}: Skipping ZK compilation, will use ONNX at runtime")
                 success = True
-                used_backend = "onnx"
+                used_backend = Backend.ONNX
                 compilation_data = {"skipped": True, "reason": "fallback_to_onnx"}
                 break
 
@@ -414,7 +401,7 @@ class Compiler:
             raise RuntimeError("EZKL backend is not available")
 
         slice_path = self._resolve_slice_path(slice_data, base_path)
-        backend_dir = "ezkl"
+        backend_dir = Backend.EZKL
         
         if output_dir:
             slice_output_path = output_dir
@@ -455,7 +442,7 @@ class Compiler:
         backend = self._get_jstprove()
         if backend is None:
             raise RuntimeError("JSTprove backend is not available")
-        backend_dir = "jstprove"
+        backend_dir = Backend.JSTPROVE
         
         if output_dir:
             slice_output_path = output_dir
@@ -551,15 +538,15 @@ class Compiler:
                 backends_to_build.append(self.layer_backends[idx])
 
             if idx in self.default_layer_indices:
-                for b in ["jstprove", "ezkl"]:
+                for b in [Backend.JSTPROVE, Backend.EZKL]:
                     if b not in backends_to_build:
                         backends_to_build.append(b)
 
             if not backends_to_build:
-                if self.default_backend in {"jstprove", "ezkl"} and not self.use_fallback:
+                if self.default_backend in {Backend.JSTPROVE, Backend.EZKL} and not self.use_fallback:
                     backends_to_build = [self.default_backend]
                 else:
-                    backends_to_build = ["jstprove", "ezkl"]
+                    backends_to_build = [Backend.JSTPROVE, Backend.EZKL]
 
             work_items.append((idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, compilation_slice_data))
             slice_info_map[idx] = {
@@ -621,10 +608,10 @@ class Compiler:
                 if isinstance(slice_data, dict):
                     if 'compilation' not in slice_data or not isinstance(slice_data.get('compilation'), dict):
                         slice_data['compilation'] = {}
-                    slice_data['compilation']['onnx'] = {
+                    slice_data['compilation'][Backend.ONNX] = {
                         "compiled": True,
                         "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "backend": "onnx",
+                        "backend": Backend.ONNX,
                         "backend_version": None,
                         "files": {"skipped": True, "reason": "fallback_to_onnx"}
                     }
@@ -691,28 +678,28 @@ class Compiler:
             onnx_block = {
                 "compiled": True,
                 "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "backend": "onnx",
+                "backend": Backend.ONNX,
                 "backend_version": None,
                 "files": {"skipped": True, "reason": "fallback_to_onnx"}
             }
             if 'compilation' not in slice_data:
                 slice_data['compilation'] = {}
-            slice_data['compilation']['onnx'] = onnx_block
+            slice_data['compilation'][Backend.ONNX] = onnx_block
 
             slice_meta_path = Path(slice_dir) / "metadata.json"
             if slice_meta_path.exists():
-                CompilerUtils.update_slice_metadata(idx, slice_meta_path, True, onnx_block, backend_name="onnx")
+                CompilerUtils.update_slice_metadata(idx, slice_meta_path, True, onnx_block, backend_name=Backend.ONNX)
 
         return successful_backends
 
     def _run_backend_compilation(self, be: str, idx: int, slice_data: dict, base_path: str, output_dir: str,
                                  slice_dir: str):
         """Dispatches to the specific backend implementation."""
-        if be == "jstprove":
+        if be == Backend.JSTPROVE:
             success, file_paths = self._compile_jstprove_slice(idx, slice_data, base_path, output_dir=output_dir,
                                                                slice_dir=slice_dir)
             version = self._jstprove.get_version() if self._jstprove else None
-        elif be == "ezkl":
+        elif be == Backend.EZKL:
             success, file_paths = self._compile_ezkl_slice(idx, slice_data, base_path, output_dir=output_dir,
                                                            slice_dir=slice_dir)
             version = self._ezkl.get_version() if self._ezkl else None

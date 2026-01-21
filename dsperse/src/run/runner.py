@@ -15,7 +15,7 @@ from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
+from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, ChannelSplitInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -430,6 +430,107 @@ class Runner:
         logger.info(f"Concat {slice_id} completed in {concat_time:.3f}s, output shape {list(output.shape)}")
         return concat_time
 
+    def _run_channel_group(self, group, group_input: torch.Tensor, run_dir: Path, output_shape: tuple) -> tuple[torch.Tensor, str]:
+        """Run a single channel group, returning (output_tensor, method_used)."""
+        import numpy as np
+        import onnxruntime as ort
+
+        forced = self.force_backend
+        has_jst = bool(group.jstprove_circuit_path) and self.jstprove_runner
+        has_ezkl = bool(group.ezkl_circuit_path) and group.vk_path
+
+        if isinstance(group_input, torch.Tensor):
+            input_arr = group_input.detach().cpu().numpy().astype(np.float32)
+        else:
+            input_arr = np.asarray(group_input, dtype=np.float32)
+
+        group_dir = run_dir / f"channel_group_{group.group_idx}"
+        group_dir.mkdir(parents=True, exist_ok=True)
+        in_file = group_dir / "input.json"
+        out_file = group_dir / "output.json"
+        Utils.write_input(torch.from_numpy(input_arr), in_file)
+
+        def _extract_and_reshape(result):
+            tensor = RunnerUtils.extract_output_tensor(result)
+            if tensor is not None and isinstance(tensor, torch.Tensor) and tensor.dim() < 4:
+                expected = np.prod(output_shape)
+                if tensor.numel() == expected:
+                    return tensor.reshape(output_shape)
+            return tensor
+
+        if forced == Backend.ONNX or (not has_jst and not has_ezkl):
+            group_onnx_path = RunnerUtils.resolve_relative_path(group.path, self.slices_path)
+            session = ort.InferenceSession(str(group_onnx_path))
+            ort_input_name = session.get_inputs()[0].name
+            outputs = session.run(None, {ort_input_name: input_arr})
+            return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
+
+        if (forced == Backend.JSTPROVE and has_jst) or (has_jst and forced != Backend.EZKL):
+            circuit_path = RunnerUtils.resolve_relative_path(group.jstprove_circuit_path, self.slices_path)
+            success, result = self.jstprove_runner.generate_witness(str(in_file), circuit_path, str(out_file))
+            if success:
+                tensor = _extract_and_reshape(result)
+                if tensor is not None:
+                    return tensor, ExecutionMethod.JSTPROVE_GEN_WITNESS
+            logger.warning(f"JSTprove failed for group {group.group_idx}, falling back")
+
+        if has_ezkl:
+            circuit_path = RunnerUtils.resolve_relative_path(group.ezkl_circuit_path, self.slices_path)
+            vk_path = RunnerUtils.resolve_relative_path(group.vk_path, self.slices_path)
+            settings_path = RunnerUtils.resolve_relative_path(group.settings_path, self.slices_path) if group.settings_path else None
+            ezkl_in = RunnerUtils._flatten_input_for_ezkl(in_file)
+            success, result = self.ezkl_runner.generate_witness(str(ezkl_in), circuit_path, str(out_file), vk_path, settings_path)
+            if success:
+                tensor = _extract_and_reshape(result)
+                if tensor is not None:
+                    return tensor, ExecutionMethod.EZKL_GEN_WITNESS
+            logger.warning(f"EZKL failed for group {group.group_idx}, falling back")
+
+        group_onnx_path = RunnerUtils.resolve_relative_path(group.path, self.slices_path)
+        session = ort.InferenceSession(str(group_onnx_path))
+        outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
+        return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
+
+    def _run_channel_split_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> ExecutionInfo:
+        import numpy as np
+
+        channel_split = meta.channel_split
+        if not channel_split:
+            return ExecutionInfo(method="channel_split", success=False, error="missing_channel_split_info")
+
+        input_name = channel_split.input_name or (meta.dependencies.filtered_inputs[0] if meta.dependencies.filtered_inputs else "input")
+        input_tensor = tensor_cache.get(input_name)
+        if input_tensor is None:
+            raise ValueError(f"Missing input tensor '{input_name}' for channel-split slice {slice_id}")
+
+        output_shape = (1, channel_split.c_out, channel_split.h, channel_split.w)
+
+        partial_outputs = []
+        methods_used = []
+        for group in channel_split.groups:
+            group_input = input_tensor[:, group.c_start:group.c_end, :, :]
+            output, method = self._run_channel_group(group, group_input, run_dir, output_shape)
+            partial_outputs.append(output)
+            methods_used.append(method)
+
+        summed = partial_outputs[0]
+        for po in partial_outputs[1:]:
+            summed = summed + po
+
+        if channel_split.bias_path:
+            bias_path = RunnerUtils.resolve_relative_path(channel_split.bias_path, self.slices_path)
+            if Path(bias_path).exists():
+                bias = np.load(bias_path)
+                bias_tensor = torch.from_numpy(bias).reshape(1, -1, 1, 1)
+                summed = summed + bias_tensor
+
+        output_name = channel_split.output_name or (meta.dependencies.output[0] if meta.dependencies.output else "output")
+        tensor_cache[output_name] = summed
+
+        primary_method = methods_used[0] if len(set(methods_used)) == 1 else "channel_split_mixed"
+        logger.info(f"Channel split {slice_id}: {channel_split.num_groups} groups via {primary_method}, output {list(summed.shape)}")
+
+        return ExecutionInfo(method=f"channel_split:{primary_method}", success=True)
 
     def _run(self, output_path=None, input_json_path=None):
         exec_chain = self.run_metadata.execution_chain
@@ -452,7 +553,14 @@ class Runner:
             info = self.run_metadata.get_slice(current_slice_id)
             slice_dir = self.slices_path
 
-            if info.tiling:
+            if info.channel_split:
+                logger.info(f"Running channel-split slice {current_slice_id} with {info.channel_split.num_groups} groups")
+                exec_info = self._run_channel_split_slice(current_slice_id, info, tensor_cache, run_dir)
+                ok = exec_info.success
+                output_names = info.dependencies.output
+                if ok and output_names:
+                    final_tensor = tensor_cache.get(output_names[0])
+            elif info.tiling:
                 logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
                 exec_info = self._run_tiled_slice(current_slice_id, info, tensor_cache, run_dir)
                 ok = exec_info.success

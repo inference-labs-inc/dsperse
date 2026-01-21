@@ -150,6 +150,7 @@ class RunnerAnalyzer:
                 ezkl_pk_path=ezkl_pk_path,
                 ezkl_vk_path=ezkl_vk_path,
                 tiling=meta.tiling,
+                channel_split=meta.channel_split,
             )
 
         return slices
@@ -229,6 +230,7 @@ class RunnerAnalyzer:
                 ezkl_pk_path=ezkl_pk_path,
                 ezkl_vk_path=ezkl_vk_path,
                 tiling=meta.tiling,
+                channel_split=meta.channel_split,
             )
 
         return slices

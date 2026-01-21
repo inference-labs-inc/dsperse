@@ -18,7 +18,9 @@ from pathlib import Path
 import onnx
 from onnx import helper, TensorProto, numpy_helper
 
-from dsperse.src.metadata.schema import TilingInfo, TileInfo
+import numpy as np
+
+from dsperse.src.metadata.schema import TilingInfo, TileInfo, ChannelSplitInfo, ChannelGroupInfo
 from dsperse.src.utils.utils import save_onnx_model
 
 ELEMENTWISE_OPS = {
@@ -104,8 +106,197 @@ def get_conv_params(model: onnx.ModelProto) -> dict | None:
                 'stride': list(attrs["strides"].ints) if "strides" in attrs else [1, 1],
                 'dilation': list(attrs["dilations"].ints) if "dilations" in attrs else [1, 1],
                 'pads': list(attrs["pads"].ints) if "pads" in attrs else [0, 0, 0, 0],
+                'group': attrs["group"].i if "group" in attrs else 1,
             }
     return None
+
+
+def is_channel_splittable(model: onnx.ModelProto) -> bool:
+    if len(model.graph.input) > 1:
+        return False
+    conv_count = sum(1 for n in model.graph.node if n.op_type == "Conv")
+    if conv_count != 1:
+        return False
+    conv_params = get_conv_params(model)
+    if not conv_params:
+        return False
+    if conv_params['group'] != 1:
+        return False
+    ops = {n.op_type for n in model.graph.node}
+    return (ops - {'Conv'}).issubset(ELEMENTWISE_OPS)
+
+
+def calculate_channel_split_params(
+    c_in: int,
+    c_out: int,
+    spatial_h: int,
+    spatial_w: int,
+    max_conv_size: int,
+    min_tile: int = 7,
+) -> tuple[int | None, int | None, str | None]:
+    import math
+
+    valid_tiles = sorted([t for t in range(min_tile, spatial_h + 1) if spatial_h % t == 0])
+    if not valid_tiles:
+        return None, None, "no_valid_tile_for_spatial_dims"
+
+    for tile_candidate in valid_tiles:
+        max_channels_for_tile = max_conv_size // (tile_candidate * tile_candidate)
+        if max_channels_for_tile >= 1 and max_channels_for_tile < c_in:
+            num_groups = math.ceil(c_in / max_channels_for_tile)
+            if num_groups > 1:
+                channels_per_group = math.ceil(c_in / num_groups)
+                while channels_per_group * (num_groups - 1) >= c_in and num_groups > 1:
+                    num_groups -= 1
+                    channels_per_group = math.ceil(c_in / num_groups)
+                if num_groups > 1:
+                    return num_groups, channels_per_group, None
+
+    return None, None, "channel_split_not_beneficial"
+
+
+def create_channel_group_slice(
+    slice_path: Path,
+    group_idx: int,
+    c_start: int,
+    c_end: int,
+    slice_idx: int,
+    output_dir: Path,
+) -> dict | None:
+    m = onnx.load(str(slice_path))
+    conv_params = get_conv_params(m)
+    if not conv_params:
+        return None
+
+    conv_node = conv_params['node']
+    kh, kw = conv_params['kernel']
+    sh, sw = conv_params['stride']
+    dh, dw = conv_params['dilation']
+    pads = conv_params['pads']
+
+    orig_input = m.graph.input[0]
+    orig_dims = [d.dim_value for d in orig_input.type.tensor_type.shape.dim]
+    h_in, w_in = orig_dims[2], orig_dims[3]
+
+    weights, bias = None, None
+    for init in m.graph.initializer:
+        if init.name == conv_node.input[1]:
+            weights = numpy_helper.to_array(init)
+        if len(conv_node.input) > 2 and init.name == conv_node.input[2]:
+            bias = numpy_helper.to_array(init)
+
+    if weights is None:
+        return None
+
+    sliced_weights = weights[:, c_start:c_end, :, :]
+
+    c_out = weights.shape[0]
+    c_group = c_end - c_start
+
+    effective_kh = (kh - 1) * dh + 1
+    effective_kw = (kw - 1) * dw + 1
+    h_out = (h_in + pads[0] + pads[2] - effective_kh) // sh + 1
+    w_out = (w_in + pads[1] + pads[3] - effective_kw) // sw + 1
+
+    input_name = f"group_{group_idx}_in"
+    output_name = f"group_{group_idx}_out"
+
+    X = helper.make_tensor_value_info(input_name, TensorProto.FLOAT, [1, c_group, h_in, w_in])
+    Y = helper.make_tensor_value_info(output_name, TensorProto.FLOAT, [1, c_out, h_out, w_out])
+
+    W = helper.make_tensor("W", TensorProto.FLOAT, sliced_weights.shape, sliced_weights.flatten().tolist())
+    initializers = [W]
+    conv_inputs = [input_name, "W"]
+
+    nodes = [helper.make_node(
+        "Conv", conv_inputs, [output_name],
+        kernel_shape=[kh, kw], strides=[sh, sw], pads=pads, dilations=[dh, dw]
+    )]
+
+    graph = helper.make_graph(nodes, f"channel_group_{slice_idx}_{group_idx}", [X], [Y], initializers)
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    model.ir_version = 8
+
+    groups_dir = output_dir / "channel_groups"
+    groups_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = groups_dir / f"group_{group_idx}.onnx"
+
+    save_onnx_model(model, onnx_path)
+
+    return {
+        "path": str(onnx_path.resolve()),
+        "group_idx": group_idx,
+        "c_start": c_start,
+        "c_end": c_end,
+        "output_shape": [1, c_out, h_out, w_out],
+    }
+
+
+def apply_channel_splitting_to_slice(
+    slice_path: Path,
+    split_params: dict,
+    slice_idx: int,
+    output_dir: Path,
+) -> ChannelSplitInfo | None:
+    c_in = split_params["c_in"]
+    c_out = split_params["c_out"]
+    num_groups = split_params["num_groups"]
+    channels_per_group = split_params["channels_per_group"]
+
+    m = onnx.load(str(slice_path))
+    conv_params = get_conv_params(m)
+    if not conv_params:
+        return None
+
+    groups = []
+    for g in range(num_groups):
+        c_start = g * channels_per_group
+        c_end = min((g + 1) * channels_per_group, c_in)
+
+        group_info = create_channel_group_slice(
+            slice_path=slice_path,
+            group_idx=g,
+            c_start=c_start,
+            c_end=c_end,
+            slice_idx=slice_idx,
+            output_dir=output_dir,
+        )
+
+        if group_info is None:
+            return None
+
+        groups.append(ChannelGroupInfo(
+            group_idx=g,
+            c_start=c_start,
+            c_end=c_end,
+            path=f"slice_{slice_idx}/payload/channel_groups/group_{g}.onnx",
+        ))
+
+    bias_path = None
+    conv_node = conv_params['node']
+    for init in m.graph.initializer:
+        if len(conv_node.input) > 2 and init.name == conv_node.input[2]:
+            bias = numpy_helper.to_array(init)
+            bias_dir = output_dir / "channel_groups"
+            bias_dir.mkdir(parents=True, exist_ok=True)
+            bias_file = bias_dir / "bias.npy"
+            np.save(str(bias_file), bias)
+            bias_path = f"slice_{slice_idx}/payload/channel_groups/bias.npy"
+            break
+
+    return ChannelSplitInfo(
+        slice_idx=slice_idx,
+        c_in=c_in,
+        c_out=c_out,
+        num_groups=num_groups,
+        channels_per_group=channels_per_group,
+        input_name=split_params["input_name"],
+        output_name=split_params["output_name"],
+        h=split_params["h"],
+        w=split_params["w"],
+        groups=groups,
+        bias_path=bias_path,
+    )
 
 
 def create_tile_slice(
@@ -246,14 +437,32 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int | None = None, tile_si
     halo_h, halo_w = compute_halo(kernel, dilation)
     min_tile = compute_min_tile_size(kernel, dilation)
 
+    weights = None
+    for init in m.graph.initializer:
+        if init.name == conv_params['node'].input[1]:
+            weights = numpy_helper.to_array(init)
+            break
+    if weights is None:
+        return None
+    c_out = weights.shape[0]
+
     if max_conv_size is not None:
         actual_tile_size, skip_reason = calculate_tile_size_from_max_elements(c_in, h, w, max_conv_size, min_tile)
         if actual_tile_size is None:
-            if skip_reason == "min_tile_too_large":
-                import math
-                needed_tile = int(math.sqrt(max_conv_size / c_in))
-                print(f"  WARNING: Conv {c_in}ch x {h}x{w} cannot be tiled to fit max_conv_size={max_conv_size}")
-                print(f"           Needed tile_size={needed_tile} but min_tile={min_tile} (kernel constraint)")
+            if skip_reason in ("min_tile_too_large", "no_divisor") and is_channel_splittable(m):
+                num_groups, cpg, split_err = calculate_channel_split_params(c_in, c_out, h, w, max_conv_size, min_tile)
+                if num_groups is not None and num_groups > 1:
+                    return {
+                        "needs_channel_split": True,
+                        "c_in": c_in,
+                        "c_out": c_out,
+                        "num_groups": num_groups,
+                        "channels_per_group": cpg,
+                        "h": h,
+                        "w": w,
+                        "input_name": inp.name,
+                        "output_name": out.name,
+                    }
             return None
     elif tile_size is not None:
         if h <= tile_size:
@@ -274,15 +483,6 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int | None = None, tile_si
     if num_tiles < 2:
         return None
 
-    weights = None
-    for init in m.graph.initializer:
-        if init.name == conv_params['node'].input[1]:
-            weights = numpy_helper.to_array(init)
-            break
-    if weights is None:
-        return None
-
-    c_out = weights.shape[0]
     out_tile_h = actual_tile_size // sh
     out_tile_w = actual_tile_size // sw
 
@@ -346,54 +546,85 @@ def apply_tiling_to_slices(slices_dir: str | Path, max_conv_size: int | None = N
         if not tiling_params:
             continue
 
-        c_in = tiling_params["c_in"]
-        tile_sz = tiling_params["tile_size"]
-        print(f"Tiling Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> tile_size={tile_sz} ({tiling_params['num_tiles']} tiles)")
+        if tiling_params.get("needs_channel_split"):
+            c_in = tiling_params["c_in"]
+            num_groups = tiling_params["num_groups"]
+            cpg = tiling_params["channels_per_group"]
+            print(f"Channel splitting Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> {num_groups} groups ({cpg} channels/group)")
 
-        tile_info = create_tile_slice(
-            slice_path=onnx_path,
-            tile_size=tile_sz,
-            slice_idx=idx,
-            output_dir=slice_dir / "payload",
-        )
-        if not tile_info:
-            print(f"  Failed to create tile model for slice {idx}")
-            continue
+            channel_split_info = apply_channel_splitting_to_slice(
+                slice_path=onnx_path,
+                split_params=tiling_params,
+                slice_idx=idx,
+                output_dir=slice_dir / "payload",
+            )
+            if not channel_split_info:
+                print(f"  Failed to create channel groups for slice {idx}")
+                continue
 
-        tiled_results[idx] = {
-            "tiling": tiling_params,
-            "tile_info": tile_info,
-        }
+            tiled_results[idx] = {
+                "channel_split": tiling_params,
+            }
+            slices_data[idx]["channel_split"] = channel_split_info.to_dict()
 
-        tiling_metadata = TilingInfo(
-            slice_idx=idx,
-            tile_size=tile_sz,
-            num_tiles=tiling_params["num_tiles"],
-            tiles_y=tiling_params["tiles_y"],
-            tiles_x=tiling_params["tiles_x"],
-            halo=tuple(tiling_params["halo"]),
-            out_tile=tuple(tiling_params["out_tile"]),
-            stride=tuple(tiling_params["stride"]),
-            c_in=tiling_params["c_in"],
-            c_out=tiling_params["c_out"],
-            input_name=tiling_params["input_name"],
-            output_name=tiling_params["output_name"],
-            tile=TileInfo(
-                path=f"slice_{idx}/payload/tiles/tile.onnx",
-                conv_out=tuple(tile_info["conv_out"]),
-            ),
-        )
-        slices_data[idx]["tiling"] = tiling_metadata.to_dict()
+            slice_meta_path = slice_dir / "metadata.json"
+            if slice_meta_path.exists():
+                with open(slice_meta_path, "r") as f:
+                    slice_meta = json.load(f)
+                slice_slices = slice_meta.get("slices", [])
+                if slice_slices:
+                    slice_slices[0]["channel_split"] = channel_split_info.to_dict()
+                with open(slice_meta_path, "w") as f:
+                    json.dump(slice_meta, f, indent=2)
+        else:
+            c_in = tiling_params["c_in"]
+            tile_sz = tiling_params["tile_size"]
+            print(f"Tiling Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> tile_size={tile_sz} ({tiling_params['num_tiles']} tiles)")
 
-        slice_meta_path = slice_dir / "metadata.json"
-        if slice_meta_path.exists():
-            with open(slice_meta_path, "r") as f:
-                slice_meta = json.load(f)
-            slice_slices = slice_meta.get("slices", [])
-            if slice_slices:
-                slice_slices[0]["tiling"] = tiling_metadata.to_dict()
-            with open(slice_meta_path, "w") as f:
-                json.dump(slice_meta, f, indent=2)
+            tile_info = create_tile_slice(
+                slice_path=onnx_path,
+                tile_size=tile_sz,
+                slice_idx=idx,
+                output_dir=slice_dir / "payload",
+            )
+            if not tile_info:
+                print(f"  Failed to create tile model for slice {idx}")
+                continue
+
+            tiled_results[idx] = {
+                "tiling": tiling_params,
+                "tile_info": tile_info,
+            }
+
+            tiling_metadata = TilingInfo(
+                slice_idx=idx,
+                tile_size=tile_sz,
+                num_tiles=tiling_params["num_tiles"],
+                tiles_y=tiling_params["tiles_y"],
+                tiles_x=tiling_params["tiles_x"],
+                halo=tuple(tiling_params["halo"]),
+                out_tile=tuple(tiling_params["out_tile"]),
+                stride=tuple(tiling_params["stride"]),
+                c_in=tiling_params["c_in"],
+                c_out=tiling_params["c_out"],
+                input_name=tiling_params["input_name"],
+                output_name=tiling_params["output_name"],
+                tile=TileInfo(
+                    path=f"slice_{idx}/payload/tiles/tile.onnx",
+                    conv_out=tuple(tile_info["conv_out"]),
+                ),
+            )
+            slices_data[idx]["tiling"] = tiling_metadata.to_dict()
+
+            slice_meta_path = slice_dir / "metadata.json"
+            if slice_meta_path.exists():
+                with open(slice_meta_path, "r") as f:
+                    slice_meta = json.load(f)
+                slice_slices = slice_meta.get("slices", [])
+                if slice_slices:
+                    slice_slices[0]["tiling"] = tiling_metadata.to_dict()
+                with open(slice_meta_path, "w") as f:
+                    json.dump(slice_meta, f, indent=2)
 
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

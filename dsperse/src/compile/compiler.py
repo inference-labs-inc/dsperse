@@ -30,19 +30,105 @@ def _compile_slice_worker(args: tuple) -> dict:
     Must be module-level for pickling by ProcessPoolExecutor.
 
     Args:
-        args: Tuple of (idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, compilation_slice_data)
+        args: Tuple of (idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data)
 
     Returns:
         Dict with compilation results for this slice
     """
-    idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, compilation_slice_data = args
+    idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data = args
 
     results = {
         'idx': idx,
         'successful_backends': [],
         'compilation_blocks': {},
-        'errors': []
+        'errors': [],
+        'channel_group_circuits': {}
     }
+
+    if channel_split_info:
+        groups = channel_split_info.get('groups', [])
+        for be in backends_to_build:
+            group_circuits = []
+            all_groups_success = True
+            for group in groups:
+                group_idx = group.get('group_idx', 0)
+                group_onnx_path = group.get('path', '')
+                if not os.path.isabs(group_onnx_path):
+                    group_onnx_path = os.path.join(base_path, group_onnx_path)
+
+                if not os.path.exists(group_onnx_path):
+                    results['errors'].append(f"{be}: channel group {group_idx} ONNX not found at {group_onnx_path}")
+                    all_groups_success = False
+                    continue
+
+                output_dir = os.path.join(slice_dir, "payload", "channel_groups", be, f"group_{group_idx}")
+                os.makedirs(output_dir, exist_ok=True)
+
+                print(f"[{be}] slice_{idx} channel_group_{group_idx}: compiling...")
+                compile_start = time.time()
+
+                try:
+                    if be == Backend.JSTPROVE:
+                        from dsperse.src.backends.jstprove import JSTprove
+                        compatible, unsupported_ops = JSTprove.is_compatible(group_onnx_path)
+                        if not compatible:
+                            print(f"[jstprove] slice_{idx} group_{group_idx}: SKIP - unsupported ops {unsupported_ops}")
+                            all_groups_success = False
+                            continue
+                        backend_instance = JSTprove()
+                        compilation_data = backend_instance.compilation_pipeline(
+                            group_onnx_path, output_dir, input_file_path=None
+                        )
+                    elif be == Backend.EZKL:
+                        from dsperse.src.backends.ezkl import EZKL
+                        backend_instance = EZKL()
+                        compilation_data = backend_instance.compilation_pipeline(
+                            group_onnx_path, output_dir, input_file_path=None
+                        )
+                    else:
+                        continue
+
+                    success = CompilerUtils.is_ezkl_compilation_successful(compilation_data)
+                    compile_time = time.time() - compile_start
+
+                    file_paths = CompilerUtils.get_relative_paths(compilation_data, None, slice_dir)
+                    status = "OK" if success else "FAILED"
+                    print(f"[{be}] slice_{idx} channel_group_{group_idx}: {status} in {compile_time:.2f}s")
+
+                    if success:
+                        sdn = os.path.basename(slice_dir)
+                        def _prefix_path(p):
+                            if isinstance(p, str) and not p.startswith(sdn + os.sep):
+                                return os.path.join(sdn, p)
+                            return p
+                        pref_files = {k: _prefix_path(v) for k, v in (file_paths or {}).items()}
+                        group_circuits.append({
+                            'group_idx': group_idx,
+                            'success': True,
+                            'files': pref_files
+                        })
+                    else:
+                        all_groups_success = False
+                        group_circuits.append({'group_idx': group_idx, 'success': False})
+
+                except Exception as e:
+                    results['errors'].append(f"{be} group_{group_idx}: {str(e)}")
+                    all_groups_success = False
+                    group_circuits.append({'group_idx': group_idx, 'success': False, 'error': str(e)})
+
+            results['channel_group_circuits'][be] = group_circuits
+            if all_groups_success and group_circuits:
+                results['successful_backends'].append(be)
+                results['compilation_blocks'][be] = {
+                    "compiled": True,
+                    "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "backend": be,
+                    "channel_split": True,
+                    "num_groups": len(groups),
+                    "group_files": {g['group_idx']: g.get('files', {}) for g in group_circuits if g.get('success')}
+                }
+
+        return results
 
     for be in backends_to_build:
         try:
@@ -508,6 +594,7 @@ class Compiler:
 
             slice_meta_path = Path(slice_dir) / "metadata.json"
             tiling_info = original_slice_entry.get('tiling')
+            channel_split_info = original_slice_entry.get('channel_split')
             compilation_slice_data = original_slice_entry
 
             if tiling_info:
@@ -548,12 +635,13 @@ class Compiler:
                 else:
                     backends_to_build = [Backend.JSTPROVE, Backend.EZKL]
 
-            work_items.append((idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, compilation_slice_data))
+            work_items.append((idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data))
             slice_info_map[idx] = {
                 'slice_data': slice_data,
                 'slice_dir': slice_dir,
                 'slice_meta_path': slice_meta_path,
                 'tiling_info': tiling_info,
+                'channel_split_info': channel_split_info,
                 'original_slice_entry': original_slice_entry
             }
 
@@ -603,6 +691,27 @@ class Compiler:
                 compiled_count += 1
 
             backend_stats[idx] = successful_backends
+
+            channel_group_circuits = result.get('channel_group_circuits', {})
+            if channel_group_circuits and info.get('channel_split_info'):
+                cs_info = info['channel_split_info']
+                groups_by_idx = {g['group_idx']: g for g in cs_info.get('groups', [])}
+                for be, group_results in channel_group_circuits.items():
+                    for gr in group_results:
+                        if not (gr.get('success') and gr.get('files')):
+                            continue
+                        g = groups_by_idx.get(gr['group_idx'])
+                        if not g:
+                            continue
+                        files = gr['files']
+                        if be == Backend.JSTPROVE:
+                            g['jstprove_circuit_path'] = files.get('compiled')
+                        elif be == Backend.EZKL:
+                            g['ezkl_circuit_path'] = files.get('compiled')
+                            g.setdefault('vk_path', files.get('vk_key'))
+                            g.setdefault('pk_path', files.get('pk_key'))
+                        g.setdefault('settings_path', files.get('settings'))
+                original_slice_entry['channel_split'] = cs_info
 
             if not successful_backends:
                 if isinstance(slice_data, dict):

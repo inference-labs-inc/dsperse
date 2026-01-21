@@ -122,6 +122,107 @@ class TileInfo:
 
 
 @dataclass
+class ChannelGroupInfo:
+    """Info for a single channel group within channel splitting."""
+    group_idx: int = 0
+    c_start: int = 0
+    c_end: int = 0
+    path: str = ""
+    jstprove_circuit_path: Optional[str] = None
+    ezkl_circuit_path: Optional[str] = None
+    settings_path: Optional[str] = None
+    vk_path: Optional[str] = None
+    pk_path: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> Optional["ChannelGroupInfo"]:
+        if not d:
+            return None
+        return cls(
+            group_idx=d.get("group_idx", 0),
+            c_start=d.get("c_start", 0),
+            c_end=d.get("c_end", 0),
+            path=d.get("path", ""),
+            jstprove_circuit_path=d.get("jstprove_circuit_path"),
+            ezkl_circuit_path=d.get("ezkl_circuit_path"),
+            settings_path=d.get("settings_path"),
+            vk_path=d.get("vk_path"),
+            pk_path=d.get("pk_path"),
+        )
+
+    def to_dict(self) -> dict:
+        d = {
+            "group_idx": self.group_idx,
+            "c_start": self.c_start,
+            "c_end": self.c_end,
+            "path": self.path,
+        }
+        if self.jstprove_circuit_path:
+            d["jstprove_circuit_path"] = self.jstprove_circuit_path
+        if self.ezkl_circuit_path:
+            d["ezkl_circuit_path"] = self.ezkl_circuit_path
+        if self.settings_path:
+            d["settings_path"] = self.settings_path
+        if self.vk_path:
+            d["vk_path"] = self.vk_path
+        if self.pk_path:
+            d["pk_path"] = self.pk_path
+        return d
+
+
+@dataclass
+class ChannelSplitInfo:
+    """Channel splitting configuration for a slice."""
+    slice_idx: int = 0
+    c_in: int = 0
+    c_out: int = 0
+    num_groups: int = 1
+    channels_per_group: int = 0
+    input_name: str = "input"
+    output_name: str = "output"
+    h: int = 0
+    w: int = 0
+    groups: list[ChannelGroupInfo] = field(default_factory=list)
+    bias_path: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> Optional["ChannelSplitInfo"]:
+        if not d:
+            return None
+        groups = [ChannelGroupInfo.from_dict(g) for g in d.get("groups", []) if g]
+        return cls(
+            slice_idx=d.get("slice_idx", 0),
+            c_in=d.get("c_in", 0),
+            c_out=d.get("c_out", 0),
+            num_groups=d.get("num_groups", 1),
+            channels_per_group=d.get("channels_per_group", 0),
+            input_name=d.get("input_name", "input"),
+            output_name=d.get("output_name", "output"),
+            h=d.get("h", 0),
+            w=d.get("w", 0),
+            groups=groups,
+            bias_path=d.get("bias_path"),
+        )
+
+    def to_dict(self) -> dict:
+        d = {
+            "slice_idx": self.slice_idx,
+            "c_in": self.c_in,
+            "c_out": self.c_out,
+            "num_groups": self.num_groups,
+            "channels_per_group": self.channels_per_group,
+            "input_name": self.input_name,
+            "output_name": self.output_name,
+            "h": self.h,
+            "w": self.w,
+            "groups": [g.to_dict() for g in self.groups],
+        }
+        if self.bias_path:
+            d["bias_path"] = self.bias_path
+        return d
+
+
+@dataclass
 class TilingInfo:
     """Tiling configuration for a slice."""
     slice_idx: int = 0
@@ -258,6 +359,7 @@ class SliceMetadata:
     dependencies: Dependencies = field(default_factory=Dependencies)
     layers: list[dict] = field(default_factory=list)
     tiling: Optional[TilingInfo] = None
+    channel_split: Optional[ChannelSplitInfo] = None
     compilation: Compilation = field(default_factory=Compilation)
     dsperse_version: Optional[str] = None
     opset_version: Optional[int] = None
@@ -276,6 +378,7 @@ class SliceMetadata:
             dependencies=Dependencies.from_dict(d.get("dependencies")),
             layers=d.get("layers", []),
             tiling=TilingInfo.from_dict(d.get("tiling")),
+            channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             compilation=Compilation.from_dict(d.get("compilation")),
             dsperse_version=d.get("dsperse_version"),
             opset_version=d.get("opset_version"),
@@ -287,6 +390,8 @@ class SliceMetadata:
         d = asdict(self)
         if self.tiling is None:
             del d["tiling"]
+        if self.channel_split is None:
+            del d["channel_split"]
         return d
 
     @property
@@ -327,6 +432,7 @@ class RunSliceMetadata:
     dependencies: Dependencies = field(default_factory=Dependencies)
     parameters: int = 0
     tiling: Optional[TilingInfo] = None
+    channel_split: Optional[ChannelSplitInfo] = None
     backend: str = Backend.ONNX
     ezkl: bool = False
     ezkl_compatible: bool = True
@@ -352,6 +458,7 @@ class RunSliceMetadata:
             dependencies=Dependencies.from_dict(d.get("dependencies")),
             parameters=d.get("parameters", 0),
             tiling=TilingInfo.from_dict(d.get("tiling")),
+            channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             backend=d.get("backend", Backend.ONNX),
             ezkl=d.get("ezkl", False),
             ezkl_compatible=d.get("ezkl_compatible", True),
@@ -373,6 +480,8 @@ class RunSliceMetadata:
         d = asdict(self)
         if self.tiling is None:
             del d["tiling"]
+        if self.channel_split is None:
+            del d["channel_split"]
         return d
 
     def get_target_shape(self, index: int = 0) -> list[int]:

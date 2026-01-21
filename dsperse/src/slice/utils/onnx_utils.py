@@ -177,7 +177,7 @@ class OnnxUtils:
                 index=idx,
                 filename=expected_filename,
                 path=str(desired_path),
-                relative_path=str(desired_path.relative_to(root).relative_to("slice_" + str(idx))),
+                relative_path=str(desired_path.resolve().relative_to(root).relative_to("slice_" + str(idx))),
                 parameters=orig_slice.parameters,
                 shape=shape,
                 dependencies=orig_slice.dependencies,
@@ -187,7 +187,7 @@ class OnnxUtils:
                 dsperse_version=dsperse_ver,
                 opset_version=opset_version,
                 slice_metadata=str(slice_metadata_path.resolve()),
-                slice_metadata_relative_path=str(slice_metadata_path.relative_to(root)),
+                slice_metadata_relative_path=str(slice_metadata_path.resolve().relative_to(root)),
             )
 
             model_meta = ModelMetadata(
@@ -206,7 +206,7 @@ class OnnxUtils:
                 logger.exception(f"Failed to write slice metadata to {slice_metadata_path} for {slice_dir}: {e}")
 
             seg["path"] = updated_slice.path
-            seg["relative_path"] = str(desired_path.relative_to(root))
+            seg["relative_path"] = str(desired_path.resolve().relative_to(root))
             seg["slice_metadata"] = updated_slice.slice_metadata
             seg["slice_metadata_relative_path"] = updated_slice.slice_metadata_relative_path
             seg["dsperse_version"] = updated_slice.dsperse_version

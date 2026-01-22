@@ -54,7 +54,8 @@ def calculate_tile_size_from_max_elements(
     spatial_h: int,
     spatial_w: int,
     max_conv_size: int,
-    min_tile: int = 7
+    min_tile: int = 7,
+    stride: int = 1
 ) -> tuple[int | None, str | None]:
     import math
 
@@ -69,7 +70,7 @@ def calculate_tile_size_from_max_elements(
 
     target_tile = min(max_tile_from_constraint, spatial_h, spatial_w)
 
-    tile_size = find_tile_size(spatial_h, target_tile, min_tile)
+    tile_size = find_tile_size(spatial_h, target_tile, min_tile, stride=stride)
     if tile_size is None:
         return None, "no_divisor"
 
@@ -447,7 +448,7 @@ def get_tiling_params(onnx_path: Path, max_conv_size: int | None = None, tile_si
     c_out = weights.shape[0]
 
     if max_conv_size is not None:
-        actual_tile_size, skip_reason = calculate_tile_size_from_max_elements(c_in, h, w, max_conv_size, min_tile)
+        actual_tile_size, skip_reason = calculate_tile_size_from_max_elements(c_in, h, w, max_conv_size, min_tile, stride=sh)
         if actual_tile_size is None:
             if skip_reason in ("min_tile_too_large", "no_divisor") and is_channel_splittable(m):
                 num_groups, cpg, split_err = calculate_channel_split_params(c_in, c_out, h, w, max_conv_size, min_tile)

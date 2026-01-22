@@ -392,9 +392,10 @@ class OnnxSlicer:
                     segment_inputs.append(all_value_infos[inp])
                 else:
                     inferred_shape = OnnxSlicer._infer_input_shape(inp, segment_nodes)
+                    inferred_dtype = OnnxSlicer._infer_tensor_dtype(inp, segment_nodes, graph, is_input=True)
                     t = onnx.helper.make_tensor_value_info(
                         inp,
-                        onnx.TensorProto.FLOAT,
+                        inferred_dtype,
                         inferred_shape
                     )
                     segment_inputs.append(t)
@@ -409,14 +410,64 @@ class OnnxSlicer:
                     segment_outputs.append(all_value_infos[out])
                 else:
                     inferred_shape = OnnxSlicer._infer_output_shape(out, segment_nodes)
+                    inferred_dtype = OnnxSlicer._infer_tensor_dtype(out, segment_nodes, graph, is_input=False)
                     t = onnx.helper.make_tensor_value_info(
                         out,
-                        onnx.TensorProto.FLOAT,
+                        inferred_dtype,
                         inferred_shape
                     )
                     segment_outputs.append(t)
 
         return segment_inputs, segment_outputs, segment_initializers
+
+    @staticmethod
+    def _infer_tensor_dtype(tensor_name, segment_nodes, graph=None, is_input=True):
+        """Infer dtype for a tensor based on producing/consuming nodes.
+
+        Returns onnx.TensorProto dtype (FLOAT, INT64, etc.)
+        """
+        INT64_OUTPUT_OPS = {"Shape", "Size", "NonZero"}
+        INT64_INPUT_POSITIONS = {
+            "Gather": {1},
+            "GatherElements": {1},
+            "GatherND": {1},
+            "Scatter": {1},
+            "ScatterElements": {1},
+            "ScatterND": {1},
+            "Reshape": {1},
+            "Slice": {1, 2, 3, 4},
+            "Squeeze": {1},
+            "Unsqueeze": {1},
+            "Expand": {1},
+            "Tile": {1},
+            "TopK": {1},
+            "Pad": {1, 2},
+            "ConstantOfShape": {0},
+            "Range": {0, 1, 2},
+        }
+
+        all_nodes = list(segment_nodes)
+        if graph:
+            all_nodes = list(graph.node)
+
+        if is_input:
+            for node in segment_nodes:
+                if tensor_name in node.input:
+                    input_idx = list(node.input).index(tensor_name)
+                    if node.op_type in INT64_INPUT_POSITIONS:
+                        if input_idx in INT64_INPUT_POSITIONS[node.op_type]:
+                            return onnx.TensorProto.INT64
+        else:
+            for node in all_nodes:
+                if tensor_name in node.output:
+                    if node.op_type in INT64_OUTPUT_OPS:
+                        return onnx.TensorProto.INT64
+                    if node.op_type == "Cast":
+                        for attr in node.attribute:
+                            if attr.name == "to" and attr.i == onnx.TensorProto.INT64:
+                                return onnx.TensorProto.INT64
+
+        return onnx.TensorProto.FLOAT
 
     @staticmethod
     def _infer_input_shape(input_name, segment_nodes):

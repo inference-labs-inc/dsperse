@@ -143,14 +143,14 @@ class OnnxModels:
             model_inputs = session.get_inputs()
             logger.info(f"Model expects {len(model_inputs)} input(s)")
 
-            # Convert input to numpy if it's not already
+            # Convert input to numpy if it's not already (use float32 as default, will cast per-input later)
             if not is_numpy:
                 if isinstance(input_tensor, torch.Tensor):
-                    input_numpy = input_tensor.numpy().astype(np.float32)
+                    input_numpy = input_tensor.numpy()
                 else:
-                    input_numpy = np.array(input_tensor, dtype=np.float32)
+                    input_numpy = np.array(input_tensor)
             else:
-                input_numpy = input_tensor.astype(np.float32)
+                input_numpy = input_tensor
 
             # Handle multiple inputs
             if len(model_inputs) > 1:
@@ -161,7 +161,8 @@ class OnnxModels:
                 for i, model_input in enumerate(model_inputs):
                     input_name = model_input.name
                     input_shape = model_input.shape
-                    logger.info(f"Input {i + 1}: {input_name} with shape {input_shape}")
+                    expected_dtype = OnnxModels._parse_onnx_type(model_input.type)
+                    logger.info(f"Input {i + 1}: {input_name} with shape {input_shape}, dtype {expected_dtype}")
 
                     # Calculate number of elements needed for this input
                     elements_needed = 1
@@ -192,14 +193,11 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         if input_portion.size < elements_needed:
-                            padding = np.zeros(elements_needed - input_portion.size, dtype=np.float32)
+                            padding = np.zeros(elements_needed - input_portion.size, dtype=expected_dtype)
                             input_portion = np.concatenate([input_portion, padding])
 
-                    # Reshape to match expected shape
-                    reshaped = input_portion.reshape(final_shape)
-                    # Ensure float32 for ORT compatibility
-                    if reshaped.dtype != np.float32:
-                        reshaped = reshaped.astype(np.float32)
+                    # Reshape to match expected shape and cast to expected dtype
+                    reshaped = input_portion.reshape(final_shape).astype(expected_dtype)
                     result[input_name] = reshaped
 
                 return result
@@ -207,7 +205,8 @@ class OnnxModels:
                 # Single input case
                 input_name = model_inputs[0].name
                 input_shape = model_inputs[0].shape
-                logger.info(f"Single input: {input_name} with shape {input_shape}")
+                expected_dtype = OnnxModels._parse_onnx_type(model_inputs[0].type)
+                logger.info(f"Single input: {input_name} with shape {input_shape}, dtype {expected_dtype}")
 
                 # Check if we need to reshape
                 if len(input_numpy.shape) != len(input_shape):
@@ -231,7 +230,7 @@ class OnnxModels:
 
                         # Pad with zeros if necessary
                         flat = input_numpy.flatten()
-                        padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
+                        padding = np.zeros(elements_needed - flat.size, dtype=expected_dtype)
                         input_numpy = np.concatenate([flat, padding])
 
                     # Reshape the input
@@ -255,16 +254,16 @@ class OnnxModels:
                         # Flatten and reshape, padding if necessary
                         flat = input_numpy.flatten()
                         if flat.size < elements_needed:
-                            padding = np.zeros(elements_needed - flat.size, dtype=np.float32)
+                            padding = np.zeros(elements_needed - flat.size, dtype=expected_dtype)
                             flat = np.concatenate([flat, padding])
                         elif flat.size > elements_needed:
                             flat = flat[:elements_needed]
 
                         input_numpy = flat.reshape(expected_shape)
 
-                # Ensure float32 for ORT compatibility
-                if input_numpy.dtype != np.float32:
-                    input_numpy = input_numpy.astype(np.float32)
+                # Cast to expected dtype
+                if input_numpy.dtype != expected_dtype:
+                    input_numpy = input_numpy.astype(expected_dtype)
                 return {input_name: input_numpy}
 
         except Exception as e:

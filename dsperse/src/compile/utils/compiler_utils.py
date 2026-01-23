@@ -333,85 +333,106 @@ class CompilerUtils:
     @staticmethod
     def run_onnx_inference_chain(slices_data: list, base_path: str, input_file_path: Optional[str] = None):
         """
-        Phase 1: Run ONNX inference chain to generate calibration files, using
-        a single `calibration.json` per slice directory.
+        Phase 1: Run ONNX inference chain to generate calibration files.
 
-        Chaining scheme:
-          input -> slice_0/ezkl/calibration.json -> output_0
-          output_0 -> slice_1/ezkl/calibration.json -> output_1
-          ...
-        where each slice only stores one file named `calibration.json`.
-        
+        Uses a tensor cache to properly route multi-output slices by storing
+        all output tensors by name and looking up inputs by dependency names.
+
         Args:
             slices_data: List of slice metadata
             base_path: Base path for relative file paths
             input_file_path: Path to the initial input file
         """
-        current_input = input_file_path
-        if current_input and os.path.exists(current_input):
-            logger.info("Running ONNX inference chain to generate calibration files")
-            for idx, slice_data in enumerate(slices_data):
-                slice_path = slice_data.get('path')
-                # First try full path
-                if slice_path and os.path.exists(slice_path):
-                    pass  # Use the full path
-                # Then try relative path
-                elif slice_data.get('relative_path'):
-                    slice_path = os.path.join(base_path, slice_data.get('relative_path'))
-                    if not os.path.exists(slice_path):
-                        logger.warning(f"Slice file not found for index {idx}: {slice_path}")
-                        continue
-                else:
-                    logger.error(f"No valid path found for slice index {idx}")
-                    continue
+        import torch
+        import numpy as np
+        from dsperse.src.backends.onnx_models import OnnxModels
 
-                slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
-                os.makedirs(slice_output_path, exist_ok=True)
-
-                # 1) Save the INPUT tensor for this slice as calibration.json (what EZKL expects)
-                calibration_path = os.path.join(slice_output_path, "calibration.json")
-                try:
-                    if os.path.abspath(current_input) != os.path.abspath(calibration_path):
-                        shutil.copyfile(current_input, calibration_path)
-                except Exception as e:
-                    logger.warning(f"Failed to write calibration.json for slice {idx}: {e}")
-
-                # 2) Run ONNX to produce the OUTPUT for chaining to the NEXT slice's calibration.json
-                if idx < len(slices_data) - 1:
-                    next_slice = slices_data[idx + 1]
-                    next_slice_path = next_slice.get('path')
-                    if not (next_slice_path and os.path.exists(next_slice_path)):
-                        if next_slice.get('relative_path'):
-                            next_slice_path = os.path.join(base_path, next_slice.get('relative_path'))
-                    if not next_slice_path or not os.path.exists(next_slice_path):
-                        logger.warning(f"Next slice file not found for index {idx + 1}; stopping chain after slice {idx}")
-                        break
-
-                    next_slice_output_path = os.path.join(os.path.dirname(next_slice_path), "ezkl")
-                    os.makedirs(next_slice_output_path, exist_ok=True)
-                    next_calibration_path = os.path.join(next_slice_output_path, "calibration.json")
-
-                    logger.info(f"Running ONNX inference for slice {idx} with input file {current_input}")
-                    slice_meta = RunSliceMetadata(path=slice_path)
-                    success, _tensor, exec_info = RunnerUtils.run_onnx_slice(
-                        slice_meta,
-                        input_tensor_path=Path(current_input),
-                        output_tensor_path=Path(next_calibration_path)
-                    )
-
-                    if not success:
-                        err = exec_info.error if hasattr(exec_info, 'error') else exec_info.get('error', 'Unknown error') if isinstance(exec_info, dict) else str(exec_info)
-                        logger.error(f"ONNX inference failed for slice {idx}: {err}")
-                        return
-
-                    current_input = next_calibration_path
-                    logger.info(f"Saved calibration input for slice {idx}: {calibration_path}")
-                    logger.info(f"Generated next slice calibration file: {next_calibration_path}")
-                else:
-                    # Last slice: no next consumer; keep only its calibration.json
-                    logger.info(f"Saved calibration input for last slice {idx}: {calibration_path}")
-        else:
+        if not input_file_path or not os.path.exists(input_file_path):
             logger.warning("No input file provided, skipping ONNX inference chain")
+            return
+
+        logger.info("Running ONNX inference chain to generate calibration files")
+
+        initial_tensor = RunnerUtils.preprocess_input(input_file_path)
+        first_slice = slices_data[0] if slices_data else None
+        if not first_slice:
+            logger.warning("No slices data, skipping ONNX inference chain")
+            return
+
+        deps = first_slice.get('dependencies', {})
+        first_inputs = deps.get('filtered_inputs', deps.get('input', []))
+        model_input_name = first_inputs[0] if first_inputs else 'input'
+
+        tensor_cache: Dict[str, torch.Tensor] = {model_input_name: initial_tensor}
+
+        for idx, slice_data in enumerate(slices_data):
+            slice_path = slice_data.get('path')
+            if slice_path and os.path.exists(slice_path):
+                pass
+            elif slice_data.get('relative_path'):
+                slice_path = os.path.join(base_path, slice_data.get('relative_path'))
+                if not os.path.exists(slice_path):
+                    logger.warning(f"Slice file not found for index {idx}: {slice_path}")
+                    continue
+            else:
+                logger.error(f"No valid path found for slice index {idx}")
+                continue
+
+            slice_output_path = os.path.join(os.path.dirname(slice_path), "ezkl")
+            os.makedirs(slice_output_path, exist_ok=True)
+            calibration_path = os.path.join(slice_output_path, "calibration.json")
+
+            deps = slice_data.get('dependencies', {})
+            filtered_inputs = [n for n in deps.get('filtered_inputs', deps.get('input', [])) if n]
+            output_names = deps.get('output', [])
+
+            if len(filtered_inputs) <= 1:
+                input_name = filtered_inputs[0] if filtered_inputs else model_input_name
+                input_tensor = tensor_cache.get(input_name)
+                if input_tensor is None:
+                    logger.warning(f"Slice {idx}: Input '{input_name}' not in cache, using initial tensor")
+                    input_tensor = initial_tensor
+
+                RunnerUtils.save_to_file_flattened(input_tensor, calibration_path)
+
+                try:
+                    success, result = OnnxModels.run_inference_tensor(input_tensor, slice_path)
+                except Exception as e:
+                    logger.error(f"ONNX inference failed for slice {idx}: {e}")
+                    return
+            else:
+                missing = [n for n in filtered_inputs if n not in tensor_cache]
+                if missing:
+                    logger.warning(f"Slice {idx}: Missing inputs {missing}, cannot run multi-input inference")
+                    return
+
+                extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
+
+                first_input = tensor_cache[filtered_inputs[0]]
+                RunnerUtils.save_to_file_flattened(first_input, calibration_path)
+
+                try:
+                    success, result = OnnxModels.run_inference_multi(slice_path, extra_tensors)
+                except Exception as e:
+                    logger.error(f"ONNX inference failed for slice {idx}: {e}")
+                    return
+
+            if not success:
+                err = result if isinstance(result, str) else 'inference_failed'
+                logger.error(f"ONNX inference failed for slice {idx}: {err}")
+                return
+
+            if isinstance(result, dict) and 'output_tensors' in result:
+                for oname, tensor in result['output_tensors'].items():
+                    tensor_cache[oname] = tensor
+                    logger.debug(f"Slice {idx}: Cached output '{oname}' shape={tensor.shape} dtype={tensor.dtype}")
+            elif output_names:
+                out_tensor = result.get('output') if isinstance(result, dict) else result
+                if isinstance(out_tensor, torch.Tensor):
+                    for oname in output_names:
+                        tensor_cache[oname] = out_tensor
+
+            logger.info(f"Slice {idx}: Saved calibration to {calibration_path}")
 
 
     @staticmethod

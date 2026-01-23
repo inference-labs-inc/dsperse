@@ -269,6 +269,16 @@ class Compiler:
         self._jstprove = None
         self._ezkl = None
 
+    def _needs_calibration_chain(self) -> bool:
+        """Check if EZKL calibration chain is needed. Only EZKL requires calibration data."""
+        if self.default_backend == Backend.JSTPROVE and not self.use_fallback:
+            return False
+        if self.default_backend is None or self.default_backend == Backend.EZKL:
+            return True
+        if any(b == Backend.EZKL for b in self.layer_backends.values()):
+            return True
+        return self.use_fallback
+
     def _parse_layer_backends(self, spec: str):
         """Parse layer-specific backend specification like '0,2:jstprove;3-4:ezkl'"""
         import re
@@ -560,7 +570,7 @@ class Compiler:
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
 
-        if input_file_path:
+        if input_file_path and self._needs_calibration_chain():
             CompilerUtils.run_onnx_inference_chain(slices_data, base_path, input_file_path)
 
         print(f"Starting compilation phase...", flush=True)

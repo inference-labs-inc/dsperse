@@ -64,18 +64,7 @@ class OnnxModels:
         """Run inference with tensor input directly (no file I/O for input)."""
         try:
             session = OnnxModels._create_session(model_path)
-            model_inputs = session.get_inputs()
-            if len(model_inputs) == 1:
-                inp = model_inputs[0]
-                input_name = inp.name
-                dtype = OnnxModels._parse_onnx_type(inp.type)
-                if isinstance(input_tensor, torch.Tensor):
-                    arr = input_tensor.detach().cpu().numpy().astype(dtype)
-                else:
-                    arr = np.asarray(input_tensor, dtype=dtype)
-                input_dict = {input_name: arr}
-            else:
-                input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
+            input_dict = OnnxModels.apply_onnx_shape(model_path, input_tensor)
             raw_output = session.run(None, input_dict)
             return True, OnnxModels._process_outputs(session, raw_output, output_file)
         except Exception as e:

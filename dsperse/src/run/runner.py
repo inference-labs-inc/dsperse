@@ -729,7 +729,7 @@ class Runner:
         if self._tiered_storage:
             run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
             run_dir = self._tiered_storage.initialize(run_id)
-            self.last_run_dir = self._tiered_storage.persistent_run_dir
+            self.last_run_dir = self._tiered_storage.cold_run_dir
         else:
             run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
             self.last_run_dir = run_dir

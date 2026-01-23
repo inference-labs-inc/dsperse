@@ -305,42 +305,48 @@ class Runner:
             self.run_metadata = RunMetadata.from_dict(RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format))
 
     def _cache_circuit(self, circuit_path: str, slice_id: str) -> str:
-        """Copy circuit to cache directory for faster loading. Returns cached path or original if no cache configured."""
+        """Copy circuit directory to cache for faster loading. Returns cached path or original if no cache configured.
+
+        JSTprove circuits are directories containing multiple files (circuit.txt, quantized_model.onnx, metadata.json, etc).
+        This method copies the entire parent directory and returns the path to the circuit file within the cache.
+        """
+        import shutil
         if not self.circuit_cache_dir or not circuit_path:
             return circuit_path
-
-        cache_key = f"{slice_id}_circuit"
-        if cache_key in self._cached_circuits:
-            cached = self._cached_circuits[cache_key]
-            if cached.exists():
-                return str(cached)
 
         src = Path(circuit_path)
         if not src.exists():
             return circuit_path
 
-        self.circuit_cache_dir.mkdir(parents=True, exist_ok=True)
-        dest = self.circuit_cache_dir / f"{slice_id}_circuit"
-
-        if src.is_dir():
-            import shutil
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
-            logger.info(f"Cached circuit directory for {slice_id} to {dest}")
+        if src.is_file():
+            src_dir = src.parent
+            filename = src.name
         else:
-            import shutil
-            shutil.copy2(src, dest)
-            logger.info(f"Cached circuit file for {slice_id} to {dest}")
+            src_dir = src
+            filename = None
 
-        self._cached_circuits[cache_key] = dest
-        return str(dest)
+        cache_key = f"{slice_id}_circuit_dir"
+        if cache_key in self._cached_circuits:
+            cached_dir = self._cached_circuits[cache_key]
+            if cached_dir.exists():
+                return str(cached_dir / filename) if filename else str(cached_dir)
+
+        self.circuit_cache_dir.mkdir(parents=True, exist_ok=True)
+        dest_dir = self.circuit_cache_dir / f"{slice_id}_tiles"
+
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        shutil.copytree(src_dir, dest_dir)
+        logger.info(f"Cached circuit directory for {slice_id}: {src_dir} -> {dest_dir}")
+
+        self._cached_circuits[cache_key] = dest_dir
+        return str(dest_dir / filename) if filename else str(dest_dir)
 
     def _clear_circuit_cache(self, slice_id: str = None):
         """Clear cached circuits. If slice_id provided, only clear that slice's cache."""
         import shutil
         if slice_id:
-            cache_key = f"{slice_id}_circuit"
+            cache_key = f"{slice_id}_circuit_dir"
             if cache_key in self._cached_circuits:
                 cached = self._cached_circuits.pop(cache_key)
                 if cached.exists():

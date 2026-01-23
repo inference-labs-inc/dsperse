@@ -429,9 +429,15 @@ class Runner:
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         num_tiles = tiling.num_tiles
-        tile_info = tiling.tile
-        tile_onnx_path = RunnerUtils.resolve_relative_path(tile_info.path, self.slices_path) if tile_info else None
         slice_idx = tiling.slice_idx
+        has_per_tile_onnx = tiling.tiles and len(tiling.tiles) == num_tiles
+
+        if has_per_tile_onnx:
+            tile_onnx_path = RunnerUtils.resolve_relative_path(tiling.tiles[0].path, self.slices_path)
+        elif tiling.tile:
+            tile_onnx_path = RunnerUtils.resolve_relative_path(tiling.tile.path, self.slices_path)
+        else:
+            tile_onnx_path = None
 
         if tile_onnx_path is None or not Path(tile_onnx_path).exists():
             raise ValueError(
@@ -474,11 +480,18 @@ class Runner:
                 tile_out = tile_run_dir / "output.json"
                 Utils.write_input(tile_tensor, str(tile_in))
 
+                if has_per_tile_onnx:
+                    this_tile_onnx = RunnerUtils.resolve_relative_path(tiling.tiles[tile_idx].path, self.slices_path)
+                    conv_out = tiling.tiles[tile_idx].conv_out
+                else:
+                    this_tile_onnx = tile_onnx_path
+                    conv_out = tiling.tile.conv_out if tiling.tile else (0, 0)
+
                 tile_args_list.append({
                     'tile_idx': tile_idx,
                     'tile_in': str(tile_in),
                     'tile_out': str(tile_out),
-                    'tile_onnx_path': str(tile_onnx_path),
+                    'tile_onnx_path': str(this_tile_onnx),
                     'jstprove_circuit_path': jst_circuit_path,
                     'ezkl_circuit_path': ezkl_circuit_path,
                     'settings_path': meta.settings_path,
@@ -488,7 +501,7 @@ class Runner:
                     'has_jst': has_jst,
                     'has_ezkl': has_ezkl,
                     'c_out': tiling.c_out,
-                    'conv_out': tiling.tile.conv_out if tiling.tile else (0, 0),
+                    'conv_out': conv_out,
                 })
 
             parallel_count = min(self.parallel_tiles, num_tiles)
@@ -557,8 +570,9 @@ class Runner:
                         tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=False, error=t_error))
                         raise RuntimeError(f"Tile {tile_idx} execution failed: {t_error}")
         else:
-            session = ort.InferenceSession(str(tile_onnx_path))
-            input_name = session.get_inputs()[0].name
+            session = None
+            if not has_per_tile_onnx:
+                session = ort.InferenceSession(str(tile_onnx_path))
 
             for tile_idx in range(num_tiles):
                 cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
@@ -573,6 +587,11 @@ class Runner:
                 else:
                     input_arr = np.asarray(tile_tensor, dtype=np.float32)
 
+                if has_per_tile_onnx:
+                    this_tile_onnx = RunnerUtils.resolve_relative_path(tiling.tiles[tile_idx].path, self.slices_path)
+                    session = ort.InferenceSession(str(this_tile_onnx))
+
+                input_name = session.get_inputs()[0].name
                 outputs = session.run(None, {input_name: input_arr})
                 output_arr = outputs[0]
 

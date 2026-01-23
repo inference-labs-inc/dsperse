@@ -238,6 +238,7 @@ class TilingInfo:
     input_name: str = "input"
     output_name: str = "output"
     tile: Optional[TileInfo] = None
+    tiles: Optional[list[TileInfo]] = None
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Optional["TilingInfo"]:
@@ -246,6 +247,12 @@ class TilingInfo:
         halo = d.get("halo", [0, 0])
         out_tile = d.get("out_tile", [0, 0])
         stride = d.get("stride", [1, 1])
+        tile_info = TileInfo.from_dict(d.get("tile"))
+        tiles_list = None
+        if d.get("tiles"):
+            tiles_list = [TileInfo.from_dict(t) for t in d["tiles"] if t]
+            if not tile_info and tiles_list:
+                tile_info = tiles_list[0]
         return cls(
             slice_idx=d.get("slice_idx", 0),
             tile_size=d.get("tile_size", 0),
@@ -259,7 +266,8 @@ class TilingInfo:
             c_out=d.get("c_out", 0),
             input_name=d.get("input_name", "input"),
             output_name=d.get("output_name", "output"),
-            tile=TileInfo.from_dict(d.get("tile")),
+            tile=tile_info,
+            tiles=tiles_list,
         )
 
     def to_dict(self) -> dict:

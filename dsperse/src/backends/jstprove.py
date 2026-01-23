@@ -489,7 +489,7 @@ class JSTprove:
                 self._witness_format = "jstprove_dict"
                 # NOTE: Rescaled outputs are in output.json (from -o flag), not in the witness binary file (-w flag).
                 # The witness binary contains only the raw quantized values needed for proof generation.
-                logger.warning(
+                logger.debug(
                     "Using rescaled outputs from output.json (not witness binary). "
                     "These are the model's floating-point outputs after de-quantization."
                 )

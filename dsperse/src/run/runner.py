@@ -19,7 +19,6 @@ from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, ChannelSpl
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
-from dsperse.src.utils.storage import TieredStorage
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ def _run_single_tile_worker(args: dict) -> dict:
 
 class Runner:
     def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, parallel_tiles: int = 1,
-                 circuit_cache_dir: str = None, hot_storage: str = None, cold_storage: str = None):
+                 circuit_cache_dir: str = None, run_dir: str = None):
         """Initialize the Runner.
 
         Args:
@@ -88,8 +87,7 @@ class Runner:
             save_metadata_path: Path where to save generated metadata
             parallel_tiles: Number of parallel tile execution processes
             circuit_cache_dir: Directory for caching circuit files (e.g., RAM disk)
-            hot_storage: Fast storage path (e.g., RAM disk) for run outputs
-            cold_storage: Persistent storage path (e.g., SSD) - data drains here async
+            run_dir: Directory for run outputs (default: alongside slices)
         """
         self._provided_run_metadata_path = run_metadata_path
         self._save_metadata_path = save_metadata_path
@@ -99,10 +97,7 @@ class Runner:
         self.parallel_tiles = max(1, parallel_tiles)
         self.circuit_cache_dir = Path(circuit_cache_dir) if circuit_cache_dir else None
         self._cached_circuits: dict[str, Path] = {}
-
-        self._tiered_storage: TieredStorage | None = None
-        if hot_storage and cold_storage:
-            self._tiered_storage = TieredStorage(Path(hot_storage), Path(cold_storage))
+        self._run_dir_override = Path(run_dir) if run_dir else None
 
         try:
             self.ezkl_runner = EZKL()
@@ -726,13 +721,12 @@ class Runner:
         head = exec_chain.head
         nodes = exec_chain.nodes
 
-        if self._tiered_storage:
-            run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
-            run_dir = self._tiered_storage.initialize(run_id)
-            self.last_run_dir = self._tiered_storage.cold_run_dir
+        if self._run_dir_override:
+            run_dir = self._run_dir_override / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+            run_dir.mkdir(parents=True, exist_ok=True)
         else:
             run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
-            self.last_run_dir = run_dir
+        self.last_run_dir = run_dir
 
         input_tensor = Utils.read_input(input_json_path)
         first_slice_meta = self.run_metadata.get_slice(head)
@@ -747,9 +741,6 @@ class Runner:
         while current_slice_id:
             info = self.run_metadata.get_slice(current_slice_id)
             slice_dir = self.slices_path
-
-            if self._tiered_storage:
-                self._tiered_storage.wait_for_space()
 
             if info.channel_split:
                 logger.info(f"Running channel-split slice {current_slice_id} with {info.channel_split.num_groups} groups")
@@ -819,8 +810,6 @@ class Runner:
                 err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get('error', 'unknown')
                 raise Exception(f"Inference failed for {current_slice_id}: {err}")
 
-            if self._tiered_storage:
-                self._tiered_storage.mark_complete(current_slice_id)
             if self.circuit_cache_dir:
                 self._clear_circuit_cache(current_slice_id)
 
@@ -839,10 +828,6 @@ class Runner:
 
         run_dir.mkdir(parents=True, exist_ok=True)
         self._save_inference_output(results, run_dir / "run_results.json")
-
-        if self._tiered_storage:
-            self._tiered_storage.mark_complete("run_results.json")
-            self._tiered_storage.shutdown()
 
         return results
 

@@ -46,6 +46,11 @@ def setup_parser(subparsers):
     run_parser.add_argument('--circuit-cache-dir', '--cache-dir', dest='circuit_cache_dir',
                             help='Directory to cache circuit files for faster loading (e.g., RAM disk path like /Volumes/RamDisk/circuits)')
 
+    run_parser.add_argument('--hot-storage', dest='hot_storage',
+                            help='Fast storage for run outputs (e.g., RAM disk). Data drains async to --cold-storage.')
+    run_parser.add_argument('--cold-storage', dest='cold_storage',
+                            help='Persistent storage where data drains to (e.g., SSD).')
+
     return run_parser
 
 def run_inference(args):
@@ -141,10 +146,18 @@ def run_inference(args):
         logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
 
         start_time = time.time()
-        # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
         parallel_tiles = getattr(args, 'parallel_tiles', 1) or 1
         circuit_cache_dir = getattr(args, 'circuit_cache_dir', None)
-        runner = Runner(run_metadata_path=run_metadata_path, parallel_tiles=parallel_tiles, circuit_cache_dir=circuit_cache_dir)
+        hot_storage = getattr(args, 'hot_storage', None)
+        cold_storage = getattr(args, 'cold_storage', None)
+
+        runner = Runner(
+            run_metadata_path=run_metadata_path,
+            parallel_tiles=parallel_tiles,
+            circuit_cache_dir=circuit_cache_dir,
+            hot_storage=hot_storage,
+            cold_storage=cold_storage
+        )
         # Pass optional backend selection directly to Runner.run()
         result = runner.run(
             args.input_file,

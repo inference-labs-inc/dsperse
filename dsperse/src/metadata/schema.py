@@ -287,6 +287,8 @@ class TilingInfo:
         }
         if self.tile:
             d["tile"] = self.tile.to_dict()
+        if self.tiles:
+            d["tiles"] = [t.to_dict() for t in self.tiles if t]
         return d
 
 

@@ -400,7 +400,8 @@ class CompilerUtils:
                     )
 
                     if not success:
-                        logger.error(f"ONNX inference failed for slice {idx}: {exec_info.get('error', 'Unknown error')}")
+                        err = exec_info.error if hasattr(exec_info, 'error') else exec_info.get('error', 'Unknown error') if isinstance(exec_info, dict) else str(exec_info)
+                        logger.error(f"ONNX inference failed for slice {idx}: {err}")
                         return
 
                     current_input = next_calibration_path

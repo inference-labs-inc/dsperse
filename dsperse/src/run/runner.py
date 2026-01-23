@@ -78,7 +78,7 @@ def _run_single_tile_worker(args: dict) -> dict:
         return {'tile_idx': tile_idx, 'success': False, 'error': str(e)}
 
 class Runner:
-    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, parallel_tiles: int = 1):
+    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, parallel_tiles: int = 1, circuit_cache_dir: str = None):
         """Initialize the Runner.
 
         We keep run_metadata_path and save_metadata_path at instantiation as requested.
@@ -92,6 +92,9 @@ class Runner:
         self.force_backend: str | None = None
         # Number of parallel processes for tile execution
         self.parallel_tiles = max(1, parallel_tiles)
+        # Optional circuit cache directory (e.g., RAM disk) for faster circuit loading
+        self.circuit_cache_dir = Path(circuit_cache_dir) if circuit_cache_dir else None
+        self._cached_circuits: dict[str, Path] = {}
 
         try:
             self.ezkl_runner = EZKL()
@@ -301,6 +304,59 @@ class Runner:
                 save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
             self.run_metadata = RunMetadata.from_dict(RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format))
 
+    def _cache_circuit(self, circuit_path: str, slice_id: str) -> str:
+        """Copy circuit to cache directory for faster loading. Returns cached path or original if no cache configured."""
+        if not self.circuit_cache_dir or not circuit_path:
+            return circuit_path
+
+        cache_key = f"{slice_id}_circuit"
+        if cache_key in self._cached_circuits:
+            cached = self._cached_circuits[cache_key]
+            if cached.exists():
+                return str(cached)
+
+        src = Path(circuit_path)
+        if not src.exists():
+            return circuit_path
+
+        self.circuit_cache_dir.mkdir(parents=True, exist_ok=True)
+        dest = self.circuit_cache_dir / f"{slice_id}_circuit"
+
+        if src.is_dir():
+            import shutil
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
+            logger.info(f"Cached circuit directory for {slice_id} to {dest}")
+        else:
+            import shutil
+            shutil.copy2(src, dest)
+            logger.info(f"Cached circuit file for {slice_id} to {dest}")
+
+        self._cached_circuits[cache_key] = dest
+        return str(dest)
+
+    def _clear_circuit_cache(self, slice_id: str = None):
+        """Clear cached circuits. If slice_id provided, only clear that slice's cache."""
+        import shutil
+        if slice_id:
+            cache_key = f"{slice_id}_circuit"
+            if cache_key in self._cached_circuits:
+                cached = self._cached_circuits.pop(cache_key)
+                if cached.exists():
+                    if cached.is_dir():
+                        shutil.rmtree(cached)
+                    else:
+                        cached.unlink()
+        else:
+            for cached in self._cached_circuits.values():
+                if cached.exists():
+                    if cached.is_dir():
+                        shutil.rmtree(cached)
+                    else:
+                        cached.unlink()
+            self._cached_circuits.clear()
+
     def _run_tiled_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> ExecutionInfo:
         """Run a tiled slice: split (Python) → tiles (ONNX) → concat (Python)."""
         tiling = meta.tiling
@@ -384,6 +440,18 @@ class Runner:
             backend_name = Backend.JSTPROVE if has_jst else Backend.EZKL
             slice_specific_dir = self.slices_path / slice_id
 
+            jst_circuit_path = meta.jstprove_circuit_path
+            ezkl_circuit_path = meta.ezkl_circuit_path
+            if self.circuit_cache_dir:
+                if has_jst and jst_circuit_path:
+                    resolved_jst = RunnerUtils.resolve_relative_path(jst_circuit_path, self.slices_path)
+                    if resolved_jst:
+                        jst_circuit_path = self._cache_circuit(resolved_jst, slice_id)
+                if has_ezkl and ezkl_circuit_path:
+                    resolved_ezkl = RunnerUtils.resolve_relative_path(ezkl_circuit_path, self.slices_path)
+                    if resolved_ezkl:
+                        ezkl_circuit_path = self._cache_circuit(resolved_ezkl, f"{slice_id}_ezkl")
+
             tile_args_list = []
             for tile_idx in range(num_tiles):
                 cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
@@ -402,8 +470,8 @@ class Runner:
                     'tile_in': str(tile_in),
                     'tile_out': str(tile_out),
                     'tile_onnx_path': str(tile_onnx_path),
-                    'jstprove_circuit_path': meta.jstprove_circuit_path,
-                    'ezkl_circuit_path': meta.ezkl_circuit_path,
+                    'jstprove_circuit_path': jst_circuit_path,
+                    'ezkl_circuit_path': ezkl_circuit_path,
                     'settings_path': meta.settings_path,
                     'vk_path': meta.vk_path,
                     'slice_specific_dir': str(slice_specific_dir),

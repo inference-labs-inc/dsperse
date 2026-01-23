@@ -40,6 +40,9 @@ def setup_parser(subparsers):
                             help='Backend to use at runtime when a slice was compiled with multiple circuit backends. '
                                  'If a slice has only one circuit backend compiled, this flag is ignored for that slice (unless you choose "onnx" to skip circuits).')
 
+    run_parser.add_argument('--parallel', '--parallel-tiles', type=int, default=1, dest='parallel_tiles',
+                            help='Number of parallel processes to use for tile execution (default: 1)')
+
     return run_parser
 
 def run_inference(args):
@@ -136,7 +139,8 @@ def run_inference(args):
 
         start_time = time.time()
         # Runner expects a path to slices (dirs), a .dslice, a .dsperse, or a model dir with slices
-        runner = Runner(run_metadata_path=run_metadata_path)
+        parallel_tiles = getattr(args, 'parallel_tiles', 1) or 1
+        runner = Runner(run_metadata_path=run_metadata_path, parallel_tiles=parallel_tiles)
         # Pass optional backend selection directly to Runner.run()
         result = runner.run(
             args.input_file,

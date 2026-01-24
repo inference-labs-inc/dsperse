@@ -366,7 +366,13 @@ class Prover:
         """Prove all circuit-capable slices given a slices directory layout."""
         run_path = Path(run_path)
         dirs_path = Utils.dirs_root_from(Path(dirs_path))
-        metadata = RunMetadata.from_dict(Utils.load_run_metadata(run_path))
+
+        slices_metadata_path = dirs_path / "metadata.json"
+        if slices_metadata_path.exists():
+            run_meta_dict = RunnerAnalyzer.generate_run_metadata(dirs_path, save_path=None, original_format="dirs")
+            metadata = RunMetadata.from_dict(run_meta_dict)
+        else:
+            metadata = RunMetadata.from_dict(Utils.load_run_metadata(run_path))
 
         proofs: dict[str, dict] = {}
         proved_jst = 0
@@ -478,7 +484,7 @@ class Prover:
               backend: str | None = None, tiles_range: range | list[int] | None = None) -> dict:
         """Route to the appropriate prove path based on `model_dir` packaging."""
         run_path = Path(run_path)
-        is_run_root = (run_path / "metadata.json").exists()
+        is_run_root = (run_path / "metadata.json").exists() or (run_path / "run_results.json").exists()
 
         # Improved slice run detection (standard or tiled)
         is_slice_run = ((run_path / "input.json").exists() and (run_path / "output.json").exists()) or \
@@ -487,7 +493,6 @@ class Prover:
         detected = Converter.detect_type(model_dir)
 
         if is_run_root:
-            Utils.load_run_metadata(run_path)
             if detected == "dslice":
                 return self.prove_dslice(run_path, model_dir, output_path, backend=backend)
             if detected == "dsperse":

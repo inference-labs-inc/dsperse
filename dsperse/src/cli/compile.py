@@ -127,6 +127,8 @@ def setup_parser(subparsers):
                                 help='Backend specification for all selected layers: "jstprove" | "ezkl" | "onnx". Alternatively, provide per-layer mapping via --layers, e.g., "0,2:jstprove;3-4:ezkl". Default: try both jstprove and ezkl, fallback to onnx.')
     compile_parser.add_argument('--parallel', type=int, default=1, dest='parallel',
                                 help='Number of parallel processes for compilation (default: 1)')
+    compile_parser.add_argument('--resume', '-r', action='store_true', default=False,
+                                help='Resume compilation, skipping slices that already have compiled circuits')
 
     return compile_parser
 
@@ -140,18 +142,17 @@ def compile_model(args):
     """
     backend = getattr(args, 'backend', None)
     layers = getattr(args, 'layers', None)
-    
-    if not layers:
-        print(f"{Fore.CYAN}No layers specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx)...{Style.RESET_ALL}")
-        logger.info("No layers specified - compiling all layers with default fallback")
-    elif backend:
-        if ':' in backend:
-            print(f"{Fore.CYAN}Compiling specified layers with mixed backends...{Style.RESET_ALL}")
-        else:
-            backend_name = 'JSTprove' if backend == 'jstprove' else 'EZKL'
-            print(f"{Fore.CYAN}Compiling specified layers with {backend_name}...{Style.RESET_ALL}")
-    else:
+
+    if backend and backend.lower() in ('jstprove', 'ezkl'):
+        backend_name = 'JSTprove' if backend.lower() == 'jstprove' else 'EZKL'
+        print(f"{Fore.CYAN}Compiling all layers with {backend_name}...{Style.RESET_ALL}")
+    elif layers and ':' in str(layers):
+        print(f"{Fore.CYAN}Compiling with per-layer backend mapping...{Style.RESET_ALL}")
+    elif layers:
         print(f"{Fore.CYAN}Compiling specified layers (trying jstprove & ezkl, fallback to onnx)...{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.CYAN}No layers or backend specified. Will compile all layers with default fallback (jstprove -> ezkl -> onnx)...{Style.RESET_ALL}")
+        logger.info("No layers specified - compiling all layers with default fallback")
     logger.info(f"Starting slices compilation")
 
     # Resolve path (slices dir or .dsperse/.dslice file)
@@ -203,9 +204,10 @@ def compile_model(args):
 
     # Initialize the Compiler (it supports dirs or model.onnx)
     parallel = getattr(args, 'parallel', 1)
+    resume = getattr(args, 'resume', False)
     print(f"Initializing compiler...")
     try:
-        compiler = Compiler(backend=backend, parallel=parallel)
+        compiler = Compiler(backend=backend, parallel=parallel, resume=resume)
         logger.info(f"Compiler initialized successfully")
         print(f"Compiler initialized")
     except RuntimeError as e:

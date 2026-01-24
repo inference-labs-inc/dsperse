@@ -232,7 +232,7 @@ class Compiler:
     to the appropriate compiler implementation based on the model type.
     """
 
-    def __init__(self, backend: Optional[str] = None, parallel: int = 1):
+    def __init__(self, backend: Optional[str] = None, parallel: int = 1, resume: bool = False):
         """
         Initialize the Compiler with a specific backend configuration.
 
@@ -242,8 +242,10 @@ class Compiler:
                 - "jstprove" or "ezkl": Use specific backend for all layers
                 - "0,2:jstprove;3-4:ezkl": Per-layer backend specification
             parallel: Number of parallel processes for compilation (default: 1)
+            resume: If True, skip slices that already have compiled circuits
         """
         self.parallel = max(1, parallel)
+        self.resume = resume
         self.backend_spec = backend
         self.layer_backends = {}  # Map layer index -> backend name
         self.default_layer_indices: set[int] = set()  # Indices explicitly requested with default behavior (both)
@@ -278,6 +280,16 @@ class Compiler:
         if any(b == Backend.EZKL for b in self.layer_backends.values()):
             return True
         return self.use_fallback
+
+    def _is_slice_compiled(self, slice_dir: str, tiling_info: Optional[dict] = None) -> bool:
+        """Check if a slice already has compiled circuits (for resume mode)."""
+        if tiling_info:
+            jst_circuit = os.path.join(slice_dir, "jstprove", "tiles", "tile_circuit.txt")
+            ezkl_circuit = os.path.join(slice_dir, "payload", "ezkl", "model.compiled")
+        else:
+            jst_circuit = os.path.join(slice_dir, "jstprove", "slice_circuit.txt")
+            ezkl_circuit = os.path.join(slice_dir, "payload", "ezkl", "model.compiled")
+        return os.path.exists(jst_circuit) or os.path.exists(ezkl_circuit)
 
     def _parse_layer_backends(self, spec: str):
         """Parse layer-specific backend specification like '0,2:jstprove;3-4:ezkl'"""
@@ -597,6 +609,13 @@ class Compiler:
 
             original_slice_entry = slice_data
             slice_meta_rel = original_slice_entry.get('slice_metadata_relative_path')
+
+            if self.resume:
+                slice_dir_for_check = os.path.join(base_path, os.path.dirname(slice_meta_rel)) if slice_meta_rel else os.path.join(base_path, f"slice_{idx}")
+                if self._is_slice_compiled(slice_dir_for_check, slice_data.get('tiling')):
+                    print(f"[resume] slice_{idx}: already compiled, skipping", flush=True)
+                    skipped_count += 1
+                    continue
             if slice_meta_rel:
                 slice_dir = os.path.join(base_path, os.path.dirname(slice_meta_rel))
             else:

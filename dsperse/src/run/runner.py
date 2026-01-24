@@ -79,7 +79,7 @@ def _run_single_tile_worker(args: dict) -> dict:
 
 class Runner:
     def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, parallel_tiles: int = 1,
-                 circuit_cache_dir: str = None, run_dir: str = None):
+                 circuit_cache_dir: str = None, run_dir: str = None, resume: bool = False, resume_run_dir: str = None):
         """Initialize the Runner.
 
         Args:
@@ -88,6 +88,8 @@ class Runner:
             parallel_tiles: Number of parallel tile execution processes
             circuit_cache_dir: Directory for caching circuit files (e.g., RAM disk)
             run_dir: Directory for run outputs (default: alongside slices)
+            resume: Whether to resume a previous run, skipping completed slices
+            resume_run_dir: Specific run directory to resume from
         """
         self._provided_run_metadata_path = run_metadata_path
         self._save_metadata_path = save_metadata_path
@@ -98,6 +100,8 @@ class Runner:
         self.circuit_cache_dir = Path(circuit_cache_dir) if circuit_cache_dir else None
         self._cached_circuits: dict[str, Path] = {}
         self._run_dir_override = Path(run_dir) if run_dir else None
+        self.resume = resume
+        self.resume_run_dir = Path(resume_run_dir) if resume_run_dir else None
 
         try:
             self.ezkl_runner = EZKL()
@@ -735,12 +739,43 @@ class Runner:
 
         return ExecutionInfo(method=f"channel_split:{primary_method}", success=True)
 
+    def _find_latest_run_dir(self, base_dir: Path) -> Path | None:
+        """Find the most recent run directory in base_dir."""
+        run_dirs = sorted(base_dir.glob("run_*"), key=lambda p: p.name, reverse=True)
+        return run_dirs[0] if run_dirs else None
+
+    def _is_slice_completed(self, run_dir: Path, slice_id: str) -> tuple[bool, dict | None]:
+        """Check if a slice has completed output in the run directory."""
+        slice_dir = run_dir / slice_id
+        output_file = slice_dir / "output.json"
+        if output_file.exists():
+            try:
+                with open(output_file, 'r') as f:
+                    data = json.load(f)
+                return True, data
+            except Exception:
+                pass
+        return False, None
+
     def _run(self, output_path=None, input_json_path=None):
         exec_chain = self.run_metadata.execution_chain
         head = exec_chain.head
         nodes = exec_chain.nodes
 
-        if self._run_dir_override:
+        if self.resume and self.resume_run_dir:
+            run_dir = self.resume_run_dir
+            if not run_dir.exists():
+                raise ValueError(f"Resume run directory not found: {run_dir}")
+            logger.info(f"Resuming from existing run directory: {run_dir}")
+        elif self.resume and self._run_dir_override:
+            run_dir = self._find_latest_run_dir(self._run_dir_override)
+            if run_dir is None:
+                run_dir = self._run_dir_override / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+                run_dir.mkdir(parents=True, exist_ok=True)
+                logger.info(f"No existing run found to resume, starting new run: {run_dir}")
+            else:
+                logger.info(f"Resuming from latest run directory: {run_dir}")
+        elif self._run_dir_override:
             run_dir = self._run_dir_override / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
             run_dir.mkdir(parents=True, exist_ok=True)
         else:
@@ -760,6 +795,27 @@ class Runner:
         while current_slice_id:
             info = self.run_metadata.get_slice(current_slice_id)
             slice_dir = self.slices_path
+            output_names = info.dependencies.output
+
+            if self.resume:
+                slice_output_file = run_dir / current_slice_id / "slice_output.json"
+                if slice_output_file.exists():
+                    try:
+                        with open(slice_output_file, 'r') as f:
+                            cached_data = json.load(f)
+                        cached_tensor = torch.tensor(cached_data['output'])
+                        for oname in output_names:
+                            tensor_cache[oname] = cached_tensor
+                        final_tensor = cached_tensor
+                        slice_results[current_slice_id] = ExecutionInfo(
+                            method=cached_data.get('method', 'resumed'),
+                            success=True
+                        )
+                        print(f"[resume] {current_slice_id}: loaded cached output", flush=True)
+                        current_slice_id = nodes[current_slice_id].next
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Failed to load cached output for {current_slice_id}: {e}")
 
             if info.channel_split:
                 logger.info(f"Running channel-split slice {current_slice_id} with {info.channel_split.num_groups} groups")
@@ -828,6 +884,14 @@ class Runner:
             if not ok:
                 err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get('error', 'unknown')
                 raise Exception(f"Inference failed for {current_slice_id}: {err}")
+
+            if final_tensor is not None:
+                slice_output_dir = run_dir / current_slice_id
+                slice_output_dir.mkdir(parents=True, exist_ok=True)
+                slice_output_file = slice_output_dir / "slice_output.json"
+                method = exec_info.method if isinstance(exec_info, ExecutionInfo) else exec_info.get('method', 'unknown')
+                with open(slice_output_file, 'w') as f:
+                    json.dump({'output': final_tensor.tolist(), 'method': str(method)}, f)
 
             if self.circuit_cache_dir:
                 self._clear_circuit_cache(current_slice_id)

@@ -49,6 +49,11 @@ def setup_parser(subparsers):
     run_parser.add_argument('--run-dir', dest='run_dir',
                             help='Directory for run outputs (default: alongside slices)')
 
+    run_parser.add_argument('--resume', '-r', action='store_true', default=False,
+                            help='Resume a previous run, skipping slices that already have outputs')
+    run_parser.add_argument('--resume-run-dir', dest='resume_run_dir',
+                            help='Specific run directory to resume from (e.g., run_20260124_101332). If not provided with --resume, uses the latest run.')
+
     return run_parser
 
 def run_inference(args):
@@ -147,12 +152,16 @@ def run_inference(args):
         parallel_tiles = getattr(args, 'parallel_tiles', 1) or 1
         circuit_cache_dir = getattr(args, 'circuit_cache_dir', None)
         run_dir = getattr(args, 'run_dir', None)
+        resume = getattr(args, 'resume', False)
+        resume_run_dir = getattr(args, 'resume_run_dir', None)
 
         runner = Runner(
             run_metadata_path=run_metadata_path,
             parallel_tiles=parallel_tiles,
             circuit_cache_dir=circuit_cache_dir,
-            run_dir=run_dir
+            run_dir=run_dir,
+            resume=resume,
+            resume_run_dir=resume_run_dir
         )
         # Pass optional backend selection directly to Runner.run()
         result = runner.run(

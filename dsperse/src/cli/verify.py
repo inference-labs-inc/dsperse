@@ -139,13 +139,14 @@ def verify_proof(args):
         return
     # Validate run_dir by presence of either run-root files or per-slice files
     rd = Path(run_dir)
-    is_run_root = (rd / 'metadata.json').exists()
+    is_run_root = (rd / 'metadata.json').exists() or (rd / 'run_results.json').exists()
     is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
     is_tiled_slice_run = (rd / 'split').exists() or (rd / 'tile_0').exists()
+    has_slice_dirs = any((rd / f'slice_{i}').exists() for i in range(10))
 
-    if not (is_run_root or is_slice_run or is_tiled_slice_run):
+    if not (is_run_root or is_slice_run or is_tiled_slice_run or has_slice_dirs):
         print(
-            f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
+            f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json/run_results.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
         return
 
     print("verifying...")

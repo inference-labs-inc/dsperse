@@ -288,7 +288,13 @@ class Verifier:
         """Verify proofs for circuit-capable slices (JSTprove and EZKL)."""
         run_path = Path(run_path)
         dirs_path = Utils.dirs_root_from(Path(dirs_path))
-        metadata = RunMetadata.from_dict(Utils.load_run_metadata(run_path))
+
+        slices_metadata_path = dirs_path / "metadata.json"
+        if slices_metadata_path.exists():
+            run_meta_dict = RunnerAnalyzer.generate_run_metadata(dirs_path, save_path=None, original_format="dirs")
+            metadata = RunMetadata.from_dict(run_meta_dict)
+        else:
+            metadata = RunMetadata.from_dict(Utils.load_run_metadata(run_path))
         run_results = Utils.load_run_results(run_path)
 
         proof_paths_by_slice = {}
@@ -415,14 +421,13 @@ class Verifier:
                tiles_range: range | list[int] | None = None) -> dict:
         """Verify proofs (supports full runs, packaged formats, and single slices)."""
         run_path = Path(run_path)
-        is_run_root = (run_path / "metadata.json").exists()
+        is_run_root = (run_path / "metadata.json").exists() or (run_path / "run_results.json").exists()
         is_slice_run = ((run_path / "input.json").exists() and (run_path / "output.json").exists()) or \
                        (run_path / "split").exists() or (run_path / "tile_0").exists()
 
         detected = Converter.detect_type(model_path)
 
         if is_run_root:
-            Utils.load_run_metadata(run_path)
             if detected == "dslice": return self.verify_dslice(run_path, model_path, backend=backend)
             if detected == "dsperse": return self.verify_dsperse(run_path, model_path, backend=backend)
             if detected == "dirs": return self.verify_dirs(run_path, model_path, backend=backend)

@@ -23,6 +23,7 @@ class OnnxSlicer:
         self.onnx_analyzer = None
         self.analysis = None
         self.slice_points = None
+        self._traced_model_path = None
 
     def _ensure_analysis(self):
         """Lazy initialization of shape tracing and model analysis."""
@@ -34,9 +35,9 @@ class OnnxSlicer:
         OnnxUtils.apply_traced_shapes(self.onnx_model, self.traced_shapes, self.traced_dtypes)
 
         # Save a temporary traced model for the analyzer and tensor graph
-        traced_model_path = self.onnx_path.replace('.onnx', '_traced.onnx')
-        onnx.save(self.onnx_model, traced_model_path)
-        self.onnx_path = traced_model_path
+        self._traced_model_path = self.onnx_path.replace(".onnx", "_traced.onnx")
+        onnx.save(self.onnx_model, self._traced_model_path)
+        self.onnx_path = self._traced_model_path
 
         self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=self.save_path)
@@ -186,13 +187,18 @@ class OnnxSlicer:
             Dict[str, Any]: Metadata about the sliced model
         """
         self._ensure_analysis()
-        slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
-        
-        slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
+        try:
+            slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
+            
+            slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
 
-        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
+            self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
 
-        return slices_paths
+            return slices_paths
+        finally:
+            if self._traced_model_path and os.path.exists(self._traced_model_path):
+                logger.info(f"Cleaning up temporary traced model: {self._traced_model_path}")
+                os.remove(self._traced_model_path)
 
 
 if __name__ == "__main__":
@@ -213,4 +219,4 @@ if __name__ == "__main__":
     model_dir = os.path.join(abs_path, "model.onnx")
     output_dir = os.path.join(abs_path, "slices")
     onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir, tile_size=100000)
+    onnx_slicer.slice_model(output_path=output_dir, tile_size=1000)

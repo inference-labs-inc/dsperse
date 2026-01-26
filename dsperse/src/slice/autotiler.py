@@ -105,23 +105,22 @@ class Autotiler:
         min_tile: int = 7,
     ) -> tuple[int | None, int | None, str | None]:
         """Calculate parameters for splitting a Conv by input channels."""
-        valid_tiles = sorted([t for t in range(min_tile, spatial_h + 1) if spatial_h % t == 0])
-        if not valid_tiles:
-            return None, None, "no_valid_tile_for_spatial_dims"
-
-        for tile_candidate in valid_tiles:
-            max_channels_for_tile = tile_size // (tile_candidate * tile_candidate)
-            if max_channels_for_tile >= 1 and max_channels_for_tile < c_in:
-                num_groups = math.ceil(c_in / max_channels_for_tile)
-                if num_groups > 1:
+        # Use full spatial dimensions because we are NOT tiling spatially in this mode
+        max_channels_for_slice = tile_size // (spatial_h * spatial_w)
+        
+        if max_channels_for_slice >= 1 and max_channels_for_slice < c_in:
+            num_groups = math.ceil(c_in / max_channels_for_slice)
+            if num_groups > 1:
+                channels_per_group = math.ceil(c_in / num_groups)
+                # Ensure we don't have redundant groups
+                while channels_per_group * (num_groups - 1) >= c_in and num_groups > 1:
+                    num_groups -= 1
                     channels_per_group = math.ceil(c_in / num_groups)
-                    while channels_per_group * (num_groups - 1) >= c_in and num_groups > 1:
-                        num_groups -= 1
-                        channels_per_group = math.ceil(c_in / num_groups)
-                    if num_groups > 1:
-                        return num_groups, channels_per_group, None
+                
+                if num_groups > 1:
+                    return num_groups, channels_per_group, None
 
-        return None, None, "channel_split_not_beneficial"
+        return None, None, "channel_split_cannot_meet_constraint"
 
     # =========================================================================
     # Section 3: Model Analysis & Detection

@@ -78,6 +78,7 @@ class OnnxSlicer:
         slice_points = OnnxUtils.filter_constant_only_slices(slice_points, model_metadata)
         slice_points = sorted(set(slice_points))
 
+        slice_points = OnnxUtils.complete_slice_points(list(slice_points), model_metadata)
         print(f"Optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
@@ -122,8 +123,6 @@ class OnnxSlicer:
         # Section 2: Setup lookup maps and finalize slice points
         (graph, node_map, node_type_index_map, initializer_map, _value_info_map,
          index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
-
-        slice_points = OnnxUtils.complete_slice_points(slice_points, model_metadata)
 
         # Section 3: Pre-calculate segment inputs to determine future dependencies
         segment_inputs_map = OnnxUtils.analyze_future_dependencies(

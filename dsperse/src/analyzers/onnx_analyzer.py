@@ -146,7 +146,8 @@ class OnnxAnalyzer:
             }
         }
 
-    def _get_model_input_shapes(self, graph, initializer_map):
+    @staticmethod
+    def _get_model_input_shapes(graph, initializer_map):
         """
         Extract input shapes from the model graph.
 
@@ -170,7 +171,8 @@ class OnnxAnalyzer:
                 model_input_shapes.append(shape)
         return model_input_shapes
 
-    def _get_model_output_shapes(self, graph):
+    @staticmethod
+    def _get_model_output_shapes(graph):
         """
         Extract output shapes from the model graph.
 
@@ -192,7 +194,8 @@ class OnnxAnalyzer:
             model_output_shapes.append(shape)
         return model_output_shapes
 
-    def _get_parameter_info(self, node, node_inputs, initializer_map):
+    @staticmethod
+    def _get_parameter_info(node, node_inputs, initializer_map):
         """
         Determine parameter information for a node.
 
@@ -229,7 +232,8 @@ class OnnxAnalyzer:
 
         return parameters, parameter_details
 
-    def _get_feature_info(self, node, parameter_details):
+    @staticmethod
+    def _get_feature_info(node, parameter_details):
         """
         Determine in_features and out_features for a node.
 
@@ -265,7 +269,8 @@ class OnnxAnalyzer:
 
         return in_features, out_features
 
-    def _get_activation_info(self, node):
+    @staticmethod
+    def _get_activation_info(node):
         """
         Determine activation function for a node.
 
@@ -287,7 +292,8 @@ class OnnxAnalyzer:
 
         return activation
 
-    def _create_layer_info(self, node_name, node_info):
+    @staticmethod
+    def _create_layer_info(node_name, node_info):
         """
         Create layer information from node info.
 

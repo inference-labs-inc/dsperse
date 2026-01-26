@@ -69,6 +69,12 @@ class TestFindOptimalTileSize:
     def test_spatial_dim_smaller_than_target(self):
         assert Autotiler.find_optimal_tile_size(32, 64, min_tile=4) is None
 
+    def test_find_optimal_tile_size_with_stride(self):
+        # Case: spatial=64, target=20, stride=3. No divisor of 64 is multiple of 3.
+        assert Autotiler.find_optimal_tile_size(64, 20, stride=3) is None
+        # Case: spatial=60, target=25, stride=3. Should find 15.
+        assert Autotiler.find_optimal_tile_size(60, 25, stride=3) == 15
+
 
 class TestIsTileable:
     def _make_conv_model(self, extra_ops=None):
@@ -491,3 +497,152 @@ class TestInvalidInputs:
 
         result = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert result is None
+
+class TestChannelSplitting:
+    def _create_conv_model(self, c_in, c_out, spatial, group=1):
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in // group, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1], group=group)
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        return model
+
+    def test_is_channel_splittable(self):
+        # group=1 is splittable
+        model = self._create_conv_model(32, 64, 32, group=1)
+        assert Autotiler.is_channel_splittable(model) is True
+        
+        # group > 1 is not splittable
+        model_grouped = self._create_conv_model(32, 64, 32, group=2)
+        assert Autotiler.is_channel_splittable(model_grouped) is False
+
+    def test_calculate_channel_split_config(self):
+        # Test high c_in (1024) vs low tile_size (10000)
+        num_groups, cpg, err = Autotiler.calculate_channel_split_config(
+            c_in=1024, c_out=1024, spatial_h=32, spatial_w=32, tile_size=10000
+        )
+        assert err is None
+        assert num_groups > 1
+        assert cpg < 1024
+        assert cpg * (num_groups - 1) < 1024
+        assert cpg * num_groups >= 1024
+
+    def test_create_channel_group_slice(self, tmp_path):
+        model = self._create_conv_model(32, 64, 32)
+        model_path = tmp_path / "slice.onnx"
+        onnx.save(model, str(model_path))
+        
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        
+        group_info = Autotiler.create_channel_group_slice(
+            slice_path=model_path,
+            group_idx=0,
+            c_start=0,
+            c_end=16,
+            slice_idx=5,
+            output_dir=output_dir
+        )
+        
+        assert group_info is not None
+        assert Path(group_info["path"]).exists()
+        assert group_info["group_idx"] == 0
+        assert group_info["c_start"] == 0
+        assert group_info["c_end"] == 16
+        
+        # Load and verify the group model
+        group_model = onnx.load(group_info["path"])
+        inp = group_model.graph.input[0]
+        dims = [d.dim_value for d in inp.type.tensor_type.shape.dim]
+        assert dims == [1, 16, 32, 32]
+        
+        out = group_model.graph.output[0]
+        out_dims = [d.dim_value for d in out.type.tensor_type.shape.dim]
+        assert out_dims == [1, 64, 32, 32]
+
+class TestTilingEnhancements:
+    def test_tiling_without_bias(self, tmp_path):
+        # 1. Create Conv model without bias.
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(8, 3, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 32, 32])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_path = tmp_path / "model_no_bias.onnx"
+        onnx.save(model, str(model_path))
+        
+        # 2. create_tile_slice(...)
+        output_dir = tmp_path / "tiles"
+        output_dir.mkdir()
+        tile_info = Autotiler.create_tile_slice(model_path, tile_size=16, slice_idx=0, output_dir=output_dir)
+        
+        # 3. Assert tile model is valid and its Conv node has exactly 2 inputs (X, W).
+        assert tile_info is not None
+        tile_model = onnx.load(tile_info["path"])
+        conv_node = [n for n in tile_model.graph.node if n.op_type == "Conv"][0]
+        assert len(conv_node.input) == 2
+        assert conv_node.input[0] == "tile_in"
+        assert conv_node.input[1] == "W"
+
+    def test_integrate_multiple_ops(self, tmp_path):
+        # 1. Construct a model: Conv -> Relu -> Add -> Sigmoid.
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(8, 3, 3, 3).astype(np.float32), "W")
+        Add_val = numpy_helper.from_array(np.array([1.0], dtype=np.float32), "Add_val")
+        
+        nodes = [
+            helper.make_node("Conv", ["X", "W"], ["conv_out"], kernel_shape=[3, 3], pads=[1, 1, 1, 1]),
+            helper.make_node("Relu", ["conv_out"], ["relu_out"]),
+            helper.make_node("Add", ["relu_out", "Add_val"], ["add_out"]),
+            helper.make_node("Sigmoid", ["add_out"], ["Y"]),
+        ]
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 8, 32, 32])
+        graph = helper.make_graph(nodes, "test", [X], [Y], [W, Add_val])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_path = tmp_path / "model_multi_ops.onnx"
+        onnx.save(model, str(model_path))
+        
+        output_dir = tmp_path / "tiles_multi"
+        output_dir.mkdir()
+        tile_info = Autotiler.create_tile_slice(model_path, tile_size=16, slice_idx=0, output_dir=output_dir)
+        
+        assert tile_info is not None
+        tile_model = onnx.load(tile_info["path"])
+        op_types = [n.op_type for n in tile_model.graph.node]
+        assert "Conv" in op_types
+        assert "Relu" in op_types
+        assert "Add" in op_types
+        assert "Sigmoid" in op_types
+        assert len(tile_model.graph.node) == 4
+
+class TestDetectionFallback:
+    def test_detect_needs_fallback_to_split(self, tmp_path):
+        # 1. Create a model where spatial tiling is impossible (prime spatial dim 37).
+        c_in, c_out, spatial = 64, 64, 37
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        model.ir_version = 8
+        
+        model_path = tmp_path / "prime_model.onnx"
+        onnx.save(model, str(model_path))
+        
+        # 2. Call detect_tiling_needs with a tile_size that necessitates reduction.
+        result = Autotiler.detect_tiling_needs(model_path, tile_size=10000)
+        
+        # 3. Assert "needs_channel_split" is True in the result.
+        assert result is not None
+        assert result.get("needs_channel_split") is True
+        assert result["c_in"] == 64
+        assert result["num_groups"] > 1

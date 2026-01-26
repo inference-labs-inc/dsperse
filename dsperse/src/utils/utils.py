@@ -6,25 +6,24 @@ from pathlib import Path
 import torch
 import onnx
 
-from dsperse.src.metadata.schema import ModelMetadata, RunSliceMetadata
+from dsperse.src.analyzers.schema import ModelMetadata, RunSliceMetadata
 
 logger = logging.getLogger(__name__)
-
-
-def save_onnx_model(model: onnx.ModelProto, path: str | Path, opset_version: int = 18):
-    """Save ONNX model with compatible IR version (9) and specified opset."""
-    model.ir_version = 9
-    if model.opset_import:
-        for opset in model.opset_import:
-            if opset.domain == "" or opset.domain == "ai.onnx":
-                opset.version = opset_version
-    onnx.save(model, str(path))
 
 
 class Utils:
     """
     Utility functions for working with ONNX models.
     """
+    @staticmethod
+    def save_onnx_model(model: onnx.ModelProto, path: str | Path, opset_version: int = 18):
+        """Save ONNX model with compatible IR version (9) and specified opset."""
+        model.ir_version = 9
+        if model.opset_import:
+            for opset in model.opset_import:
+                if opset.domain == "" or opset.domain == "ai.onnx":
+                    opset.version = opset_version
+        onnx.save(model, str(path))
 
     @staticmethod
     def relativize_tiling_info(tiling_info, root_dir, base_dir=None):
@@ -67,6 +66,16 @@ class Utils:
         # relativize concat
         if "concat" in tiling and "path" in tiling["concat"]:
             tiling["concat"]["path"] = rel(tiling["concat"]["path"])
+
+        # relativize bias_path (ChannelSplitInfo)
+        if "bias_path" in tiling:
+            tiling["bias_path"] = rel(tiling["bias_path"])
+
+        # relativize groups (ChannelSplitInfo)
+        if "groups" in tiling and isinstance(tiling["groups"], list):
+            for group in tiling["groups"]:
+                if "path" in group:
+                    group["path"] = rel(group["path"])
 
         return tiling
 
@@ -423,3 +432,36 @@ class Utils:
                 json.dump(meta, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to write updated metadata to {meta_path}: {e}")
+
+    @staticmethod
+    def get_dsperse_version() -> str:
+        """
+        Read the dsperse project version from the nearest pyproject.toml.
+        Returns a string like "1.0.1" or "unknown" on failure.
+        """
+        try:
+            here = Path(__file__).resolve()
+            for parent in [here.parent, *here.parents]:
+                pyproject = parent / "pyproject.toml"
+                if pyproject.exists():
+                    try:
+                        txt = pyproject.read_text(encoding="utf-8", errors="ignore")
+                        in_project = False
+                        for line in txt.splitlines():
+                            s = line.strip()
+                            if s.startswith("[project]"):
+                                in_project = True
+                                continue
+                            if in_project and s.startswith("[") and s.endswith("]"):
+                                break
+                            if in_project and s.startswith("version") and "=" in s:
+                                try:
+                                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                                    if val: return val
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return "unknown"

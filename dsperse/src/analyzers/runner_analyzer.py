@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from dsperse.src.metadata.schema import SliceMetadata, RunSliceMetadata, Compilation, Dependencies, TilingInfo, Backend, ExecutionNode, ExecutionChain, RunMetadata
+from dsperse.src.analyzers.schema import SliceMetadata, RunSliceMetadata, Compilation, Dependencies, TilingInfo, Backend, ExecutionNode, ExecutionChain, RunMetadata
 from dsperse.src.utils.utils import Utils
 from dsperse.src.slice.utils.converter import Converter
 

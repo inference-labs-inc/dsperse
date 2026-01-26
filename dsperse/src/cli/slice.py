@@ -37,12 +37,8 @@ def setup_parser(subparsers):
     slice_parser.add_argument('--output-type', '--ot', '-ot', dest='output_type',
                               choices=['dirs', 'dslice', 'dsperse'], default='dirs',
                               help='Output format of the slicing result: dirs (default), dslice, or dsperse')
-    slice_parser.add_argument('--max-conv-size', '--mcs', type=int, default=None,
-                              help='Max elements per Conv tile. Tile size calculated dynamically per-Conv: tile_size = sqrt(max_conv_size / channels). Recommended over --tile-size.')
     slice_parser.add_argument('--tile-size', '-t', type=int, default=None,
-                              help='Fixed tile size for all Conv slices (legacy). Use --max-conv-size for better results.')
-    slice_parser.add_argument('--parallel', '-p', action='store_true', default=False,
-                              help='Parallelize slicing operations')
+                              help='Max elements per Conv tile. Tile size calculated dynamically per-Conv: tile_size = sqrt(tile_size / channels).')
 
     # Sub-commands under slice
     sub = slice_parser.add_subparsers(dest='slice_subcommand', required=False, help='Slice sub-commands')
@@ -187,22 +183,14 @@ def slice_model(args):
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
         output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
-        max_conv_size = getattr(args, 'max_conv_size', None)
         tile_size = getattr(args, 'tile_size', None)
-        parallel = getattr(args, 'parallel', False)
 
-        if max_conv_size and tile_size:
-            print(f"{Fore.YELLOW}Both --max-conv-size and --tile-size provided. Using --max-conv-size={max_conv_size}{Style.RESET_ALL}")
-            tile_size = None
-
-        tiling_info = f"max_conv_size={max_conv_size}" if max_conv_size else f"tile_size={tile_size}" if tile_size else "no tiling"
-        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}, {tiling_info}, parallel={parallel}")
+        tiling_info = f"tile_size={tile_size}" if tile_size else "no tiling"
+        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}, {tiling_info}")
         slicer.slice_model(
             output_path=output_dir,
             output_type=output_type,
-            max_conv_size=max_conv_size,
             tile_size=tile_size,
-            parallel=parallel,
         )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

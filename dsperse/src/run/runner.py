@@ -15,7 +15,7 @@ from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.metadata.schema import RunSliceMetadata, TilingInfo, ChannelSplitInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
+from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, ChannelSplitInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -30,7 +30,7 @@ def _run_single_tile_worker(args: dict) -> dict:
     from dsperse.src.backends.jstprove import JSTprove
     from dsperse.src.backends.ezkl import EZKL
     from dsperse.src.run.utils.runner_utils import RunnerUtils
-    from dsperse.src.metadata.schema import ExecutionMethod
+    from dsperse.src.analyzers.schema import ExecutionMethod
 
     tile_idx = args['tile_idx']
     tile_in = args['tile_in']

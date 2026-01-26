@@ -7,7 +7,7 @@ import time
 
 import torch
 
-from dsperse.src.metadata.schema import ExecutionInfo, RunSliceMetadata, Backend, ExecutionMethod, RunMetadata
+from dsperse.src.analyzers.schema import ExecutionInfo, RunSliceMetadata, Backend, ExecutionMethod, RunMetadata
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.torch_utils import ModelUtils
 

@@ -212,7 +212,7 @@ class TestSliceE2E:
             output_dir=str(output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=16
+            tile_size=1024
         )
 
         try:

@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 import onnx
 
-from dsperse.src.metadata.schema import (
+from dsperse.src.analyzers.schema import (
     SliceMetadata, SliceShape, TensorShape, WeightShape, Dependencies, ModelMetadata
 )
 from dsperse.src.slice.utils.onnx_utils import OnnxUtils
@@ -379,7 +379,11 @@ class OnnxAnalyzer:
             )
             if segment_metadata:
                 if segment_idx in tiled_info:
-                    segment_metadata["tiling"] = Utils.relativize_tiling_info(tiled_info[segment_idx], output_dir)
+                    info = tiled_info[segment_idx]
+                    if "tiling" in info:
+                        segment_metadata["tiling"] = Utils.relativize_tiling_info(info["tiling"], output_dir)
+                    if "channel_split" in info:
+                        segment_metadata["channel_split"] = Utils.relativize_tiling_info(info["channel_split"], output_dir)
                 segments.append(segment_metadata)
 
         # Add segments to metadata

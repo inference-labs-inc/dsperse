@@ -6,76 +6,68 @@ import torch
 from pathlib import Path
 from onnx import helper, TensorProto, numpy_helper
 
-from dsperse.src.slice.autotiler import (
-    compute_halo,
-    compute_min_tile_size,
-    find_tile_size,
-    is_tileable,
-    get_tiling_params,
-    create_tile_slice,
-    ELEMENTWISE_OPS,
-)
+from dsperse.src.slice.autotiler import Autotiler, ELEMENTWISE_OPS
 
 
-class TestComputeHalo:
+class TestComputeHaloSize:
     def test_3x3_kernel_no_dilation(self):
-        assert compute_halo([3, 3], [1, 1]) == (1, 1)
+        assert Autotiler.compute_halo_size([3, 3], [1, 1]) == (1, 1)
 
     def test_5x5_kernel_no_dilation(self):
-        assert compute_halo([5, 5], [1, 1]) == (2, 2)
+        assert Autotiler.compute_halo_size([5, 5], [1, 1]) == (2, 2)
 
     def test_7x7_kernel_no_dilation(self):
-        assert compute_halo([7, 7], [1, 1]) == (3, 3)
+        assert Autotiler.compute_halo_size([7, 7], [1, 1]) == (3, 3)
 
     def test_3x3_kernel_dilation_2(self):
-        assert compute_halo([3, 3], [2, 2]) == (2, 2)
+        assert Autotiler.compute_halo_size([3, 3], [2, 2]) == (2, 2)
 
     def test_3x3_kernel_dilation_3(self):
-        assert compute_halo([3, 3], [3, 3]) == (3, 3)
+        assert Autotiler.compute_halo_size([3, 3], [3, 3]) == (3, 3)
 
     def test_asymmetric_kernel(self):
-        assert compute_halo([3, 5], [1, 1]) == (1, 2)
+        assert Autotiler.compute_halo_size([3, 5], [1, 1]) == (1, 2)
 
     def test_asymmetric_dilation(self):
-        assert compute_halo([3, 3], [1, 2]) == (1, 2)
+        assert Autotiler.compute_halo_size([3, 3], [1, 2]) == (1, 2)
 
 
-class TestComputeMinTileSize:
+class TestComputeMinSpatialTile:
     def test_3x3_kernel_no_dilation(self):
-        assert compute_min_tile_size([3, 3], [1, 1]) == 4
+        assert Autotiler.compute_min_spatial_tile([3, 3], [1, 1]) == 4
 
     def test_5x5_kernel_no_dilation(self):
-        assert compute_min_tile_size([5, 5], [1, 1]) == 6
+        assert Autotiler.compute_min_spatial_tile([5, 5], [1, 1]) == 6
 
     def test_7x7_kernel_no_dilation(self):
-        assert compute_min_tile_size([7, 7], [1, 1]) == 8
+        assert Autotiler.compute_min_spatial_tile([7, 7], [1, 1]) == 8
 
     def test_3x3_kernel_dilation_2(self):
-        assert compute_min_tile_size([3, 3], [2, 2]) == 6
+        assert Autotiler.compute_min_spatial_tile([3, 3], [2, 2]) == 6
 
     def test_asymmetric_takes_max(self):
-        assert compute_min_tile_size([3, 7], [1, 1]) == 8
+        assert Autotiler.compute_min_spatial_tile([3, 7], [1, 1]) == 8
 
 
-class TestFindTileSize:
+class TestFindOptimalTileSize:
     def test_exact_divisor(self):
-        assert find_tile_size(128, 64, min_tile=4) == 64
+        assert Autotiler.find_optimal_tile_size(128, 64, min_tile=4) == 64
 
     def test_finds_largest_divisor(self):
-        assert find_tile_size(128, 100, min_tile=4) == 64
+        assert Autotiler.find_optimal_tile_size(128, 100, min_tile=4) == 64
 
     def test_respects_min_tile(self):
-        result = find_tile_size(64, 8, min_tile=10)
+        result = Autotiler.find_optimal_tile_size(64, 8, min_tile=10)
         assert result is None or result >= 10
 
     def test_returns_none_when_no_valid_divisor(self):
-        assert find_tile_size(17, 16, min_tile=10) is None
+        assert Autotiler.find_optimal_tile_size(17, 16, min_tile=10) is None
 
     def test_target_smaller_than_min_tile(self):
-        assert find_tile_size(128, 4, min_tile=8) is None
+        assert Autotiler.find_optimal_tile_size(128, 4, min_tile=8) is None
 
     def test_spatial_dim_smaller_than_target(self):
-        assert find_tile_size(32, 64, min_tile=4) is None
+        assert Autotiler.find_optimal_tile_size(32, 64, min_tile=4) is None
 
 
 class TestIsTileable:
@@ -102,15 +94,15 @@ class TestIsTileable:
 
     def test_conv_only_is_tileable(self):
         model = self._make_conv_model()
-        assert is_tileable(model)
+        assert Autotiler.is_tileable(model)
 
     def test_conv_with_relu_is_tileable(self):
         model = self._make_conv_model(extra_ops=["Relu"])
-        assert is_tileable(model)
+        assert Autotiler.is_tileable(model)
 
     def test_conv_with_sigmoid_is_tileable(self):
         model = self._make_conv_model(extra_ops=["Sigmoid"])
-        assert is_tileable(model)
+        assert Autotiler.is_tileable(model)
 
     def test_conv_with_flatten_not_tileable(self):
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
@@ -123,7 +115,7 @@ class TestIsTileable:
         graph = helper.make_graph(nodes, "test", [X],
                                   [helper.make_tensor_value_info("flat", TensorProto.FLOAT, None)], [W])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        assert not is_tileable(model)
+        assert not Autotiler.is_tileable(model)
 
     def test_no_conv_not_tileable(self):
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 3, 32, 32])
@@ -131,7 +123,7 @@ class TestIsTileable:
         nodes = [helper.make_node("Relu", ["X"], ["Y"])]
         graph = helper.make_graph(nodes, "test", [X], [Y], [])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        assert not is_tileable(model)
+        assert not Autotiler.is_tileable(model)
 
     def test_multiple_inputs_not_tileable(self):
         X1 = helper.make_tensor_value_info("X1", TensorProto.FLOAT, [1, 3, 32, 32])
@@ -140,10 +132,10 @@ class TestIsTileable:
         nodes = [helper.make_node("Add", ["X1", "X2"], ["Y"])]
         graph = helper.make_graph(nodes, "test", [X1, X2], [Y], [])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        assert not is_tileable(model)
+        assert not Autotiler.is_tileable(model)
 
 
-class TestGetTilingParams:
+class TestDetectTilingNeeds:
     def _create_conv_model(self, c_in, c_out, spatial, kernel=3, stride=1, padding=1, dilation=1):
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
 
@@ -176,7 +168,7 @@ class TestGetTilingParams:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=16)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert params is not None
         assert params["tile_size"] == 16
         assert params["tiles_y"] == 4
@@ -189,7 +181,11 @@ class TestGetTilingParams:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=64)
+        # This will not return None anymore just because of the value, 
+        # but because 3*64*64 is larger than the total elements in a 32x32 image (3*32*32)
+        # Wait, if tile_size (max elements) > total elements, it returns None, "already_fits" in calculate_spatial_tile_config
+        # which results in detect_tiling_needs returning None.
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*64*64)
         assert params is None
 
     def test_returns_none_for_non_square_spatial(self, tmp_path):
@@ -206,7 +202,7 @@ class TestGetTilingParams:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=16)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert params is None
 
     def test_halo_for_large_kernel(self, tmp_path):
@@ -214,7 +210,7 @@ class TestGetTilingParams:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=16)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert params is not None
         assert params["halo"] == [3, 3]
 
@@ -223,16 +219,16 @@ class TestGetTilingParams:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=16)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert params is not None
         assert params["halo"] == [2, 2]
 
-    def test_max_conv_size_calculates_tile(self, tmp_path):
+    def test_tile_size_calculates_tile(self, tmp_path):
         model = self._create_conv_model(3, 8, 64)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, max_conv_size=3 * 32 * 32)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3 * 32 * 32)
         assert params is not None
         assert params["tile_size"] <= 32
 
@@ -259,36 +255,36 @@ class TestCreateTileSlice:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=16)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert params is not None
 
         output_dir = tmp_path / "tiles"
         output_dir.mkdir()
 
-        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        tile_info = Autotiler.create_tile_slice(model_path, params["tile_size"], 0, output_dir)
         assert tile_info is not None
         assert "path" in tile_info
         assert Path(tile_info["path"]).exists()
 
     def test_tile_model_has_correct_input_shape(self, tmp_path):
         c_in, c_out, spatial = 3, 8, 64
-        tile_size = 16
+        tile_size_max_elements = 3*16*16
         halo = 1
 
         model = self._create_conv_model(c_in, c_out, spatial)
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        params = get_tiling_params(model_path, tile_size=tile_size)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=tile_size_max_elements)
         output_dir = tmp_path / "tiles"
         output_dir.mkdir()
 
-        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        tile_info = Autotiler.create_tile_slice(model_path, params["tile_size"], 0, output_dir)
         tile_model = onnx.load(tile_info["path"])
 
         inp = tile_model.graph.input[0]
         dims = [d.dim_value for d in inp.type.tensor_type.shape.dim]
-        expected_tile_input = tile_size + 2 * halo
+        expected_tile_input = 16 + 2 * halo
         assert dims == [1, c_in, expected_tile_input, expected_tile_input]
 
 
@@ -373,7 +369,7 @@ class TestTiledParity:
     ])
     def test_parity(self, kernel, stride, padding, tmp_path):
         c_in, c_out, spatial = 3, 8, 64
-        tile_size = 16
+        tile_size_max_elements = 3*16*16
 
         model = self._create_conv_model(c_in, c_out, spatial, kernel, stride, padding)
         model_path = tmp_path / "model.onnx"
@@ -384,13 +380,13 @@ class TestTiledParity:
 
         expected = self._run_original(model_path, input_data)
 
-        params = get_tiling_params(model_path, tile_size=tile_size)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=tile_size_max_elements)
         if params is None:
             pytest.skip("Model not tileable with given parameters")
 
         output_dir = tmp_path / "tiles"
         output_dir.mkdir()
-        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        tile_info = Autotiler.create_tile_slice(model_path, params["tile_size"], 0, output_dir)
 
         actual = self._run_tiled_python(tile_info["path"], params, input_data)
 
@@ -399,7 +395,7 @@ class TestTiledParity:
 
     def test_boundary_pixels_exact(self, tmp_path):
         c_in, c_out, spatial = 1, 1, 32
-        tile_size = 16
+        tile_size_max_elements = 1*16*16
 
         model = self._create_conv_model(c_in, c_out, spatial)
         model_path = tmp_path / "model.onnx"
@@ -410,14 +406,14 @@ class TestTiledParity:
 
         expected = self._run_original(model_path, input_data)
 
-        params = get_tiling_params(model_path, tile_size=tile_size)
+        params = Autotiler.detect_tiling_needs(model_path, tile_size=tile_size_max_elements)
         output_dir = tmp_path / "tiles"
         output_dir.mkdir()
-        tile_info = create_tile_slice(model_path, params["tile_size"], 0, output_dir)
+        tile_info = Autotiler.create_tile_slice(model_path, params["tile_size"], 0, output_dir)
 
         actual = self._run_tiled_python(tile_info["path"], params, input_data)
 
-        boundary_h = tile_size
+        boundary_h = 16
         np.testing.assert_array_equal(
             actual[0, :, boundary_h-1:boundary_h+1, :],
             expected[0, :, boundary_h-1:boundary_h+1, :],
@@ -447,7 +443,10 @@ class TestInvalidInputs:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        result = get_tiling_params(model_path, tile_size=64)
+        # 3 channels * 32 * 32 = 3072. 3*64*64 = 12288.
+        # So 12288 elements fits a 3072 image without tiling.
+        # calculate_spatial_tile_config returns None, "already_fits"
+        result = Autotiler.detect_tiling_needs(model_path, tile_size=3*64*64)
         assert result is None
 
     def test_prime_spatial_no_valid_divisor(self, tmp_path):
@@ -455,7 +454,10 @@ class TestInvalidInputs:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        result = get_tiling_params(model_path, tile_size=16)
+        # c_in=3. sqrt((3*16*16)/3) = 16. 
+        # find_optimal_tile_size(37, 16, min_tile=7) will look for divisors of 37 <= 16.
+        # 37 is prime. No divisors. returns None.
+        result = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert result is None
 
     def test_tile_smaller_than_kernel(self, tmp_path):
@@ -463,7 +465,9 @@ class TestInvalidInputs:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        result = get_tiling_params(model_path, tile_size=4)
+        # min_tile = 8 for kernel 7.
+        # sqrt((3*4*4)/3) = 4. 4 < 8. returns None.
+        result = Autotiler.detect_tiling_needs(model_path, tile_size=3*4*4)
         assert result is None
 
     def test_multiple_conv_rejected(self, tmp_path):
@@ -485,5 +489,5 @@ class TestInvalidInputs:
         model_path = tmp_path / "model.onnx"
         onnx.save(model, str(model_path))
 
-        result = get_tiling_params(model_path, tile_size=16)
+        result = Autotiler.detect_tiling_needs(model_path, tile_size=3*16*16)
         assert result is None

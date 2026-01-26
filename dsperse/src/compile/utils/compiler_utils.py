@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
-from dsperse.src.metadata.schema import RunSliceMetadata, Backend
+from dsperse.src.analyzers.schema import RunSliceMetadata, Backend
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 logger = logging.getLogger(__name__)

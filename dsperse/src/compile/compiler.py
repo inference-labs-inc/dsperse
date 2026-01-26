@@ -17,7 +17,7 @@ from typing import Optional, Dict, Any
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.compile.utils.compiler_utils import CompilerUtils
-from dsperse.src.metadata.schema import Backend
+from dsperse.src.analyzers.schema import Backend
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 

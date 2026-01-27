@@ -71,6 +71,8 @@ class ChannelSplitExecutor:
 
         if forced == Backend.ONNX or (not has_jst and not has_ezkl):
             group_onnx_path = self._resolve_path(group.path)
+            if not group_onnx_path:
+                raise ValueError(f"Cannot resolve ONNX path for channel group {group.group_idx}: {group.path}")
             session = ort.InferenceSession(str(group_onnx_path))
             outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
             return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
@@ -97,6 +99,8 @@ class ChannelSplitExecutor:
             logger.warning(f"EZKL failed for group {group.group_idx}, falling back")
 
         group_onnx_path = self._resolve_path(group.path)
+        if not group_onnx_path:
+            raise ValueError(f"Cannot resolve ONNX path for channel group {group.group_idx}: {group.path}")
         session = ort.InferenceSession(str(group_onnx_path))
         outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
         return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY

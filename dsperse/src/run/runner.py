@@ -68,13 +68,17 @@ class Runner:
         if info.channel_split:
             logger.info(f"Running channel-split slice {slice_id} with {info.channel_split.num_groups} groups")
             exec_info = self.run_channel_split_inference(slice_id, info, tensor_cache, run_dir, slices_path, backend=backend)
-            return exec_info.success, None, exec_info
-        
+            output_name = info.channel_split.output_name or (info.dependencies.output[0] if info.dependencies.output else "output")
+            output_tensor = tensor_cache.get(output_name)
+            return exec_info.success, {"output": output_tensor}, exec_info
+
         # --- Tiled Execution ---
         if info.tiling:
             logger.info(f"Running tiled slice {slice_id} with parallel tiles")
             exec_info = self.run_tiled_inference(slice_id, info, tensor_cache, run_dir, backend=backend)
-            return exec_info.success, None, exec_info
+            output_name = info.tiling.output_name
+            output_tensor = tensor_cache.get(output_name)
+            return exec_info.success, {"output": output_tensor}, exec_info
 
         # --- Standard Circuit Execution ---
         use_circuit = node.use_circuit and backend != Backend.ONNX

@@ -348,7 +348,7 @@ class RunnerUtils:
             return r.get("tiles") or r.get("tile_exec_infos") or []
 
         def _count_tile_method(tiles, method_prefix):
-            return sum(1 for t in tiles if (t.method if isinstance(t, TileResult) else t.get("method", "")).startswith(method_prefix))
+            return sum(1 for t in tiles if ((t.method or "") if isinstance(t, TileResult) else (t.get("method") or "")).startswith(method_prefix))
 
         ezkl_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.EZKL_GEN_WITNESS)
         jstprove_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.JSTPROVE_GEN_WITNESS)

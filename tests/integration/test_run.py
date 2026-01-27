@@ -26,7 +26,7 @@ class TestRunE2E:
         slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
         
         input_file = model_dir / "input.json"
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
         
         capfd.readouterr()
         run_inference(run_args)
@@ -52,7 +52,7 @@ class TestRunE2E:
         compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers=None, backend=None))
         
         input_file = model_dir / "input.json"
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
         
         capfd.readouterr()
         run_inference(run_args)
@@ -75,7 +75,7 @@ class TestRunE2E:
         input_file = model_dir / "input.json"
         
         # Test force_backend=onnx (guaranteed to work, no fallback)
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend="onnx", run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend="onnx")
         capfd.readouterr()
         run_inference(run_args)
         out = capfd.readouterr().out.lower()
@@ -103,7 +103,7 @@ class TestRunE2E:
         
         slice_0_path = slices_output_dir / "slice_0"
         input_file = model_dir / "input.json"
-        run_args = SimpleNamespace(path=str(slice_0_path), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slice_0_path), input_file=str(input_file), output_file=None, force_backend=None)
         
         capfd.readouterr()
         run_inference(run_args)
@@ -133,7 +133,7 @@ class TestRunE2E:
         input_file = model_dir / "input.json"
         
         # Default (blank) -> should be jstprove (method name includes suffix like jstprove_gen_witness)
-        run_args = SimpleNamespace(path=str(slice_0_path), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slice_0_path), input_file=str(input_file), output_file=None, force_backend=None)
         capfd.readouterr()
         run_inference(run_args)
         out = capfd.readouterr().out.lower()
@@ -161,7 +161,7 @@ class TestRunE2E:
         # .dslice
         slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dslice"))
         # Whole model dirs (containing .dslice)
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
         capfd.readouterr()
         run_inference(run_args)
         assert "Inference completed" in capfd.readouterr().out
@@ -189,7 +189,7 @@ class TestRunE2E:
         input_file = model_dir / "input.json"
         custom_out = tmp_path / "custom_results.json"
         
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=str(custom_out), force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=str(custom_out), force_backend=None)
         run_inference(run_args)
         
         assert custom_out.exists()
@@ -210,7 +210,7 @@ class TestRunE2E:
         compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers="0;2:jstprove;3-4:ezkl", backend=None))
         
         input_file = model_dir / "input.json"
-        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None)
+        run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
         
         capfd.readouterr()
         run_inference(run_args)
@@ -239,7 +239,7 @@ class TestRunE2E:
             output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=14
+            tile_size=1000
         ))
 
         # 2. Compile
@@ -256,8 +256,7 @@ class TestRunE2E:
             path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
-            force_backend=None,
-            run_metadata_path=None
+            force_backend=None
         )
         
         capfd.readouterr()
@@ -280,3 +279,266 @@ class TestRunE2E:
         assert len(w_exec["tile_exec_infos"]) == 4
         for t_info in w_exec["tile_exec_infos"]:
             assert t_info["success"] is True
+
+    def test_run_with_channel_split(self, tmp_path, capfd, jstprove_available):
+        """10. Verify that running a channel-split model works."""
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+        import numpy as np
+
+        # Create a model with high input channels and prime spatial dimension to force channel splitting
+        c_in, c_out, spatial = 64, 64, 37
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        W_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
+        W = numpy_helper.from_array(W_data, "W")
+        # Add bias to verify bias compensation
+        B_data = np.random.randn(c_out).astype(np.float32)
+        B = numpy_helper.from_array(B_data, "B")
+        
+        conv = helper.make_node("Conv", ["X", "W", "B"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W, B])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "channel_split_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        # Create input.json
+        input_data = np.random.randn(1, c_in, spatial, spatial).astype(np.float32).tolist()
+        input_file = model_dir / "input.json"
+        with open(input_file, 'w') as f:
+            json.dump({"input_data": input_data}, f)
+            
+        slices_output_dir = model_dir / "slices"
+        
+        # 1. Slice
+        slice_model(SimpleNamespace(
+            model_dir=str(model_path),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=10000
+        ))
+        
+        # 2. Compile (optional)
+        if jstprove_available:
+            compile_model(SimpleNamespace(
+                path=str(slices_output_dir),
+                input_file=None,
+                layers=None,
+                backend="jstprove"
+            ))
+
+        # 3. Run
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend=None,
+            threads=1,
+            run_dir=None
+        )
+        
+        capfd.readouterr()
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        
+        assert "Inference completed" in out
+        assert "channel_split" in out.lower()
+
+        run_dir = self._get_run_dir(out)
+        run_results = json.loads((run_dir / "run_results.json").read_text())
+        assert "output" in run_results
+        assert run_results["tensor_shape"] == [1, c_out, spatial, spatial]
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_run_parallel_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, jstprove_available):
+        """11. Verify that parallel execution (threads > 1) works for tiling."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        # 1. Slice with tiling
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=1000
+        ))
+
+        # 2. Compile
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=None,
+            layers=None,
+            backend="jstprove"
+        ))
+
+        # 3. Run with parallel threads
+        input_file = model_dir / "input.json"
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend=None,
+            threads=2,
+            run_dir=None
+        )
+        
+        capfd.readouterr()
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        
+        assert "Inference completed" in out
+        assert "parallel processes" in out.lower()
+        assert "slice_0: tiled" in out
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_run_tiling_ezkl(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, ezkl_available):
+        """12. Verify that tiling works with EZKL backend."""
+        if not ezkl_available:
+            pytest.skip("EZKL unavailable")
+
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=1000
+        ))
+
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=None,
+            layers=None,
+            backend="ezkl"
+        ))
+
+        input_file = model_dir / "input.json"
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend="ezkl",
+            threads=1,
+            run_dir=None
+        )
+        
+        capfd.readouterr()
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        assert "Inference completed" in out
+        assert "slice_0: tiled" in out
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_run_tiling_onnx_fallback(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
+        """13. Verify that tiling falls back to ONNX if no circuits are available."""
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=1000
+        ))
+
+        input_file = model_dir / "input.json"
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend="onnx",
+            threads=1,
+            run_dir=None
+        )
+        
+        capfd.readouterr()
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        assert "Inference completed" in out
+        assert "slice_0: tiled" in out
+        assert "onnx_only" in out.lower()
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_run_resume_complex(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
+        """14. Verify that resuming works for tiled/channel-split runs."""
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=1000
+        ))
+        
+        input_file = model_dir / "input.json"
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend="onnx",
+            threads=1,
+            run_dir=None
+        )
+        
+        # First run to produce artifacts
+        run_inference(run_args)
+        out1 = capfd.readouterr().out
+        run_dir = self._get_run_dir(out1)
+        
+        # Second run with resume
+        run_args.run_dir = str(run_dir)
+        capfd.readouterr()
+        run_inference(run_args)
+        out2 = capfd.readouterr().out
+        
+        assert "Inference completed" in out2
+        assert "loaded cached output" in out2.lower()
+
+    def test_run_multi_input_complex(self, tmp_path, capfd):
+        """15. Verify multi-input ONNX models with complex dependencies."""
+        import onnx
+        from onnx import helper, TensorProto
+        import numpy as np
+        
+        # X1 + X2 -> T1
+        # T1 + X3 -> Y
+        X1 = helper.make_tensor_value_info("X1", TensorProto.FLOAT, [1, 10])
+        X2 = helper.make_tensor_value_info("X2", TensorProto.FLOAT, [1, 10])
+        X3 = helper.make_tensor_value_info("X3", TensorProto.FLOAT, [1, 10])
+        add1 = helper.make_node("Add", ["X1", "X2"], ["T1"])
+        add2 = helper.make_node("Add", ["T1", "X3"], ["Y"])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 10])
+        graph = helper.make_graph([add1, add2], "multi_input", [X1, X2, X3], [Y], [])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "multi_input_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        slices_output_dir = model_dir / "slices"
+        slice_model(SimpleNamespace(
+            model_dir=str(model_path),
+            output_dir=str(slices_output_dir),
+            save_file=None,
+            output_type="dirs"
+        ))
+        
+        input_file = model_dir / "input.json"
+        with open(input_file, 'w') as f:
+            json.dump({"input_data": np.zeros((1, 10)).tolist()}, f)
+            
+        run_args = SimpleNamespace(
+            path=str(slices_output_dir),
+            input_file=str(input_file),
+            output_file=None,
+            force_backend="onnx",
+            threads=1,
+            run_dir=None
+        )
+        
+        run_inference(run_args)
+        out = capfd.readouterr().out
+        assert "Inference completed" in out

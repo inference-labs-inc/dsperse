@@ -108,7 +108,7 @@ if __name__ == "__main__":
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")
-        slices = slicer.slice_model(output_path=output_dir, output_type="dirs", tile_size=100000)
+        slices = slicer.slice_model(output_path=output_dir, output_type="dirs", tile_size=1000)
 
         # Display results
         print("\nSlicing completed!")

@@ -34,7 +34,7 @@ class TestFullRunE2E:
 
         # 3. Run (default)
         capfd.readouterr() # clear buffers
-        run_inference(SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None))
+        run_inference(SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None))
         out = capfd.readouterr().out
         
         # Extract run directory
@@ -161,7 +161,7 @@ class TestFullRunE2E:
             output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=14  # doom input is 28x28, so 14 triggers tiling for 2 slices
+            tile_size=1000  # doom input is 28x28, so 1000 triggers spatial tiling
         )
         slice_model(args)
         
@@ -182,7 +182,7 @@ class TestFullRunE2E:
 
         # Check that tiled slices were executed (method should be "tiled")
         slice_results = run_results.get("slice_results", {})
-        tiled_slices = [s for s in slice_results.values() if s.get("method") == "tiled"]
+        tiled_slices = [s for s in slice_results.values() if (s.method if hasattr(s, 'method') else s.get("method")) == "tiled"]
         assert len(tiled_slices) >= 1, "At least one slice should be tiled"
 
         # 4. Prove

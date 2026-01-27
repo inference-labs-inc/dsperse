@@ -29,7 +29,6 @@ def setup_parser(subparsers):
     # Arguments with aliases/shorthands
     run_parser.add_argument('--path', '-p', '--slices-dir', '--slices-directory', '--slices', '--sd', '-s', dest='path',
                             help='Path to the slices directory or a .dsperse/.dslice file')
-    run_parser.add_argument('--run-metadata-path', help='Path to run metadata.json (auto-generated if not provided)')
     run_parser.add_argument('--input-file', '--input', '--if', '-i', dest='input_file',
                             help='Path to input file (default: parent_dir/input.json)')
     run_parser.add_argument('--output-file', '-o', dest='output_file',
@@ -40,19 +39,11 @@ def setup_parser(subparsers):
                             help='Backend to use at runtime when a slice was compiled with multiple circuit backends. '
                                  'If a slice has only one circuit backend compiled, this flag is ignored for that slice (unless you choose "onnx" to skip circuits).')
 
-    run_parser.add_argument('--parallel', '--parallel-tiles', type=int, default=1, dest='parallel_tiles',
-                            help='Number of parallel processes to use for tile execution (default: 1)')
+    run_parser.add_argument('--parallel', '--threads', type=int, default=1, dest='threads',
+                            help='Number of parallel processes to use for execution (default: 1)')
 
-    run_parser.add_argument('--circuit-cache-dir', '--cache-dir', dest='circuit_cache_dir',
-                            help='Directory to cache circuit files for faster loading (e.g., RAM disk path like /Volumes/RamDisk/circuits)')
-
-    run_parser.add_argument('--run-dir', dest='run_dir',
-                            help='Directory for run outputs (default: alongside slices)')
-
-    run_parser.add_argument('--resume', '-r', action='store_true', default=False,
-                            help='Resume a previous run, skipping slices that already have outputs')
-    run_parser.add_argument('--resume-run-dir', dest='resume_run_dir',
-                            help='Specific run directory to resume from (e.g., run_20260124_101332). If not provided with --resume, uses the latest run.')
+    run_parser.add_argument('--run-dir', '--resume', dest='run_dir',
+                            help='Directory for run outputs (default: alongside slices). If it contains metadata.json, or is a parent of run_ subdirs, it will resume.')
 
     return run_parser
 
@@ -104,11 +95,6 @@ def run_inference(args):
         slices_dir_effective = normalize_path(slices_dir_effective)
     model_dir = normalize_path(model_dir)
 
-    # Get run metadata path if provided, otherwise None (Runner will auto-generate)
-    run_metadata_path = args.run_metadata_path if hasattr(args, 'run_metadata_path') and args.run_metadata_path else None
-    if run_metadata_path:
-        run_metadata_path = normalize_path(run_metadata_path)
-
     # Prompt for input file if not provided
     if not hasattr(args, 'input_file') or not args.input_file:
         # Set default input file path based on model_dir (parent of slices)
@@ -149,19 +135,12 @@ def run_inference(args):
         logger.info(f"Model path: {model_dir}, Slices path: {slices_dir_effective}")
 
         start_time = time.time()
-        parallel_tiles = getattr(args, 'parallel_tiles', 1) or 1
-        circuit_cache_dir = getattr(args, 'circuit_cache_dir', None)
+        threads = getattr(args, 'threads', 1) or 1
         run_dir = getattr(args, 'run_dir', None)
-        resume = getattr(args, 'resume', False)
-        resume_run_dir = getattr(args, 'resume_run_dir', None)
 
         runner = Runner(
-            run_metadata_path=run_metadata_path,
-            parallel_tiles=parallel_tiles,
-            circuit_cache_dir=circuit_cache_dir,
             run_dir=run_dir,
-            resume=resume,
-            resume_run_dir=resume_run_dir
+            threads=threads,
         )
         # Pass optional backend selection directly to Runner.run()
         result = runner.run(

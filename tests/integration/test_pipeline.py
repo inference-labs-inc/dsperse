@@ -119,7 +119,7 @@ class TestOnnxInference:
         output = np.array(results["output"])
         assert not np.isnan(output).any(), "Output contains NaN"
         assert not np.isinf(output).any(), "Output contains Inf"
-        assert all(r["success"] for r in results["slice_results"].values()), \
+        assert all(getattr(r, 'success', False) for r in results["slice_results"].values()), \
             "Not all slices succeeded"
 
 
@@ -157,11 +157,12 @@ class TestWitnessGeneration:
 
         jstprove_slices = [
             (sid, r) for sid, r in results["slice_results"].items()
-            if "jstprove" in r.get("method", "")
+            if "jstprove" in (getattr(r, 'method', ''))
         ]
         assert len(jstprove_slices) >= 1, "No slices used JSTprove"
         for sid, r in jstprove_slices:
-            assert r["success"], f"JSTprove witness failed for {sid}"
+            success = getattr(r, 'success', False)
+            assert success, f"JSTprove witness failed for {sid}"
 
 
 class TestProofGeneration:
@@ -200,8 +201,7 @@ class TestProofGeneration:
             path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
-            force_backend=None,
-            run_metadata_path=None
+            force_backend=None
         ))
         out = capfd.readouterr().out
         match = re.search(r"Run data saved to (.+)", out)
@@ -258,8 +258,7 @@ class TestVerification:
             path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
-            force_backend=None,
-            run_metadata_path=None
+            force_backend=None
         ))
         out = capfd.readouterr().out
         match = re.search(r"Run data saved to (.+)", out)
@@ -329,8 +328,7 @@ class TestEndToEnd:
             path=str(slices_output_dir),
             input_file=str(input_file),
             output_file=None,
-            force_backend=None,
-            run_metadata_path=None
+            force_backend=None
         ))
         out = capfd.readouterr().out
         match = re.search(r"Run data saved to (.+)", out)

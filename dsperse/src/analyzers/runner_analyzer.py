@@ -512,6 +512,56 @@ class RunnerAnalyzer:
 
         return run_meta
 
+    @staticmethod
+    def initialize_run_metadata(slices_path: Path, run_dir: Path = None, output_path: str = None, format: str = "dirs") -> tuple[Path, bool, RunMetadata]:
+        """Set up the run directory and prepare the run metadata, handling resumes if applicable."""
+        import time
+        from dsperse.src.run.utils.runner_utils import RunnerUtils
+
+        # 1. Determine base run directory logic
+        requested_dir = Path(output_path) if output_path else run_dir
+        resume = False
+        
+        if requested_dir:
+            if (requested_dir / "metadata.json").exists():
+                actual_run_dir = requested_dir
+                resume = True
+            elif requested_dir.exists() and not (requested_dir / "metadata.json").exists():
+                latest = RunnerUtils.find_most_recent_run(requested_dir)
+                if latest:
+                    actual_run_dir = latest
+                    resume = True
+                else:
+                    ts = time.strftime('%Y%m%d_%H%M%S')
+                    actual_run_dir = requested_dir / f"run_{ts}"
+                    resume = False
+            else:
+                actual_run_dir = requested_dir
+                resume = actual_run_dir.exists() and (actual_run_dir / "metadata.json").exists()
+        else:
+            ts = time.strftime('%Y%m%d_%H%M%S')
+            base_dir = slices_path.parent
+            if base_dir.name == "slices":
+                base_dir = base_dir.parent
+            actual_run_dir = base_dir / "run" / f"run_{ts}"
+            resume = False
+
+        # 2. Load or generate metadata
+        if resume:
+            metadata_path = actual_run_dir / "metadata.json"
+            with open(metadata_path, 'r') as f:
+                run_metadata = RunMetadata.from_dict(json.load(f))
+            logger.info(f"Resuming from existing run directory: {actual_run_dir}")
+        else:
+            actual_run_dir.mkdir(parents=True, exist_ok=True)
+            save_path = actual_run_dir / "metadata.json"
+            run_metadata = RunMetadata.from_dict(
+                RunnerAnalyzer.generate_run_metadata(slices_path, save_path, format)
+            )
+            logger.info(f"Started new run in directory: {actual_run_dir}")
+            
+        return actual_run_dir, resume, run_metadata
+
 if __name__ == "__main__":
     model_choice = 1
     base_paths = {

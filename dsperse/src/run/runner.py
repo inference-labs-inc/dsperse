@@ -2,20 +2,21 @@
 Runner for EzKL Circuit and ONNX Inference
 """
 
-import json
 import logging
 import os
-import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
+import numpy as np
 import torch
-import torch.nn.functional as F
+import onnxruntime as ort
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
+from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, ExecutionInfo, TileResult, Backend, \
+    ExecutionMethod
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, ChannelSplitInfo, Dependencies, ExecutionInfo, TileResult, Backend, ExecutionMethod, RunMetadata
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -23,85 +24,22 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 
-def _run_single_tile_worker(args: dict) -> dict:
-    """Worker function for parallel tile execution. Must be at module level for pickling."""
-    import json
-    from pathlib import Path
-    from dsperse.src.backends.jstprove import JSTprove
-    from dsperse.src.backends.ezkl import EZKL
-    from dsperse.src.run.utils.runner_utils import RunnerUtils
-    from dsperse.src.analyzers.schema import ExecutionMethod
-
-    tile_idx = args['tile_idx']
-    tile_in = args['tile_in']
-    tile_out = args['tile_out']
-    has_jst = args['has_jst']
-    has_ezkl = args['has_ezkl']
-    slices_path = Path(args['slices_path'])
-
-    try:
-        if has_jst:
-            jst_runner = JSTprove()
-            circuit_path = RunnerUtils.resolve_relative_path(args['jstprove_circuit_path'], slices_path)
-            success, result = jst_runner.generate_witness(tile_in, circuit_path, tile_out)
-            if success:
-                output_tensor = RunnerUtils.extract_output_tensor(result)
-                if output_tensor is not None:
-                    return {
-                        'tile_idx': tile_idx,
-                        'success': True,
-                        'output_tensor': output_tensor.tolist() if hasattr(output_tensor, 'tolist') else output_tensor,
-                        'method': ExecutionMethod.JSTPROVE_GEN_WITNESS
-                    }
-            return {'tile_idx': tile_idx, 'success': False, 'error': f'JSTprove failed: {result}'}
-
-        elif has_ezkl:
-            ezkl_runner = EZKL()
-            circuit_path = RunnerUtils.resolve_relative_path(args['ezkl_circuit_path'], slices_path)
-            vk_path = RunnerUtils.resolve_relative_path(args['vk_path'], slices_path) if args['vk_path'] else None
-            settings_path = RunnerUtils.resolve_relative_path(args['settings_path'], slices_path) if args['settings_path'] else None
-            success, result = ezkl_runner.generate_witness(tile_in, circuit_path, tile_out, vk_path, settings_path)
-            if success:
-                output_tensor = RunnerUtils.extract_output_tensor(result)
-                if output_tensor is not None:
-                    return {
-                        'tile_idx': tile_idx,
-                        'success': True,
-                        'output_tensor': output_tensor.tolist() if hasattr(output_tensor, 'tolist') else output_tensor,
-                        'method': ExecutionMethod.EZKL_GEN_WITNESS
-                    }
-            return {'tile_idx': tile_idx, 'success': False, 'error': f'EZKL failed: {result}'}
-
-        return {'tile_idx': tile_idx, 'success': False, 'error': 'No backend available'}
-
-    except Exception as e:
-        return {'tile_idx': tile_idx, 'success': False, 'error': str(e)}
-
 class Runner:
-    def __init__(self, run_metadata_path: str = None, save_metadata_path: str = None, parallel_tiles: int = 1,
-                 circuit_cache_dir: str = None, run_dir: str = None, resume: bool = False, resume_run_dir: str = None):
+
+    def __init__(self, run_dir: str = None, threads: int = 1):
         """Initialize the Runner.
 
         Args:
-            run_metadata_path: Path to existing run metadata
-            save_metadata_path: Path where to save generated metadata
-            parallel_tiles: Number of parallel tile execution processes
-            circuit_cache_dir: Directory for caching circuit files (e.g., RAM disk)
-            run_dir: Directory for run outputs (default: alongside slices)
-            resume: Whether to resume a previous run, skipping completed slices
-            resume_run_dir: Specific run directory to resume from
+            run_dir: Directory for run outputs (default: alongside slices). If it contains metadata.json, it's a resume.
+            threads: Number of parallel tile execution processes
         """
-        self._provided_run_metadata_path = run_metadata_path
-        self._save_metadata_path = save_metadata_path
+        self.run_dir = Path(run_dir) if run_dir else None
+        self.threads = max(1, threads)
+        self.resume = bool(self.run_dir)
+        
         self.run_metadata = None
+        self.slices_path: Path | None = None
         self.last_run_dir: Path | None = None
-        self.force_backend: str | None = None
-        self.parallel_tiles = max(1, parallel_tiles)
-        self.circuit_cache_dir = Path(circuit_cache_dir) if circuit_cache_dir else None
-        self._cached_circuits: dict[str, Path] = {}
-        self._run_dir_override = Path(run_dir) if run_dir else None
-        self.resume = resume
-        self.resume_run_dir = Path(resume_run_dir) if resume_run_dir else None
 
         try:
             self.ezkl_runner = EZKL()
@@ -115,11 +53,361 @@ class Runner:
             self.jstprove_runner = None
             logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
+
+    def dispatch_slice(self, slice_id, info, node, tensor_cache, run_dir, slices_path, in_file, out_file, backend, current_tensor):
+        """Route execution to the appropriate backend based on slice type."""
+        # --- Channel Split Execution ---
+        if info.channel_split:
+            logger.info(f"Running channel-split slice {slice_id} with {info.channel_split.num_groups} groups")
+            exec_info = self.run_channel_split_inference(slice_id, info, tensor_cache, run_dir, slices_path, backend=backend)
+            return exec_info.success, None, exec_info
+        
+        # --- Tiled Execution ---
+        if info.tiling:
+            logger.info(f"Running tiled slice {slice_id} with parallel tiles")
+            exec_info = self.run_tiled_inference(slice_id, info, tensor_cache, run_dir, backend=backend)
+            return exec_info.success, None, exec_info
+
+        # --- Standard Circuit Execution ---
+        use_circuit = node.use_circuit and backend != Backend.ONNX
+        if use_circuit:
+            return self.run_circuit_with_fallback(info, in_file, out_file, slices_path, backend=backend)
+        
+        # --- ONNX Fallback / Multi-input Execution ---
+        filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
+        if len(filtered_inputs) > 1:
+            missing = [n for n in filtered_inputs if n not in tensor_cache]
+            if missing:
+                raise ValueError(f"Missing input tensors for {slice_id}: {missing}")
+            extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
+        else:
+            extra_tensors = {filtered_inputs[0] if filtered_inputs else "input": current_tensor}
+        
+        return self.run_onnx_multi(info, out_file, slices_path, extra_tensors)
+
+    def run_circuit_with_fallback(self, meta: RunSliceMetadata, in_file: Path, out_file: Path, slice_dir: Path, backend: str = None):
+        """Execute a slice using best available backend: jstprove -> ezkl -> onnx."""
+        # --- Setup and Capability Check ---
+        slice_id = slice_dir.name if slice_dir else "unknown"
+        forced = backend
+
+        has_jst = bool(meta.jstprove_circuit_path) and self.jstprove_runner is not None
+        has_ezkl = bool(meta.ezkl_circuit_path) and bool(meta.vk_path)
+
+        # --- Forced Backend Handling ---
+        if forced == Backend.ONNX:
+            logger.info(f"[{slice_id}] Running with ONNX (forced)")
+            return self.run_onnx_single(meta, in_file, out_file, slice_dir)
+
+        if forced == Backend.JSTPROVE and has_jst:
+            logger.info(f"[{slice_id}] Running with JSTprove (forced)")
+            j_meta = RunnerUtils.prepare_jstprove_meta(meta)
+            return self.run_jstprove_inference(j_meta, in_file, out_file, slice_dir)
+
+        if forced == Backend.EZKL and has_ezkl:
+            logger.info(f"[{slice_id}] Running with EZKL (forced)")
+            e_meta = RunnerUtils.prepare_ezkl_meta(meta)
+            ezkl_in = RunnerUtils.flatten_input_for_ezkl(in_file)
+            return self.run_ezkl_inference(e_meta, ezkl_in, out_file, slice_dir)
+
+        # --- Best Available (Automatic) Backend Selection ---
+        if has_jst:
+            logger.info(f"[{slice_id}] Running with JSTprove (best available)")
+            j_meta = RunnerUtils.prepare_jstprove_meta(meta)
+            ok, tensor, j_info = self.run_jstprove_inference(j_meta, in_file, out_file, slice_dir)
+            if ok:
+                return ok, tensor, j_info
+            logger.warning(f"[{slice_id}] JSTprove failed, trying fallback...")
+
+            if has_ezkl:
+                logger.info(f"[{slice_id}] Falling back to EZKL")
+                e_meta = RunnerUtils.prepare_ezkl_meta(meta)
+                ezkl_in = RunnerUtils.flatten_input_for_ezkl(in_file)
+                ok, tensor, e_info = self.run_ezkl_inference(e_meta, ezkl_in, out_file, slice_dir)
+                if ok:
+                    return ok, tensor, e_info
+                logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
+
+            logger.info(f"[{slice_id}] Falling back to ONNX")
+            ok, tensor, o_info = self.run_onnx_single(meta, in_file, out_file, slice_dir)
+            o_info.method = ExecutionMethod.JSTPROVE_FALLBACK_ONNX
+            return ok, tensor, o_info
+
+        if has_ezkl:
+            logger.info(f"[{slice_id}] Running with EZKL (best available)")
+            e_meta = RunnerUtils.prepare_ezkl_meta(meta)
+            ezkl_in = RunnerUtils.flatten_input_for_ezkl(in_file)
+            ok, tensor, e_info = self.run_ezkl_inference(e_meta, ezkl_in, out_file, slice_dir)
+            if ok:
+                return ok, tensor, e_info
+            logger.warning(f"[{slice_id}] EZKL failed, falling back to ONNX")
+            ok, tensor, o_info = self.run_onnx_single(meta, in_file, out_file, slice_dir)
+            o_info.method = ExecutionMethod.EZKL_FALLBACK_ONNX
+            return ok, tensor, o_info
+
+        # --- Final ONNX Fallback ---
+        logger.info(f"[{slice_id}] Running with ONNX (no ZK circuits available)")
+        return self.run_onnx_single(meta, in_file, out_file, slice_dir)
+
+    def run_ezkl_inference(self, meta: RunSliceMetadata, input_tensor_path: Path, output_witness_path: Path, slice_dir: Path = None):
+        """Run EZKL inference for a slice."""
+        # --- Pre-execution Checks ---
+        if self.ezkl_runner is None:
+            return False, "EZKL CLI not available", ExecutionInfo(method=ExecutionMethod.EZKL_GEN_WITNESS, success=False, error='EZKL CLI not available')
+
+        # --- Path Resolution ---
+        paths = RunnerUtils.resolve_inference_paths(meta, slice_dir)
+
+        # --- Witness Generation ---
+        try:
+            success, output_tensor = self.ezkl_runner.generate_witness(
+                input_file=str(input_tensor_path),
+                model_path=paths['circuit'],
+                output_file=str(output_witness_path),
+                vk_path=paths['vk'],
+                settings_path=paths['settings']
+            )
+        except Exception as e:
+            success, output_tensor = False, str(e)
+
+        # --- Result Packaging ---
+        exec_info = ExecutionInfo(
+            method=ExecutionMethod.EZKL_GEN_WITNESS,
+            success=success,
+            error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"),
+            witness_file=str(output_witness_path),
+        )
+        return success, output_tensor, exec_info
+
+    def run_jstprove_inference(self, meta: RunSliceMetadata, input_tensor_path: Path, output_witness_path: Path, slice_dir: Path = None):
+        """Run JSTprove inference for a slice."""
+        # --- Pre-execution Checks ---
+        if self.jstprove_runner is None:
+            return False, "JSTprove CLI not available", ExecutionInfo(method=ExecutionMethod.JSTPROVE_GEN_WITNESS, success=False, error='JSTprove CLI not available')
+
+        # --- Path Resolution ---
+        paths = RunnerUtils.resolve_inference_paths(meta, slice_dir)
+
+        # --- Witness Generation ---
+        try:
+            witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
+            success, output_tensor = self.jstprove_runner.generate_witness(
+                input_file=str(input_tensor_path),
+                model_path=paths['circuit'],
+                output_file=str(output_witness_path),
+            )
+        except Exception as e:
+            success, output_tensor = False, str(e)
+            witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
+
+        # --- Result Packaging ---
+        exec_info = ExecutionInfo(
+            method=ExecutionMethod.JSTPROVE_GEN_WITNESS,
+            success=success,
+            error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown JSTprove error"),
+            witness_file=str(witness_file_path),
+        )
+        return success, output_tensor, exec_info
+
+    def run_tiled_inference(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path, backend: str = None) -> ExecutionInfo:
+        """Run a tiled slice by splitting into overlapping tiles and executing them."""
+        # --- Initialization ---
+        tiling = meta.tiling
+        if not tiling:
+            return ExecutionInfo(method=ExecutionMethod.TILED, success=False, error='missing_tiling_info')
+
+        # --- Tiling Split ---
+        input_tensor = RunnerUtils.get_input_tensor_for_tiling(slice_id, tiling, meta, tensor_cache)
+        RunnerUtils.split_tensor_into_tiles(slice_id, tiling, input_tensor, tensor_cache)
+        
+        # --- Tile Execution ---
+        tile_results = self.run_tiles(slice_id, tiling, meta, run_dir, tensor_cache, backend=backend)
+        
+        # --- Tiling Reassembly ---
+        RunnerUtils.reconstruct_tensor_from_tiles(slice_id, tiling, tensor_cache)
+
+        return ExecutionInfo(method=ExecutionMethod.TILED, success=True, tiles=tile_results)
+
+    def run_tiles(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, run_dir: Path, tensor_cache: dict, backend: str = None) -> list[TileResult]:
+        """Execute individual tiles for a tiled slice in parallel or sequentially."""
+        # --- Setup and Path Discovery ---
+        config = RunnerUtils.get_tile_execution_config(tiling, meta, self.slices_path, backend=backend, has_jst_runner=(self.jstprove_runner is not None))
+        if config['tile_onnx_path'] is None or not Path(config['tile_onnx_path']).exists():
+            raise ValueError(f"Tile ONNX path not found for {slice_id}: {config['tile_onnx_path']}")
+
+        # --- Tile Argument Preparation ---
+        tile_exec_infos = []
+        if config['has_jst'] or config['has_ezkl']:
+            tile_args_list = RunnerUtils.prepare_tile_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, tensor_cache, self.slices_path, config)
+
+            # --- Parallel Execution ---
+            parallel_count = min(self.threads, tiling.num_tiles)
+            if parallel_count > 1:
+                logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} circuits using {parallel_count} parallel processes")
+                with ProcessPoolExecutor(max_workers=parallel_count) as executor:
+                    futures = {executor.submit(RunnerUtils.execute_tile_worker, args): args['tile_idx'] for args in tile_args_list}
+                    results_map = {}
+                    for future in as_completed(futures):
+                        tile_idx = futures[future]
+                        try:
+                            results_map[tile_idx] = future.result()
+                        except Exception as e:
+                            results_map[tile_idx] = {'success': False, 'error': str(e), 'tile_idx': tile_idx}
+                
+                tile_exec_infos = RunnerUtils.collect_tile_outputs(results_map, tiling.num_tiles, tiling.slice_idx, tiling, tensor_cache)
+            # --- Sequential Execution ---
+            else:
+                logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} circuits (sequential)")
+                for args in tile_args_list:
+                    tile_meta = RunSliceMetadata(
+                        path=args['tile_onnx_path'], jstprove_circuit_path=args['jstprove_circuit_path'],
+                        ezkl_circuit_path=args['ezkl_circuit_path'], settings_path=args['settings_path'],
+                        vk_path=args['vk_path'], dependencies=meta.dependencies,
+                    )
+                    ok, tensor, exec_info = self.run_circuit_with_fallback(tile_meta, Path(args['tile_in']), Path(args['tile_out']), Path(args['slice_specific_dir']), backend=config['effective_backend'])
+                    if not ok: raise RuntimeError(f"Tile {args['tile_idx']} failed: {exec_info.error}")
+                    tensor_cache[f"tile_{tiling.slice_idx}_{args['tile_idx']}_out"] = tensor
+                    tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=exec_info.method))
+        # --- ONNX Only Tiling ---
+        else:
+            logger.info(f"Running {tiling.num_tiles} tiles with ONNX only")
+            for tile_idx in range(tiling.num_tiles):
+                tile_run_dir = run_dir / f"slice_{tiling.slice_idx}" / f"tile_{tile_idx}"
+                tile_run_dir.mkdir(parents=True, exist_ok=True)
+                tile_in, tile_out = tile_run_dir / "input.json", tile_run_dir / "output.json"
+                Utils.write_input(tensor_cache[f"tile_{tiling.slice_idx}_{tile_idx}_in"], str(tile_in))
+                
+                ok, result, o_info = self.run_onnx_single(meta, tile_in, tile_out, self.slices_path)
+                if not ok: raise RuntimeError(f"Tile {tile_idx} failed: {o_info.error}")
+                tensor_cache[f"tile_{tiling.slice_idx}_{tile_idx}_out"] = result
+                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=ExecutionMethod.ONNX_ONLY))
+
+        return tile_exec_infos
+
+    def run_channel_split_inference(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path, slices_path: Path, backend: str = None) -> ExecutionInfo:
+        """Coordinate the execution of multiple channel groups and sum their outputs."""
+        # --- Channel Split Setup ---
+        input_tensor, output_shape, input_name = RunnerUtils.prepare_channel_split_config(meta, tensor_cache)
+        if input_tensor is None:
+            err = "missing_channel_split_info" if not meta.channel_split else f"Missing input tensor for channel-split slice {slice_id}"
+            return ExecutionInfo(method="channel_split", success=False, error=err)
+
+        # --- Group Execution Loop ---
+        partial_outputs, methods_used = [], []
+        for group in meta.channel_split.groups:
+            group_input = input_tensor[:, group.c_start:group.c_end, :, :]
+            output, method = RunnerUtils.execute_channel_group(self, group, group_input, run_dir / slice_id, output_shape, slices_path, backend=backend)
+            partial_outputs.append(output)
+            methods_used.append(method)
+
+        # --- Output Aggregation ---
+        summed = partial_outputs[0]
+        for po in partial_outputs[1:]: summed = summed + po
+
+        # --- Bias Compensation ---
+        summed = RunnerUtils.apply_channel_split_bias(summed, meta.channel_split, slices_path)
+
+        # --- Cache Update ---
+        output_name = meta.channel_split.output_name or (meta.dependencies.output[0] if meta.dependencies.output else "output")
+        tensor_cache[output_name] = summed
+        primary_method = methods_used[0] if len(set(methods_used)) == 1 else "channel_split_mixed"
+        logger.info(f"Channel split {slice_id}: {meta.channel_split.num_groups} groups via {primary_method}, output {list(summed.shape)}")
+        return ExecutionInfo(method=f"channel_split:{primary_method}", success=True)
+
+    @staticmethod
+    def run_onnx_multi(meta: RunSliceMetadata, output_file: Path, slice_dir: Path, extra_tensors: dict):
+        """Run ONNX inference for a multi-input slice."""
+        # --- ONNX Path Resolution ---
+        onnx_path = RunnerUtils.resolve_relative_path(meta.path, slice_dir)
+        if not onnx_path or not Path(onnx_path).exists():
+            return False, f"ONNX file not found: {onnx_path}", ExecutionInfo(method=ExecutionMethod.ONNX_MULTI_INPUT, success=False, error='file_not_found')
+
+        # --- Inference Execution ---
+        try:
+            success, result = OnnxModels.run_inference_multi(model_path=onnx_path, extra_tensors=extra_tensors, output_file=str(output_file))
+        except Exception as e:
+            success, result = False, str(e)
+
+        # --- Result Packaging ---
+        exec_info = ExecutionInfo(
+            method=ExecutionMethod.ONNX_MULTI_INPUT, success=success,
+            error=None if success else (result if isinstance(result, str) else 'unknown'),
+        )
+        return success, result, exec_info
+
+    @staticmethod
+    def run_onnx_single(meta: RunSliceMetadata, input_tensor_path: Path, output_tensor_path: Path, slice_dir: Path = None):
+        """Run ONNX inference for a single-input slice."""
+        # --- ONNX Path Resolution ---
+        onnx_path = RunnerUtils.resolve_relative_path(meta.path, slice_dir)
+        if not onnx_path or not Path(onnx_path).exists():
+            return False, f"ONNX file not found: {onnx_path}", ExecutionInfo(method=ExecutionMethod.ONNX_ONLY, success=False, error='file_not_found')
+
+        # --- Inference Execution ---
+        success, result = OnnxModels.run_inference(model_path=onnx_path, input_file=str(input_tensor_path), output_file=str(output_tensor_path))
+        
+        # --- Result Packaging ---
+        exec_info = ExecutionInfo(
+            method=ExecutionMethod.ONNX_ONLY, success=success,
+            error=None if success else (result if isinstance(result, str) else 'inference_failed'),
+        )
+        return success, result, exec_info
+
+    def _run(self, input_json_path=None, backend: str = None):
+        """Internal execution loop for model inference."""
+        # --- Initialization ---
+        nodes = self.run_metadata.execution_chain.nodes
+        current_slice_id = self.run_metadata.execution_chain.head
+        run_dir = self.last_run_dir
+
+        input_tensor, tensor_cache = RunnerUtils.initialize_run_state(input_json_path, self.run_metadata,
+                                                                      current_slice_id)
+        slice_results, final_tensor = {}, None
+
+        # --- Execution Loop ---
+        while current_slice_id:
+            info = self.run_metadata.get_slice(current_slice_id)
+            node = nodes[current_slice_id]
+            in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
+
+            # Resume Logic
+            if self.resume:
+                resumed, cached_tensor, cached_info = RunnerUtils.try_resume_slice(run_dir, current_slice_id)
+                if resumed:
+                    for oname in info.dependencies.output: tensor_cache[oname] = cached_tensor
+                    final_tensor, slice_results[current_slice_id] = cached_tensor, cached_info
+                    current_slice_id = node.next
+                    continue
+
+            # Execution Step
+            current_tensor = RunnerUtils.prepare_slice_input(info, tensor_cache, input_tensor, in_file)
+            ok, result, exec_info = self.dispatch_slice(
+                current_slice_id, info, node, tensor_cache, run_dir, self.slices_path, in_file, out_file, backend,
+                current_tensor
+            )
+
+            # Result Processing
+            final_tensor = RunnerUtils.process_inference_result(current_slice_id, info, ok, result, exec_info,
+                                                                tensor_cache)
+            slice_results[current_slice_id] = exec_info
+
+            if not ok:
+                err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get('error', 'unknown')
+                raise Exception(f"Inference failed for {current_slice_id}: {err}")
+
+            if final_tensor is not None:
+                RunnerUtils.save_intermediate_output(out_file, final_tensor, exec_info)
+
+            current_slice_id = nodes[current_slice_id].next
+
+        # --- Finalization ---
+        return RunnerUtils.finalize_run_results(self.run_metadata, input_tensor, final_tensor, slice_results, run_dir)
+
     def run(self, input_json_path, slice_path: str, output_path: str = None, backend: str | None = None) -> dict:
         """Run inference through the chain using run/metadata.json.
 
         slice_path can be provided here (preferred) or at construction time for backward compatibility.
-        
+
         Args:
             input_json_path: Path to the input JSON tensor file
             slice_path: Path to the slices directory or packaged slices (.dsperse/.dslice)
@@ -128,793 +416,27 @@ class Runner:
                      - When provided, applies only at run-time and only affects slices that
                        have multiple circuit backends compiled. If 'onnx', skips circuit backends.
         """
-        # Ensure slices path is available and valid
         if slice_path is None or not Path(slice_path).exists():
             raise Exception("A valid path must be provided for slices")
         self.slices_path = Path(slice_path)
 
-        # convert to dirs
         format = Converter.detect_type(self.slices_path)
         if format != "dirs":
             slices_path = Converter.convert(str(self.slices_path), output_type="dirs")
             self.slices_path = Path(slices_path)
 
         # Generate run metadata if needed
-        self._generate_run_metadata(format)
+        self.last_run_dir, self.resume, self.run_metadata = RunnerAnalyzer.initialize_run_metadata(
+            self.slices_path, run_dir=self.run_dir, output_path=output_path, format=format
+        )
 
-        # Apply optional one-shot backend override for this run only
-        prev_forced = self.force_backend
-        if backend is not None:
-            self.force_backend = backend
-
-        try:
-            # run inference
-            results = self._run(input_json_path=input_json_path, output_path=output_path)
-        finally:
-            # Restore previous forced backend setting
-            self.force_backend = prev_forced
+        # run inference
+        results = self._run(input_json_path=input_json_path, backend=backend)
 
         if format != "dirs":
             self.slices_path = Converter.convert(str(self.slices_path), output_type=format, cleanup=True)
 
         return results
-
-
-    def _run_ezkl_slice(self, meta: RunSliceMetadata, input_tensor_path, output_witness_path, slice_dir: Path = None):
-        """Run EZKL inference for a slice with fallback to ONNX."""
-        if self.ezkl_runner is None:
-            return False, "EZKL CLI not available", ExecutionInfo(
-                method=ExecutionMethod.EZKL_GEN_WITNESS, success=False, error='EZKL CLI not available'
-            )
-
-        model_path = meta.circuit_path
-        vk_path = meta.vk_path
-        settings_path = meta.settings_path
-
-        if model_path and not os.path.isabs(str(model_path)):
-            model_path = RunnerUtils.resolve_relative_path(model_path, slice_dir)
-        if vk_path and not os.path.isabs(str(vk_path)):
-            vk_path = RunnerUtils.resolve_relative_path(vk_path, slice_dir)
-        if settings_path and not os.path.isabs(str(settings_path)):
-            settings_path = RunnerUtils.resolve_relative_path(settings_path, slice_dir)
-
-        try:
-            success, output_tensor = self.ezkl_runner.generate_witness(
-                input_file=input_tensor_path,
-                model_path=model_path,
-                output_file=output_witness_path,
-                vk_path=vk_path,
-                settings_path=settings_path
-            )
-        except Exception as e:
-            success = False
-            output_tensor = str(e)
-
-        exec_info = ExecutionInfo(
-            method=ExecutionMethod.EZKL_GEN_WITNESS,
-            success=success,
-            error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown EZKL error"),
-            witness_file=str(output_witness_path),
-        )
-
-        return success, output_tensor, exec_info
-
-    def _run_jstprove_slice(self, meta: RunSliceMetadata, input_tensor_path, output_witness_path, slice_dir: Path = None):
-        """Run JSTprove inference for a slice with fallback to ONNX."""
-        if self.jstprove_runner is None:
-            return False, "JSTprove CLI not available", ExecutionInfo(
-                method=ExecutionMethod.JSTPROVE_GEN_WITNESS, success=False, error='JSTprove CLI not available'
-            )
-
-        circuit_path = meta.circuit_path
-        if circuit_path and not os.path.isabs(str(circuit_path)):
-            circuit_path = RunnerUtils.resolve_relative_path(circuit_path, slice_dir)
-
-        try:
-            witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
-            success, output_tensor = self.jstprove_runner.generate_witness(
-                input_file=input_tensor_path,
-                model_path=circuit_path,
-                output_file=output_witness_path,
-            )
-        except Exception as e:
-            success = False
-            output_tensor = str(e)
-            witness_file_path = Path(output_witness_path).with_name("output_witness.bin")
-
-        exec_info = ExecutionInfo(
-            method=ExecutionMethod.JSTPROVE_GEN_WITNESS,
-            success=success,
-            error=None if success else (output_tensor if isinstance(output_tensor, str) else "Unknown JSTprove error"),
-            witness_file=str(witness_file_path),
-        )
-
-        return success, output_tensor, exec_info
-
-    def _save_inference_output(self, results, output_path):
-        """Save inference_output.json with execution details."""
-        model_path = self.run_metadata.model_path or "unknown"
-        slice_results = results.get("slice_results", {})
-
-        def _get_method(r):
-            return r.method if isinstance(r, ExecutionInfo) else r.get("method", "")
-
-        def _get_tiles(r):
-            if isinstance(r, ExecutionInfo):
-                return r.tiles
-            return r.get("tiles") or r.get("tile_exec_infos") or []
-
-        def _count_tile_method(tiles, method_prefix):
-            return sum(1 for t in tiles if (t.method if isinstance(t, TileResult) else t.get("method", "")).startswith(method_prefix))
-
-        ezkl_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.EZKL_GEN_WITNESS)
-        jstprove_complete = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.JSTPROVE_GEN_WITNESS)
-        jstprove_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.TILED and _count_tile_method(_get_tiles(r), Backend.JSTPROVE) > 0)
-        ezkl_tiled_slices = sum(1 for r in slice_results.values() if _get_method(r) == ExecutionMethod.TILED and _count_tile_method(_get_tiles(r), Backend.EZKL) > 0)
-        jstprove_complete += jstprove_tiled_slices
-        ezkl_complete += ezkl_tiled_slices
-        total_slices = len(slice_results)
-
-        execution_results = []
-        for slice_id, exec_info in slice_results.items():
-            if isinstance(exec_info, ExecutionInfo):
-                witness_execution = exec_info.to_dict()
-            else:
-                witness_execution = {
-                    "method": exec_info.get("method", "unknown"),
-                    "success": exec_info.get("success", False),
-                    "witness_file": exec_info.get("witness_file") or exec_info.get("witness_path"),
-                    "tile_exec_infos": exec_info.get("tile_exec_infos", []),
-                }
-                if exec_info.get("error"):
-                    witness_execution["error"] = exec_info["error"]
-
-            execution_results.append({"slice_id": slice_id, "witness_execution": witness_execution})
-
-        # Calculate security percentage (any circuit backend counts as secure)
-        circuit_slices = ezkl_complete + jstprove_complete
-        security_percent = (circuit_slices / total_slices * 100) if total_slices > 0 else 0
-
-        # Build output structure
-        inference_output = {
-            "model_path": model_path,
-            "output": results["output"],
-            "tensor_shape": results["tensor_shape"],
-            "execution_chain": {
-                "total_slices": total_slices,
-                "jstprove_witness_slices": jstprove_complete,
-                "ezkl_witness_slices": ezkl_complete,
-                "overall_security": f"{security_percent:.1f}%",
-                "execution_results": execution_results
-            },
-            "performance_comparison": {
-                "note": "Full ONNX vs verified chain comparison would require separate pure ONNX run"
-            }
-        }
-
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w') as f:
-            json.dump(inference_output, f, indent=2)
-
-    def _generate_run_metadata(self, format: str = "dirs"):
-        if self._provided_run_metadata_path:
-            with open(self._provided_run_metadata_path, 'r') as f:
-                self.run_metadata = RunMetadata.from_dict(json.load(f))
-        else:
-            if self._save_metadata_path:
-                save_path = Path(self._save_metadata_path)
-            else:
-                ts = time.strftime('%Y%m%d_%H%M%S')
-                base_dir = self.slices_path.parent
-                if base_dir.name == "slices":
-                    base_dir = base_dir.parent
-                save_path = base_dir / "run" / f"run_{ts}" / "metadata.json"
-            self.run_metadata = RunMetadata.from_dict(RunnerAnalyzer.generate_run_metadata(self.slices_path, save_path, format))
-
-    def _cache_circuit(self, circuit_path: str, slice_id: str) -> str:
-        """Copy circuit directory to cache for faster loading. Returns cached path or original if no cache configured.
-
-        JSTprove circuits are directories containing multiple files (circuit.txt, quantized_model.onnx, metadata.json, etc).
-        This method copies the entire parent directory and returns the path to the circuit file within the cache.
-        """
-        import shutil
-        if not self.circuit_cache_dir or not circuit_path:
-            return circuit_path
-
-        src = Path(circuit_path)
-        if not src.exists():
-            return circuit_path
-
-        if src.is_file():
-            src_dir = src.parent
-            filename = src.name
-        else:
-            src_dir = src
-            filename = None
-
-        cache_key = f"{slice_id}_circuit_dir"
-        if cache_key in self._cached_circuits:
-            cached_dir = self._cached_circuits[cache_key]
-            if cached_dir.exists():
-                return str(cached_dir / filename) if filename else str(cached_dir)
-
-        self.circuit_cache_dir.mkdir(parents=True, exist_ok=True)
-        dest_dir = self.circuit_cache_dir / f"{slice_id}_tiles"
-
-        if dest_dir.exists():
-            shutil.rmtree(dest_dir)
-        shutil.copytree(src_dir, dest_dir)
-        logger.info(f"Cached circuit directory for {slice_id}: {src_dir} -> {dest_dir}")
-
-        self._cached_circuits[cache_key] = dest_dir
-        return str(dest_dir / filename) if filename else str(dest_dir)
-
-    def _clear_circuit_cache(self, slice_id: str = None):
-        """Clear cached circuits. If slice_id provided, only clear that slice's cache."""
-        import shutil
-        if slice_id:
-            cache_key = f"{slice_id}_circuit_dir"
-            if cache_key in self._cached_circuits:
-                cached = self._cached_circuits.pop(cache_key)
-                if cached.exists():
-                    if cached.is_dir():
-                        shutil.rmtree(cached)
-                    else:
-                        cached.unlink()
-        else:
-            for cached in self._cached_circuits.values():
-                if cached.exists():
-                    if cached.is_dir():
-                        shutil.rmtree(cached)
-                    else:
-                        cached.unlink()
-            self._cached_circuits.clear()
-
-    def _run_tiled_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> ExecutionInfo:
-        """Run a tiled slice: split (Python) → tiles (ONNX) → concat (Python)."""
-        tiling = meta.tiling
-        if not tiling:
-            return ExecutionInfo(method=ExecutionMethod.TILED, success=False, error='missing_tiling_info')
-
-        input_tensor = self._get_tiled_input_tensor(slice_id, tiling, meta, tensor_cache)
-
-        self._run_tiling_split(slice_id, tiling, input_tensor, run_dir, tensor_cache)
-        tile_results = self._run_tiling_parallel_tiles(slice_id, tiling, meta, run_dir, tensor_cache)
-        self._run_tiling_concat(slice_id, tiling, run_dir, tensor_cache)
-
-        return ExecutionInfo(
-            method=ExecutionMethod.TILED,
-            success=True,
-            tiles=tile_results,
-        )
-
-    def _get_tiled_input_tensor(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, tensor_cache: dict) -> torch.Tensor:
-        input_name = tiling.input_name or (meta.dependencies.filtered_inputs[0] if meta.dependencies.filtered_inputs else "input")
-        input_tensor = tensor_cache.get(input_name)
-        if input_tensor is None:
-            raise ValueError(f"Missing input tensor '{input_name}' for tiled slice {slice_id}")
-        return input_tensor
-
-    def _run_tiling_split(self, slice_id: str, tiling: TilingInfo, input_tensor: torch.Tensor, run_dir: Path, tensor_cache: dict) -> float:
-        """Pure Python split: pad input and extract tiles."""
-        start_time = time.time()
-
-        slice_idx = tiling.slice_idx
-        tile_size = tiling.tile_size
-        halo_h, halo_w = tiling.halo
-        tiles_y = tiling.tiles_y
-        tiles_x = tiling.tiles_x
-        num_tiles = tiling.num_tiles
-
-        tile_with_halo_h = tile_size + 2 * halo_h
-        tile_with_halo_w = tile_size + 2 * halo_w
-
-        padded = F.pad(input_tensor, (halo_w, halo_w, halo_h, halo_h), mode='constant', value=0)
-
-        for ty in range(tiles_y):
-            for tx in range(tiles_x):
-                tile_idx = ty * tiles_x + tx
-                y_start = ty * tile_size
-                x_start = tx * tile_size
-                y_end = y_start + tile_with_halo_h
-                x_end = x_start + tile_with_halo_w
-
-                tile = padded[:, :, y_start:y_end, x_start:x_end]
-                cache_name = f"tile_{slice_idx}_{tile_idx}_in"
-                tensor_cache[cache_name] = tile
-
-        split_time = time.time() - start_time
-        logger.info(f"Split {slice_id} completed in {split_time:.3f}s, produced {num_tiles} tiles")
-        return split_time
-
-    def _run_tiling_parallel_tiles(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, run_dir: Path, tensor_cache: dict) -> list[TileResult]:
-        import onnxruntime as ort
-        import numpy as np
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-
-        num_tiles = tiling.num_tiles
-        slice_idx = tiling.slice_idx
-        has_per_tile_onnx = tiling.tiles and len(tiling.tiles) == num_tiles
-
-        if has_per_tile_onnx:
-            tile_onnx_path = RunnerUtils.resolve_relative_path(tiling.tiles[0].path, self.slices_path)
-        elif tiling.tile:
-            tile_onnx_path = RunnerUtils.resolve_relative_path(tiling.tile.path, self.slices_path)
-        else:
-            tile_onnx_path = None
-
-        if tile_onnx_path is None or not Path(tile_onnx_path).exists():
-            raise ValueError(
-                f"Tile ONNX path not found for {slice_id} (slice_idx={slice_idx}, num_tiles={num_tiles}): {tile_onnx_path}"
-            )
-
-        effective_backend = self.force_backend if self.force_backend else Backend.AUTO
-        has_jst = effective_backend in (Backend.JSTPROVE, Backend.AUTO) and bool(meta.jstprove_circuit_path) and getattr(self, "jstprove_runner", None)
-        has_ezkl = effective_backend in (Backend.EZKL, Backend.AUTO) and bool(meta.ezkl_circuit_path)
-
-        tile_start = time.time()
-        tile_exec_infos = []
-
-        if has_jst or has_ezkl:
-            backend_name = Backend.JSTPROVE if has_jst else Backend.EZKL
-            slice_specific_dir = self.slices_path / slice_id
-
-            jst_circuit_path = meta.jstprove_circuit_path
-            ezkl_circuit_path = meta.ezkl_circuit_path
-            if self.circuit_cache_dir:
-                if has_jst and jst_circuit_path:
-                    resolved_jst = RunnerUtils.resolve_relative_path(jst_circuit_path, self.slices_path)
-                    if resolved_jst:
-                        jst_circuit_path = self._cache_circuit(resolved_jst, slice_id)
-                if has_ezkl and ezkl_circuit_path:
-                    resolved_ezkl = RunnerUtils.resolve_relative_path(ezkl_circuit_path, self.slices_path)
-                    if resolved_ezkl:
-                        ezkl_circuit_path = self._cache_circuit(resolved_ezkl, f"{slice_id}_ezkl")
-
-            tile_args_list = []
-            for tile_idx in range(num_tiles):
-                cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
-                tile_tensor = tensor_cache.get(cache_input_name)
-                if tile_tensor is None:
-                    raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
-
-                tile_run_dir = run_dir / slice_id / f"tile_{tile_idx}"
-                tile_run_dir.mkdir(parents=True, exist_ok=True)
-                tile_in = tile_run_dir / "input.json"
-                tile_out = tile_run_dir / "output.json"
-                Utils.write_input(tile_tensor, str(tile_in))
-
-                if has_per_tile_onnx:
-                    this_tile_onnx = RunnerUtils.resolve_relative_path(tiling.tiles[tile_idx].path, self.slices_path)
-                    conv_out = tiling.tiles[tile_idx].conv_out
-                else:
-                    this_tile_onnx = tile_onnx_path
-                    conv_out = tiling.tile.conv_out if tiling.tile else (0, 0)
-
-                tile_args_list.append({
-                    'tile_idx': tile_idx,
-                    'tile_in': str(tile_in),
-                    'tile_out': str(tile_out),
-                    'tile_onnx_path': str(this_tile_onnx),
-                    'jstprove_circuit_path': jst_circuit_path,
-                    'ezkl_circuit_path': ezkl_circuit_path,
-                    'settings_path': meta.settings_path,
-                    'vk_path': meta.vk_path,
-                    'slice_specific_dir': str(slice_specific_dir),
-                    'slices_path': str(self.slices_path),
-                    'has_jst': has_jst,
-                    'has_ezkl': has_ezkl,
-                    'c_out': tiling.c_out,
-                    'conv_out': conv_out,
-                })
-
-            parallel_count = min(self.parallel_tiles, num_tiles)
-            if parallel_count > 1:
-                logger.info(f"Running {num_tiles} tiles with {backend_name} circuits using {parallel_count} parallel processes")
-                with ProcessPoolExecutor(max_workers=parallel_count) as executor:
-                    futures = {executor.submit(_run_single_tile_worker, args): args['tile_idx'] for args in tile_args_list}
-                    results_map = {}
-                    for future in as_completed(futures):
-                        tile_idx = futures[future]
-                        try:
-                            results_map[tile_idx] = future.result()
-                        except Exception as e:
-                            results_map[tile_idx] = {'success': False, 'error': str(e), 'tile_idx': tile_idx}
-
-                for tile_idx in range(num_tiles):
-                    result = results_map[tile_idx]
-                    cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
-                    if result['success'] and result.get('output_tensor') is not None:
-                        output_tensor = torch.tensor(result['output_tensor'])
-                        c_out = tiling.c_out
-                        h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
-                        if c_out and h_out and w_out:
-                            expected_numel = 1 * c_out * h_out * w_out
-                            if output_tensor.numel() == expected_numel:
-                                output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
-                        tensor_cache[cache_output_name] = output_tensor
-                        tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=result.get('method', 'unknown')))
-                    else:
-                        tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=False, error=result.get('error', 'unknown')))
-                        raise RuntimeError(f"Tile {tile_idx} execution failed: {result.get('error', 'unknown')}")
-            else:
-                logger.info(f"Running {num_tiles} tiles with {backend_name} circuits (sequential)")
-                for args in tile_args_list:
-                    tile_idx = args['tile_idx']
-                    cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
-
-                    tile_meta = RunSliceMetadata(
-                        path=args['tile_onnx_path'],
-                        jstprove_circuit_path=args['jstprove_circuit_path'],
-                        ezkl_circuit_path=args['ezkl_circuit_path'],
-                        settings_path=args['settings_path'],
-                        vk_path=args['vk_path'],
-                        dependencies=meta.dependencies,
-                    )
-
-                    ok, result, t_info = RunnerUtils.execute_slice(
-                        self, tile_meta, Path(args['tile_in']), Path(args['tile_out']), slice_specific_dir
-                    )
-
-                    output_tensor = RunnerUtils.extract_output_tensor(result) if ok else None
-                    t_method = t_info.method if isinstance(t_info, ExecutionInfo) else t_info.get('method', 'unknown')
-                    t_error = t_info.error if isinstance(t_info, ExecutionInfo) else t_info.get('error', 'unknown')
-
-                    if ok and output_tensor is not None:
-                        if isinstance(output_tensor, torch.Tensor) and output_tensor.dim() < 4:
-                            c_out = tiling.c_out
-                            h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
-                            if c_out and h_out and w_out:
-                                expected_numel = 1 * c_out * h_out * w_out
-                                if output_tensor.numel() == expected_numel:
-                                    output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
-                        tensor_cache[cache_output_name] = output_tensor
-                        tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=t_method))
-                    else:
-                        tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=False, error=t_error))
-                        raise RuntimeError(f"Tile {tile_idx} execution failed: {t_error}")
-        else:
-            session = None
-            if not has_per_tile_onnx:
-                session = ort.InferenceSession(str(tile_onnx_path))
-
-            for tile_idx in range(num_tiles):
-                cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
-                cache_output_name = f"tile_{slice_idx}_{tile_idx}_out"
-
-                tile_tensor = tensor_cache.get(cache_input_name)
-                if tile_tensor is None:
-                    raise ValueError(f"Missing tile input tensor '{cache_input_name}' for slice {slice_id}")
-
-                if isinstance(tile_tensor, torch.Tensor):
-                    input_arr = tile_tensor.detach().cpu().numpy().astype(np.float32)
-                else:
-                    input_arr = np.asarray(tile_tensor, dtype=np.float32)
-
-                if has_per_tile_onnx:
-                    this_tile_onnx = RunnerUtils.resolve_relative_path(tiling.tiles[tile_idx].path, self.slices_path)
-                    session = ort.InferenceSession(str(this_tile_onnx))
-
-                input_name = session.get_inputs()[0].name
-                outputs = session.run(None, {input_name: input_arr})
-                output_arr = outputs[0]
-
-                output_tensor = torch.from_numpy(output_arr)
-                tensor_cache[cache_output_name] = output_tensor
-
-                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=ExecutionMethod.ONNX_ONLY))
-
-        tile_time = time.time() - tile_start
-        logger.info(f"All {num_tiles} tiles completed in {tile_time:.2f}s ({tile_time / num_tiles * 1000:.1f}ms avg)")
-        return tile_exec_infos
-
-    def _run_tiling_concat(self, slice_id: str, tiling: TilingInfo, run_dir: Path, tensor_cache: dict) -> float:
-        """Pure Python concat: reassemble tiles into full output."""
-        concat_start = time.time()
-
-        slice_idx = tiling.slice_idx
-        tiles_y = tiling.tiles_y
-        tiles_x = tiling.tiles_x
-        output_name = tiling.output_name
-
-        rows = []
-        for ty in range(tiles_y):
-            row_tiles = []
-            for tx in range(tiles_x):
-                tile_idx = ty * tiles_x + tx
-                cache_name = f"tile_{slice_idx}_{tile_idx}_out"
-                tile = tensor_cache.get(cache_name)
-                if tile is None:
-                    raise ValueError(f"Missing tile output tensor '{cache_name}' for concat")
-                row_tiles.append(tile)
-            row = torch.cat(row_tiles, dim=3)
-            rows.append(row)
-
-        output = torch.cat(rows, dim=2)
-        tensor_cache[output_name] = output
-
-        concat_time = time.time() - concat_start
-        logger.info(f"Concat {slice_id} completed in {concat_time:.3f}s, output shape {list(output.shape)}")
-        return concat_time
-
-    def _run_channel_group(self, group, group_input: torch.Tensor, run_dir: Path, output_shape: tuple) -> tuple[torch.Tensor, str]:
-        """Run a single channel group, returning (output_tensor, method_used)."""
-        import numpy as np
-        import onnxruntime as ort
-
-        forced = self.force_backend
-        has_jst = bool(group.jstprove_circuit_path) and self.jstprove_runner
-        has_ezkl = bool(group.ezkl_circuit_path) and group.vk_path
-
-        if isinstance(group_input, torch.Tensor):
-            input_arr = group_input.detach().cpu().numpy().astype(np.float32)
-        else:
-            input_arr = np.asarray(group_input, dtype=np.float32)
-
-        group_dir = run_dir / f"channel_group_{group.group_idx}"
-        group_dir.mkdir(parents=True, exist_ok=True)
-        in_file = group_dir / "input.json"
-        out_file = group_dir / "output.json"
-        Utils.write_input(torch.from_numpy(input_arr), in_file)
-
-        def _extract_and_reshape(result):
-            tensor = RunnerUtils.extract_output_tensor(result)
-            if tensor is not None and isinstance(tensor, torch.Tensor) and tensor.dim() < 4:
-                expected = np.prod(output_shape)
-                if tensor.numel() == expected:
-                    return tensor.reshape(output_shape)
-            return tensor
-
-        if forced == Backend.ONNX or (not has_jst and not has_ezkl):
-            group_onnx_path = RunnerUtils.resolve_relative_path(group.path, self.slices_path)
-            session = ort.InferenceSession(str(group_onnx_path))
-            ort_input_name = session.get_inputs()[0].name
-            outputs = session.run(None, {ort_input_name: input_arr})
-            return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
-
-        if (forced == Backend.JSTPROVE and has_jst) or (has_jst and forced != Backend.EZKL):
-            circuit_path = RunnerUtils.resolve_relative_path(group.jstprove_circuit_path, self.slices_path)
-            success, result = self.jstprove_runner.generate_witness(str(in_file), circuit_path, str(out_file))
-            if success:
-                tensor = _extract_and_reshape(result)
-                if tensor is not None:
-                    return tensor, ExecutionMethod.JSTPROVE_GEN_WITNESS
-            logger.warning(f"JSTprove failed for group {group.group_idx}, falling back")
-
-        if has_ezkl:
-            circuit_path = RunnerUtils.resolve_relative_path(group.ezkl_circuit_path, self.slices_path)
-            vk_path = RunnerUtils.resolve_relative_path(group.vk_path, self.slices_path)
-            settings_path = RunnerUtils.resolve_relative_path(group.settings_path, self.slices_path) if group.settings_path else None
-            ezkl_in = RunnerUtils._flatten_input_for_ezkl(in_file)
-            success, result = self.ezkl_runner.generate_witness(str(ezkl_in), circuit_path, str(out_file), vk_path, settings_path)
-            if success:
-                tensor = _extract_and_reshape(result)
-                if tensor is not None:
-                    return tensor, ExecutionMethod.EZKL_GEN_WITNESS
-            logger.warning(f"EZKL failed for group {group.group_idx}, falling back")
-
-        group_onnx_path = RunnerUtils.resolve_relative_path(group.path, self.slices_path)
-        session = ort.InferenceSession(str(group_onnx_path))
-        outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
-        return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
-
-    def _run_channel_split_slice(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path) -> ExecutionInfo:
-        import numpy as np
-
-        channel_split = meta.channel_split
-        if not channel_split:
-            return ExecutionInfo(method="channel_split", success=False, error="missing_channel_split_info")
-
-        input_name = channel_split.input_name or (meta.dependencies.filtered_inputs[0] if meta.dependencies.filtered_inputs else "input")
-        input_tensor = tensor_cache.get(input_name)
-        if input_tensor is None:
-            raise ValueError(f"Missing input tensor '{input_name}' for channel-split slice {slice_id}")
-
-        output_shape = (1, channel_split.c_out, channel_split.h, channel_split.w)
-
-        partial_outputs = []
-        methods_used = []
-        for group in channel_split.groups:
-            group_input = input_tensor[:, group.c_start:group.c_end, :, :]
-            output, method = self._run_channel_group(group, group_input, run_dir, output_shape)
-            partial_outputs.append(output)
-            methods_used.append(method)
-
-        summed = partial_outputs[0]
-        for po in partial_outputs[1:]:
-            summed = summed + po
-
-        if channel_split.bias_path:
-            bias_path = RunnerUtils.resolve_relative_path(channel_split.bias_path, self.slices_path)
-            if Path(bias_path).exists():
-                bias = np.load(bias_path)
-                bias_tensor = torch.from_numpy(bias).reshape(1, -1, 1, 1)
-                summed = summed + bias_tensor
-
-        output_name = channel_split.output_name or (meta.dependencies.output[0] if meta.dependencies.output else "output")
-        tensor_cache[output_name] = summed
-
-        primary_method = methods_used[0] if len(set(methods_used)) == 1 else "channel_split_mixed"
-        logger.info(f"Channel split {slice_id}: {channel_split.num_groups} groups via {primary_method}, output {list(summed.shape)}")
-
-        return ExecutionInfo(method=f"channel_split:{primary_method}", success=True)
-
-    def _find_latest_run_dir(self, base_dir: Path) -> Path | None:
-        """Find the most recent run directory in base_dir."""
-        run_dirs = sorted(base_dir.glob("run_*"), key=lambda p: p.name, reverse=True)
-        return run_dirs[0] if run_dirs else None
-
-    def _is_slice_completed(self, run_dir: Path, slice_id: str) -> tuple[bool, dict | None]:
-        """Check if a slice has completed output in the run directory."""
-        slice_dir = run_dir / slice_id
-        output_file = slice_dir / "output.json"
-        if output_file.exists():
-            try:
-                with open(output_file, 'r') as f:
-                    data = json.load(f)
-                return True, data
-            except Exception:
-                pass
-        return False, None
-
-    def _run(self, output_path=None, input_json_path=None):
-        exec_chain = self.run_metadata.execution_chain
-        head = exec_chain.head
-        nodes = exec_chain.nodes
-
-        if self.resume and self.resume_run_dir:
-            run_dir = self.resume_run_dir
-            if not run_dir.exists():
-                raise ValueError(f"Resume run directory not found: {run_dir}")
-            logger.info(f"Resuming from existing run directory: {run_dir}")
-        elif self.resume and self._run_dir_override:
-            run_dir = self._find_latest_run_dir(self._run_dir_override)
-            if run_dir is None:
-                run_dir = self._run_dir_override / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
-                run_dir.mkdir(parents=True, exist_ok=True)
-                logger.info(f"No existing run found to resume, starting new run: {run_dir}")
-            else:
-                logger.info(f"Resuming from latest run directory: {run_dir}")
-        elif self._run_dir_override:
-            run_dir = self._run_dir_override / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
-            run_dir.mkdir(parents=True, exist_ok=True)
-        else:
-            run_dir = RunnerUtils.make_run_dir(self.run_metadata, output_path, self.slices_path)
-        self.last_run_dir = run_dir
-
-        input_tensor = Utils.read_input(input_json_path)
-        first_slice_meta = self.run_metadata.get_slice(head)
-        first_slice_inputs = first_slice_meta.dependencies.filtered_inputs if first_slice_meta else []
-        model_input_name = first_slice_inputs[0] if first_slice_inputs else "input"
-        tensor_cache = {model_input_name: input_tensor}
-
-        current_slice_id = head
-        slice_results = {}
-        final_tensor = None
-
-        while current_slice_id:
-            info = self.run_metadata.get_slice(current_slice_id)
-            slice_dir = self.slices_path
-            output_names = info.dependencies.output
-
-            if self.resume:
-                slice_output_file = run_dir / current_slice_id / "slice_output.json"
-                if slice_output_file.exists():
-                    try:
-                        with open(slice_output_file, 'r') as f:
-                            cached_data = json.load(f)
-                        cached_tensor = torch.tensor(cached_data['output'])
-                        for oname in output_names:
-                            tensor_cache[oname] = cached_tensor
-                        final_tensor = cached_tensor
-                        slice_results[current_slice_id] = ExecutionInfo(
-                            method=cached_data.get('method', 'resumed'),
-                            success=True
-                        )
-                        print(f"[resume] {current_slice_id}: loaded cached output", flush=True)
-                        current_slice_id = nodes[current_slice_id].next
-                        continue
-                    except Exception as e:
-                        logger.warning(f"Failed to load cached output for {current_slice_id}: {e}")
-
-            if info.channel_split:
-                logger.info(f"Running channel-split slice {current_slice_id} with {info.channel_split.num_groups} groups")
-                exec_info = self._run_channel_split_slice(current_slice_id, info, tensor_cache, run_dir)
-                ok = exec_info.success
-                output_names = info.dependencies.output
-                if ok and output_names:
-                    final_tensor = tensor_cache.get(output_names[0])
-            elif info.tiling:
-                logger.info(f"Running tiled slice {current_slice_id} with parallel tiles")
-                exec_info = self._run_tiled_slice(current_slice_id, info, tensor_cache, run_dir)
-                ok = exec_info.success
-                output_names = info.dependencies.output
-                if ok and output_names:
-                    final_tensor = tensor_cache.get(output_names[0])
-            else:
-                filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
-                output_names = info.dependencies.output
-                node = nodes[current_slice_id]
-
-                input_name = filtered_inputs[0] if filtered_inputs else "input"
-                current_tensor = tensor_cache.get(input_name, input_tensor)
-
-                use_circuit = node.use_circuit and self.force_backend != Backend.ONNX
-
-                if use_circuit:
-                    in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
-                    Utils.write_input(current_tensor, str(in_file))
-                    ok, result, exec_info = RunnerUtils.execute_slice(self, info, in_file, out_file, slice_dir)
-                else:
-                    if len(filtered_inputs) > 1:
-                        missing = [n for n in filtered_inputs if n not in tensor_cache]
-                        if missing:
-                            raise ValueError(f"Missing input tensors for {current_slice_id}: {missing}")
-                        extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
-                    else:
-                        extra_tensors = {input_name: current_tensor}
-                    ok, result, exec_info = RunnerUtils.run_onnx_multi_input_slice(info, None, slice_dir, extra_tensors)
-
-                logger.info(f"[{current_slice_id}] ok={ok}, result type={type(result).__name__}")
-                if ok and result is not None:
-                    if isinstance(result, dict) and 'output_tensors' in result:
-                        for oname, tensor in result['output_tensors'].items():
-                            tensor_cache[oname] = tensor
-                        first_output = list(result['output_tensors'].values())[0] if result['output_tensors'] else None
-                        if first_output is not None:
-                            final_tensor = first_output
-                        else:
-                            final_tensor = RunnerUtils.extract_output_tensor(result)
-                    else:
-                        out_tensor = RunnerUtils.extract_output_tensor(result)
-                        if isinstance(out_tensor, torch.Tensor):
-                            target_shape = info.get_target_shape()
-                            if target_shape:
-                                expected_numel = torch.prod(torch.tensor(target_shape)).item()
-                                if out_tensor.numel() == expected_numel:
-                                    out_tensor = out_tensor.reshape(target_shape)
-                                    logger.info(f"[{current_slice_id}] Reshaped output to {target_shape}")
-                                else:
-                                    logger.warning(f"[{current_slice_id}] Cannot reshape: got {out_tensor.numel()} elements, expected {expected_numel}")
-                            for oname in output_names:
-                                tensor_cache[oname] = out_tensor
-                            final_tensor = out_tensor
-
-            slice_results[current_slice_id] = exec_info
-            if not ok:
-                err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get('error', 'unknown')
-                raise Exception(f"Inference failed for {current_slice_id}: {err}")
-
-            if final_tensor is not None:
-                slice_output_dir = run_dir / current_slice_id
-                slice_output_dir.mkdir(parents=True, exist_ok=True)
-                slice_output_file = slice_output_dir / "slice_output.json"
-                method = exec_info.method if isinstance(exec_info, ExecutionInfo) else exec_info.get('method', 'unknown')
-                with open(slice_output_file, 'w') as f:
-                    json.dump({'output': final_tensor.tolist(), 'method': str(method)}, f)
-
-            if self.circuit_cache_dir:
-                self._clear_circuit_cache(current_slice_id)
-
-            current_slice_id = nodes[current_slice_id].next
-
-        if final_tensor is None:
-            if slice_results:
-                logger.warning("No output tensor produced by execution chain, using input tensor")
-            final_tensor = input_tensor
-
-        results = {
-            "output": final_tensor.tolist(),
-            "tensor_shape": list(final_tensor.shape),
-            "slice_results": slice_results,
-        }
-
-        run_dir.mkdir(parents=True, exist_ok=True)
-        self._save_inference_output(results, run_dir / "run_results.json")
-
-        return results
-
-
 
 if __name__ == "__main__":
     # Choose which model to test
@@ -934,14 +456,9 @@ if __name__ == "__main__":
     slices_dir = os.path.join(abs_path, "slices")
     # slices_dir = os.path.join(slices_dir, "slice_0")
     input_json = os.path.join(abs_path, "input.json")
-    run_metadata_path = None
-
-    saved_run_metadata_path = None
-
-    print(f"saves run metadata to {saved_run_metadata_path}")
 
     # Initialize runner (auto-generates run metadata if needed). Slices dir is now passed to run(...).
-    runner = Runner(run_metadata_path=run_metadata_path, save_metadata_path=saved_run_metadata_path)
+    runner = Runner()
 
     # Run inference
     print(f"Running inference on model {base_paths[model_choice]}...")
@@ -951,4 +468,5 @@ if __name__ == "__main__":
     print(f"\nOutput shape: {results['tensor_shape']}")
     print("Execution summary:")
     for slice_id, info in results["slice_results"].items():
-        print(f"  {slice_id}: {info['method']}")
+        method = info.method if isinstance(info, ExecutionInfo) else info.get('method', 'unknown')
+        print(f"  {slice_id}: {method}")

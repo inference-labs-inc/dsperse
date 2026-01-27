@@ -9,7 +9,8 @@ import glob
 from pathlib import Path
 from colorama import Fore, Style
 
-from dsperse.src.prover import Prover
+from dsperse.src.prove.prover import Prover
+from dsperse.src.prove.utils.prover_utils import ProverUtils
 from dsperse.src.cli.base import normalize_path, logger, prompt_for_value
 from dsperse.src.utils.utils import Utils
 
@@ -37,30 +38,6 @@ def setup_parser(subparsers):
                              help='Range of tiles to prove (e.g., "0-2" or "0,1,5"). Only applicable in single-slice mode.')
 
     return prove_parser
-
-
-def parse_tiles_range(tiles_str: str | None) -> range | list[int] | None:
-    """Parse a tile string into a range or list of integers."""
-    if not tiles_str:
-        return None
-
-    if '-' in tiles_str:
-        try:
-            start, end = map(int, tiles_str.split('-'))
-            return range(start, end + 1)
-        except ValueError:
-            return None
-
-    if ',' in tiles_str:
-        try:
-            return [int(x.strip()) for x in tiles_str.split(',')]
-        except ValueError:
-            return None
-
-    try:
-        return [int(tiles_str)]
-    except ValueError:
-        return None
 
 
 def get_all_runs(run_root_dir):
@@ -155,7 +132,7 @@ def run_proof(args):
         start_time = time.time()
 
         # Parse the tile range from CLI args
-        tiles_range = parse_tiles_range(getattr(args, 'tiles', None))
+        tiles_range = ProverUtils.parse_tiles_range(getattr(args, 'tiles', None))
 
         result = prover.prove(
             run_dir,

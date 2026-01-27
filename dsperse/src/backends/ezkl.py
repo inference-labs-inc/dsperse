@@ -6,106 +6,17 @@ import logging
 import traceback
 import shutil
 from pathlib import Path
+from typing import Optional, Dict, Any, Union, Tuple, List
 from dsperse.src.run.utils.runner_utils import RunnerUtils
+from dsperse.src.backends.utils.ezkl_utils import EZKLUtils
 from dsperse.src.constants import EZKL_PATH
 from dsperse.src.utils.srs_manager import ensure_srs, get_logrows_from_settings
 
-# Configure logger
 logger = logging.getLogger(__name__)
 
 
-def _detect_srs_error(stderr_output):
-    """
-    Detect SRS-related errors in EZKL stderr output.
-
-    Args:
-        stderr_output (str): The stderr output from EZKL command
-
-    Returns:
-        str: SRS error message if detected, None otherwise
-    """
-    if not stderr_output:
-        return None
-
-    stderr_lower = stderr_output.lower()
-
-    # Common SRS error patterns
-    srs_error_patterns = [
-        "srs",  # General SRS reference
-        "structured reference string",  # Full name
-        "trusted setup",  # Alternative name
-        "ceremony",  # Related to trusted setup ceremonies
-        "powers of tau",  # Technical SRS component
-        "no srs file",  # Specific error message
-        "srs not found",  # Specific error message
-        "missing srs",  # Specific error message
-        "srs table",  # SRS table reference
-        "srs path",  # SRS path reference
-    ]
-
-    for pattern in srs_error_patterns:
-        if pattern in stderr_lower:
-            return f"SRS Error Detected: {stderr_output.strip()}"
-
-    return None
-
-
-def _run_ezkl_command_with_srs_check(
-    cmd_list, env=None, check=True, capture_output=True, text=True, **kwargs
-):
-    """
-    Wrapper for subprocess.run that detects SRS errors and bubbles them up.
-
-    Args:
-        cmd_list (list): Command list to run
-        env (dict): Environment variables
-        check (bool): Whether to check return code
-        capture_output (bool): Whether to capture output
-        text (bool): Whether to return text
-        **kwargs: Additional subprocess.run arguments
-
-    Returns:
-        subprocess.CompletedProcess: The completed process
-
-    Raises:
-        RuntimeError: If SRS error is detected
-    """
-    try:
-        process = subprocess.run(
-            cmd_list,
-            env=env,
-            check=check,
-            capture_output=capture_output,
-            text=text,
-            **kwargs,
-        )
-
-        # Check for SRS errors even if command succeeded
-        if process.stderr:
-            srs_error = _detect_srs_error(process.stderr)
-            if srs_error:
-                logger.error(
-                    f"EZKL SRS Error in command '{' '.join(cmd_list)}': {srs_error}"
-                )
-                raise RuntimeError(f"DSperse detected SRS error: {srs_error}")
-
-        return process
-
-    except subprocess.CalledProcessError as e:
-        # Check for SRS errors in stderr
-        if e.stderr:
-            srs_error = _detect_srs_error(e.stderr)
-            if srs_error:
-                logger.error(
-                    f"EZKL SRS Error in command '{' '.join(cmd_list)}': {srs_error}"
-                )
-                raise RuntimeError(f"DSperse detected SRS error: {srs_error}")
-
-        # Re-raise the original exception if not SRS-related
-        raise
-
-
 class EZKL:
+    """EZKL backend for zero-knowledge proof generation."""
     def __init__(self, model_directory=None):
         """
         Initialize the EZKL backend.
@@ -159,239 +70,94 @@ class EZKL:
         return None
 
     def generate_witness(
-        self, input_file: str, model_path: str, output_file: str, vk_path: str, settings_path: str = None
-    ):
-        """
-        Generate a witness for the given model and input.
+        self, input_file: Union[str, Path], model_path: Union[str, Path], output_file: Union[str, Path], 
+        vk_path: Union[str, Path], settings_path: Optional[Union[str, Path]] = None
+    ) -> Tuple[bool, Any]:
+        """Generate a witness for the given model and input."""
+        # --- Normalization & Validation ---
+        input_file, model_path, output_file, vk_path = str(input_file), str(model_path), str(output_file), str(vk_path)
+        if not os.path.exists(input_file): raise FileNotFoundError(f"Input file not found: {input_file}")
+        if not os.path.exists(model_path): raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(vk_path): raise FileNotFoundError(f"Verification key file not found: {vk_path}")
 
-        Args:
-            input_file (str): Path to the input file
-            model_path (str): Path to the compiled model
-            output_file (str): Path where to save the output
-            vk_path (str): Path to the verification key
+        # --- SRS Setup ---
+        if settings_path and os.path.exists(settings_path):
+            logrows = get_logrows_from_settings(str(settings_path))
+            if logrows and not ensure_srs(logrows): return False, f"Failed to ensure SRS for logrows={logrows}"
 
-        Returns:
-            tuple: (success, output) where success is a boolean and output is the processed witness output
-        """
-        # Normalize possible Path-like arguments to strings for subprocess and logging clarity
-        input_file = str(input_file)
-        model_path = str(model_path)
-        output_file = str(output_file)
-        vk_path = str(vk_path)
-
-        # Validate required files exist
-        if not os.path.exists(input_file):
-            raise FileNotFoundError(f"Input file not found: {input_file}")
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        if not os.path.exists(vk_path):
-            raise FileNotFoundError(f"Verification key file not found: {vk_path}")
-
-        # Create output directory if it doesn't exist
+        # --- Execution ---
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
-
-        if settings_path and os.path.exists(settings_path):
-            logrows = get_logrows_from_settings(settings_path)
-            if logrows:
-                if not ensure_srs(logrows):
-                    return False, f"Failed to ensure SRS for logrows={logrows}"
-
         try:
             cmd = [
-                str(EZKL_PATH),
-                "gen-witness",
-                "--data",
-                input_file,
-                "--compiled-circuit",
-                model_path,
-                "--output",
-                output_file,
-                "--vk-path",
-                vk_path,
+                str(EZKL_PATH), "gen-witness", "--data", input_file,
+                "--compiled-circuit", model_path, "--output", output_file, "--vk-path", vk_path,
             ]
-            process = subprocess.run(
-                cmd, env=self.env, check=True, capture_output=True, text=True
-            )
-
-            if process.returncode != 0:
-                # Print the full Python stack and the process stderr
-                traceback.print_stack()
-                if process.stderr:
-                    print(process.stderr)
-                error_msg = (
-                    f"Witness generation failed with return code {process.returncode}"
-                )
-                if process.stderr:
-                    error_msg += f"\nError: {process.stderr}"
-                return False, error_msg
-
+            process = subprocess.run(cmd, env=self.env, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
-            # Print the full stack trace from the exception and the process stderr
-            traceback.print_exc()
-            if getattr(e, "stderr", None):
-                print(e.stderr)
-            error_msg = f"Witness generation failed: {e}"
-            if e.stderr:
-                error_msg += f"\nError output: {e.stderr}"
-            return False, error_msg
-
-        # return the processed outputs
-        with open(output_file, "r") as f:
-            witness_data = json.load(f)
-            output = self.process_witness_output(witness_data)
-
-        return True, output
-
-    def prove(
-        self,
-        witness_path: str,
-        model_path: str,
-        proof_path: str,
-        pk_path: str,
-        check_mode: str = "unsafe",
-        settings_path: str = None
-    ):
-        """
-        Generate a proof for the given witness and model.
-
-        Args:
-            witness_path (str): Path to the witness file
-            model_path (str): Path to the compiled model
-            proof_path (str): Path where to save the proof
-            pk_path (str): Path to the proving key
-            check_mode (str, optional): Check mode for the prover. Defaults to "unsafe".
-
-        Returns:
-            tuple: (success, results) where success is a boolean and results is the path to the proof
-        """
-        # Normalize path-like args
-        witness_path = str(witness_path)
-        model_path = str(model_path)
-        proof_path = str(proof_path)
-        pk_path = str(pk_path)
-
-        # Validate required files exist
-        if not os.path.exists(witness_path):
-            raise FileNotFoundError(f"Witness file not found: {witness_path}")
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        if not os.path.exists(pk_path):
-            raise FileNotFoundError(f"PK key file not found: {pk_path}")
-
-        # Create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(proof_path), exist_ok=True)
-
-        if settings_path and os.path.exists(settings_path):
-            logrows = get_logrows_from_settings(settings_path)
-            if logrows:
-                if not ensure_srs(logrows):
-                    return False, f"Failed to ensure SRS for logrows={logrows}"
-
-        try:
-            cmd = [
-                str(EZKL_PATH),
-                "prove",
-                "--check-mode",
-                check_mode,
-                "--witness",
-                witness_path,
-                "--compiled-circuit",
-                model_path,
-                "--proof-path",
-                proof_path,
-                "--pk-path",
-                pk_path,
-            ]
-            process = _run_ezkl_command_with_srs_check(
-                cmd, env=self.env, check=True, capture_output=True, text=True
-            )
-
-            if process.returncode != 0:
-                # Print the full Python stack and the process stderr
-                traceback.print_stack()
-                if process.stderr:
-                    print(process.stderr)
-                error_msg = (
-                    f"Proof generation failed with return code {process.returncode}"
-                )
-                if process.stderr:
-                    error_msg += f"\nError: {process.stderr}"
-                return False, error_msg
-
-        except subprocess.CalledProcessError as e:
-            print(f"Error during proof generation: {e}")
-            traceback.print_exc()
-            if getattr(e, "stderr", None):
-                print(e.stderr)
+            logger.error(f"Witness generation failed: {e.stderr}")
             return False, e.stderr
-        except RuntimeError as e:
-            # SRS error detected and bubbled up
-            traceback.print_exc()
+
+        # --- Result Processing ---
+        try:
+            with open(output_file, "r") as f:
+                witness_data = json.load(f)
+                output = self.process_witness_output(witness_data)
+            return True, output
+        except Exception as e:
+            logger.error(f"Failed to process witness output: {e}")
             return False, str(e)
 
-        results = proof_path
-        return True, results
+    def prove(
+        self, witness_path: Union[str, Path], model_path: Union[str, Path], proof_path: Union[str, Path],
+        pk_path: Union[str, Path], check_mode: str = "unsafe", settings_path: Optional[Union[str, Path]] = None
+    ) -> Tuple[bool, Union[str, Path]]:
+        """Generate a proof for the given witness and model."""
+        # --- Normalization & Validation ---
+        witness_path, model_path, proof_path, pk_path = str(witness_path), str(model_path), str(proof_path), str(pk_path)
+        if not os.path.exists(witness_path): raise FileNotFoundError(f"Witness file not found: {witness_path}")
+        if not os.path.exists(model_path): raise FileNotFoundError(f"Model file not found: {model_path}")
+        if not os.path.exists(pk_path): raise FileNotFoundError(f"PK key file not found: {pk_path}")
 
-    def verify(self, proof_path: str, settings_path: str, vk_path: str) -> bool:
-        """
-        Verify a proof.
+        # --- SRS Setup ---
+        if settings_path and os.path.exists(settings_path):
+            logrows = get_logrows_from_settings(str(settings_path))
+            if logrows and not ensure_srs(logrows): return False, f"Failed to ensure SRS for logrows={logrows}"
 
-        Args:
-            proof_path (str): Path to the proof file
-            settings_path (str): Path to the settings file
-            vk_path (str): Path to the verification key
-
-        Returns:
-            bool: True if verification succeeded, False otherwise
-        """
-        # Normalize path-like args
-        proof_path = str(proof_path)
-        settings_path = str(settings_path)
-        vk_path = str(vk_path)
-
-        # Validate required files exist
-        if not os.path.exists(proof_path):
-            raise FileNotFoundError(f"Proof file not found: {proof_path}")
-        if not os.path.exists(settings_path):
-            raise FileNotFoundError(f"Settings file not found: {settings_path}")
-        if not os.path.exists(vk_path):
-            raise FileNotFoundError(f"Verification key file not found: {vk_path}")
-
-        logrows = get_logrows_from_settings(settings_path)
-        if logrows:
-            if not ensure_srs(logrows):
-                return False
-
+        # --- Execution ---
+        os.makedirs(os.path.dirname(proof_path), exist_ok=True)
         try:
             cmd = [
-                str(EZKL_PATH),
-                "verify",
-                "--proof-path",
-                proof_path,
-                "--settings-path",
-                settings_path,
-                "--vk-path",
-                vk_path,
+                str(EZKL_PATH), "prove", "--check-mode", check_mode, "--witness", witness_path,
+                "--compiled-circuit", model_path, "--proof-path", proof_path, "--pk-path", pk_path,
             ]
-            process = subprocess.run(
-                cmd, env=self.env, check=True, capture_output=True, text=True
-            )
+            EZKLUtils.run_ezkl_command_with_srs_check(cmd, env=self.env, check=True, capture_output=True, text=True)
+            return True, proof_path
+        except Exception as e:
+            logger.error(f"Proof generation failed: {e}")
+            return False, str(e)
 
-            if process.returncode != 0:
-                # Print the full Python stack and the process stderr
-                traceback.print_stack()
-                if process.stderr:
-                    print(process.stderr)
-                error_msg = f"Verification generation failed with return code {process.returncode}"
-                if process.stderr:
-                    error_msg += f"\nError: {process.stderr}"
-                return False
+    def verify(self, proof_path: Union[str, Path], settings_path: Union[str, Path], vk_path: Union[str, Path]) -> bool:
+        """Verify a proof using EZKL."""
+        # --- Normalization & Validation ---
+        proof_path, settings_path, vk_path = str(proof_path), str(settings_path), str(vk_path)
+        if not os.path.exists(proof_path): raise FileNotFoundError(f"Proof file not found: {proof_path}")
+        if not os.path.exists(settings_path): raise FileNotFoundError(f"Settings file not found: {settings_path}")
+        if not os.path.exists(vk_path): raise FileNotFoundError(f"Verification key file not found: {vk_path}")
+
+        # --- SRS Setup ---
+        logrows = get_logrows_from_settings(settings_path)
+        if logrows and not ensure_srs(logrows): return False
+
+        # --- Execution ---
+        try:
+            cmd = [
+                str(EZKL_PATH), "verify", "--proof-path", proof_path,
+                "--settings-path", settings_path, "--vk-path", vk_path,
+            ]
+            subprocess.run(cmd, env=self.env, check=True, capture_output=True, text=True)
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Error verifying proof: {e}")
-            traceback.print_exc()
-            if getattr(e, "stderr", None):
-                print(e.stderr)
+            logger.error(f"Proof verification failed: {e.stderr}")
             return False
 
     def gen_settings(
@@ -556,7 +322,7 @@ class EZKL:
                 "--pk-path",
                 pk_path,
             ]
-            process = _run_ezkl_command_with_srs_check(
+            process = EZKLUtils.run_ezkl_command_with_srs_check(
                 cmd,
                 env=self.env,
                 check=True,
@@ -578,104 +344,70 @@ class EZKL:
             # SRS error detected and bubbled up
             return False, str(e)
 
-    def compilation_pipeline(self, model_path, output_path, input_file_path=None):
-        """
-        Run the full EZKL circuitization pipeline: gen-settings, calibrate-settings, compile-circuit, setup.
-
-        Args:
-            model_path (str): Path to the ONNX model file.
-            output_path (str): Base path for output files (without extension).
-            input_file_path (str, optional): Path to input data file for calibration.
-            slice_details (dict, optional): Details about the segment being processed.
-
-        Returns:
-            dict: Dictionary containing paths to generated files and any error information.
-        """
-        # Ensure model_path exists
-        if not os.path.exists(model_path):
+    def compilation_pipeline(self, model_path: Union[str, Path], output_path: Union[str, Path], input_file_path: Optional[str] = None) -> Dict[str, Any]:
+        """Run the full EZKL compilation pipeline: settings -> calibration -> compile -> setup."""
+        # --- Validation & Initialization ---
+        model_path, output_path = Path(model_path), Path(output_path)
+        if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
+        output_path.mkdir(parents=True, exist_ok=True)
 
-        # Create output directory
-        os.makedirs(output_path, exist_ok=True)
-
-        model_name = Path(model_path).stem
-
-        # Define file paths
-        settings_path = os.path.join(output_path, f"settings.json")
-        compiled_path = os.path.join(output_path, f"model.compiled")
-        vk_path = os.path.join(output_path, f"vk.key")
-        pk_path = os.path.join(output_path, f"pk.key")
-        calibration_dest = os.path.join(output_path, "calibration.json") if input_file_path else None
-
-        # Initialize circuitization data dictionary
-        compilation_data = {
-            "settings": settings_path,
-            "compiled": compiled_path,
-            "vk_key": vk_path,
-            "pk_key": pk_path,
-            "calibration": calibration_dest if input_file_path else None,
-        }
+        # --- Artifact Preparation ---
+        artifacts = EZKLUtils.initialize_compilation_artifacts(model_path, output_path, input_file_path)
+        paths, compilation_data = artifacts["paths"], artifacts["data"]
 
         try:
+            # --- Calibration Setup ---
             if input_file_path and os.path.exists(input_file_path):
                 try:
-                    src = os.path.abspath(input_file_path)
-                    dst = os.path.abspath(calibration_dest)
-                    if src != dst:
-                        os.makedirs(os.path.dirname(dst), exist_ok=True)
-                        shutil.copyfile(src, dst)
+                    shutil.copyfile(os.path.abspath(input_file_path), os.path.abspath(paths["calibration"]))
                 except Exception as copy_err:
-                    logging.getLogger(__name__).warning(f"Could not write calibration.json: {copy_err}")
+                    logger.warning(f"Could not write calibration.json: {copy_err}")
 
-            # Step 1: Generate settings
-            logger.info(f"Generating settings for {model_name}")
-            ok, err = self.gen_settings(
-                model_path=model_path, settings_path=settings_path
-            )
+            # --- Settings Generation ---
+            logger.info(f"Generating settings for {model_path.stem}")
+            ok, err = self.gen_settings(model_path=str(model_path), settings_path=str(paths["settings"]))
             if not ok:
-                logger.warning("Failed to generate settings")
+                logger.warning(f"Failed to generate settings: {err}")
                 compilation_data["gen-settings_error"] = err
+                return compilation_data
 
-            # Step 2/3: Calibrate settings
+            # --- Settings Calibration ---
             if input_file_path and os.path.exists(input_file_path):
                 logger.info(f"Calibrating settings using {input_file_path}")
                 ok, err = self.calibrate_settings(
-                    model_path=model_path,
-                    settings_path=settings_path,
-                    data_path=input_file_path,
-                    target="accuracy",
+                    model_path=str(model_path), settings_path=str(paths["settings"]),
+                    data_path=input_file_path, target="accuracy",
                 )
                 if not ok:
                     logger.warning(f"Failed to calibrate settings: {err}")
                     compilation_data["calibrate-settings_error"] = err
             else:
-                # If no input file, log and skip calibration
                 logger.info("No input file provided, skipping calibration step")
 
-            # Step 4: Compile circuit
+            # --- Circuit Compilation ---
             logger.info(f"Compiling circuit for {model_path}")
             ok, err = self.compile_circuit(
-                model_path=model_path,
-                settings_path=settings_path,
-                compiled_path=compiled_path,
+                model_path=str(model_path), settings_path=str(paths["settings"]), compiled_path=str(paths["compiled"]),
             )
             if not ok:
-                logger.warning("Failed to compile circuit")
+                logger.warning(f"Failed to compile circuit: {err}")
                 compilation_data["compile-circuit_error"] = err
+                return compilation_data
 
-            # Step 5: Setup (generate verification and proving keys)
+            # --- Key Generation (Setup) ---
             logger.info("Setting up verification and proving keys")
             ok, err = self.setup(
-                compiled_path=compiled_path, vk_path=vk_path, pk_path=pk_path, settings_path=settings_path
+                compiled_path=str(paths["compiled"]), vk_path=str(paths["vk"]),
+                pk_path=str(paths["pk"]), settings_path=str(paths["settings"]),
             )
             if not ok:
-                logger.warning("Failed to setup (generate keys)")
+                logger.warning(f"Failed to setup (generate keys): {err}")
                 compilation_data["setup_error"] = err
+                return compilation_data
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
-
         except Exception as e:
-            # Print the full stack trace for any unexpected pipeline error
             traceback.print_exc()
             error_msg = f"Error during circuitization: {str(e)}"
             logger.error(error_msg)
@@ -685,25 +417,9 @@ class EZKL:
 
 
     @staticmethod
-    def process_witness_output(witness_data):
-        """
-        Process the witness.json data to get prediction results.
-        """
-        try:
-            rescaled_outputs = witness_data["pretty_elements"]["rescaled_outputs"][0]
-        except KeyError:
-            print("Error: Could not find rescaled_outputs in witness data")
-            return None
-
-        # Convert string values to float and create a tensor
-        float_values = [float(val) for val in rescaled_outputs]
-
-        # Create a tensor with shape [1, num_classes] to match batch_size, num_classes format
-        tensor_output = torch.tensor([float_values], dtype=torch.float32)
-
-        # Process the tensor through _process_final_output (simulating one segment)
-        output = RunnerUtils.process_final_output(tensor_output)
-        return output
+    def process_witness_output(witness_data: dict) -> Optional[dict]:
+        """Process the witness.json data to get prediction results."""
+        return EZKLUtils.process_witness_output(witness_data)
 
 
 if __name__ == "__main__":

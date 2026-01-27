@@ -126,6 +126,29 @@ class RunnerAnalyzer:
             ezkl_pk_path = _norm(ezkl_comp.files.pk_key)
             ezkl_vk_path = _norm(ezkl_comp.files.vk_key)
 
+            # Ensure tiling and channel split paths are also prefixed
+            if meta.tiling:
+                if meta.tiling.tile:
+                    meta.tiling.tile.path = _norm(meta.tiling.tile.path)
+                if meta.tiling.tiles:
+                    for t in meta.tiling.tiles:
+                        t.path = _norm(t.path)
+
+            if meta.channel_split:
+                for group in meta.channel_split.groups:
+                    group.path = _norm(group.path)
+                    group.jstprove_circuit_path = _norm(group.jstprove_circuit_path)
+                    group.ezkl_circuit_path = _norm(group.ezkl_circuit_path)
+                    group.settings_path = _norm(group.settings_path)
+                    group.vk_path = _norm(group.vk_path)
+                    group.pk_path = _norm(group.pk_path)
+                    group.jstprove_settings_path = _norm(group.jstprove_settings_path)
+                    group.ezkl_settings_path = _norm(group.ezkl_settings_path)
+                    group.ezkl_vk_path = _norm(group.ezkl_vk_path)
+                    group.ezkl_pk_path = _norm(group.ezkl_pk_path)
+                if meta.channel_split.bias_path:
+                    meta.channel_split.bias_path = _norm(meta.channel_split.bias_path)
+
             slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
 
             slices[slice_key] = RunSliceMetadata(
@@ -208,6 +231,29 @@ class RunnerAnalyzer:
             ezkl_pk_path = _join(ezkl_comp.files.pk_key)
             ezkl_vk_path = _join(ezkl_comp.files.vk_key)
 
+            # Recursively join nested paths for tiling and channel split
+            if meta.tiling:
+                if meta.tiling.tile:
+                    meta.tiling.tile.path = _join(meta.tiling.tile.path)
+                if meta.tiling.tiles:
+                    for t in meta.tiling.tiles:
+                        t.path = _join(t.path)
+
+            if meta.channel_split:
+                for group in meta.channel_split.groups:
+                    group.path = _join(group.path)
+                    group.jstprove_circuit_path = _join(group.jstprove_circuit_path)
+                    group.ezkl_circuit_path = _join(group.ezkl_circuit_path)
+                    group.settings_path = _join(group.settings_path)
+                    group.vk_path = _join(group.vk_path)
+                    group.pk_path = _join(group.pk_path)
+                    group.jstprove_settings_path = _join(group.jstprove_settings_path)
+                    group.ezkl_settings_path = _join(group.ezkl_settings_path)
+                    group.ezkl_vk_path = _join(group.ezkl_vk_path)
+                    group.ezkl_pk_path = _join(group.ezkl_pk_path)
+                if meta.channel_split.bias_path:
+                    meta.channel_split.bias_path = _join(meta.channel_split.bias_path)
+
             slices[slice_key] = RunSliceMetadata(
                 path=onnx_path,
                 input_shape=meta.input_shape,
@@ -275,10 +321,8 @@ class RunnerAnalyzer:
             backend = meta.backend or Backend.EZKL
             jst_circuit = meta.jstprove_circuit_path
             ezkl_circuit = meta.ezkl_circuit_path
-            has_circuit = circuit_path is not None and circuit_path != ""
-            has_keys = (meta.pk_path is not None) and (meta.vk_path is not None)
-            has_jst = bool(jst_circuit) or (backend == Backend.JSTPROVE and has_circuit)
-            has_ezkl = bool(ezkl_circuit) or (meta.ezkl and has_circuit and has_keys)
+            has_jst = bool(jst_circuit)
+            has_ezkl = bool(ezkl_circuit) and (bool(meta.ezkl_vk_path) or bool(meta.vk_path))
             use_circuit = has_jst or has_ezkl
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
@@ -294,7 +338,7 @@ class RunnerAnalyzer:
                 fallbacks=fallbacks if use_circuit else ([onnx_path] if onnx_path else []),
                 use_circuit=use_circuit,
                 next=next_slice,
-                circuit_path=circuit_path if has_circuit else None,
+                circuit_path=circuit_path if circuit_path else None,
                 onnx_path=onnx_path,
                 backend=backend,
             )

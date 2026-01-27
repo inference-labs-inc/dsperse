@@ -15,8 +15,6 @@ from dsperse.src.analyzers.schema import ExecutionInfo, RunSliceMetadata, Backen
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.torch_utils import ModelUtils
 from dsperse.src.utils.utils import Utils
-from dsperse.src.backends.ezkl import EZKL
-from dsperse.src.backends.jstprove import JSTprove
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +24,14 @@ class RunnerUtils:
 
     @staticmethod
     def extract_output_tensor(result):
-        """Extract output tensor from execution result, checking 'output' then 'logits' keys."""
+        """Extract output tensor from execution result, checking 'output', 'logits', then 'output_tensor' keys."""
         if result is None:
             return None
         if isinstance(result, dict):
-            out = result.get('output')
-            return out if out is not None else result.get('logits')
+            for key in ['output', 'logits', 'output_tensor']:
+                if key in result and result[key] is not None:
+                    return result[key]
+            return None
         return result
 
     # ----- Runtime helpers to keep Runner.run concise -----
@@ -153,13 +153,21 @@ class RunnerUtils:
 
     @staticmethod
     def prepare_jstprove_meta(meta: RunSliceMetadata) -> RunSliceMetadata:
-        """Prepare metadata with JSTprove-specific circuit path."""
-        return replace(meta, circuit_path=meta.jstprove_circuit_path or meta.circuit_path)
+        """Prepare metadata with JSTprove-specific circuit path and settings."""
+        return replace(meta, 
+            circuit_path=meta.jstprove_circuit_path or meta.circuit_path,
+            settings_path=meta.jstprove_settings_path or meta.settings_path
+        )
 
     @staticmethod
     def prepare_ezkl_meta(meta: RunSliceMetadata) -> RunSliceMetadata:
-        """Prepare metadata with EZKL-specific circuit path."""
-        return replace(meta, circuit_path=meta.ezkl_circuit_path or meta.circuit_path)
+        """Prepare metadata with EZKL-specific circuit path and keys."""
+        return replace(meta, 
+            circuit_path=meta.ezkl_circuit_path or meta.circuit_path,
+            settings_path=meta.ezkl_settings_path or meta.settings_path,
+            vk_path=meta.ezkl_vk_path or meta.vk_path,
+            pk_path=meta.ezkl_pk_path or meta.pk_path
+        )
 
     @staticmethod
     def flatten_input_for_ezkl(in_file: Path) -> Path:
@@ -410,6 +418,7 @@ class RunnerUtils:
 
         try:
             if has_jst:
+                from dsperse.src.backends.jstprove import JSTprove
                 jst_runner = JSTprove()
                 circuit_path = RunnerUtils.resolve_relative_path(args['jstprove_circuit_path'], slices_path)
                 success, result = jst_runner.generate_witness(tile_in, circuit_path, tile_out)
@@ -425,10 +434,11 @@ class RunnerUtils:
                 return {'tile_idx': tile_idx, 'success': False, 'error': f'JSTprove failed: {result}'}
 
             elif has_ezkl:
+                from dsperse.src.backends.ezkl import EZKL
                 ezkl_runner = EZKL()
                 circuit_path = RunnerUtils.resolve_relative_path(args['ezkl_circuit_path'], slices_path)
-                vk_path = RunnerUtils.resolve_relative_path(args['vk_path'], slices_path) if args['vk_path'] else None
-                settings_path = RunnerUtils.resolve_relative_path(args['settings_path'], slices_path) if args['settings_path'] else None
+                vk_path = RunnerUtils.resolve_relative_path(args.get('ezkl_vk_path') or args.get('vk_path'), slices_path)
+                settings_path = RunnerUtils.resolve_relative_path(args.get('ezkl_settings_path') or args.get('settings_path'), slices_path)
                 success, result = ezkl_runner.generate_witness(tile_in, circuit_path, tile_out, vk_path, settings_path)
                 if success:
                     output_tensor = RunnerUtils.extract_output_tensor(result)
@@ -440,6 +450,21 @@ class RunnerUtils:
                             'method': ExecutionMethod.EZKL_GEN_WITNESS
                         }
                 return {'tile_idx': tile_idx, 'success': False, 'error': f'EZKL failed: {result}'}
+
+            # Fallback to ONNX if requested or if no circuits are available
+            tile_onnx_path = args.get('tile_onnx_path')
+            if tile_onnx_path:
+                from dsperse.src.backends.onnx_models import OnnxModels
+                success, result = OnnxModels.run_inference(tile_in, tile_onnx_path, tile_out)
+                if success:
+                    output_tensor = RunnerUtils.extract_output_tensor(result)
+                    return {
+                        'tile_idx': tile_idx,
+                        'success': True,
+                        'output_tensor': output_tensor.tolist() if hasattr(output_tensor, 'tolist') else output_tensor,
+                        'method': ExecutionMethod.ONNX_ONLY
+                    }
+                return {'tile_idx': tile_idx, 'success': False, 'error': f'ONNX failed: {result}'}
 
             return {'tile_idx': tile_idx, 'success': False, 'error': 'No backend available'}
 
@@ -608,9 +633,12 @@ class RunnerUtils:
     def execute_channel_group(runner, group: ChannelGroupInfo, group_input: torch.Tensor, run_dir: Path, output_shape: tuple, slices_path: Path, backend: str = None) -> tuple[torch.Tensor, str]:
         """Run inference on a specific group of channels for a channel-split slice."""
         forced = backend
+        
+        # --- Capability Check ---
         has_jst = bool(group.jstprove_circuit_path) and getattr(runner, "jstprove_runner", None)
-        has_ezkl = bool(group.ezkl_circuit_path) and group.vk_path
+        has_ezkl = bool(group.ezkl_circuit_path) and (group.vk_path or group.ezkl_vk_path)
 
+        # --- Input Preparation ---
         if isinstance(group_input, torch.Tensor):
             input_arr = group_input.detach().cpu().numpy().astype(np.float32)
         else:
@@ -630,13 +658,14 @@ class RunnerUtils:
                     return tensor.reshape(output_shape)
             return tensor
 
+        # --- Forced ONNX / No ZK fallback ---
         if forced == Backend.ONNX or (not has_jst and not has_ezkl):
             group_onnx_path = RunnerUtils.resolve_relative_path(group.path, slices_path)
             session = ort.InferenceSession(str(group_onnx_path))
-            ort_input_name = session.get_inputs()[0].name
-            outputs = session.run(None, {ort_input_name: input_arr})
+            outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
             return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
 
+        # --- Forced Backend / Best Available JSTprove ---
         if (forced == Backend.JSTPROVE and has_jst) or (has_jst and forced != Backend.EZKL):
             circuit_path = RunnerUtils.resolve_relative_path(group.jstprove_circuit_path, slices_path)
             success, result = runner.jstprove_runner.generate_witness(str(in_file), circuit_path, str(out_file))
@@ -646,10 +675,11 @@ class RunnerUtils:
                     return tensor, ExecutionMethod.JSTPROVE_GEN_WITNESS
             logger.warning(f"JSTprove failed for group {group.group_idx}, falling back")
 
-        if has_ezkl:
+        # --- Forced Backend / Best Available EZKL ---
+        if (forced == Backend.EZKL and has_ezkl) or (has_ezkl and forced != Backend.JSTPROVE):
             circuit_path = RunnerUtils.resolve_relative_path(group.ezkl_circuit_path, slices_path)
-            vk_path = RunnerUtils.resolve_relative_path(group.vk_path, slices_path)
-            settings_path = RunnerUtils.resolve_relative_path(group.settings_path, slices_path) if group.settings_path else None
+            vk_path = RunnerUtils.resolve_relative_path(group.ezkl_vk_path or group.vk_path, slices_path)
+            settings_path = RunnerUtils.resolve_relative_path(group.ezkl_settings_path or group.settings_path, slices_path)
             ezkl_in = RunnerUtils.flatten_input_for_ezkl(in_file)
             success, result = runner.ezkl_runner.generate_witness(str(ezkl_in), circuit_path, str(out_file), vk_path, settings_path)
             if success:
@@ -658,6 +688,7 @@ class RunnerUtils:
                     return tensor, ExecutionMethod.EZKL_GEN_WITNESS
             logger.warning(f"EZKL failed for group {group.group_idx}, falling back")
 
+        # --- Final ONNX Fallback ---
         group_onnx_path = RunnerUtils.resolve_relative_path(group.path, slices_path)
         session = ort.InferenceSession(str(group_onnx_path))
         outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
@@ -766,7 +797,7 @@ class RunnerUtils:
 
         effective_backend = backend if backend else Backend.AUTO
         has_jst = effective_backend in (Backend.JSTPROVE, Backend.AUTO) and bool(meta.jstprove_circuit_path) and has_jst_runner
-        has_ezkl = effective_backend in (Backend.EZKL, Backend.AUTO) and bool(meta.ezkl_circuit_path)
+        has_ezkl = effective_backend in (Backend.EZKL, Backend.AUTO) and bool(meta.ezkl_circuit_path) and (meta.ezkl_vk_path or meta.vk_path)
         
         return {
             'tile_onnx_path': tile_onnx_path,
@@ -798,13 +829,40 @@ class RunnerUtils:
 
             tile_args_list.append({
                 'tile_idx': tile_idx, 'tile_in': str(tile_in), 'tile_out': str(tile_out),
-                'tile_onnx_path': str(this_tile_onnx), 'jstprove_circuit_path': meta.jstprove_circuit_path,
-                'ezkl_circuit_path': meta.ezkl_circuit_path, 'settings_path': meta.settings_path,
-                'vk_path': meta.vk_path, 'slice_specific_dir': str(slice_specific_dir),
+                'tile_onnx_path': str(this_tile_onnx), 
+                'jstprove_circuit_path': meta.jstprove_circuit_path,
+                'ezkl_circuit_path': meta.ezkl_circuit_path, 
+                'settings_path': meta.settings_path,
+                'vk_path': meta.vk_path,
+                'jstprove_settings_path': meta.jstprove_settings_path,
+                'ezkl_settings_path': meta.ezkl_settings_path,
+                'ezkl_vk_path': meta.ezkl_vk_path,
+                'ezkl_pk_path': meta.ezkl_pk_path,
+                'slice_specific_dir': str(slice_specific_dir),
                 'slices_path': str(slices_path), 'has_jst': config['has_jst'], 'has_ezkl': config['has_ezkl'],
                 'c_out': tiling.c_out, 'conv_out': conv_out,
             })
         return tile_args_list
+
+    @staticmethod
+    def process_tile_inference_result(result, tiling: TilingInfo, tensor_cache: dict, slice_idx: int, tile_idx: int):
+        """Extract and optionally reshape the output tensor from a tile inference result."""
+        output_tensor = RunnerUtils.extract_output_tensor(result)
+        if output_tensor is None:
+            return None
+
+        # Ensure it's a tensor
+        if not isinstance(output_tensor, torch.Tensor):
+            output_tensor = torch.tensor(output_tensor)
+
+        # Tiles might need reshaping to (1, C, H, W)
+        c_out = tiling.c_out
+        h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
+        if c_out and h_out and w_out and output_tensor.numel() == (1 * c_out * h_out * w_out):
+            output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
+
+        tensor_cache[f"tile_{slice_idx}_{tile_idx}_out"] = output_tensor
+        return output_tensor
 
     @staticmethod
     def collect_tile_outputs(results_map: dict, num_tiles: int, slice_idx: int, tiling: TilingInfo, tensor_cache: dict) -> list[TileResult]:
@@ -812,14 +870,12 @@ class RunnerUtils:
         tile_exec_infos = []
         for tile_idx in range(num_tiles):
             result = results_map[tile_idx]
-            if result['success'] and result.get('output_tensor') is not None:
-                output_tensor = torch.tensor(result['output_tensor'])
-                c_out = tiling.c_out
-                h_out, w_out = tiling.tile.conv_out if tiling.tile else (0, 0)
-                if c_out and h_out and w_out and output_tensor.numel() == (1 * c_out * h_out * w_out):
-                    output_tensor = output_tensor.reshape(1, c_out, h_out, w_out)
-                tensor_cache[f"tile_{slice_idx}_{tile_idx}_out"] = output_tensor
-                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=result.get('method', 'unknown')))
+            if result['success']:
+                output = RunnerUtils.process_tile_inference_result(result, tiling, tensor_cache, slice_idx, tile_idx)
+                if output is not None:
+                    tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=result.get('method', 'unknown')))
+                else:
+                    raise RuntimeError(f"Tile {tile_idx} produced no output tensor")
             else:
                 raise RuntimeError(f"Tile {tile_idx} execution failed: {result.get('error', 'unknown')}")
         return tile_exec_infos

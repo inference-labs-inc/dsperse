@@ -133,6 +133,10 @@ class ChannelGroupInfo:
     settings_path: Optional[str] = None
     vk_path: Optional[str] = None
     pk_path: Optional[str] = None
+    jstprove_settings_path: Optional[str] = None
+    ezkl_settings_path: Optional[str] = None
+    ezkl_pk_path: Optional[str] = None
+    ezkl_vk_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict | None) -> Optional["ChannelGroupInfo"]:
@@ -148,6 +152,10 @@ class ChannelGroupInfo:
             settings_path=d.get("settings_path"),
             vk_path=d.get("vk_path"),
             pk_path=d.get("pk_path"),
+            jstprove_settings_path=d.get("jstprove_settings_path"),
+            ezkl_settings_path=d.get("ezkl_settings_path"),
+            ezkl_pk_path=d.get("ezkl_pk_path"),
+            ezkl_vk_path=d.get("ezkl_vk_path"),
         )
 
     def to_dict(self) -> dict:
@@ -167,6 +175,14 @@ class ChannelGroupInfo:
             d["vk_path"] = self.vk_path
         if self.pk_path:
             d["pk_path"] = self.pk_path
+        if self.jstprove_settings_path:
+            d["jstprove_settings_path"] = self.jstprove_settings_path
+        if self.ezkl_settings_path:
+            d["ezkl_settings_path"] = self.ezkl_settings_path
+        if self.ezkl_pk_path:
+            d["ezkl_pk_path"] = self.ezkl_pk_path
+        if self.ezkl_vk_path:
+            d["ezkl_vk_path"] = self.ezkl_vk_path
         return d
 
 

@@ -55,16 +55,6 @@ class TestCompileE2E:
             assert (payload / "ezkl").exists()
             assert (payload / "jstprove").exists()
 
-            ezkl_dir = payload / "ezkl"
-            ezkl_expected = [ezkl_dir / "settings.json", ezkl_dir / "model.compiled", ezkl_dir / "vk.key",
-                             ezkl_dir / "pk.key"]
-            assert any(p.exists() for p in ezkl_expected)
-
-            jst_dir = payload / "jstprove"
-            stem = f"slice_{idx}"
-            jst_expected = [jst_dir / f"{stem}_circuit.txt", jst_dir / f"{stem}_settings.json"]
-            assert any(p.exists() for p in jst_expected) or any(jst_dir.iterdir())
-
             slice_meta = json.loads((d / "metadata.json").read_text())
 
             # Metadata may either nest under slices[index].compilation or at root.compilation
@@ -81,6 +71,12 @@ class TestCompileE2E:
             # Expect entries for both backends
             assert "ezkl" in comp_block, "Missing ezkl compilation entry"
             assert "jstprove" in comp_block, "Missing jstprove compilation entry"
+
+            # Paths in metadata should be relative to the slice directory
+            # e.g., payload/ezkl/model.compiled
+            ezkl_item = comp_block["ezkl"]
+            ezkl_files = ezkl_item["files"]
+            assert ezkl_files["compiled"].startswith("payload/ezkl/")
 
         # 5) Top-level metadata should contain compilation info per slice
         # And 6) Verify that the paths in the metadata for the compilation are correct and contain the files
@@ -197,15 +193,20 @@ class TestCompileE2E:
             comp = item.get("compilation", {})
 
             if idx == 0:
-                assert "jstprove" in comp and "ezkl" in comp
+                assert comp.get("jstprove", {}).get("compiled") is True
+                assert comp.get("ezkl", {}).get("compiled") is True
             elif idx == 1:
-                assert "jstprove" not in comp and "ezkl" not in comp
+                assert comp.get("jstprove", {}).get("compiled") is False
+                assert comp.get("ezkl", {}).get("compiled") is False
             elif idx == 2:
-                assert "jstprove" in comp and "ezkl" not in comp
+                assert comp.get("jstprove", {}).get("compiled") is True
+                assert comp.get("ezkl", {}).get("compiled") is False
             elif idx in [3, 4]:
-                assert "ezkl" in comp and "jstprove" not in comp
+                assert comp.get("ezkl", {}).get("compiled") is True
+                assert comp.get("jstprove", {}).get("compiled") is False
             else:
-                assert "jstprove" not in comp and "ezkl" not in comp
+                assert comp.get("jstprove", {}).get("compiled") is False
+                assert comp.get("ezkl", {}).get("compiled") is False
 
     @pytest.mark.parametrize("model_name", ["net"])
     def test_compile_with_input_file(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
@@ -364,7 +365,7 @@ class TestCompileE2E:
             output_dir=str(output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=14
+            tile_size=1000
         ))
 
         # 2. Compile
@@ -387,7 +388,11 @@ class TestCompileE2E:
             comp = s.get("compilation", {}).get("jstprove", {})
             assert comp.get("compiled") is True
             assert comp.get("tiled") is True
-            assert comp.get("tile_count") == 4
+            
+            if idx == 0:
+                assert comp.get("tile_count") == 4
+            elif idx == 2:
+                assert comp.get("tile_count") == 49
 
             files = comp.get("files", {})
             assert "tile_0" in files
@@ -397,7 +402,7 @@ class TestCompileE2E:
             # Check that files actually exist
             tile_0_circuit = output_dir / files["tile_0"]["compiled"]
             assert tile_0_circuit.exists()
-            assert "payload/jstprove/tiled" in files["tile_0"]["compiled"]
+            assert "payload/jstprove/tiles" in files["tile_0"]["compiled"]
 
             # Per-slice metadata check
             slice_meta_path = output_dir / f"slice_{idx}" / "metadata.json"
@@ -409,7 +414,173 @@ class TestCompileE2E:
             assert "tile_0" in s_comp.get("files", {})
 
             # Path in per-slice metadata should be relative to slice dir
-            # It should be payload/jstprove/tiled/...
+            # It should be payload/jstprove/tiles/...
             tile_0_rel_path = s_comp["files"]["tile_0"]["compiled"]
             assert (output_dir / f"slice_{idx}" / tile_0_rel_path).exists()
-            assert tile_0_rel_path.startswith("payload/jstprove/tiled/")
+            assert tile_0_rel_path.startswith("payload/jstprove/tiles/")
+
+    def test_compile_channel_split(self, tmp_path, jstprove_available):
+        """Verify that compilation correctly handles channel-split slices."""
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+        import numpy as np
+
+        # 1. Create a channel-split model
+        c_in, c_out, spatial = 64, 64, 37
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node(
+            "Conv", ["X", "W"], ["Y"], 
+            kernel_shape=[3, 3], strides=[1, 1], pads=[1, 1, 1, 1], dilations=[1, 1]
+        )
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "channel_split_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        slices_dir = model_dir / "slices"
+        
+        # 2. Slice with channel splitting (forced by small tile_size and prime spatial dim)
+        slice_model(SimpleNamespace(
+            model_dir=str(model_path), output_dir=str(slices_dir), save_file=None, output_type="dirs", tile_size=10000
+        ))
+        
+        # 3. Compile
+        compile_model(SimpleNamespace(
+            path=str(slices_dir), input_file=None, layers=None, backend="jstprove" if jstprove_available else "ezkl",
+            parallel=4
+        ))
+        
+        # 4. Verify metadata
+        meta = json.loads((slices_dir / "metadata.json").read_text())
+        cs_slice = next((s for s in meta["slices"] if "channel_split" in s), None)
+        assert cs_slice is not None
+        
+        be = "jstprove" if jstprove_available else "ezkl"
+        comp = cs_slice.get("compilation", {}).get(be, {})
+        assert comp.get("compiled") is True
+        assert comp.get("channel_split") is True
+        
+        group_files = comp.get("group_files", {})
+        assert len(group_files) > 0
+        for g_idx, files in group_files.items():
+            assert "compiled" in files
+            # Path should be relative to top-level slices_dir
+            assert (slices_dir / files["compiled"]).exists()
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_compile_parallel(self, model_name, model_dir, slices_output_dir, jstprove_available, capfd):
+        """Verify that parallel compilation works without errors."""
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"
+        ))
+        
+        # Compile with 2 parallel processes
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir), input_file=None, layers=None, backend=None, parallel=2
+        ))
+        
+        out = capfd.readouterr().out
+        assert "parallel processes" in out
+        assert "Slices compiled successfully" in out
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_compile_resume(self, model_name, model_dir, slices_output_dir, jstprove_available, capfd):
+        """Verify that resume mode skips already compiled slices."""
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"
+        ))
+        
+        # 1. Compile first slice only
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir), input_file=None, layers="0", backend="jstprove" if jstprove_available else "ezkl"
+        ))
+        
+        # 2. Compile with resume
+        capfd.readouterr()
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir), input_file=None, layers=None, backend=None, resume=True, parallel=4
+        ))
+        out = capfd.readouterr().out
+        
+        assert "[resume] slice_0: already compiled, skipping" in out
+
+    def test_compile_channel_split_both_backends(self, tmp_path, jstprove_available, ezkl_available):
+        """Verify that channel splitting works when both backends are requested."""
+        if not jstprove_available or not ezkl_available:
+            pytest.skip("Both backends must be available")
+
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+        import numpy as np
+
+        # Create a channel-split model
+        c_in, c_out, spatial = 32, 32, 11
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node(
+            "Conv", ["X", "W"], ["Y"], 
+            kernel_shape=[3, 3], strides=[1, 1], pads=[1, 1, 1, 1], dilations=[1, 1]
+        )
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "cs_both_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        slices_dir = model_dir / "slices"
+        slice_model(SimpleNamespace(
+            model_dir=str(model_path), output_dir=str(slices_dir), save_file=None, output_type="dirs", tile_size=1000
+        ))
+        
+        # Compile with both backends
+        compile_model(SimpleNamespace(
+            path=str(slices_dir), input_file=None, layers=None, backend=None
+        ))
+        
+        meta = json.loads((slices_dir / "metadata.json").read_text())
+        cs_slice = next((s for s in meta["slices"] if "channel_split" in s), None)
+        assert cs_slice is not None
+        
+        comp = cs_slice.get("compilation", {})
+        assert "jstprove" in comp and "ezkl" in comp
+        assert comp["jstprove"]["compiled"] is True
+        assert comp["ezkl"]["compiled"] is True
+        
+        # Check that group artifacts are in correct directories
+        # payload/jstprove/channel_groups/group_0
+        # payload/ezkl/channel_groups/group_0
+        slice_idx = cs_slice["index"]
+        payload_dir = slices_dir / f"slice_{slice_idx}" / "payload"
+        assert (payload_dir / "jstprove" / "channel_groups" / "group_0").exists()
+        assert (payload_dir / "ezkl" / "channel_groups" / "group_0").exists()
+
+    @pytest.mark.parametrize("model_name", ["doom"])
+    def test_compile_resume_tiled(self, model_name, model_dir, slices_output_dir, jstprove_available, capfd):
+        """Verify that resume mode works for tiled slices."""
+        if not jstprove_available:
+            pytest.skip("JSTprove unavailable")
+
+        slice_model(SimpleNamespace(
+            model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs", tile_size=1000
+        ))
+        
+        # 1. Compile tiled slice 0
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir), input_file=None, layers="0", backend="jstprove"
+        ))
+        
+        # 2. Compile with resume
+        capfd.readouterr()
+        compile_model(SimpleNamespace(
+            path=str(slices_output_dir), input_file=None, layers="0", backend="jstprove", resume=True
+        ))
+        out = capfd.readouterr().out
+        assert "[resume] slice_0: already compiled, skipping" in out

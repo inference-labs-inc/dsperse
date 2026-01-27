@@ -15,37 +15,9 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
 from dsperse.src.constants import JSTPROVE_COMMAND
+from dsperse.src.backends.utils.jstprove_utils import JSTproveUtils, JSTPROVE_SUPPORTED_OPS
 
 logger = logging.getLogger(__name__)
-
-
-def _add_zero_bias_to_conv(model: onnx.ModelProto) -> onnx.ModelProto:
-    """Add zero bias to Conv nodes that don't have one (JSTprove requires 3 inputs)."""
-    for node in model.graph.node:
-        if node.op_type == "Conv" and len(node.input) == 2:
-            weight_name = node.input[1]
-            weight_init = next((i for i in model.graph.initializer if i.name == weight_name), None)
-            if weight_init is None:
-                continue
-
-            weight_arr = numpy_helper.to_array(weight_init)
-            out_channels = weight_arr.shape[0]
-
-            node_id = node.name or node.output[0] if node.output else weight_name
-            bias_name = f"{node_id}_zero_bias"
-            zero_bias = np.zeros(out_channels, dtype=weight_arr.dtype)
-            bias_init = numpy_helper.from_array(zero_bias, name=bias_name)
-            model.graph.initializer.append(bias_init)
-            node.input.append(bias_name)
-
-    return model
-
-JSTPROVE_SUPPORTED_OPS = {
-    # "Add", "Clip", "BatchNormalization", "Div", "Sub",
-    # "Mul", "Constant", "Flatten", "Gemm",
-    # "MaxPool", "Max", "Min", "ReLU", "Relu", "Reshape"
-    "Conv",
-}
 
 
 class JSTprove:
@@ -58,29 +30,8 @@ class JSTprove:
 
     @staticmethod
     def is_compatible(model_path: Union[str, Path]) -> Tuple[bool, set]:
-        """
-        Check if an ONNX model contains only JSTprove-supported operations.
-
-        Args:
-            model_path: Path to the ONNX model file
-
-        Returns:
-            Tuple of (is_compatible: bool, unsupported_ops: set)
-        """
-        model_path = Path(model_path)
-        if not model_path.exists():
-            return False, {"FILE_NOT_FOUND"}
-
-        try:
-            model = onnx.load(str(model_path))
-            ops = {node.op_type for node in model.graph.node}
-            unsupported = ops - JSTPROVE_SUPPORTED_OPS
-            if unsupported:
-                return False, unsupported
-            return True, set()
-        except Exception as e:
-            logger.warning(f"Failed to check JSTprove compatibility: {e}")
-            return False, {"LOAD_ERROR"}
+        """Check if an ONNX model contains only JSTprove-supported operations."""
+        return JSTproveUtils.is_compatible(model_path)
 
     def __init__(self, model_directory: Optional[str] = None) -> None:
         """
@@ -158,75 +109,53 @@ class JSTprove:
         input_file: Union[str, Path],
         model_path: Union[str, Path],  # This is the circuit path in JSTprove context
         output_file: Union[str, Path],
-        vk_path: Optional[Union[str, Path]] = None,  # Kept for backward compatibility but not used
-        settings_path: Optional[Union[str, Path]] = None  # Kept for backward compatibility but not used
+        vk_path: Optional[Union[str, Path]] = None,
+        settings_path: Optional[Union[str, Path]] = None
     ) -> Tuple[bool, Any]:
-        """
-        Generate a witness for the given circuit and input using JSTprove.
-
-        Args:
-            input_file: Path to the input JSON file
-            model_path: Path to the compiled circuit file (called model_path for interface compatibility)
-            output_file: Path where to save the model outputs JSON
-            vk_path: Ignored (kept for backward compatibility)
-            settings_path: Ignored (kept for backward compatibility)
-
-        Returns:
-            Tuple of (success: bool, output: Any) where output is the processed witness data
-        """
-        # Normalize paths
-        input_file = Path(input_file)
-        circuit_path = Path(model_path)  # model_path is actually the circuit path
-        output_file = Path(output_file)
+        """Generate a witness for the given circuit and input using JSTprove."""
+        # --- Normalization & Validation ---
+        input_file, output_file = Path(input_file), Path(output_file)
+        circuit_path = Path(model_path)
         witness_path = output_file.parent / f"{output_file.stem}_witness.bin"
 
-        # Validate required files exist
         if not input_file.exists():
             raise FileNotFoundError(f"Input file not found: {input_file}")
 
-        # Check if we have an ONNX model that needs compilation, or an existing circuit
+        # --- Circuit Compilation (JIT) ---
         onnx_model_path = None
         if circuit_path.exists() and circuit_path.suffix == '.onnx':
             onnx_model_path = circuit_path
             circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
 
-        # If we have an ONNX model, compile it first only if circuit doesn't exist
         if onnx_model_path and not circuit_path.exists():
             logger.info(f"JSTprove: Compiling ONNX model {onnx_model_path} to circuit {circuit_path}")
             ok, err = self.compile_circuit(onnx_model_path, circuit_path)
-            if not ok:
-                raise RuntimeError(f"Circuit compilation failed: {err}")
-        elif onnx_model_path and circuit_path.exists():
-            logger.info(f"Using existing circuit: {circuit_path}")
+            if not ok: raise RuntimeError(f"Circuit compilation failed: {err}")
         elif not circuit_path.exists():
             raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
 
-        # Create output directories if they don't exist
+        # --- Execution ---
         output_file.parent.mkdir(parents=True, exist_ok=True)
         witness_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             self._run_command("witness", [
-                "-c", str(circuit_path),
-                "-i", str(input_file),
-                "-o", str(output_file),
-                "-w", str(witness_path),
+                "-c", str(circuit_path), "-i", str(input_file),
+                "-o", str(output_file), "-w", str(witness_path),
             ])
         except RuntimeError as e:
-            error_msg = f"Witness generation failed: {e}"
-            logger.error(error_msg)
-            return False, error_msg
+            logger.error(f"Witness generation failed: {e}")
+            return False, str(e)
 
-        # Process the outputs
+        # --- Result Processing ---
         try:
             with open(output_file, "r") as f:
                 output_data = json.load(f)
                 processed_output = self.process_witness_output(output_data)
             return True, processed_output
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            error_msg = f"Failed to process witness output: {e}"
-            logger.error(error_msg)
-            return False, error_msg
+        except Exception as e:
+            logger.error(f"Failed to process witness output: {e}")
+            return False, str(e)
 
     def prove(
         self,
@@ -355,7 +284,7 @@ class JSTprove:
         circuit_path.parent.mkdir(parents=True, exist_ok=True)
 
         model = onnx.load(str(model_path))
-        model = _add_zero_bias_to_conv(model)
+        model = JSTproveUtils.add_zero_bias_to_conv(model)
 
         fd, preprocessed_path = tempfile.mkstemp(suffix=".onnx")
         os.close(fd)
@@ -381,78 +310,35 @@ class JSTprove:
         input_file_path: Optional[Union[str, Path]] = None,
         segment_details: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """
-        Run the JSTprove circuitization pipeline.
-
-        In JSTprove, circuitization is a single step that compiles the model into a circuit.
-        The compile command handles all the necessary setup internally.
-
-        Args:
-            model_path: Path to the ONNX model file.
-            output_path: Base path for output files.
-            input_file_path: Ignored (kept for backward compatibility).
-            segment_details: Ignored (kept for backward compatibility).
-
-        Returns:
-            Dictionary containing paths to generated files and any error information.
-        """
-        # Normalize paths
-        model_path = Path(model_path)
-        output_path = Path(output_path)
-
-        # Ensure model_path exists
+        """Run the JSTprove circuitization pipeline."""
+        # --- Validation & Normalization ---
+        model_path, output_path = Path(model_path), Path(output_path)
         if not model_path.exists():
             raise FileNotFoundError(f"Model file not found: {model_path}")
-
-        # Create output directory
         output_path.mkdir(parents=True, exist_ok=True)
 
-        model_name = model_path.stem
+        # --- Artifact Preparation ---
+        artifacts = JSTproveUtils.initialize_circuitization_artifacts(model_path, output_path, str(input_file_path) if input_file_path else None)
+        circuit_path = artifacts["paths"]["circuit"]
+        settings_path = artifacts["paths"]["settings"]
+        circuitization_data = artifacts["data"]
 
-        # Define file paths (JSTprove outputs circuit and quantized model)
-        circuit_path = output_path / f"{model_name}_circuit.txt"
-        quantized_model_path = output_path / f"{model_name}_circuit_quantized_model.onnx"
-        witness_solver_path = output_path / f"{model_name}_circuit_witness_solver.txt"
-
-        # Create dummy settings file for compatibility with runner analyzer
-        settings_path = output_path / f"{model_name}_settings.json"
-
-        # Initialize circuitization data dictionary (match EZKL structure for compatibility)
-        circuitization_data: Dict[str, Any] = {
-            "compiled": str(circuit_path),  # This is what runner_analyzer looks for
-            "circuit": str(circuit_path),
-            "quantized_model": str(quantized_model_path),
-            "witness_solver": str(witness_solver_path),
-            "calibration": input_file_path,
-            # Create dummy settings file for runner analyzer compatibility
-            "settings": str(settings_path),
-            # JSTprove doesn't use vk, pk in the same way as EZKL
-            "vk_key": None,
-            "pk_key": None,
-        }
-
+        # --- Circuit Compilation ---
         try:
-            logger.info(f"Compiling circuit for {model_name}")
-            # JSTprove compile command handles everything in one step
-            ok, err = self.compile_circuit(
-                model_path=model_path,
-                circuit_path=circuit_path,
-            )
+            logger.info(f"Compiling circuit for {model_path.stem}")
+            ok, err = self.compile_circuit(model_path=model_path, circuit_path=circuit_path)
+            
             if not ok:
-                logger.warning("Failed to compile circuit")
+                logger.warning(f"Failed to compile circuit: {err}")
                 circuitization_data["compile_error"] = err
-            else:
-                # Create dummy settings file for runner analyzer compatibility
-                dummy_settings = {
-                    "backend": "jstprove",
-                    "model_path": str(model_path),
-                    "circuit_path": str(circuit_path),
-                    "compiled_at": str(output_path),
-                    "note": "This is a dummy settings file for dsperse compatibility. JSTprove handles settings internally."
-                }
-                with open(settings_path, 'w') as f:
-                    json.dump(dummy_settings, f, indent=2)
-                logger.info(f"Circuitization pipeline completed for {model_path}")
+                return circuitization_data
+
+            # --- Settings Generation (Dummy) ---
+            dummy_settings = JSTproveUtils.create_dummy_settings(model_path, circuit_path, output_path)
+            with open(settings_path, 'w') as f:
+                json.dump(dummy_settings, f, indent=2)
+            
+            logger.info(f"Circuitization pipeline completed for {model_path}")
         except Exception as e:
             error_msg = f"Error during circuitization: {str(e)}"
             logger.exception(error_msg)
@@ -464,45 +350,24 @@ class JSTprove:
     compilation_pipeline = circuitization_pipeline
 
     def process_witness_output(self, witness_data: Any) -> Optional[Dict[str, Any]]:
-        """
-        Process the witness output data to get prediction results.
-
-        This method handles JSTprove witness output format. JSTprove outputs
-        a raw array of floats representing the final logits.
-
-        Args:
-            witness_data: The parsed JSON data from witness output.
-
-        Returns:
-            Dictionary containing processed predictions, or None if processing fails.
-        """
-        def _to_logits(data) -> torch.Tensor:
-            """Helper to convert data to logits tensor with batch dimension."""
-            logits = torch.tensor(data)
-            if logits.dim() == 1:
-                logits = logits.unsqueeze(0)
-            return logits
-
+        """Process the witness output data to get prediction results."""
         try:
-            # JSTprove dict format with 'rescaled_output' key
+            # --- JSTprove Dict Format ---
             if isinstance(witness_data, dict) and "rescaled_output" in witness_data:
                 self._witness_format = "jstprove_dict"
-                # NOTE: Rescaled outputs are in output.json (from -o flag), not in the witness binary file (-w flag).
-                # The witness binary contains only the raw quantized values needed for proof generation.
-                logger.debug(
-                    "Using rescaled outputs from output.json (not witness binary). "
-                    "These are the model's floating-point outputs after de-quantization."
-                )
-                return {"logits": _to_logits(witness_data["rescaled_output"])}
-            # Raw array format
+                logger.debug("Using rescaled outputs from output.json (not witness binary).")
+                return {"logits": JSTproveUtils.convert_to_logits(witness_data["rescaled_output"])}
+            
+            # --- Raw Array Format ---
             elif isinstance(witness_data, list):
                 self._witness_format = "jstprove_list"
-                return {"logits": _to_logits(witness_data)}
-            # EZKL-like format fallback
+                return {"logits": JSTproveUtils.convert_to_logits(witness_data)}
+            
+            # --- EZKL Fallback Format ---
             else:
                 self._witness_format = "ezkl_compat"
                 rescaled = witness_data["pretty_elements"]["rescaled_outputs"][0]
-                return {"logits": _to_logits(rescaled)}
+                return {"logits": JSTproveUtils.convert_to_logits(rescaled)}
         except (KeyError, TypeError) as e:
             logger.error(f"Could not process witness data: {e}")
             return None
@@ -530,13 +395,5 @@ class JSTprove:
             logger.debug(f"Could not get JSTprove version: {e}")
         return None
 
-
-if __name__ == "__main__":
-    # Example usage with JSTprove
-    print("JSTprove backend example:")
-    print("backend = JSTprove()")
-    print("backend.compile_circuit('model.onnx', 'circuit.txt')")
-    print("backend.generate_witness('input.json', 'circuit.txt', 'output.json')")
-    print("backend.prove('witness.bin', 'circuit.txt', 'proof.bin')")
-    print("backend.verify('proof.bin', 'circuit.txt', 'input.json', 'output.json', 'witness.bin')")
-
+    def __repr__(self) -> str:
+        return f"JSTprove(version={self.get_version()})"

@@ -1,15 +1,10 @@
 """
 Runner for EzKL Circuit and ONNX Inference
 """
-
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-
-import numpy as np
-import torch
-import onnxruntime as ort
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, ExecutionInfo, TileResult, Backend, \
@@ -92,7 +87,7 @@ class Runner:
         forced = backend
 
         has_jst = bool(meta.jstprove_circuit_path) and self.jstprove_runner is not None
-        has_ezkl = bool(meta.ezkl_circuit_path) and bool(meta.vk_path)
+        has_ezkl = bool(meta.ezkl_circuit_path) and (bool(meta.vk_path) or bool(meta.ezkl_vk_path))
 
         # --- Forced Backend Handling ---
         if forced == Backend.ONNX:
@@ -111,7 +106,7 @@ class Runner:
             return self.run_ezkl_inference(e_meta, ezkl_in, out_file, slice_dir)
 
         # --- Best Available (Automatic) Backend Selection ---
-        if has_jst:
+        if has_jst and forced != Backend.EZKL:
             logger.info(f"[{slice_id}] Running with JSTprove (best available)")
             j_meta = RunnerUtils.prepare_jstprove_meta(meta)
             ok, tensor, j_info = self.run_jstprove_inference(j_meta, in_file, out_file, slice_dir)
@@ -133,7 +128,7 @@ class Runner:
             o_info.method = ExecutionMethod.JSTPROVE_FALLBACK_ONNX
             return ok, tensor, o_info
 
-        if has_ezkl:
+        if has_ezkl and forced != Backend.JSTPROVE:
             logger.info(f"[{slice_id}] Running with EZKL (best available)")
             e_meta = RunnerUtils.prepare_ezkl_meta(meta)
             ezkl_in = RunnerUtils.flatten_input_for_ezkl(in_file)
@@ -236,51 +231,55 @@ class Runner:
             raise ValueError(f"Tile ONNX path not found for {slice_id}: {config['tile_onnx_path']}")
 
         # --- Tile Argument Preparation ---
+        tile_args_list = RunnerUtils.prepare_tile_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, tensor_cache, self.slices_path, config)
         tile_exec_infos = []
-        if config['has_jst'] or config['has_ezkl']:
-            tile_args_list = RunnerUtils.prepare_tile_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, tensor_cache, self.slices_path, config)
+        parallel_count = min(self.threads, tiling.num_tiles)
 
-            # --- Parallel Execution ---
-            parallel_count = min(self.threads, tiling.num_tiles)
-            if parallel_count > 1:
-                logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} circuits using {parallel_count} parallel processes")
-                with ProcessPoolExecutor(max_workers=parallel_count) as executor:
-                    futures = {executor.submit(RunnerUtils.execute_tile_worker, args): args['tile_idx'] for args in tile_args_list}
-                    results_map = {}
-                    for future in as_completed(futures):
-                        tile_idx = futures[future]
-                        try:
-                            results_map[tile_idx] = future.result()
-                        except Exception as e:
-                            results_map[tile_idx] = {'success': False, 'error': str(e), 'tile_idx': tile_idx}
-                
-                tile_exec_infos = RunnerUtils.collect_tile_outputs(results_map, tiling.num_tiles, tiling.slice_idx, tiling, tensor_cache)
-            # --- Sequential Execution ---
-            else:
+        # --- Parallel Execution ---
+        if parallel_count > 1:
+            logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} using {parallel_count} parallel processes")
+            with ProcessPoolExecutor(max_workers=parallel_count) as executor:
+                futures = {executor.submit(RunnerUtils.execute_tile_worker, args): args['tile_idx'] for args in tile_args_list}
+                results_map = {}
+                for future in as_completed(futures):
+                    tile_idx = futures[future]
+                    try:
+                        results_map[tile_idx] = future.result()
+                    except Exception as e:
+                        results_map[tile_idx] = {'success': False, 'error': str(e), 'tile_idx': tile_idx}
+            
+            tile_exec_infos = RunnerUtils.collect_tile_outputs(results_map, tiling.num_tiles, tiling.slice_idx, tiling, tensor_cache)
+        
+        # --- Sequential Execution ---
+        else:
+            if config['has_jst'] or config['has_ezkl']:
                 logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} circuits (sequential)")
                 for args in tile_args_list:
                     tile_meta = RunSliceMetadata(
-                        path=args['tile_onnx_path'], jstprove_circuit_path=args['jstprove_circuit_path'],
-                        ezkl_circuit_path=args['ezkl_circuit_path'], settings_path=args['settings_path'],
-                        vk_path=args['vk_path'], dependencies=meta.dependencies,
+                        path=args['tile_onnx_path'], 
+                        jstprove_circuit_path=args['jstprove_circuit_path'],
+                        ezkl_circuit_path=args['ezkl_circuit_path'], 
+                        settings_path=args['settings_path'],
+                        vk_path=args['vk_path'], 
+                        jstprove_settings_path=args.get('jstprove_settings_path'),
+                        ezkl_settings_path=args.get('ezkl_settings_path'),
+                        ezkl_vk_path=args.get('ezkl_vk_path'),
+                        ezkl_pk_path=args.get('ezkl_pk_path'),
+                        dependencies=meta.dependencies,
                     )
-                    ok, tensor, exec_info = self.run_circuit_with_fallback(tile_meta, Path(args['tile_in']), Path(args['tile_out']), Path(args['slice_specific_dir']), backend=config['effective_backend'])
+                    ok, result, exec_info = self.run_circuit_with_fallback(tile_meta, Path(args['tile_in']), Path(args['tile_out']), Path(args['slice_specific_dir']), backend=config['effective_backend'])
                     if not ok: raise RuntimeError(f"Tile {args['tile_idx']} failed: {exec_info.error}")
-                    tensor_cache[f"tile_{tiling.slice_idx}_{args['tile_idx']}_out"] = tensor
+                    RunnerUtils.process_tile_inference_result(result, tiling, tensor_cache, tiling.slice_idx, args['tile_idx'])
                     tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=exec_info.method))
-        # --- ONNX Only Tiling ---
-        else:
-            logger.info(f"Running {tiling.num_tiles} tiles with ONNX only")
-            for tile_idx in range(tiling.num_tiles):
-                tile_run_dir = run_dir / f"slice_{tiling.slice_idx}" / f"tile_{tile_idx}"
-                tile_run_dir.mkdir(parents=True, exist_ok=True)
-                tile_in, tile_out = tile_run_dir / "input.json", tile_run_dir / "output.json"
-                Utils.write_input(tensor_cache[f"tile_{tiling.slice_idx}_{tile_idx}_in"], str(tile_in))
-                
-                ok, result, o_info = self.run_onnx_single(meta, tile_in, tile_out, self.slices_path)
-                if not ok: raise RuntimeError(f"Tile {tile_idx} failed: {o_info.error}")
-                tensor_cache[f"tile_{tiling.slice_idx}_{tile_idx}_out"] = result
-                tile_exec_infos.append(TileResult(tile_idx=tile_idx, success=True, method=ExecutionMethod.ONNX_ONLY))
+            else:
+                logger.info(f"Running {tiling.num_tiles} tiles with ONNX only")
+                for args in tile_args_list:
+                    # Use tile-specific ONNX model and metadata to ensure correct output shapes
+                    tile_meta = RunSliceMetadata(path=args['tile_onnx_path'], dependencies=meta.dependencies)
+                    ok, result, o_info = self.run_onnx_single(tile_meta, Path(args['tile_in']), Path(args['tile_out']), self.slices_path)
+                    if not ok: raise RuntimeError(f"Tile {args['tile_idx']} failed: {o_info.error}")
+                    RunnerUtils.process_tile_inference_result(result, tiling, tensor_cache, tiling.slice_idx, args['tile_idx'])
+                    tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=ExecutionMethod.ONNX_ONLY))
 
         return tile_exec_infos
 
@@ -440,7 +439,7 @@ class Runner:
 
 if __name__ == "__main__":
     # Choose which model to test
-    model_choice = 1  # Change this to test different models
+    model_choice = 2  # Change this to test different models
 
     # Model configurations
     base_paths = {
@@ -462,7 +461,7 @@ if __name__ == "__main__":
 
     # Run inference
     print(f"Running inference on model {base_paths[model_choice]}...")
-    results = runner.run(input_json, slice_path=slices_dir)#, backend="onnx")
+    results = runner.run(input_json, slice_path=slices_dir)#, backend="ezkl")
 
     # Display results
     print(f"\nOutput shape: {results['tensor_shape']}")

@@ -5,6 +5,7 @@ import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable, Optional
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
 from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, ExecutionInfo, TileResult, Backend, \
@@ -12,26 +13,38 @@ from dsperse.src.analyzers.schema import RunSliceMetadata, TilingInfo, Execution
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
+from dsperse.src.run.channel_split_executor import ChannelSplitExecutor
+from dsperse.src.run.tile_executor import TileExecutor
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 
+SliceCompleteCallback = Callable[[str, ExecutionInfo, Path], None]
+
 
 class Runner:
 
-    def __init__(self, run_dir: str = None, threads: int = 1):
+    def __init__(
+        self,
+        run_dir: str = None,
+        threads: int = 1,
+        on_slice_complete: Optional[SliceCompleteCallback] = None
+    ):
         """Initialize the Runner.
 
         Args:
             run_dir: Directory for run outputs (default: alongside slices). If it contains metadata.json, it's a resume.
             threads: Number of parallel tile execution processes
+            on_slice_complete: Optional callback called after each slice completes.
+                               Signature: (slice_id: str, exec_info: ExecutionInfo, run_dir: Path) -> None
         """
         self.run_dir = Path(run_dir) if run_dir else None
         self.threads = max(1, threads)
         self.resume = bool(self.run_dir)
-        
+        self.on_slice_complete = on_slice_complete
+
         self.run_metadata = None
         self.slices_path: Path | None = None
         self.last_run_dir: Path | None = None
@@ -206,40 +219,36 @@ class Runner:
 
     def run_tiled_inference(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path, backend: str = None) -> ExecutionInfo:
         """Run a tiled slice by splitting into overlapping tiles and executing them."""
-        # --- Initialization ---
         tiling = meta.tiling
         if not tiling:
             return ExecutionInfo(method=ExecutionMethod.TILED, success=False, error='missing_tiling_info')
 
-        # --- Tiling Split ---
-        input_tensor = RunnerUtils.get_input_tensor_for_tiling(slice_id, tiling, meta, tensor_cache)
-        RunnerUtils.split_tensor_into_tiles(slice_id, tiling, input_tensor, tensor_cache)
-        
-        # --- Tile Execution ---
+        tile_executor = TileExecutor(self.slices_path, tensor_cache)
+        input_tensor = tile_executor.get_input_tensor(slice_id, tiling, meta)
+        tile_executor.split_into_tiles(slice_id, tiling, input_tensor)
+
         tile_results = self.run_tiles(slice_id, tiling, meta, run_dir, tensor_cache, backend=backend)
-        
-        # --- Tiling Reassembly ---
-        RunnerUtils.reconstruct_tensor_from_tiles(slice_id, tiling, tensor_cache)
+
+        tile_executor.reconstruct_from_tiles(slice_id, tiling)
 
         return ExecutionInfo(method=ExecutionMethod.TILED, success=True, tiles=tile_results)
 
     def run_tiles(self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata, run_dir: Path, tensor_cache: dict, backend: str = None) -> list[TileResult]:
         """Execute individual tiles for a tiled slice in parallel or sequentially."""
-        # --- Setup and Path Discovery ---
-        config = RunnerUtils.get_tile_execution_config(tiling, meta, self.slices_path, backend=backend, has_jst_runner=(self.jstprove_runner is not None))
+        tile_executor = TileExecutor(self.slices_path, tensor_cache)
+        config = tile_executor.get_execution_config(tiling, meta, backend=backend, has_jst_runner=(self.jstprove_runner is not None))
+
         if config['tile_onnx_path'] is None or not Path(config['tile_onnx_path']).exists():
             raise ValueError(f"Tile ONNX path not found for {slice_id}: {config['tile_onnx_path']}")
 
-        # --- Tile Argument Preparation ---
-        tile_args_list = RunnerUtils.prepare_tile_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, tensor_cache, self.slices_path, config)
+        tile_args_list = tile_executor.prepare_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config)
         tile_exec_infos = []
         parallel_count = min(self.threads, tiling.num_tiles)
 
-        # --- Parallel Execution ---
         if parallel_count > 1:
             logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} using {parallel_count} parallel processes")
             with ProcessPoolExecutor(max_workers=parallel_count) as executor:
-                futures = {executor.submit(RunnerUtils.execute_tile_worker, args): args['tile_idx'] for args in tile_args_list}
+                futures = {executor.submit(TileExecutor.execute_worker, args): args['tile_idx'] for args in tile_args_list}
                 results_map = {}
                 for future in as_completed(futures):
                     tile_idx = futures[future]
@@ -247,66 +256,70 @@ class Runner:
                         results_map[tile_idx] = future.result()
                     except Exception as e:
                         results_map[tile_idx] = {'success': False, 'error': str(e), 'tile_idx': tile_idx}
-            
-            tile_exec_infos = RunnerUtils.collect_tile_outputs(results_map, tiling.num_tiles, tiling.slice_idx, tiling, tensor_cache)
-        
-        # --- Sequential Execution ---
+
+            tile_exec_infos = tile_executor.collect_outputs(results_map, tiling.num_tiles, tiling.slice_idx, tiling)
         else:
             if config['has_jst'] or config['has_ezkl']:
                 logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} circuits (sequential)")
                 for args in tile_args_list:
                     tile_meta = RunSliceMetadata(
-                        path=args['tile_onnx_path'], 
+                        path=args['tile_onnx_path'],
                         jstprove_circuit_path=args['jstprove_circuit_path'],
-                        ezkl_circuit_path=args['ezkl_circuit_path'], 
+                        ezkl_circuit_path=args['ezkl_circuit_path'],
                         settings_path=args['settings_path'],
-                        vk_path=args['vk_path'], 
+                        vk_path=args['vk_path'],
                         jstprove_settings_path=args.get('jstprove_settings_path'),
                         ezkl_settings_path=args.get('ezkl_settings_path'),
                         ezkl_vk_path=args.get('ezkl_vk_path'),
                         ezkl_pk_path=args.get('ezkl_pk_path'),
                         dependencies=meta.dependencies,
                     )
-                    ok, result, exec_info = self.run_circuit_with_fallback(tile_meta, Path(args['tile_in']), Path(args['tile_out']), Path(args['slice_specific_dir']), backend=config['effective_backend'])
-                    if not ok: raise RuntimeError(f"Tile {args['tile_idx']} failed: {exec_info.error}")
-                    RunnerUtils.process_tile_inference_result(result, tiling, tensor_cache, tiling.slice_idx, args['tile_idx'])
+                    ok, result, exec_info = self.run_circuit_with_fallback(
+                        tile_meta, Path(args['tile_in']), Path(args['tile_out']),
+                        Path(args['slice_specific_dir']), backend=config['effective_backend']
+                    )
+                    if not ok:
+                        raise RuntimeError(f"Tile {args['tile_idx']} failed: {exec_info.error}")
+                    tile_executor.process_result(result, tiling, tiling.slice_idx, args['tile_idx'])
                     tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=exec_info.method))
             else:
                 logger.info(f"Running {tiling.num_tiles} tiles with ONNX only")
                 for args in tile_args_list:
-                    # Use tile-specific ONNX model and metadata to ensure correct output shapes
                     tile_meta = RunSliceMetadata(path=args['tile_onnx_path'], dependencies=meta.dependencies)
                     ok, result, o_info = self.run_onnx_single(tile_meta, Path(args['tile_in']), Path(args['tile_out']), self.slices_path)
-                    if not ok: raise RuntimeError(f"Tile {args['tile_idx']} failed: {o_info.error}")
-                    RunnerUtils.process_tile_inference_result(result, tiling, tensor_cache, tiling.slice_idx, args['tile_idx'])
+                    if not ok:
+                        raise RuntimeError(f"Tile {args['tile_idx']} failed: {o_info.error}")
+                    tile_executor.process_result(result, tiling, tiling.slice_idx, args['tile_idx'])
                     tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=ExecutionMethod.ONNX_ONLY))
 
         return tile_exec_infos
 
     def run_channel_split_inference(self, slice_id: str, meta: RunSliceMetadata, tensor_cache: dict, run_dir: Path, slices_path: Path, backend: str = None) -> ExecutionInfo:
         """Coordinate the execution of multiple channel groups and sum their outputs."""
-        # --- Channel Split Setup ---
-        input_tensor, output_shape, input_name = RunnerUtils.prepare_channel_split_config(meta, tensor_cache)
+        cs_executor = ChannelSplitExecutor(
+            slices_path, tensor_cache,
+            jstprove_runner=self.jstprove_runner,
+            ezkl_runner=self.ezkl_runner
+        )
+
+        input_tensor, output_shape, input_name = cs_executor.prepare_config(meta)
         if input_tensor is None:
             err = "missing_channel_split_info" if not meta.channel_split else f"Missing input tensor for channel-split slice {slice_id}"
             return ExecutionInfo(method="channel_split", success=False, error=err)
 
-        # --- Group Execution Loop ---
         partial_outputs, methods_used = [], []
         for group in meta.channel_split.groups:
             group_input = input_tensor[:, group.c_start:group.c_end, :, :]
-            output, method = RunnerUtils.execute_channel_group(self, group, group_input, run_dir / slice_id, output_shape, slices_path, backend=backend)
+            output, method = cs_executor.execute_group(group, group_input, run_dir / slice_id, output_shape, backend=backend)
             partial_outputs.append(output)
             methods_used.append(method)
 
-        # --- Output Aggregation ---
         summed = partial_outputs[0]
-        for po in partial_outputs[1:]: summed = summed + po
+        for po in partial_outputs[1:]:
+            summed = summed + po
 
-        # --- Bias Compensation ---
-        summed = RunnerUtils.apply_channel_split_bias(summed, meta.channel_split, slices_path)
+        summed = cs_executor.apply_bias(summed, meta.channel_split)
 
-        # --- Cache Update ---
         output_name = meta.channel_split.output_name or (meta.dependencies.output[0] if meta.dependencies.output else "output")
         tensor_cache[output_name] = summed
         primary_method = methods_used[0] if len(set(methods_used)) == 1 else "channel_split_mixed"
@@ -396,6 +409,9 @@ class Runner:
 
             if final_tensor is not None:
                 RunnerUtils.save_intermediate_output(out_file, final_tensor, exec_info)
+
+            if self.on_slice_complete:
+                self.on_slice_complete(current_slice_id, exec_info, run_dir)
 
             current_slice_id = nodes[current_slice_id].next
 

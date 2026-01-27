@@ -7,7 +7,7 @@ import torch
 
 from dsperse.src.analyzers.schema import Backend
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.compile.utils.compiler_utils import CompilerUtils
+from dsperse.src.compile.utils.compiler_utils import CompilerUtils, BackendParseResult
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -268,11 +268,12 @@ class Compiler:
         if not os.path.exists(model_path): raise FileNotFoundError(f"Path does not exist: {model_path}")
 
         # --- Configuration and Layer Parsing ---
-        parsed_be, parsed_fallback, layer_indices = CompilerUtils.parse_backend_and_layers(layers)
-        if parsed_be is not None:
-            self.default_backend, self.use_fallback = parsed_be, parsed_fallback
+        parse_result = CompilerUtils.parse_backend_and_layers(layers)
+        if parse_result.default_backend is not None:
+            self.default_backend, self.use_fallback = parse_result.default_backend, parse_result.use_fallback
 
-        if layer_indices == "PARSE_COMPLEX":
+        layer_indices = parse_result.layer_indices
+        if parse_result.needs_complex_parse:
             self.layer_backends, self.default_layer_indices = CompilerUtils.parse_complex_layer_backends(layers)
             layer_indices = sorted(set(self.layer_backends.keys()) | self.default_layer_indices)
 

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -13,6 +14,14 @@ from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BackendParseResult:
+    default_backend: Optional[str]
+    use_fallback: bool
+    layer_indices: Optional[list[int]]
+    needs_complex_parse: bool = False
 
 class CompilerUtils:
 
@@ -80,32 +89,34 @@ class CompilerUtils:
         return sorted(set(layer_indices)) if layer_indices else None
 
     @staticmethod
-    def parse_backend_and_layers(layers: Optional[str]):
+    def parse_backend_and_layers(layers: Optional[str]) -> BackendParseResult:
         """
         Parses the 'layers' argument to determine the default backend,
         whether fallback should be used, and which layer indices to compile.
 
         Returns:
-            tuple: (default_backend, use_fallback, layer_indices)
+            BackendParseResult with parsed configuration
         """
-        default_backend = None
-        use_fallback = True
-        layer_indices = None
-
         if layers and layers.lower() in [Backend.JSTPROVE, Backend.EZKL]:
-            default_backend = layers.lower()
-            use_fallback = False
-            layer_indices = None
-        elif layers and (":" in layers or ";" in layers):
-            # This case requires the compiler instance to call _parse_layer_backends
-            # We return a special flag or handle logic in the caller
-            use_fallback = True
-            default_backend = None
-            layer_indices = "PARSE_COMPLEX"
-        else:
-            layer_indices = CompilerUtils.parse_layers(layers) if layers else None
+            return BackendParseResult(
+                default_backend=layers.lower(),
+                use_fallback=False,
+                layer_indices=None
+            )
 
-        return default_backend, use_fallback, layer_indices
+        if layers and (":" in layers or ";" in layers):
+            return BackendParseResult(
+                default_backend=None,
+                use_fallback=True,
+                layer_indices=None,
+                needs_complex_parse=True
+            )
+
+        return BackendParseResult(
+            default_backend=None,
+            use_fallback=True,
+            layer_indices=CompilerUtils.parse_layers(layers) if layers else None
+        )
 
     @staticmethod
     def resolve_compilation_source(idx: int, slice_data: dict, base_path: str, slice_dir: str, tiling_info: dict | None):

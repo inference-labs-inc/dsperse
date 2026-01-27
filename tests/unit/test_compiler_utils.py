@@ -28,28 +28,32 @@ def test_parse_complex_layer_backends():
 
 def test_parse_backend_and_layers():
     # 1. Backend name only
-    be, fallback, idxs = CompilerUtils.parse_backend_and_layers("ezkl")
-    assert be == "ezkl"
-    assert fallback is False
-    assert idxs is None
+    result = CompilerUtils.parse_backend_and_layers("ezkl")
+    assert result.default_backend == "ezkl"
+    assert result.use_fallback is False
+    assert result.layer_indices is None
+    assert result.needs_complex_parse is False
 
     # 2. Layer indices only
-    be, fallback, idxs = CompilerUtils.parse_backend_and_layers("0,2-3")
-    assert be is None
-    assert fallback is True
-    assert idxs == [0, 2, 3]
+    result = CompilerUtils.parse_backend_and_layers("0,2-3")
+    assert result.default_backend is None
+    assert result.use_fallback is True
+    assert result.layer_indices == [0, 2, 3]
+    assert result.needs_complex_parse is False
 
     # 3. Complex mapping
-    be, fallback, idxs = CompilerUtils.parse_backend_and_layers("0:jstprove;1:ezkl")
-    assert be is None
-    assert fallback is True
-    assert idxs == "PARSE_COMPLEX"
+    result = CompilerUtils.parse_backend_and_layers("0:jstprove;1:ezkl")
+    assert result.default_backend is None
+    assert result.use_fallback is True
+    assert result.layer_indices is None
+    assert result.needs_complex_parse is True
 
     # 4. None/Empty
-    be, fallback, idxs = CompilerUtils.parse_backend_and_layers(None)
-    assert be is None
-    assert fallback is True
-    assert idxs is None
+    result = CompilerUtils.parse_backend_and_layers(None)
+    assert result.default_backend is None
+    assert result.use_fallback is True
+    assert result.layer_indices is None
+    assert result.needs_complex_parse is False
 
 def test_parse_layers():
     # 1. Simple indices

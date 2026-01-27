@@ -1,6 +1,7 @@
 import json
 import shutil
 import re
+import logging
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
@@ -287,7 +288,7 @@ class TestRunE2E:
         import numpy as np
 
         # Create a model with high input channels and prime spatial dimension to force channel splitting
-        c_in, c_out, spatial = 64, 64, 37
+        c_in, c_out, spatial = 16, 16, 11
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
         np.random.seed(42)
         W_data = np.random.randn(c_out, c_in, 3, 3).astype(np.float32)
@@ -296,7 +297,10 @@ class TestRunE2E:
         B_data = np.random.randn(c_out).astype(np.float32)
         B = numpy_helper.from_array(B_data, "B")
         
-        conv = helper.make_node("Conv", ["X", "W", "B"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        conv = helper.make_node(
+            "Conv", ["X", "W", "B"], ["Y"], 
+            kernel_shape=[3, 3], strides=[1, 1], pads=[1, 1, 1, 1], dilations=[1, 1]
+        )
         Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
         graph = helper.make_graph([conv], "test", [X], [Y], [W, B])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
@@ -320,7 +324,7 @@ class TestRunE2E:
             output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
-            tile_size=10000
+            tile_size=1000
         ))
         
         # 2. Compile (optional)
@@ -355,7 +359,7 @@ class TestRunE2E:
         assert run_results["tensor_shape"] == [1, c_out, spatial, spatial]
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_parallel_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, jstprove_available):
+    def test_run_parallel_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, caplog, jstprove_available):
         """11. Verify that parallel execution (threads > 1) works for tiling."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
@@ -387,13 +391,13 @@ class TestRunE2E:
             threads=2,
             run_dir=None
         )
+
+        with caplog.at_level(logging.INFO):
+            run_inference(run_args)
         
-        capfd.readouterr()
-        run_inference(run_args)
         out = capfd.readouterr().out
-        
         assert "Inference completed" in out
-        assert "parallel processes" in out.lower()
+        assert "parallel processes" in caplog.text.lower()
         assert "slice_0: tiled" in out
 
     @pytest.mark.parametrize("model_name", ["doom"])

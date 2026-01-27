@@ -146,7 +146,7 @@ def run_inference(args):
         result = runner.run(
             args.input_file,
             slice_path=slices_dir_effective or model_dir,
-            output_path=getattr(args, 'output_file', None),
+            output_path=run_dir,
             backend=getattr(args, 'force_backend', None)
         )
         elapsed_time = time.time() - start_time

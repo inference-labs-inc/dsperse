@@ -426,7 +426,7 @@ class TestCompileE2E:
         import numpy as np
 
         # 1. Create a channel-split model
-        c_in, c_out, spatial = 64, 64, 37
+        c_in, c_out, spatial = 16, 16, 7
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
         W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
         conv = helper.make_node(
@@ -446,7 +446,7 @@ class TestCompileE2E:
         
         # 2. Slice with channel splitting (forced by small tile_size and prime spatial dim)
         slice_model(SimpleNamespace(
-            model_dir=str(model_path), output_dir=str(slices_dir), save_file=None, output_type="dirs", tile_size=10000
+            model_dir=str(model_path), output_dir=str(slices_dir), save_file=None, output_type="dirs", tile_size=100
         ))
         
         # 3. Compile

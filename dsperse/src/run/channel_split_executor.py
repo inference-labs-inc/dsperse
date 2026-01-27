@@ -108,7 +108,7 @@ class ChannelSplitExecutor:
     def apply_bias(self, summed: torch.Tensor, channel_split: ChannelSplitInfo) -> torch.Tensor:
         if channel_split.bias_path:
             bias_path = self._resolve_path(channel_split.bias_path)
-            if Path(bias_path).exists():
+            if bias_path and Path(bias_path).exists():
                 bias_tensor = torch.from_numpy(np.load(bias_path)).reshape(1, -1, 1, 1)
                 summed = summed + bias_tensor
         return summed

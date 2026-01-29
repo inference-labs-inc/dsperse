@@ -7,7 +7,7 @@ name = "dsperse"
 version = "1.0.1"
 description = "Distributed zkML Toolkit"
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = "==3.13.*"
 license = { file = "LICENSE" }
 authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
 dependencies = [

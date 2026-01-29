@@ -214,42 +214,27 @@ class JSTprove:
         input_path: Union[str, Path],
         output_path: Union[str, Path],
         witness_path: Union[str, Path],
-        settings_path: Optional[Union[str, Path]] = None,  # Kept for backward compatibility but not used
-        vk_path: Optional[Union[str, Path]] = None  # Kept for backward compatibility but not used
+        settings_path: Optional[Union[str, Path]] = None,
+        vk_path: Optional[Union[str, Path]] = None
     ) -> bool:
-        """
-        Verify a proof using JSTprove.
-
-        Args:
-            proof_path: Path to the proof file
-            circuit_path: Path to the compiled circuit
-            input_path: Path to the input JSON used for the proof
-            output_path: Path to the expected outputs JSON
-            witness_path: Path to the witness file
-            settings_path: Ignored (kept for backward compatibility)
-            vk_path: Ignored (kept for backward compatibility)
-
-        Returns:
-            True if verification succeeded, False otherwise
-        """
-        # Normalize paths
         proof_path = Path(proof_path)
         circuit_path = Path(circuit_path)
         input_path = Path(input_path)
         output_path = Path(output_path)
         witness_path = Path(witness_path)
 
-        # Validate required files exist
         required_files = [proof_path, circuit_path, input_path, output_path, witness_path]
         for file_path in required_files:
             if not file_path.exists():
                 raise FileNotFoundError(f"Required file not found: {file_path}")
 
+        veri_output_path = self._prepare_verification_output(circuit_path, output_path)
+
         try:
             self._run_command("verify", [
                 "-c", str(circuit_path),
                 "-i", str(input_path),
-                "-o", str(output_path),
+                "-o", str(veri_output_path),
                 "-w", str(witness_path),
                 "-p", str(proof_path),
             ])
@@ -257,6 +242,41 @@ class JSTprove:
         except RuntimeError as e:
             logger.error(f"Proof verification failed: {e}")
             return False
+
+    @staticmethod
+    def _prepare_verification_output(circuit_path: Path, output_path: Path) -> Path:
+        metadata_path = circuit_path.with_name(circuit_path.stem + "_metadata.json")
+        if not metadata_path.exists():
+            return output_path
+
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
+        scale_base = metadata.get("scale_base")
+        scale_exponent = metadata.get("scale_exponent")
+        if scale_base is None or scale_exponent is None:
+            return output_path
+
+        with open(output_path, "r") as f:
+            output_data = json.load(f)
+
+        raw_output = output_data.get("output")
+        if raw_output is None:
+            return output_path
+
+        flat = torch.tensor(raw_output).flatten()
+
+        if flat.is_floating_point():
+            scale = scale_base ** scale_exponent
+            flat = torch.round(flat * scale).long()
+
+        scaled = flat.long().tolist()
+
+        veri_path = output_path.parent / "output_veri.json"
+        with open(veri_path, "w") as f:
+            json.dump({"output": scaled}, f)
+
+        return veri_path
 
     def compile_circuit(
         self,

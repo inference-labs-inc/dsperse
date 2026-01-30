@@ -332,13 +332,25 @@ class Runner:
             jobs.append(job)
 
         manifest_dir = run_dir / f"slice_{tiling.slice_idx}"
-        logger.info(f"Running {tiling.num_tiles} tiles with JSTprove batch witness for {slice_id}")
+        cpus = os.cpu_count() or 1
+        total_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        cgroup_limit = Path("/sys/fs/cgroup/memory.max")
+        if not cgroup_limit.exists():
+            cgroup_limit = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cgroup_limit.exists():
+            raw = cgroup_limit.read_text().strip()
+            if raw != "max" and raw.isdigit():
+                total_bytes = min(total_bytes, int(raw))
+        mem_workers = max(1, int(total_bytes / (1024 ** 3) * 0.5))
+        witness_workers = max(1, min(cpus, mem_workers, len(jobs) // 16))
+        logger.info(f"Running {tiling.num_tiles} tiles with JSTprove batch witness for {slice_id} ({witness_workers} workers)")
 
         if has_tensors:
             results = self.jstprove_runner.generate_witness_batch_from_tensors(
                 circuit_path=circuit_path,
                 jobs=jobs,
                 manifest_dir=str(manifest_dir),
+                workers=witness_workers,
             )
         else:
             results = self.jstprove_runner.generate_witness_batch(

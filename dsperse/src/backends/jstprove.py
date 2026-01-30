@@ -228,6 +228,7 @@ class JSTprove:
         circuit_path: Union[str, Path],
         jobs: List[Dict[str, Any]],
         manifest_dir: Optional[Union[str, Path]] = None,
+        workers: int = 1,
     ) -> List[Tuple[bool, Any]]:
         from python.frontend.commands.batch import batch_witness_from_tensors
 
@@ -258,6 +259,7 @@ class JSTprove:
                 circuit_path=str(circuit_path),
                 jobs=jobs,
                 manifest_path=str(manifest_path),
+                workers=workers,
             )
         except Exception as e:
             logger.error(f"Batch witness generation failed: {e}")

@@ -255,6 +255,9 @@ class Runner:
         if self.batch and config['has_jst']:
             return self._run_tiles_batch_jst(slice_id, tiling, meta, tile_args_list, tile_executor, run_dir)
 
+        if self.batch and config['tile_onnx_path']:
+            return self._run_tiles_batch_onnx(slice_id, tiling, tile_args_list, tile_executor, config)
+
         if parallel_count > 1:
             logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} using {parallel_count} parallel processes")
             with ProcessPoolExecutor(max_workers=parallel_count) as executor:
@@ -339,6 +342,47 @@ class Runner:
                 tile_idx=args['tile_idx'],
                 success=True,
                 method=ExecutionMethod.JSTPROVE_GEN_WITNESS,
+            ))
+
+        return tile_exec_infos
+
+    def _run_tiles_batch_onnx(
+        self, slice_id: str, tiling: TilingInfo,
+        tile_args_list: list[dict], tile_executor: TileExecutor, config: dict,
+    ) -> list[TileResult]:
+        """Execute all tiles with a single ONNX session (model loaded once)."""
+        import numpy as np
+        import torch
+
+        model_path = config['tile_onnx_path']
+        logger.info(f"Running {tiling.num_tiles} tiles with ONNX batch for {slice_id}")
+
+        session = OnnxModels._create_session(model_path)
+        model_inputs = session.get_inputs()
+        input_name = model_inputs[0].name
+        input_shape = [int(d) if isinstance(d, int) else 1 for d in model_inputs[0].shape]
+        expected_dtype = OnnxModels._parse_onnx_type(model_inputs[0].type)
+
+        tile_exec_infos = []
+        for args in tile_args_list:
+            input_tensor = RunnerUtils.preprocess_input(args['tile_in'])
+            if isinstance(input_tensor, torch.Tensor):
+                arr = input_tensor.numpy()
+            else:
+                arr = np.asarray(input_tensor)
+            arr = arr.reshape(input_shape).astype(expected_dtype)
+
+            raw_output = session.run(None, {input_name: arr})
+            output_tensor = torch.from_numpy(raw_output[0]).float()
+            result = RunnerUtils.process_final_output(output_tensor)
+            if args.get('tile_out'):
+                RunnerUtils.save_to_file_flattened(result['output'], args['tile_out'])
+
+            tile_executor.process_result(result, tiling, tiling.slice_idx, args['tile_idx'])
+            tile_exec_infos.append(TileResult(
+                tile_idx=args['tile_idx'],
+                success=True,
+                method=ExecutionMethod.ONNX_ONLY,
             ))
 
         return tile_exec_infos

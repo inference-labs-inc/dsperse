@@ -157,6 +157,72 @@ class JSTprove:
             logger.error(f"Failed to process witness output: {e}")
             return False, str(e)
 
+    def generate_witness_batch(
+        self,
+        circuit_path: Union[str, Path],
+        jobs: List[Dict[str, str]],
+        manifest_dir: Optional[Union[str, Path]] = None,
+    ) -> List[Tuple[bool, Any]]:
+        """Generate witnesses for multiple inputs in a single batch call.
+
+        All jobs share the same circuit. The circuit is loaded once by the
+        Rust binary, reducing disk IO from O(n) to O(1).
+
+        Args:
+            circuit_path: Path to the compiled circuit (or ONNX model for JIT compilation)
+            jobs: List of dicts each with 'input', 'output', 'witness' string paths
+            manifest_dir: Directory to write the manifest file (defaults to circuit parent)
+
+        Returns:
+            List of (success, result) tuples, one per job
+        """
+        circuit_path = Path(circuit_path)
+
+        onnx_model_path = None
+        if circuit_path.exists() and circuit_path.suffix == '.onnx':
+            onnx_model_path = circuit_path
+            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
+
+        if onnx_model_path and not circuit_path.exists():
+            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
+            if not ok:
+                raise RuntimeError(f"Circuit compilation failed: {err}")
+        elif not circuit_path.exists():
+            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
+
+        for job in jobs:
+            Path(job["output"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(job["witness"]).parent.mkdir(parents=True, exist_ok=True)
+
+        manifest_parent = Path(manifest_dir) if manifest_dir else circuit_path.parent
+        manifest_parent.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_parent / "batch_witness_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump({"jobs": jobs}, f)
+
+        try:
+            self._run_command("batch", [
+                "witness",
+                "-c", str(circuit_path),
+                "-f", str(manifest_path),
+            ])
+        except RuntimeError as e:
+            logger.error(f"Batch witness generation failed: {e}")
+            return [(False, str(e)) for _ in jobs]
+
+        results = []
+        for job in jobs:
+            output_path = Path(job["output"])
+            try:
+                with open(output_path, "r") as f:
+                    output_data = json.load(f)
+                processed = self.process_witness_output(output_data)
+                results.append((True, processed))
+            except Exception as e:
+                results.append((False, str(e)))
+
+        return results
+
     def prove(
         self,
         witness_path: Union[str, Path],

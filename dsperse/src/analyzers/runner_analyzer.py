@@ -204,7 +204,11 @@ class RunnerAnalyzer:
             onnx_path = os.path.join(parent_dir, meta.relative_path)
 
             def _join(rel: Optional[str]) -> Optional[str]:
-                return os.path.join(parent_dir, rel) if rel else None
+                if not rel:
+                    return None
+                if rel.split(os.sep)[0] == parent_dir:
+                    return rel
+                return os.path.join(parent_dir, rel)
 
             jst = meta.compilation.jstprove
             ezkl_comp = meta.compilation.ezkl

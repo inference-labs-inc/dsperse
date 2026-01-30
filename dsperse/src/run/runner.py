@@ -30,7 +30,8 @@ class Runner:
         self,
         run_dir: str = None,
         threads: int = 1,
-        on_slice_complete: Optional[SliceCompleteCallback] = None
+        on_slice_complete: Optional[SliceCompleteCallback] = None,
+        batch: bool = False,
     ):
         """Initialize the Runner.
 
@@ -39,11 +40,13 @@ class Runner:
             threads: Number of parallel tile execution processes
             on_slice_complete: Optional callback called after each slice completes.
                                Signature: (slice_id: str, exec_info: ExecutionInfo, run_dir: Path) -> None
+            batch: Use JSTprove batch witness generation for tiled slices (loads circuit once for all tiles)
         """
         self.run_dir = Path(run_dir) if run_dir else None
         self.threads = max(1, threads)
         self.resume = bool(self.run_dir)
         self.on_slice_complete = on_slice_complete
+        self.batch = batch
 
         self.run_metadata = None
         self.slices_path: Path | None = None
@@ -249,6 +252,9 @@ class Runner:
         tile_exec_infos = []
         parallel_count = min(self.threads, tiling.num_tiles)
 
+        if self.batch and config['has_jst']:
+            return self._run_tiles_batch_jst(slice_id, tiling, meta, tile_args_list, tile_executor, run_dir)
+
         if parallel_count > 1:
             logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} using {parallel_count} parallel processes")
             with ProcessPoolExecutor(max_workers=parallel_count) as executor:
@@ -295,6 +301,45 @@ class Runner:
                         raise RuntimeError(f"Tile {args['tile_idx']} failed: {o_info.error}")
                     tile_executor.process_result(result, tiling, tiling.slice_idx, args['tile_idx'])
                     tile_exec_infos.append(TileResult(tile_idx=args['tile_idx'], success=True, method=ExecutionMethod.ONNX_ONLY))
+
+        return tile_exec_infos
+
+    def _run_tiles_batch_jst(
+        self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata,
+        tile_args_list: list[dict], tile_executor: TileExecutor, run_dir: Path,
+    ) -> list[TileResult]:
+        """Execute all tiles via a single JSTprove batch witness call."""
+        circuit_path = RunnerUtils.resolve_relative_path(meta.jstprove_circuit_path, self.slices_path)
+
+        jobs = []
+        for args in tile_args_list:
+            tile_out = Path(args['tile_out'])
+            witness_path = tile_out.parent / f"{tile_out.stem}_witness.bin"
+            jobs.append({
+                "input": args['tile_in'],
+                "output": args['tile_out'],
+                "witness": str(witness_path),
+            })
+
+        manifest_dir = run_dir / f"slice_{tiling.slice_idx}"
+        logger.info(f"Running {tiling.num_tiles} tiles with JSTprove batch witness for {slice_id}")
+
+        results = self.jstprove_runner.generate_witness_batch(
+            circuit_path=circuit_path,
+            jobs=jobs,
+            manifest_dir=str(manifest_dir),
+        )
+
+        tile_exec_infos = []
+        for args, (success, output) in zip(tile_args_list, results):
+            if not success:
+                raise RuntimeError(f"Batch witness failed for tile {args['tile_idx']}: {output}")
+            tile_executor.process_result(output, tiling, tiling.slice_idx, args['tile_idx'])
+            tile_exec_infos.append(TileResult(
+                tile_idx=args['tile_idx'],
+                success=True,
+                method=ExecutionMethod.JSTPROVE_GEN_WITNESS,
+            ))
 
         return tile_exec_infos
 

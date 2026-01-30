@@ -86,6 +86,36 @@ class OnnxModels:
         return np.float32
 
     @staticmethod
+    def _reshape_for_input(arr: np.ndarray, model_input) -> np.ndarray:
+        """Reshape and cast a numpy array to match an ONNX model input's expected shape and type."""
+        expected_dtype = OnnxModels._parse_onnx_type(model_input.type)
+        expected_shape = model_input.shape
+
+        if not expected_shape:
+            return arr.astype(expected_dtype)
+
+        final_shape = []
+        for dim in expected_shape:
+            if isinstance(dim, int):
+                final_shape.append(dim)
+            elif isinstance(dim, str) and (dim == 'batch_size' or dim.startswith('unk')):
+                final_shape.append(1)
+            else:
+                final_shape.append(1)
+
+        if arr.shape != tuple(final_shape):
+            elements_needed = int(np.prod(final_shape))
+            flat = arr.flatten()
+            if flat.size < elements_needed:
+                padding = np.zeros(elements_needed - flat.size, dtype=expected_dtype)
+                flat = np.concatenate([flat, padding])
+            elif flat.size > elements_needed:
+                flat = flat[:elements_needed]
+            arr = flat.reshape(final_shape)
+
+        return arr.astype(expected_dtype)
+
+    @staticmethod
     def run_inference_multi(model_path: str, extra_tensors: dict, output_file: str = None):
         """Run inference with multiple named inputs. All inputs must be provided in extra_tensors."""
         try:
@@ -99,14 +129,7 @@ class OnnxModels:
 
                 t = extra_tensors[name]
                 arr = t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else np.asarray(t)
-                arr = arr.astype(OnnxModels._parse_onnx_type(model_input.type))
-
-                expected_shape = model_input.shape
-                expected_rank = len(expected_shape)
-                if expected_rank > 0 and arr.ndim != expected_rank:
-                    logger.warning(f"Rank mismatch for {name}: got {arr.ndim}D, expected {expected_rank}D - using actual shape")
-
-                input_dict[name] = arr
+                input_dict[name] = OnnxModels._reshape_for_input(arr, model_input)
 
             raw_output = session.run(None, input_dict)
             return True, OnnxModels._process_outputs(session, raw_output, output_file)

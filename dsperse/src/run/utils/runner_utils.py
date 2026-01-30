@@ -441,12 +441,12 @@ class RunnerUtils:
         return False, None, None
 
     @staticmethod
-    def prepare_slice_input(info: RunSliceMetadata, tensor_cache: dict, model_input_tensor: torch.Tensor, in_file: Path) -> torch.Tensor:
-        """Extracts and saves the input tensor for the current slice."""
+    def prepare_slice_input(info: RunSliceMetadata, tensor_cache: dict, model_input_tensor: torch.Tensor, in_file: Path, skip_write: bool = False) -> torch.Tensor:
         filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
         input_name = filtered_inputs[0] if filtered_inputs else "input"
         current_tensor = tensor_cache.get(input_name, model_input_tensor)
-        Utils.write_input(current_tensor, str(in_file))
+        if not skip_write:
+            Utils.write_input(current_tensor, str(in_file))
         return current_tensor
 
     @staticmethod

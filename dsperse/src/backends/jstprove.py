@@ -223,6 +223,56 @@ class JSTprove:
 
         return results
 
+    def generate_witness_batch_from_tensors(
+        self,
+        circuit_path: Union[str, Path],
+        jobs: List[Dict[str, Any]],
+        manifest_dir: Optional[Union[str, Path]] = None,
+    ) -> List[Tuple[bool, Any]]:
+        from python.frontend.commands.batch import batch_witness_from_tensors
+
+        circuit_path = Path(circuit_path)
+
+        onnx_model_path = None
+        if circuit_path.exists() and circuit_path.suffix == '.onnx':
+            onnx_model_path = circuit_path
+            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
+
+        if onnx_model_path and not circuit_path.exists():
+            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
+            if not ok:
+                raise RuntimeError(f"Circuit compilation failed: {err}")
+        elif not circuit_path.exists():
+            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
+
+        for job in jobs:
+            Path(job["output"]).parent.mkdir(parents=True, exist_ok=True)
+            Path(job["witness"]).parent.mkdir(parents=True, exist_ok=True)
+
+        manifest_parent = Path(manifest_dir) if manifest_dir else circuit_path.parent
+        manifest_parent.mkdir(parents=True, exist_ok=True)
+        manifest_path = manifest_parent / "batch_witness_manifest.json"
+
+        try:
+            raw_outputs = batch_witness_from_tensors(
+                circuit_path=str(circuit_path),
+                jobs=jobs,
+                manifest_path=str(manifest_path),
+            )
+        except Exception as e:
+            logger.error(f"Batch witness generation failed: {e}")
+            return [(False, str(e)) for _ in jobs]
+
+        results = []
+        for output_data in raw_outputs:
+            try:
+                processed = self.process_witness_output(output_data)
+                results.append((True, processed))
+            except Exception as e:
+                results.append((False, str(e)))
+
+        return results
+
     def prove(
         self,
         witness_path: Union[str, Path],

@@ -248,15 +248,18 @@ class Runner:
         if config['tile_onnx_path'] is None or not Path(config['tile_onnx_path']).exists():
             raise ValueError(f"Tile ONNX path not found for {slice_id}: {config['tile_onnx_path']}")
 
-        tile_args_list = tile_executor.prepare_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config)
         tile_exec_infos = []
         parallel_count = min(self.threads, tiling.num_tiles)
 
         if self.batch and config['has_jst']:
+            tile_args_list = tile_executor.prepare_tasks_in_memory(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config)
             return self._run_tiles_batch_jst(slice_id, tiling, meta, tile_args_list, tile_executor, run_dir)
 
         if self.batch and config['tile_onnx_path']:
+            tile_args_list = tile_executor.prepare_tasks_in_memory(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config)
             return self._run_tiles_batch_onnx(slice_id, tiling, tile_args_list, tile_executor, config)
+
+        tile_args_list = tile_executor.prepare_tasks(tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config)
 
         if parallel_count > 1:
             logger.info(f"Running {tiling.num_tiles} tiles with {config['backend_name']} using {parallel_count} parallel processes")
@@ -311,27 +314,38 @@ class Runner:
         self, slice_id: str, tiling: TilingInfo, meta: RunSliceMetadata,
         tile_args_list: list[dict], tile_executor: TileExecutor, run_dir: Path,
     ) -> list[TileResult]:
-        """Execute all tiles via a single JSTprove batch witness call."""
         circuit_path = RunnerUtils.resolve_relative_path(meta.jstprove_circuit_path, self.slices_path)
 
         jobs = []
+        has_tensors = "tile_tensor" in tile_args_list[0]
         for args in tile_args_list:
             tile_out = Path(args['tile_out'])
             witness_path = tile_out.parent / f"{tile_out.stem}_witness.bin"
-            jobs.append({
-                "input": args['tile_in'],
+            job = {
                 "output": args['tile_out'],
                 "witness": str(witness_path),
-            })
+            }
+            if has_tensors:
+                job["_tensor_inputs"] = {"input_data": args['tile_tensor'].tolist()}
+            else:
+                job["input"] = args['tile_in']
+            jobs.append(job)
 
         manifest_dir = run_dir / f"slice_{tiling.slice_idx}"
         logger.info(f"Running {tiling.num_tiles} tiles with JSTprove batch witness for {slice_id}")
 
-        results = self.jstprove_runner.generate_witness_batch(
-            circuit_path=circuit_path,
-            jobs=jobs,
-            manifest_dir=str(manifest_dir),
-        )
+        if has_tensors:
+            results = self.jstprove_runner.generate_witness_batch_from_tensors(
+                circuit_path=circuit_path,
+                jobs=jobs,
+                manifest_dir=str(manifest_dir),
+            )
+        else:
+            results = self.jstprove_runner.generate_witness_batch(
+                circuit_path=circuit_path,
+                jobs=jobs,
+                manifest_dir=str(manifest_dir),
+            )
 
         tile_exec_infos = []
         for args, (success, output) in zip(tile_args_list, results):
@@ -350,7 +364,6 @@ class Runner:
         self, slice_id: str, tiling: TilingInfo,
         tile_args_list: list[dict], tile_executor: TileExecutor, config: dict,
     ) -> list[TileResult]:
-        """Execute all tiles with a single ONNX session (model loaded once)."""
         import numpy as np
         import torch
 
@@ -365,18 +378,20 @@ class Runner:
 
         tile_exec_infos = []
         for args in tile_args_list:
-            input_tensor = RunnerUtils.preprocess_input(args['tile_in'])
-            if isinstance(input_tensor, torch.Tensor):
-                arr = input_tensor.numpy()
+            tile_tensor = args.get('tile_tensor')
+            if tile_tensor is not None:
+                if isinstance(tile_tensor, torch.Tensor):
+                    arr = tile_tensor.numpy()
+                else:
+                    arr = np.asarray(tile_tensor)
             else:
-                arr = np.asarray(input_tensor)
+                input_tensor = RunnerUtils.preprocess_input(args['tile_in'])
+                arr = input_tensor.numpy() if isinstance(input_tensor, torch.Tensor) else np.asarray(input_tensor)
             arr = arr.reshape(input_shape).astype(expected_dtype)
 
             raw_output = session.run(None, {input_name: arr})
             output_tensor = torch.from_numpy(raw_output[0]).float()
             result = RunnerUtils.process_final_output(output_tensor)
-            if args.get('tile_out'):
-                RunnerUtils.save_to_file_flattened(result['output'], args['tile_out'])
 
             tile_executor.process_result(result, tiling, tiling.slice_idx, args['tile_idx'])
             tile_exec_infos.append(TileResult(
@@ -485,7 +500,8 @@ class Runner:
                     continue
 
             # Execution Step
-            current_tensor = RunnerUtils.prepare_slice_input(info, tensor_cache, input_tensor, in_file)
+            skip_write = bool(info.tiling or info.channel_split)
+            current_tensor = RunnerUtils.prepare_slice_input(info, tensor_cache, input_tensor, in_file, skip_write=skip_write)
             ok, result, exec_info = self.dispatch_slice(
                 current_slice_id, info, node, tensor_cache, run_dir, self.slices_path, in_file, out_file, backend,
                 current_tensor

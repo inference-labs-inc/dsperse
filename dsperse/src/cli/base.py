@@ -4,10 +4,17 @@ Contains common utilities and classes used by all CLI commands.
 """
 
 import argparse
+import glob as _glob
+try:
+    import readline
+except ImportError:
+    readline = None
 import random
+import sys
 import colorama
 import logging
 import os
+from contextlib import contextmanager
 from colorama import Fore, Style
 
 # Initialize colorama
@@ -55,6 +62,37 @@ def _looks_like_path(value: str) -> bool:
     if v.lower().endswith((".json", ".onnx", ".pth")):
         return True
     return False
+
+
+def _path_completer(text, state):
+    expanded = os.path.expanduser(text) if text.startswith("~") else text
+    pattern = "*" if not expanded else expanded + "*"
+    matches = [m + os.sep if os.path.isdir(m) else m for m in _glob.glob(pattern)]
+    return matches[state] if state < len(matches) else None
+
+
+@contextmanager
+def _with_path_completion(enabled=True):
+    if not enabled or readline is None or not sys.stdin.isatty():
+        yield
+        return
+
+    old_completer = readline.get_completer()
+    old_delims = readline.get_completer_delims()
+
+    readline.set_completer(_path_completer)
+    readline.set_completer_delims("\t\n;")
+
+    if "libedit" in (readline.__doc__ or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+
+    try:
+        yield
+    finally:
+        readline.set_completer(old_completer)
+        readline.set_completer_delims(old_delims)
 
 
 def _maybe_normalize_from_prompt(param_name: str, prompt_message: str, value: str) -> str:
@@ -252,10 +290,13 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
     Returns:
         str: The value provided by the user or the default value
     """
+    is_path = _param_name_suggests_path(param_name)
     try:
         logger.debug(f"Prompting for {param_name} with message: {prompt_message}")
         if default is not None:
-            user_input = input(f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}")
+            prompt_str = f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}"
+            with _with_path_completion(is_path):
+                user_input = input(prompt_str)
             if not user_input.strip():
                 # Don't normalize run names (they're not real paths until resolved)
                 if str(default).startswith('run_'):
@@ -276,7 +317,9 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
                 return value
         else:
             while True:
-                user_input = input(f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}")
+                prompt_str = f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}"
+                with _with_path_completion(is_path):
+                    user_input = input(prompt_str)
                 if user_input.strip() or not required:
                     if user_input.strip():
                         value = user_input.strip().strip('\'"')  # Strip surrounding quotes

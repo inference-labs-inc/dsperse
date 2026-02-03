@@ -29,18 +29,18 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      - name: Replace bundled MPI with system MPI
+        run: |
+          BUNDLED_LIB=$(find .venv -path "*/python/core/lib" -type d | head -1)
+          echo "Removing bundled MPI libs from $BUNDLED_LIB"
+          rm -f "$BUNDLED_LIB"/libmpi* "$BUNDLED_LIB"/libopen-* "$BUNDLED_LIB"/libevent* "$BUNDLED_LIB"/libhwloc* "$BUNDLED_LIB"/libpmix*
+
       - name: Debug expander-exec prove
         run: |
           set +e
           EXPANDER=$(find .venv -name "expander-exec" -type f 2>/dev/null | head -1)
-          BUNDLED_LIB="$(dirname "$EXPANDER")/../lib"
-          SYSTEM_MPI=$(dirname "$(dpkg -L libopenmpi-dev | grep libmpi.so$ | head -1)")
-
-          echo "=== Bundled MPI ==="
-          ls "$BUNDLED_LIB"/libmpi* 2>&1
-          echo "=== System MPI ==="
-          echo "$SYSTEM_MPI"
-          ls "$SYSTEM_MPI"/libmpi* 2>&1
+          echo "=== ldd after removing bundled MPI ==="
+          ldd "$EXPANDER" 2>&1
 
           echo "=== Slice + Compile + Witness ==="
           uv run python -c "
@@ -58,12 +58,8 @@ jobs:
           CIRCUIT=$(find /tmp/dbg_slices -name "*_circuit.txt" | head -1)
           WITNESS=$(find /tmp/dbg_slices -name "*witness.bin" | head -1)
 
-          echo "=== prove with SYSTEM MPI (no bundled) ==="
-          LD_LIBRARY_PATH="$SYSTEM_MPI" "$EXPANDER" -p Hyrax prove -c "$CIRCUIT" -w "$WITNESS" -o /tmp/proof_sys.json 2>&1
-          echo "Exit: $?"
-
-          echo "=== prove with system MPI first, bundled second ==="
-          LD_LIBRARY_PATH="$SYSTEM_MPI:$BUNDLED_LIB" "$EXPANDER" -p Hyrax prove -c "$CIRCUIT" -w "$WITNESS" -o /tmp/proof_mixed.json 2>&1
+          echo "=== prove with system MPI ==="
+          "$EXPANDER" -p Hyrax prove -c "$CIRCUIT" -w "$WITNESS" -o /tmp/proof.json 2>&1
           echo "Exit: $?"
 
       - name: Run Integration Tests

@@ -5,7 +5,10 @@ Contains common utilities and classes used by all CLI commands.
 
 import argparse
 import glob as _glob
-import readline
+try:
+    import readline
+except ImportError:
+    readline = None
 import random
 import sys
 import colorama
@@ -63,14 +66,14 @@ def _looks_like_path(value: str) -> bool:
 
 def _path_completer(text, state):
     expanded = os.path.expanduser(text) if text.startswith("~") else text
-    pattern = expanded + "*" if expanded and not expanded.endswith(os.sep) else (expanded or ".") + "*"
+    pattern = "*" if not expanded else expanded + "*"
     matches = [m + os.sep if os.path.isdir(m) else m for m in _glob.glob(pattern)]
     return matches[state] if state < len(matches) else None
 
 
 @contextmanager
 def _with_path_completion(enabled=True):
-    if not enabled or not sys.stdin.isatty():
+    if not enabled or readline is None or not sys.stdin.isatty():
         yield
         return
 

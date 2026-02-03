@@ -10,20 +10,10 @@ on:
 
 jobs:
   test:
-    name: Run Full Run Integration Tests
+    name: Run Integration Tests
     runs-on: ubuntu-latest
-    
-    steps:
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/share/powershell
-          sudo rm -rf /usr/share/swift
-          sudo docker image prune --all --force
 
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -33,10 +23,8 @@ jobs:
           enable-cache: true
           python-version: '3.13'
 
-      - name: Install dependencies using install.sh
-        run: |
-          chmod +x install.sh
-          ./install.sh -n
+      - name: Install OpenMPI
+        run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
 
       - name: Run Integration Tests
-        run: uv run pytest tests/integration/test_full_run.py
+        run: uv run pytest tests/integration/ -m "not slow"

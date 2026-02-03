@@ -71,7 +71,10 @@ confirm() {
 
 # Resolve pip for the chosen python
 resolve_pip() {
-  if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  if command -v uv >/dev/null 2>&1; then
+    PIP_BIN="uv pip"
+    PYTHON_BIN="${PYTHON_BIN:-python3}"
+  elif command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     PIP_BIN="$PYTHON_BIN -m pip"
   elif command -v python >/dev/null 2>&1; then
     PYTHON_BIN="python"

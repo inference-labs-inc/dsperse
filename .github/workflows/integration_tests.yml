@@ -31,13 +31,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: '3.12'
+          python-version: '3.13'
 
       - name: Install dependencies using install.sh
         run: |
           chmod +x install.sh
-          # Tell install.sh to use the python from the uv environment
-          export PYTHON_BIN="$(uv run python -c 'import sys; print(sys.executable)')"
           ./install.sh -n
 
       - name: Run Integration Tests

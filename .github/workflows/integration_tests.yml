@@ -26,13 +26,5 @@ jobs:
       - name: Install OpenMPI
         run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
 
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Use system OpenMPI for expander-exec
-        run: |
-          BUNDLED_LIB=$(find .venv -path "*/python/core/lib" -type d | head -1)
-          rm -f "$BUNDLED_LIB"/libmpi* "$BUNDLED_LIB"/libopen-* "$BUNDLED_LIB"/libevent* "$BUNDLED_LIB"/libhwloc* "$BUNDLED_LIB"/libpmix*
-
       - name: Run Integration Tests
         run: uv run pytest tests/integration/test_slice.py tests/integration/test_compile.py tests/integration/test_pipeline.py tests/integration/test_full_run.py -m "not slow"

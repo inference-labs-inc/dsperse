@@ -8,6 +8,7 @@ import torch
 from dsperse.src.analyzers.schema import (
     Backend, ChannelGroupInfo, ChannelSplitInfo, ExecutionMethod, RunSliceMetadata
 )
+from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class ChannelSplitExecutor:
             group_onnx_path = self._resolve_path(group.path)
             if not group_onnx_path:
                 raise ValueError(f"Cannot resolve ONNX path for channel group {group.group_idx}: {group.path}")
-            session = ort.InferenceSession(str(group_onnx_path))
+            session = OnnxModels._create_session(str(group_onnx_path))
             outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
             return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
 
@@ -101,7 +102,7 @@ class ChannelSplitExecutor:
         group_onnx_path = self._resolve_path(group.path)
         if not group_onnx_path:
             raise ValueError(f"Cannot resolve ONNX path for channel group {group.group_idx}: {group.path}")
-        session = ort.InferenceSession(str(group_onnx_path))
+        session = OnnxModels._create_session(str(group_onnx_path))
         outputs = session.run(None, {session.get_inputs()[0].name: input_arr})
         return torch.from_numpy(outputs[0]), ExecutionMethod.ONNX_ONLY
 

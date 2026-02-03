@@ -487,8 +487,20 @@ class RunnerUtils:
     def save_intermediate_output(out_file: Path, tensor: torch.Tensor, exec_info: ExecutionInfo):
         """Saves intermediate inference result to a JSON file."""
         method = exec_info.method if isinstance(exec_info, ExecutionInfo) else exec_info.get('method', 'unknown')
+        raw_output = None
+        if out_file.exists():
+            try:
+                with open(out_file, 'r') as f:
+                    existing = json.load(f)
+                if isinstance(existing.get('output'), list):
+                    raw_output = existing['output']
+            except Exception:
+                pass
+        data = {'output': tensor.tolist(), 'method': str(method)}
+        if raw_output is not None:
+            data['raw_output'] = raw_output
         with open(out_file, 'w') as f:
-            json.dump({'output': tensor.tolist(), 'method': str(method)}, f)
+            json.dump(data, f)
 
     @staticmethod
     def resolve_inference_paths(meta: RunSliceMetadata, slice_dir: Path) -> dict:

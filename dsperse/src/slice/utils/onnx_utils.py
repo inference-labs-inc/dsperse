@@ -19,9 +19,22 @@ from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 
+_MAX_ORT_IR_VERSION = 10
+_MAX_ORT_OPSET_VERSION = 22
+
+
 class OnnxUtils:
     def __init__(self):
         pass
+
+    @staticmethod
+    def clamp_for_ort(model: onnx.ModelProto) -> None:
+        """Clamp IR and opset versions to the maximums supported by ORT."""
+        if model.ir_version > _MAX_ORT_IR_VERSION:
+            model.ir_version = _MAX_ORT_IR_VERSION
+        for opset in model.opset_import:
+            if opset.domain in ("", "ai.onnx") and opset.version > _MAX_ORT_OPSET_VERSION:
+                opset.version = _MAX_ORT_OPSET_VERSION
 
     # =========================================================================
     # Section 1: Graph Setup & Map Building
@@ -101,6 +114,7 @@ class OnnxUtils:
         traced_dtypes = {}
         
         try:
+            OnnxUtils.clamp_for_ort(trace_model)
             onnx.save(trace_model, trace_path)
 
             session = ort.InferenceSession(trace_path, providers=['CPUExecutionProvider'])

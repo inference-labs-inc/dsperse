@@ -1,12 +1,15 @@
 import logging
 import os
 import re
+import tempfile
 
 import numpy as np
+import onnx
 import onnxruntime as ort
 import torch
 
 from dsperse.src.run.utils.runner_utils import RunnerUtils
+from dsperse.src.slice.utils.onnx_utils import OnnxUtils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +21,14 @@ class OnnxModels:
     @staticmethod
     def _create_session(model_path: str) -> ort.InferenceSession:
         """Create ONNX Runtime session with deterministic settings for ZK proofs."""
+        model = onnx.load(model_path)
+        if model.ir_version > 10:
+            OnnxUtils.clamp_for_ort(model)
+            fd, clamped_path = tempfile.mkstemp(suffix=".onnx")
+            os.close(fd)
+            onnx.save(model, clamped_path)
+            model_path = clamped_path
+
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
         opts.enable_profiling = False

@@ -9,10 +9,12 @@ import tempfile
 import torch
 import logging
 import onnx
-import numpy as np
-from onnx import numpy_helper
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
+
+from python.core.circuit_models.generic_onnx import GenericModelONNX
+from python.core.utils.helper_functions import read_from_json
+from python.frontend.commands.batch import _run_witness_chunk_piped
 
 from dsperse.src.constants import JSTPROVE_COMMAND
 from dsperse.src.backends.utils.jstprove_utils import JSTproveUtils, JSTPROVE_SUPPORTED_OPS
@@ -45,9 +47,9 @@ class JSTprove:
         """
         self.env = os.environ.copy()
         self.model_directory = Path(model_directory) if model_directory else None
-        self._witness_format = "jstprove"  # Track witness output format
+        self._witness_format = "jstprove"
+        self._circuit_cache: Dict[str, GenericModelONNX] = {}
 
-        # Check if JSTprove CLI is available
         try:
             result = subprocess.run(
                 [self.COMMAND, "--help"],
@@ -100,61 +102,81 @@ class JSTprove:
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    #
-    # High-level methods that dispatch to specific implementations
-    #
+    def _get_circuit(self, circuit_path: Path) -> GenericModelONNX:
+        key = str(circuit_path)
+        if key in self._circuit_cache:
+            return self._circuit_cache[key]
+        circuit = GenericModelONNX("_")
+        quantized_path = circuit_path.parent / f"{circuit_path.stem}_quantized_model.onnx"
+        if not quantized_path.exists():
+            raise FileNotFoundError(f"Quantized model not found: {quantized_path}")
+        circuit.load_quantized_model(str(quantized_path))
+        self._circuit_cache[key] = circuit
+        return circuit
+
+    def _resolve_circuit_path(self, model_path: Path) -> Path:
+        circuit_path = model_path
+        onnx_model_path = None
+        if circuit_path.exists() and circuit_path.suffix == '.onnx':
+            onnx_model_path = circuit_path
+            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
+        if onnx_model_path and not circuit_path.exists():
+            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
+            if not ok:
+                raise RuntimeError(f"Circuit compilation failed: {err}")
+        elif not circuit_path.exists():
+            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
+        return circuit_path
+
+    def _process_inputs(self, circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, dict]:
+        scaled = circuit.scale_inputs_only(inputs)
+        inference_inputs = circuit.reshape_inputs_for_inference(scaled)
+        circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
+        outputs = circuit.get_outputs(inference_inputs)
+        formatted = circuit.format_outputs(outputs)
+        return circuit_inputs, formatted
 
     def generate_witness(
         self,
         input_file: Union[str, Path],
-        model_path: Union[str, Path],  # This is the circuit path in JSTprove context
+        model_path: Union[str, Path],
         output_file: Union[str, Path],
         vk_path: Optional[Union[str, Path]] = None,
         settings_path: Optional[Union[str, Path]] = None
     ) -> Tuple[bool, Any]:
-        """Generate a witness for the given circuit and input using JSTprove."""
-        # --- Normalization & Validation ---
         input_file, output_file = Path(input_file), Path(output_file)
-        circuit_path = Path(model_path)
+        circuit_path = self._resolve_circuit_path(Path(model_path))
         witness_path = output_file.parent / f"{output_file.stem}_witness.bin"
 
         if not input_file.exists():
             raise FileNotFoundError(f"Input file not found: {input_file}")
 
-        # --- Circuit Compilation (JIT) ---
-        onnx_model_path = None
-        if circuit_path.exists() and circuit_path.suffix == '.onnx':
-            onnx_model_path = circuit_path
-            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
-
-        if onnx_model_path and not circuit_path.exists():
-            logger.info(f"JSTprove: Compiling ONNX model {onnx_model_path} to circuit {circuit_path}")
-            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
-            if not ok: raise RuntimeError(f"Circuit compilation failed: {err}")
-        elif not circuit_path.exists():
-            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
-
-        # --- Execution ---
         output_file.parent.mkdir(parents=True, exist_ok=True)
         witness_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            self._run_command("witness", [
-                "-c", str(circuit_path), "-i", str(input_file),
-                "-o", str(output_file), "-w", str(witness_path),
-            ])
-        except RuntimeError as e:
-            logger.error(f"Witness generation failed: {e}")
-            return False, str(e)
+            circuit = self._get_circuit(circuit_path)
+            inputs = read_from_json(str(input_file))
+            circuit_inputs, formatted = self._process_inputs(circuit, inputs)
 
-        # --- Result Processing ---
-        try:
-            with open(output_file, "r") as f:
-                output_data = json.load(f)
-                processed_output = self.process_witness_output(output_data)
-            return True, processed_output
+            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+            _run_witness_chunk_piped(
+                binary_name=circuit.name,
+                circuit_path=str(circuit_path),
+                metadata_path=metadata_path,
+                chunk_jobs=[{
+                    "_circuit_inputs": circuit_inputs,
+                    "_circuit_outputs": formatted,
+                    "witness": str(witness_path),
+                }],
+            )
+
+            with open(output_file, "w") as f:
+                json.dump(formatted, f)
+
+            return True, self.process_witness_output(formatted)
         except Exception as e:
-            logger.error(f"Failed to process witness output: {e}")
+            logger.error(f"Witness generation failed: {e}")
             return False, str(e)
 
     def generate_witness_batch(
@@ -163,65 +185,45 @@ class JSTprove:
         jobs: List[Dict[str, str]],
         manifest_dir: Optional[Union[str, Path]] = None,
     ) -> List[Tuple[bool, Any]]:
-        """Generate witnesses for multiple inputs in a single batch call.
-
-        All jobs share the same circuit. The circuit is loaded once by the
-        Rust binary, reducing disk IO from O(n) to O(1).
-
-        Args:
-            circuit_path: Path to the compiled circuit (or ONNX model for JIT compilation)
-            jobs: List of dicts each with 'input', 'output', 'witness' string paths
-            manifest_dir: Directory to write the manifest file (defaults to circuit parent)
-
-        Returns:
-            List of (success, result) tuples, one per job
-        """
-        circuit_path = Path(circuit_path)
-
-        onnx_model_path = None
-        if circuit_path.exists() and circuit_path.suffix == '.onnx':
-            onnx_model_path = circuit_path
-            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
-
-        if onnx_model_path and not circuit_path.exists():
-            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
-            if not ok:
-                raise RuntimeError(f"Circuit compilation failed: {err}")
-        elif not circuit_path.exists():
-            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
+        circuit_path = self._resolve_circuit_path(Path(circuit_path))
 
         for job in jobs:
             Path(job["output"]).parent.mkdir(parents=True, exist_ok=True)
             Path(job["witness"]).parent.mkdir(parents=True, exist_ok=True)
 
-        manifest_parent = Path(manifest_dir) if manifest_dir else circuit_path.parent
-        manifest_parent.mkdir(parents=True, exist_ok=True)
-        manifest_path = manifest_parent / "batch_witness_manifest.json"
-        with open(manifest_path, "w") as f:
-            json.dump({"jobs": jobs}, f)
-
         try:
-            self._run_command("batch", [
-                "witness",
-                "-c", str(circuit_path),
-                "-f", str(manifest_path),
-            ])
-        except RuntimeError as e:
+            circuit = self._get_circuit(circuit_path)
+            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+
+            piped_jobs = []
+            per_job_formatted = []
+            for job in jobs:
+                inputs = read_from_json(job["input"])
+                circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                piped_jobs.append({
+                    "_circuit_inputs": circuit_inputs,
+                    "_circuit_outputs": formatted,
+                    "witness": job["witness"],
+                })
+                per_job_formatted.append(formatted)
+
+            _run_witness_chunk_piped(
+                binary_name=circuit.name,
+                circuit_path=str(circuit_path),
+                metadata_path=metadata_path,
+                chunk_jobs=piped_jobs,
+            )
+
+            results = []
+            for job, formatted in zip(jobs, per_job_formatted):
+                with open(job["output"], "w") as f:
+                    json.dump(formatted, f)
+                results.append((True, self.process_witness_output(formatted)))
+
+            return results
+        except Exception as e:
             logger.error(f"Batch witness generation failed: {e}")
             return [(False, str(e)) for _ in jobs]
-
-        results = []
-        for job in jobs:
-            output_path = Path(job["output"])
-            try:
-                with open(output_path, "r") as f:
-                    output_data = json.load(f)
-                processed = self.process_witness_output(output_data)
-                results.append((True, processed))
-            except Exception as e:
-                results.append((False, str(e)))
-
-        return results
 
     def generate_witness_batch_from_tensors(
         self,
@@ -230,50 +232,54 @@ class JSTprove:
         manifest_dir: Optional[Union[str, Path]] = None,
         workers: int = 1,
     ) -> List[Tuple[bool, Any]]:
-        from python.frontend.commands.batch import batch_witness_from_tensors
-
-        circuit_path = Path(circuit_path)
-
-        onnx_model_path = None
-        if circuit_path.exists() and circuit_path.suffix == '.onnx':
-            onnx_model_path = circuit_path
-            circuit_path = circuit_path.parent / f"{circuit_path.stem}_jstprove_circuit.txt"
-
-        if onnx_model_path and not circuit_path.exists():
-            ok, err = self.compile_circuit(onnx_model_path, circuit_path)
-            if not ok:
-                raise RuntimeError(f"Circuit compilation failed: {err}")
-        elif not circuit_path.exists():
-            raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
+        circuit_path = self._resolve_circuit_path(Path(circuit_path))
 
         for job in jobs:
             Path(job["output"]).parent.mkdir(parents=True, exist_ok=True)
             Path(job["witness"]).parent.mkdir(parents=True, exist_ok=True)
 
-        manifest_parent = Path(manifest_dir) if manifest_dir else circuit_path.parent
-        manifest_parent.mkdir(parents=True, exist_ok=True)
-        manifest_path = manifest_parent / "batch_witness_manifest.json"
-
         try:
-            raw_outputs = batch_witness_from_tensors(
-                circuit_path=str(circuit_path),
-                jobs=jobs,
-                manifest_path=str(manifest_path),
-                workers=workers,
-            )
+            circuit = self._get_circuit(circuit_path)
+            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+
+            piped_jobs = []
+            per_job_formatted = []
+            for job in jobs:
+                inputs = job.get("_tensor_inputs") or job.get("input")
+                if isinstance(inputs, str):
+                    inputs = read_from_json(inputs)
+                circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                piped_jobs.append({
+                    "_circuit_inputs": circuit_inputs,
+                    "_circuit_outputs": formatted,
+                    "witness": job["witness"],
+                })
+                per_job_formatted.append(formatted)
+
+            chunk_size = max(1, len(piped_jobs) // max(1, workers)) if workers > 1 else 0
+            if chunk_size <= 0:
+                chunks = [piped_jobs]
+            else:
+                chunks = [piped_jobs[i:i + chunk_size] for i in range(0, len(piped_jobs), chunk_size)]
+
+            for chunk in chunks:
+                _run_witness_chunk_piped(
+                    binary_name=circuit.name,
+                    circuit_path=str(circuit_path),
+                    metadata_path=metadata_path,
+                    chunk_jobs=chunk,
+                )
+
+            results = []
+            for job, formatted in zip(jobs, per_job_formatted):
+                with open(job["output"], "w") as f:
+                    json.dump(formatted, f)
+                results.append((True, self.process_witness_output(formatted)))
+
+            return results
         except Exception as e:
             logger.error(f"Batch witness generation failed: {e}")
             return [(False, str(e)) for _ in jobs]
-
-        results = []
-        for output_data in raw_outputs:
-            try:
-                processed = self.process_witness_output(output_data)
-                results.append((True, processed))
-            except Exception as e:
-                results.append((False, str(e)))
-
-        return results
 
     def prove(
         self,
@@ -363,6 +369,16 @@ class JSTprove:
 
     @staticmethod
     def _prepare_verification_output(circuit_path: Path, output_path: Path) -> Path:
+        with open(output_path, "r") as f:
+            output_data = json.load(f)
+
+        raw_output = output_data.get("raw_output")
+        if raw_output is not None:
+            veri_path = output_path.parent / "output_veri.json"
+            with open(veri_path, "w") as f:
+                json.dump({"output": raw_output}, f)
+            return veri_path
+
         metadata_path = circuit_path.with_name(circuit_path.stem + "_metadata.json")
         if not metadata_path.exists():
             return output_path
@@ -375,14 +391,11 @@ class JSTprove:
         if scale_base is None or scale_exponent is None:
             return output_path
 
-        with open(output_path, "r") as f:
-            output_data = json.load(f)
-
-        raw_output = output_data.get("output")
-        if raw_output is None:
+        output_values = output_data.get("output")
+        if output_values is None:
             return output_path
 
-        flat = torch.tensor(raw_output).flatten()
+        flat = torch.tensor(output_values).flatten()
 
         if flat.is_floating_point():
             scale = scale_base ** scale_exponent
@@ -432,6 +445,8 @@ class JSTprove:
                 "-m", preprocessed_path,
                 "-c", str(circuit_path),
             ])
+            if not circuit_path.exists():
+                return False, f"Rust binary exited successfully but did not produce circuit file at {circuit_path}"
             return True, None
         except Exception as e:
             error_msg = f"Circuit compilation failed: {e}"
@@ -471,7 +486,15 @@ class JSTprove:
                 circuitization_data["compile_error"] = err
                 return circuitization_data
 
-            # --- Settings Generation (Dummy) ---
+            quantized_model_path = artifacts["paths"]["quantized_model"]
+            if not Path(quantized_model_path).exists():
+                alt_path = circuit_path.parent / f"{circuit_path.stem}_quantized_model.onnx"
+                if alt_path.exists():
+                    circuitization_data["quantized_model"] = str(alt_path)
+                else:
+                    logger.warning(f"Quantized model not found after compilation: {quantized_model_path}")
+                    circuitization_data["compile_error"] = f"Missing quantized model at {quantized_model_path}"
+                    return circuitization_data
             dummy_settings = JSTproveUtils.create_dummy_settings(model_path, circuit_path, output_path)
             with open(settings_path, 'w') as f:
                 json.dump(dummy_settings, f, indent=2)

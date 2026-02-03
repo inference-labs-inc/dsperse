@@ -11,7 +11,7 @@ requires-python = "==3.13.*"
 license = { file = "LICENSE" }
 authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
 dependencies = [
-  "torch==2.7.1",
+  "torch==2.6.0",
   "onnx==1.18.0",
   "pytest>=8.4.1",
   "ezkl==22.2.1",
@@ -22,7 +22,7 @@ dependencies = [
   "onnxruntime>=1.21.0",
   "colorama~=0.4.6",
   "onnxslim>=0.1.82",
-  "jstprove==2.1.0",
+  "jstprove==2.2.0",
 ]
 
 [project.scripts]

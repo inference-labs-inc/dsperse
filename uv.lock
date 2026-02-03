@@ -122,7 +122,7 @@ dependencies = [
 requires-dist = [
     { name = "colorama", specifier = "~=0.4.6" },
     { name = "ezkl", specifier = "==22.2.1" },
-    { name = "jstprove", specifier = "==2.2.0" },
+    { name = "jstprove", specifier = "==2.3.0" },
     { name = "matplotlib", specifier = "~=3.10.1" },
     { name = "networkx", specifier = "~=3.4.2" },
     { name = "numpy", specifier = "~=2.2.3" },
@@ -286,7 +286,7 @@ wheels = [
 
 [[package]]
 name = "jstprove"
-version = "2.2.0"
+version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -301,8 +301,8 @@ dependencies = [
     { name = "transformers" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/ef/c3ea871eb58496409fc6d18144f9243c0733126538032767ff5ae5d7903e/jstprove-2.2.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:8531abaa57d500547b6d503cf79fa81bd540da2e85f6a417f638dc09a4d3ec9a", size = 5848543, upload-time = "2026-02-03T02:14:18.813Z" },
-    { url = "https://files.pythonhosted.org/packages/c9/1c/8036539056f2f594e4ed3a44eddbb9f3ea9fe98cdc5adc43262ad5ebb248/jstprove-2.2.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:cd047cd9cdf21d620425ede63ffeb7daba9b90cf27da9fd1b63713b703dcd67c", size = 7163626, upload-time = "2026-02-03T02:14:16.939Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/53/23cae5d340647be004f3058103b847c397316bea62caef4ea58b3ea46332/jstprove-2.3.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2e2e31217f77e85d1bef15d7b69ab0622b56d62dbd1cdcd38e4e2186292b18ca", size = 5853282, upload-time = "2026-02-03T19:04:38.666Z" },
+    { url = "https://files.pythonhosted.org/packages/54/e8/4a2b83512220ea47b8c87865f5353ed0688fb62006af99044f358776ab3f/jstprove-2.3.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:9d20c908a7a08b0fd10607aa263cf6e4ac3a03b5b0eb37d57d60d8bc2f579994", size = 7167376, upload-time = "2026-02-03T19:04:40.635Z" },
 ]
 
 [[package]]

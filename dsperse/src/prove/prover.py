@@ -120,7 +120,15 @@ class Prover:
                         results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
             return results
         else:
-            return [ProverUtils.prove_slice_logic(item) for item in work_items]
+            results = []
+            for item in work_items:
+                slice_id = item[0]
+                try:
+                    results.append(ProverUtils.prove_slice_logic(item))
+                except Exception as e:
+                    logger.error(f"Slice {slice_id} proving failed: {e}")
+                    results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
+            return results
 
     @staticmethod
     def _process_results(results: list) -> tuple[dict, int, int]:

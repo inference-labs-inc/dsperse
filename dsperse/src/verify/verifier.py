@@ -123,7 +123,7 @@ class Verifier:
                     try:
                         results.append(future.result())
                     except Exception as e:
-                        logger.error(f"Slice {slice_id} verification failed: {e}")
+                        logger.exception(f"Slice {slice_id} verification failed: {e}")
                         results.append(SliceResult(slice_id=slice_id, success=False, error=str(e)).to_dict())
             return results
         else:
@@ -250,7 +250,8 @@ class Verifier:
             }
         else:
             proof_path = run_path / "proof.json"
-            if not proof_path.exists(): raise FileNotFoundError(f"Proof file not found at {proof_path}")
+            if not proof_path.exists():
+                raise FileNotFoundError(f"Proof file not found at {proof_path}")
             
             input_path, output_path = run_path / "input.json", run_path / "output.json"
             wf = VerifierUtils.get_witness_file(run_path, slice_id)
@@ -311,7 +312,7 @@ if __name__ == "__main__":
     results = verifier.verify(run_path, slices_dir, backend="jstprove",  tiles_range=[0, 1])
     
     # Display results
-    print(f"\nVerification completed!")
+    print("\nVerification completed!")
     ec = results.get('execution_chain', {})
     verified_total = int(ec.get('jstprove_verified_slices', 0)) + int(ec.get('ezkl_verified_slices', 0))
     proved_total = int(ec.get('jstprove_proved_slices', 0)) + int(ec.get('ezkl_proved_slices', 0))

@@ -117,7 +117,7 @@ def slice_model(args):
     logger.info("Starting model slicing")
 
     # Prompt for model path if not provided
-    if not hasattr(args, 'model_dir') or not args.model_dir:
+    if not getattr(args, 'model_dir', None):
         args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory')
     else:
         args.model_dir = normalize_path(args.model_dir)
@@ -139,7 +139,7 @@ def slice_model(args):
         logger.info(f"Using model file: {model_file}")
 
     # Prompt for output directory if not provided
-    if not hasattr(args, 'output_dir') or not args.output_dir:
+    if not getattr(args, 'output_dir', None):
         default_output_dir = os.path.join(model_dir, "slices")
         args.output_dir = prompt_for_value('output-dir', 'Enter the output directory', default=default_output_dir, required=False)
     else:

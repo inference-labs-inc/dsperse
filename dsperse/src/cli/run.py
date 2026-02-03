@@ -99,7 +99,7 @@ def run_inference(args):
     model_dir = normalize_path(model_dir)
 
     # Prompt for input file if not provided
-    if not hasattr(args, 'input_file') or not args.input_file:
+    if not getattr(args, 'input_file', None):
         # Set default input file path based on model_dir (parent of slices)
         default_input_file = os.path.join(model_dir, "input.json")
         args.input_file = prompt_for_value('input-file', 'Enter the input file path', default=default_input_file, required=True)
@@ -166,7 +166,7 @@ def run_inference(args):
             logger.info(f"Run data saved to {run_dir_path}")
 
         # Save the result only if an output file was explicitly specified
-        if hasattr(args, 'output_file') and args.output_file:
+        if getattr(args, 'output_file', None):
             try:
                 args.output_file = normalize_path(args.output_file)
                 save_result(result, args.output_file)

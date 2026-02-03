@@ -161,7 +161,7 @@ def full_run(args):
         pass
     inference_output_path = os.path.join(run_root_dir, 'inference_results.json')
     # run_inference expects 'path' for slices, and doesn't use output_file directly for run_results.json anymore (it saves to run_results.json in the run dir)
-    run_args = Namespace(path=slices_dir, run_metadata_path=None, input_file=args.input_file, output_file=inference_output_path, force_backend=None)
+    run_args = Namespace(path=slices_dir, input_file=args.input_file, output_file=inference_output_path, force_backend=None)
     print(f"{Fore.CYAN}Step 3/5: Running inference over slices...{Style.RESET_ALL}")
     run_inference(run_args)
 

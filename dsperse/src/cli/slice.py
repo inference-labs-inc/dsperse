@@ -37,13 +37,15 @@ def setup_parser(subparsers):
     slice_parser.add_argument('--output-type', '--ot', '-ot', dest='output_type',
                               choices=['dirs', 'dslice', 'dsperse'], default='dirs',
                               help='Output format of the slicing result: dirs (default), dslice, or dsperse')
+    slice_parser.add_argument('--tile-size', '-t', type=int, default=None,
+                              help='Max elements per Conv tile. Tile size calculated dynamically per-Conv: tile_size = sqrt(tile_size / channels).')
 
     # Sub-commands under slice
-    sub = slice_parser.add_subparsers(dest='slice_subcommand', help='Slice sub-commands')
+    sub = slice_parser.add_subparsers(dest='slice_subcommand', required=False, help='Slice sub-commands')
     convert_parser = sub.add_parser('convert', aliases=['c'], help='Convert between .dsperse/.dslice and directory layouts')
     convert_parser.set_defaults(slice_subcommand='convert')
     convert_parser.add_argument('--input', '-i', dest='input_path', help='Input path (.dsperse/.dslice or directory)')
-    convert_parser.add_argument('--to', '--output-type', '--type', '-t', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
+    convert_parser.add_argument('--to', '--output-type', '--type', choices=['dirs', 'dslice', 'dsperse'], dest='to_type',
                                 help='Desired output type')
     convert_parser.add_argument('--output', '-o', dest='output_path', help='Output path (directory or archive)')
     convert_parser.add_argument('--expand-slices', action='store_true',
@@ -180,13 +182,15 @@ def slice_model(args):
 
         logger.info(f"Creating slicer for model: {onnx_path}")
         slicer = Slicer.create(onnx_path, save_path)
-        # Determine desired output type (default to 'dirs')
         output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
-        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}")
-        # Delegate to Slicer which will convert if needed
+        tile_size = getattr(args, 'tile_size', None)
+
+        tiling_info = f"tile_size={tile_size}" if tile_size else "no tiling"
+        logger.info(f"Slicing ONNX model to output path: {output_dir} with output_type={output_type}, {tiling_info}")
         slicer.slice_model(
             output_path=output_dir,
             output_type=output_type,
+            tile_size=tile_size,
         )
         success_msg = "ONNX model sliced successfully!"
         print(f"{Fore.GREEN}✓ {success_msg}{Style.RESET_ALL}")

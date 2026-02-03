@@ -7,11 +7,11 @@ name = "dsperse"
 version = "1.0.1"
 description = "Distributed zkML Toolkit"
 readme = "README.md"
-requires-python = "==3.12.*"
+requires-python = "==3.13.*"
 license = { file = "LICENSE" }
 authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
 dependencies = [
-  "torch==2.7.1",
+  "torch==2.6.0",
   "onnx==1.18.0",
   "pytest>=8.4.1",
   "ezkl==22.2.1",
@@ -19,12 +19,18 @@ dependencies = [
   "matplotlib~=3.10.1",
   "numpy~=2.2.3",
   "tqdm~=4.67.1",
-  "onnxruntime==1.21.0",
+  "onnxruntime>=1.21.0,<2.0.0",
   "colorama~=0.4.6",
+  "onnxslim>=0.1.82",
+  "jstprove==2.3.1",
 ]
 
 [project.scripts]
 dsperse = "dsperse.main:main"
+
+[tool.pytest.ini_options]
+markers = ["slow: full pipeline tests (skip with -m 'not slow')"]
+addopts = "--durations=0"
 
 [tool.setuptools.packages.find]
 where = ["."]

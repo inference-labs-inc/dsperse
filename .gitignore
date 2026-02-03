@@ -1,7 +1,7 @@
 # macOS system files
 .DS_Store
 .DS_*
-
+tests/models/run
 # macOS metadata
 ._*
 
@@ -64,3 +64,10 @@ develop-eggs/
 python.venv/
 .venv/
 venv/
+
+# Slice output directories
+pitch-sliced/
+*-sliced/
+
+# Test output
+tests/models/output/

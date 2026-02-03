@@ -55,13 +55,15 @@ class Slicer:
         return Slicer(OnnxSlicer(model_path, save_path))
 
 
-    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs"):
+    def slice_model(self, output_path: Optional[str] = None, output_type: str = "dirs", tile_size: Optional[int] = None):
         """
         Slice the model using the appropriate slicer implementation, then optionally convert output.
 
         Args:
             output_path: Directory to save the sliced model
             output_type: One of {'dsperse', 'dslice', 'dirs'}
+            tile_size: Maximum elements per Conv tile. Tile size is calculated dynamically
+                           per-Conv based on channel count: tile_size = sqrt(tile_size / channels).
 
         Returns:
             The result of the slicing operation (list of slice paths from slicer_impl)
@@ -70,7 +72,7 @@ class Slicer:
             raise ValueError("output_path must be provided for slicing")
 
         logger.info(f"Slicing model to output path: {output_path}")
-        result = self.slicer_impl.slice_model(output_path=output_path)
+        result = self.slicer_impl.slice_model(output_path=output_path, tile_size=tile_size)
 
         if output_type != "dirs":
             Converter.convert(output_path, output_type)
@@ -91,7 +93,8 @@ if __name__ == "__main__":
         4: "../../models/age",
         5: "../../models/version",
         6: "../../models/bert",
-        7: "../../models/roberta"
+        7: "../../models/roberta",
+        8: "../../models/yolov8"
     }
 
     # Resolve paths
@@ -105,13 +108,12 @@ if __name__ == "__main__":
 
         # Run slicing
         print(f"Slicing model at {model_file} to {output_dir}...")
-        slices = slicer.slice_model(output_path=output_dir, output_type="dirs")
+        slices = slicer.slice_model(output_path=output_dir, output_type="dirs", tile_size=1000)
 
         # Display results
         print("\nSlicing completed!")
         if isinstance(slices, list):
             print(f"Created {len(slices)} segments.")
-            # Optionally display first few slice paths
             preview = slices[:]
             if preview:
                 print("Sample slice files:")

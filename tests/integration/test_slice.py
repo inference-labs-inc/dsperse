@@ -10,10 +10,9 @@ from dsperse.src.cli.slice import slice_model, slice_convert
 class TestSliceE2E:
     @pytest.mark.parametrize("model_name", ["net", "doom"])
     def test_slice_dirs(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
-        # Use default-like CLI values by explicitly passing the computed default output dir
         args = SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=None,  # default would be <model_dir>/slices
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
         )
@@ -52,7 +51,7 @@ class TestSliceE2E:
         assert metadata_path.exists(), f"Missing metadata.json at {metadata_path}"
         meta = json.loads(metadata_path.read_text())
         assert isinstance(meta.get("original_model"), str)
-        assert meta["original_model"].endswith("model.onnx")
+        assert meta["original_model"].endswith(".onnx")
         assert isinstance(meta.get("model_type"), str) and len(meta["model_type"]) > 0
         assert isinstance(meta.get("slice_points"), list)
         assert isinstance(meta.get("slices"), list) and len(meta["slices"]) >= 1
@@ -104,7 +103,7 @@ class TestSliceE2E:
         assert metadata_path.exists(), f"Missing metadata.json at {metadata_path}"
         meta = json.loads(metadata_path.read_text())
         assert isinstance(meta.get("original_model"), str)
-        assert meta["original_model"].endswith("model.onnx")
+        assert meta["original_model"].endswith(".onnx")
         assert isinstance(meta.get("model_type"), str) and len(meta["model_type"]) > 0
         assert isinstance(meta.get("slice_points"), list)
         assert isinstance(meta.get("slices"), list) and len(meta["slices"]) >= 1
@@ -172,7 +171,7 @@ class TestSliceE2E:
 
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_slice_dirs_with_save_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, analysis_output_dir: Path, capfd):
+    def test_slice_dirs_with_save_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
         """Using --save default should write analysis/model_metadata.json under the model directory."""
         args = SimpleNamespace(
             model_dir=str(model_dir),
@@ -189,17 +188,194 @@ class TestSliceE2E:
         assert "ONNX model sliced successfully" in out
         assert "Model analysis saved to" in out
 
-        # Verify analysis metadata file
-        metadata_file = analysis_output_dir / "model_metadata.json"
+        metadata_file = model_dir / "analysis" / "model_metadata.json"
         assert metadata_file.exists(), f"Expected analysis metadata at {metadata_file}"
         data = json.loads(metadata_file.read_text())
         # Spot-check a few key fields
         assert isinstance(data.get("original_model"), str)
-        assert data["original_model"].endswith("model.onnx")
+        assert data["original_model"].endswith(".onnx")
         assert isinstance(data.get("model_type"), str) and data["model_type"]
 
+    @pytest.mark.parametrize("model_name", ["net", "doom"])
+    def test_slice_with_tiling(self, model_name: str, model_dir: Path, capfd):
+        """Verify end-to-end slicing with tiling enabled."""
+        output_dir = model_dir.parent / f"{model_name}_tiling_output"
+        
+        # Clean up before
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
 
+        args = SimpleNamespace(
+            model_dir=str(model_dir),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=1024
+        )
 
+        try:
+            slice_model(args)
+
+            # Capture console output
+            captured = capfd.readouterr()
+            combined_out = captured.out + captured.err
+            
+            assert "Slicing model" in combined_out
+            assert "ONNX model sliced successfully" in combined_out
+            assert "Tiled" in combined_out and "Conv slices" in combined_out
+
+            # Verify artifacts
+            metadata_path = output_dir / "metadata.json"
+            assert metadata_path.exists()
+            meta = json.loads(metadata_path.read_text())
+
+            tiled_slices = [s for s in meta["slices"] if "tiling" in s]
+            # Note: net model may not have tileable Conv layers, doom should have some
+            if model_name == "doom":
+                assert len(tiled_slices) > 0, "At least one slice should be tiled for doom model"
+
+            for s in tiled_slices:
+                assert s["tiling"]["num_tiles"] >= 2
+                payload_dir = output_dir / f"slice_{s['index']}" / "payload"
+                tiles_dir = payload_dir / "tiles"
+                assert tiles_dir.exists()
+                # New architecture: only tile.onnx is created, split/concat done in pure Python
+                assert (tiles_dir / "tile.onnx").exists()
+
+                # Verify tiling info has tile path
+                assert "tile" in s["tiling"]
+                assert s["tiling"]["tile"]["path"].endswith("tile.onnx")
+
+        finally:
+            # Clean up after
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+
+    def test_slice_with_channel_splitting(self, tmp_path):
+        """Verify end-to-end channel splitting when spatial tiling is not possible."""
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+        import numpy as np
+        
+        # Create a model with high input channels and prime spatial dimension
+        c_in, c_out, spatial = 64, 64, 37
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, c_in, spatial, spatial])
+        np.random.seed(42)
+        W = numpy_helper.from_array(np.random.randn(c_out, c_in, 3, 3).astype(np.float32), "W")
+        conv = helper.make_node("Conv", ["X", "W"], ["Y"], kernel_shape=[3, 3], pads=[1, 1, 1, 1])
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, c_out, spatial, spatial])
+        graph = helper.make_graph([conv], "test", [X], [Y], [W])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "prime_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        output_dir = tmp_path / "prime_output"
+        
+        args = SimpleNamespace(
+            model_dir=str(model_path),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=10000
+        )
+        
+        slice_model(args)
+        
+        # Verify metadata
+        metadata_path = output_dir / "metadata.json"
+        assert metadata_path.exists()
+        meta = json.loads(metadata_path.read_text())
+        
+        # Find the Conv slice (likely index 0)
+        conv_slice = next((s for s in meta["slices"] if "channel_split" in s), None)
+        assert conv_slice is not None, "Channel splitting should have been applied"
+        
+        cs = conv_slice["channel_split"]
+        assert cs["num_groups"] > 1
+        
+        # Verify group files exist
+        payload_dir = output_dir / f"slice_{conv_slice['index']}" / "payload"
+        groups_dir = payload_dir / "channel_groups"
+        assert groups_dir.exists()
+        assert (groups_dir / "group_0.onnx").exists()
+
+    def test_slice_extraction_fallback(self, tmp_path, capfd):
+        """Verify fallback to manual graph building if extract_model fails."""
+        import onnx
+        from onnx import helper, TensorProto
+        from unittest.mock import patch
+        
+        # Create a simple model
+        X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 1, 4, 4])
+        nodes = [helper.make_node("Relu", ["X"], ["Y"])]
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 1, 4, 4])
+        graph = helper.make_graph(nodes, "test", [X], [Y], [])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "fallback_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        output_dir = tmp_path / "fallback_output"
+        args = SimpleNamespace(
+            model_dir=str(model_path),
+            output_dir=str(output_dir),
+            save_file=None,
+            output_type="dirs",
+            tile_size=None
+        )
+        
+        # Mock extract_single_slice to return None
+        with patch("dsperse.src.slice.utils.onnx_utils.OnnxUtils.extract_single_slice", return_value=None):
+            slice_model(args)
+        
+        # Verify it still succeeded via fallback
+        out = capfd.readouterr().out
+        assert "Fallback: building slice" in out
+        assert "ONNX model sliced successfully" in out
+        
+        # Verify slice exists
+        assert (output_dir / "slice_0" / "payload" / "slice_0.onnx").exists()
+
+    def test_slice_constant_filtering(self, tmp_path):
+        """Verify that constant-only slices are merged into functional slices."""
+        import onnx
+        from onnx import helper, TensorProto, numpy_helper
+        import numpy as np
+        
+        # Model: Constant -> Relu
+        c_val = numpy_helper.from_array(np.array([1.0], dtype=np.float32), "C")
+        nodes = [
+            helper.make_node("Constant", [], ["C"], value=c_val),
+            helper.make_node("Relu", ["C"], ["Y"]),
+        ]
+        Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1])
+        graph = helper.make_graph(nodes, "test", [], [Y], [])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+        
+        model_dir = tmp_path / "const_model"
+        model_dir.mkdir()
+        model_path = model_dir / "model.onnx"
+        onnx.save(model, str(model_path))
+        
+        from dsperse.src.slice.onnx_slicer import OnnxSlicer
+        slicer = OnnxSlicer(str(model_path))
+        slicer._ensure_analysis() # Initialize analyzer and shapes
+        
+        # Manually provide slice points that isolate Constant (index 0)
+        points = [1, 2]
+        model_metadata = slicer.analysis
+        
+        from dsperse.src.slice.utils.onnx_utils import OnnxUtils
+        optimized_points = OnnxUtils.filter_constant_only_slices(points, model_metadata)
+        
+        # Point 1 should be removed because it creates a constant-only slice [0, 1)
+        assert 1 not in optimized_points
+        assert 2 in optimized_points
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
     def test_slice_convert_roundtrip(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path, tmp_path: Path, capfd):

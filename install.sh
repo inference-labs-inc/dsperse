@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# install.sh - Installer for Dsperse CLI, JSTproveand EZKL (with lookup tables)
+# install.sh - Installer for Dsperse CLI and EZKL (with lookup tables)
 # This script installs:
 #   - Dsperse CLI (python package, console script: dsperse)
 #   - EZKL CLI (if missing)
 #   - EZKL lookup tables (if missing)
 #   - Open MPI (required for JSTprove)
-#   - JSTprove CLI (if missing)
 # It detects existing installations and will skip or prompt accordingly.
 
 set -euo pipefail
@@ -72,7 +71,10 @@ confirm() {
 
 # Resolve pip for the chosen python
 resolve_pip() {
-  if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  if command -v uv >/dev/null 2>&1; then
+    PIP_BIN="uv pip"
+    PYTHON_BIN="${PYTHON_BIN:-python3}"
+  elif command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     PIP_BIN="$PYTHON_BIN -m pip"
   elif command -v python >/dev/null 2>&1; then
     PYTHON_BIN="python"
@@ -262,70 +264,6 @@ install_openmpi() {
   fi
 }
 
-# Install JSTprove via uv
-install_jstprove() {
-  info "Checking for JSTprove installation..."
-  
-  # Add common uv tool bin paths to PATH for detection
-  export PATH="$HOME/.local/bin:$PATH"
-  
-  if command -v jst >/dev/null 2>&1; then
-    local bin_path
-    bin_path=$(command -v jst)
-    info "JSTprove already installed: $bin_path"
-    if [[ -n "${GITHUB_PATH:-}" ]]; then
-      echo "$(dirname "$bin_path")" >> "$GITHUB_PATH"
-    fi
-    jst --version 2>/dev/null || jst --help 2>/dev/null | head -n1 || true
-    if [[ "$INTERACTIVE" == true ]] && confirm "Reinstall/upgrade JSTprove?"; then
-      :
-    else
-      info "Skipping JSTprove install."
-      return 0
-    fi
-  fi
-
-  # Check if uv is available
-  if command -v uv >/dev/null 2>&1; then
-    info "Installing JSTprove via uv..."
-    if uv tool install jstprove 2>/dev/null || uv pip install jstprove 2>/dev/null; then
-      info "JSTprove installed successfully via uv"
-      # Add uv tool bin to PATH
-      export PATH="$HOME/.local/bin:$PATH"
-      if [[ -n "${GITHUB_PATH:-}" ]]; then
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      fi
-      info "Added $HOME/.local/bin to PATH for JSTprove"
-    else
-      warn "Failed to install JSTprove via uv. Trying pip..."
-      if eval $PIP_BIN install jstprove 2>/dev/null; then
-        info "JSTprove installed successfully via pip"
-      else
-        warn "Failed to install JSTprove. Please install manually: uv tool install jstprove"
-      fi
-    fi
-  else
-    # Fallback to pip
-    info "uv not found. Installing JSTprove via pip..."
-    if eval $PIP_BIN install jstprove 2>/dev/null; then
-      info "JSTprove installed successfully via pip"
-    else
-      warn "Failed to install JSTprove via pip. Please install uv first: curl -LsSf https://astral.sh/uv/install.sh | sh"
-      warn "Then install JSTprove: uv tool install jstprove"
-    fi
-  fi
-
-  if command -v jst >/dev/null 2>&1; then
-    info "JSTprove is now available: $(command -v jst)"
-    jst --version 2>/dev/null || jst --help 2>/dev/null | head -n1 || true
-  else
-    warn "JSTprove CLI (jst) not found on PATH."
-    warn "You may need to add ~/.local/bin to your PATH:"
-    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
-    warn "Add this line to your shell profile (~/.bashrc, ~/.zshrc, etc.) for persistence."
-  fi
-}
-
 # Ensure SRS files (kzg commitment) exist under ~/.ezkl/srs
 ensure_srs() {
   if ! command -v ezkl >/dev/null 2>&1; then
@@ -484,7 +422,9 @@ main() {
   resolve_pip
 
   # Display python and pip info
-  eval $PIP_BIN --version || true
+  if [[ "$PIP_BIN" != "uv pip" ]]; then
+    eval $PIP_BIN --version || true
+  fi
 
   # Install Dsperse CLI
   install_dsperse_cli
@@ -501,9 +441,6 @@ main() {
   # Install Open MPI (required for JSTprove)
   install_openmpi
 
-  # Install JSTprove
-  install_jstprove
-
   # Final verification step for EZKL and SRS
   verify_environment_post_install
 
@@ -518,12 +455,6 @@ main() {
     info "EZKL is ready: ezkl --help"
   else
     warn "EZKL not detected; some features will fall back to ONNX or fail."
-  fi
-
-  if command -v jst >/dev/null 2>&1; then
-    info "JSTprove is ready: jst --help"
-  else
-    warn "JSTprove not detected; JSTprove backend features will not be available."
   fi
 
   say "\nInstallation complete!"

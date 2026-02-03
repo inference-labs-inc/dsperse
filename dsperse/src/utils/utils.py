@@ -4,8 +4,10 @@ import os
 import time
 from pathlib import Path
 import torch
+import onnx
 
-# Configure logger
+from dsperse.src.analyzers.schema import ModelMetadata, RunSliceMetadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,6 +15,69 @@ class Utils:
     """
     Utility functions for working with ONNX models.
     """
+    @staticmethod
+    def save_onnx_model(model: onnx.ModelProto, path: str | Path, opset_version: int = 18):
+        """Save ONNX model with compatible IR version (9) and specified opset."""
+        model.ir_version = 9
+        if model.opset_import:
+            for opset in model.opset_import:
+                if opset.domain == "" or opset.domain == "ai.onnx":
+                    opset.version = opset_version
+        onnx.save(model, str(path))
+
+    @staticmethod
+    def relativize_tiling_info(tiling_info, root_dir, base_dir=None):
+        """
+        Relativize paths in tiling info against the root directory.
+        If base_dir is provided, relative paths in tiling_info are assumed to be relative to base_dir.
+        """
+        if not tiling_info or not root_dir:
+            return tiling_info
+
+        # Work on a copy to avoid side effects
+        import copy
+        tiling = copy.deepcopy(tiling_info)
+        root = Path(root_dir).resolve()
+
+        def rel(p_str):
+            if not p_str:
+                return p_str
+            p = Path(p_str)
+            if not p.is_absolute() and base_dir:
+                p = Path(base_dir) / p
+            p = p.resolve()
+            try:
+                return str(p.relative_to(root))
+            except ValueError:
+                return p_str
+
+        # relativize original_onnx
+        if "original_onnx" in tiling:
+            tiling["original_onnx"] = rel(tiling["original_onnx"])
+
+        # relativize split
+        if "split" in tiling and "path" in tiling["split"]:
+            tiling["split"]["path"] = rel(tiling["split"]["path"])
+
+        # relativize tile
+        if "tile" in tiling and "path" in tiling["tile"]:
+            tiling["tile"]["path"] = rel(tiling["tile"]["path"])
+
+        # relativize concat
+        if "concat" in tiling and "path" in tiling["concat"]:
+            tiling["concat"]["path"] = rel(tiling["concat"]["path"])
+
+        # relativize bias_path (ChannelSplitInfo)
+        if "bias_path" in tiling:
+            tiling["bias_path"] = rel(tiling["bias_path"])
+
+        # relativize groups (ChannelSplitInfo)
+        if "groups" in tiling and isinstance(tiling["groups"], list):
+            for group in tiling["groups"]:
+                if "path" in group:
+                    group["path"] = rel(group["path"])
+
+        return tiling
 
     @staticmethod
     def save_metadata_file(metadata, output_path, filename="metadata.json"):
@@ -68,26 +133,33 @@ class Utils:
     @staticmethod
     def filter_inputs(slice_inputs, graph):
         # Filter input names from slice details
+        # Exclude initializer-like names (weights, biases, running stats, etc.)
+        initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"]
+
+        # Get the set of graph.input names that are actual model inputs (not initializers)
+        # Note: in some ONNX models, initializers are also listed in graph.input
+        initializer_names = {init.name for init in graph.initializer}
+        model_input_names = {inp.name for inp in graph.input if inp.name not in initializer_names}
+
         slice_filtered_inputs = []
         for input_info in slice_inputs:
-            # Only include actual inputs that are not weights or biases
-            # Typically, weights and biases have names containing "weight" or "bias"
-            if (not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]) and
-                    input_info.name in [inp.name for inp in graph.input]):
-                slice_filtered_inputs.append(input_info.name)
-            # Also include intermediate tensors from previous layers
-            elif input_info.name.startswith('/'):  # Intermediate tensors often start with '/'
-                slice_filtered_inputs.append(input_info.name)
-        # If there are no inputs after filtering, include the first non-weight/bias input
-        if not slice_filtered_inputs:
-            for input_info in slice_inputs:
-                if not any(pattern in input_info.name.lower() for pattern in ["weight", "bias"]):
-                    slice_filtered_inputs.append(input_info.name)
-                    break
+            name = input_info.name
+            name_lower = name.lower()
 
-            # If still no inputs, use the first input as a fallback
-            if not slice_filtered_inputs and slice_inputs:
-                slice_filtered_inputs.append(slice_inputs[0].name)
+            # Skip if it matches an initializer pattern
+            if any(pattern in name_lower for pattern in initializer_patterns):
+                continue
+
+            # Include if it's a model input or an intermediate tensor
+            # Model inputs are in graph.input but not initializers
+            # Intermediate tensors are everything else (from previous slices)
+            if name in model_input_names or name not in initializer_names:
+                slice_filtered_inputs.append(name)
+
+        # Fallback: if nothing passed the filter, use the first input
+        if not slice_filtered_inputs and slice_inputs:
+            slice_filtered_inputs.append(slice_inputs[0].name)
+
         return slice_filtered_inputs
 
     @staticmethod
@@ -101,19 +173,15 @@ class Utils:
         Returns:
             dict: Dictionary mapping tensor names to their shapes
         """
+        meta = ModelMetadata.from_dict(model_metadata)
         shapes = {}
 
-        # Extract shapes from input_shape
-        input_shape = model_metadata.get("input_shape", [])
-        if input_shape and len(input_shape) > 0:
-            shapes["input"] = input_shape[0]
+        if meta.input_shape and len(meta.input_shape) > 0:
+            shapes["input"] = meta.input_shape[0]
 
-        # Extract shapes from output_shapes
-        output_shapes = model_metadata.get("output_shapes", [])
-        if output_shapes and len(output_shapes) > 0:
-            shapes["output"] = output_shapes[0]
+        if meta.output_shapes and len(meta.output_shapes) > 0:
+            shapes["output"] = meta.output_shapes[0]
 
-        # Extract shapes from nodes if available
         nodes = model_metadata.get("nodes", {})
         for node_name, node_info in nodes.items():
             if "parameter_details" in node_info:
@@ -191,16 +259,18 @@ class Utils:
 
     @staticmethod
     def iter_circuit_slices(metadata: dict):
-        """Yield (slice_id, slice_meta) for slices that have circuit and pk present.
-        Prefer `use_circuit` flag; otherwise check presence of compiled circuit + keys.
+        """Yield (slice_id, slice_meta) for slices that can be proved.
+        Includes: use_circuit flag set, tiled slices, JSTprove circuits, or EZKL circuits with pk.
         """
         slices = (metadata or {}).get("slices", {})
-        for sid, meta in slices.items():
-            use_circuit = bool(meta.get("use_circuit"))
-            circuit_path = meta.get("circuit_path") or meta.get("compiled")
-            pk_path = meta.get("pk_path")
-            if use_circuit or (circuit_path and pk_path):
-                yield sid, meta
+        for sid, meta_raw in slices.items():
+            m = RunSliceMetadata.from_dict(meta_raw)
+            use_circuit = bool(meta_raw.get("use_circuit"))
+            has_tiling = m.tiling is not None
+            has_jstprove = bool(m.jstprove_circuit_path)
+            has_ezkl_with_pk = bool(m.ezkl_circuit_path) and bool(m.pk_path or m.ezkl_pk_path)
+            if use_circuit or has_tiling or has_jstprove or has_ezkl_with_pk:
+                yield sid, meta_raw
 
     @staticmethod
     def resolve_under_slice(slice_dir: Path, rel_or_abs: str | None) -> str | None:
@@ -278,21 +348,23 @@ class Utils:
 
         for sid, info in execution_data.items():
             # Build execution entry based on type
+            tiles = info.get("tiles") or info.get("tile_proofs_info") or info.get("tile_verifs_info")
             if execution_type == "proof":
                 exec_entry = {
                     "proof_file": info.get("proof_path"),
                     "success": bool(info.get("success")),
-                    # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if tiles:
+                    exec_entry["tile_proofs_info"] = tiles
             elif execution_type == "verification":
                 exec_entry = {
-                    # Keep a simple boolean while also storing success
                     "verified": bool(info.get("success")),
                     "success": bool(info.get("success")),
-                    # Standardized timing key
                     "time_sec": float(info.get("time_sec", 0.0)),
                 }
+                if tiles:
+                    exec_entry["tile_verifs_info"] = tiles
             else:
                 raise ValueError(f"Invalid execution_type: {execution_type}. Must be 'proof' or 'verification'")
 
@@ -360,3 +432,36 @@ class Utils:
                 json.dump(meta, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to write updated metadata to {meta_path}: {e}")
+
+    @staticmethod
+    def get_dsperse_version() -> str:
+        """
+        Read the dsperse project version from the nearest pyproject.toml.
+        Returns a string like "1.0.1" or "unknown" on failure.
+        """
+        try:
+            here = Path(__file__).resolve()
+            for parent in [here.parent, *here.parents]:
+                pyproject = parent / "pyproject.toml"
+                if pyproject.exists():
+                    try:
+                        txt = pyproject.read_text(encoding="utf-8", errors="ignore")
+                        in_project = False
+                        for line in txt.splitlines():
+                            s = line.strip()
+                            if s.startswith("[project]"):
+                                in_project = True
+                                continue
+                            if in_project and s.startswith("[") and s.endswith("]"):
+                                break
+                            if in_project and s.startswith("version") and "=" in s:
+                                try:
+                                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
+                                    if val: return val
+                                except Exception:
+                                    pass
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return "unknown"

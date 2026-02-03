@@ -52,7 +52,7 @@ class TestFullRunE2E:
         for slice_id in slice_ids:
             slice_path = slices_output_dir / slice_id
             run_slice_path = run_dir / slice_id
-            jst_dir = slice_path / "jstprove"
+            jst_dir = slice_path / "payload" / "jstprove"
 
             # Only prove slices that were actually compiled with jstprove
             if not jst_dir.exists() or not any(jst_dir.iterdir()):
@@ -120,7 +120,7 @@ class TestFullRunE2E:
 
             compiled_count = 0
             for slice_id in slice_ids:
-                jst_dir = actual_slices_dir / slice_id / "jstprove"
+                jst_dir = actual_slices_dir / slice_id / "payload" / "jstprove"
                 if jst_dir.exists() and any(jst_dir.iterdir()):
                     compiled_count += 1
             assert compiled_count >= 1, "At least one slice should have jstprove artifacts"
@@ -192,7 +192,7 @@ class TestFullRunE2E:
         prover.prove(str(run_dir), str(slices_output_dir))
 
         # 5. Verify
-        from dsperse.src.verifier import Verifier
+        from dsperse.src.verify.verifier import Verifier
         verifier = Verifier()
         verifier.verify(str(run_dir), str(slices_output_dir))
 

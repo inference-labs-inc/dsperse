@@ -195,7 +195,7 @@ class TestVerification:
 
         from dsperse.src.cli.run import run_inference
         from dsperse.src.prove.prover import Prover
-        from dsperse.src.verifier import Verifier
+        from dsperse.src.verify.verifier import Verifier
         import re
 
         input_file = model_dir / "input.json"
@@ -246,7 +246,7 @@ class TestEndToEnd:
         from dsperse.src.cli.compile import compile_model
         from dsperse.src.cli.run import run_inference
         from dsperse.src.prove.prover import Prover
-        from dsperse.src.verifier import Verifier
+        from dsperse.src.verify.verifier import Verifier
         import re
 
         original_model = model_dir / "model.onnx"

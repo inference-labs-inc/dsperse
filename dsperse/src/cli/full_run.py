@@ -107,10 +107,11 @@ def full_run(args):
             args.model_dir = normalize_path(choice)
             canonical_model_dir = _determine_model_dir(args.model_dir)
     else:
-        # Normalize provided values
         if getattr(args, 'model_dir', None):
             args.model_dir = normalize_path(args.model_dir)
-        # Determine canonical model directory for downstream steps
+        else:
+            args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory', required=True)
+            args.model_dir = normalize_path(args.model_dir)
         canonical_model_dir = _determine_model_dir(args.model_dir)
 
     # Input file resolution

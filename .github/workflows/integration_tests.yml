@@ -26,5 +26,17 @@ jobs:
       - name: Install OpenMPI
         run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
 
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Debug expander-exec
+        run: |
+          EXPANDER=$(find .venv -name "expander-exec" -type f 2>/dev/null | head -1)
+          echo "Binary: $EXPANDER"
+          file "$EXPANDER"
+          ldd "$EXPANDER" || true
+          LD_LIBRARY_PATH="$(dirname "$EXPANDER")/../lib:$LD_LIBRARY_PATH" "$EXPANDER" --help 2>&1 || true
+          LD_LIBRARY_PATH="$(dirname "$EXPANDER")/../lib:$LD_LIBRARY_PATH" "$EXPANDER" -p Hyrax prove 2>&1 || true
+
       - name: Run Integration Tests
         run: uv run pytest tests/integration/test_slice.py tests/integration/test_compile.py tests/integration/test_pipeline.py tests/integration/test_full_run.py -m "not slow"

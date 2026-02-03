@@ -69,8 +69,8 @@ def _path_completer(text, state):
 
 
 @contextmanager
-def _with_path_completion():
-    if not sys.stdin.isatty():
+def _with_path_completion(enabled=True):
+    if not enabled or not sys.stdin.isatty():
         yield
         return
 
@@ -292,10 +292,7 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         logger.debug(f"Prompting for {param_name} with message: {prompt_message}")
         if default is not None:
             prompt_str = f"{Fore.YELLOW}{prompt_message} [{default}]: {Style.RESET_ALL}"
-            if is_path:
-                with _with_path_completion():
-                    user_input = input(prompt_str)
-            else:
+            with _with_path_completion(is_path):
                 user_input = input(prompt_str)
             if not user_input.strip():
                 # Don't normalize run names (they're not real paths until resolved)
@@ -318,10 +315,7 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         else:
             while True:
                 prompt_str = f"{Fore.YELLOW}{prompt_message}: {Style.RESET_ALL}"
-                if is_path:
-                    with _with_path_completion():
-                        user_input = input(prompt_str)
-                else:
+                with _with_path_completion(is_path):
                     user_input = input(prompt_str)
                 if user_input.strip() or not required:
                     if user_input.strip():

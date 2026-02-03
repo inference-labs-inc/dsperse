@@ -81,7 +81,7 @@ def _with_path_completion(enabled=True):
     old_delims = readline.get_completer_delims()
 
     readline.set_completer(_path_completer)
-    readline.set_completer_delims(" \t\n;")
+    readline.set_completer_delims("\t\n;")
 
     if "libedit" in (readline.__doc__ or ""):
         readline.parse_and_bind("bind ^I rl_complete")

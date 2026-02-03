@@ -127,7 +127,7 @@ requires-dist = [
     { name = "networkx", specifier = "~=3.4.2" },
     { name = "numpy", specifier = "~=2.2.3" },
     { name = "onnx", specifier = "==1.18.0" },
-    { name = "onnxruntime", specifier = ">=1.21.0" },
+    { name = "onnxruntime", specifier = ">=1.21.0,<2.0.0" },
     { name = "onnxslim", specifier = ">=0.1.82" },
     { name = "pytest", specifier = ">=8.4.1" },
     { name = "torch", specifier = "==2.6.0" },

@@ -422,7 +422,9 @@ main() {
   resolve_pip
 
   # Display python and pip info
-  eval $PIP_BIN --version || true
+  if [[ "$PIP_BIN" != "uv pip" ]]; then
+    eval $PIP_BIN --version || true
+  fi
 
   # Install Dsperse CLI
   install_dsperse_cli

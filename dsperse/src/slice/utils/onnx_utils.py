@@ -241,7 +241,7 @@ class OnnxUtils:
                 updated_points.add(idx)
                 if idx + 1 <= max_idx:
                     updated_points.add(idx + 1)
-        return updated_points
+        return sorted(updated_points)
 
     @staticmethod
     def optimize_jstprove_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:
@@ -262,7 +262,7 @@ class OnnxUtils:
                     updated_points.add(idx)
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
-        return [p for p in updated_points if p is not None and p <= max_idx]
+        return sorted(p for p in updated_points if p is not None and p <= max_idx)
 
     @staticmethod
     def optimize_for_tiling(slice_points: List[int], model_metadata: Dict) -> List[int]:
@@ -294,7 +294,7 @@ class OnnxUtils:
                     updated_points.add(idx)
 
         max_idx = max((n.get("index", 0) for n in nodes_dict.values()), default=0)
-        return [p for p in updated_points if p is not None and p <= max_idx]
+        return sorted(p for p in updated_points if p is not None and p <= max_idx)
 
     @staticmethod
     def filter_constant_only_slices(slice_points: List[int], model_metadata: Dict) -> List[int]:

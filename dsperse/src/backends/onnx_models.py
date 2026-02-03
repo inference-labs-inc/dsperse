@@ -22,6 +22,7 @@ class OnnxModels:
     def _create_session(model_path: str) -> ort.InferenceSession:
         """Create ONNX Runtime session with deterministic settings for ZK proofs."""
         model = onnx.load(model_path)
+        clamped_path = None
         if model.ir_version > 10:
             OnnxUtils.clamp_for_ort(model)
             fd, clamped_path = tempfile.mkstemp(suffix=".onnx")
@@ -36,7 +37,11 @@ class OnnxModels:
         opts.enable_cpu_mem_arena = False
         opts.enable_mem_reuse = False
         opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        return ort.InferenceSession(model_path, opts)
+        try:
+            return ort.InferenceSession(model_path, opts)
+        finally:
+            if clamped_path and os.path.exists(clamped_path):
+                os.remove(clamped_path)
 
     @staticmethod
     def _process_outputs(session: ort.InferenceSession, raw_output: list, output_file: str = None) -> dict:
@@ -50,7 +55,7 @@ class OnnxModels:
             output_tensors[out.name] = torch.from_numpy(raw_output[i])
 
         first_output_name = model_outputs[0].name
-        output_tensor = output_tensors[first_output_name].float()
+        output_tensor = output_tensors[first_output_name]
         result = RunnerUtils.process_final_output(output_tensor)
         result['output_tensors'] = output_tensors
         if output_file:
@@ -169,7 +174,7 @@ class OnnxModels:
             # Convert input to numpy if it's not already (use float32 as default, will cast per-input later)
             if not is_numpy:
                 if isinstance(input_tensor, torch.Tensor):
-                    input_numpy = input_tensor.numpy()
+                    input_numpy = input_tensor.detach().cpu().numpy()
                 else:
                     input_numpy = np.array(input_tensor)
             else:

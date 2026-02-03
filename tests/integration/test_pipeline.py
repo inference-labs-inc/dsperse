@@ -9,7 +9,6 @@ These tests verify actual functionality:
 - Proofs are generated and verify successfully
 """
 import json
-import shutil
 import numpy as np
 import onnxruntime as ort
 import pytest
@@ -97,22 +96,16 @@ class TestOnnxInference:
     """Verify ONNX inference produces valid results."""
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_onnx_inference_succeeds(self, model_name: str, model_dir: Path, slices_output_dir: Path):
+    def test_onnx_inference_succeeds(self, model_name: str, model_dir: Path, pre_sliced_net, pre_sliced_doom, tmp_path, copy_to):
         """ONNX backend should produce valid numeric output."""
-        from dsperse.src.cli.slice import slice_model
         from dsperse.src.run.runner import Runner
 
         input_file = model_dir / "input.json"
-
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs"
-        ))
+        source = pre_sliced_net if model_name == "net" else pre_sliced_doom
+        work_dir = copy_to(source, tmp_path / "slices")
 
         runner = Runner()
-        results = runner.run(str(input_file), str(slices_output_dir))
+        results = runner.run(str(input_file), str(work_dir))
 
         assert "output" in results
         assert "slice_results" in results
@@ -127,33 +120,18 @@ class TestWitnessGeneration:
     """Verify JSTprove witness generation works."""
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_jstprove_witness_generation(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available):
+    def test_jstprove_witness_generation(self, model_name: str, model_dir: Path, pre_compiled_net, tmp_path, copy_to, jstprove_available):
         """JSTprove should successfully generate witness for compiled slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        from dsperse.src.cli.slice import slice_model
-        from dsperse.src.cli.compile import compile_model
         from dsperse.src.run.runner import Runner
 
         input_file = model_dir / "input.json"
-
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs"
-        ))
-
-        compile_model(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=str(input_file),
-            layers=None,
-            backend="jstprove"
-        ))
+        work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
         runner = Runner()
-        results = runner.run(str(input_file), str(slices_output_dir))
+        results = runner.run(str(input_file), str(work_dir))
 
         jstprove_slices = [
             (sid, r) for sid, r in results["slice_results"].items()
@@ -169,36 +147,21 @@ class TestProofGeneration:
     """Verify proof generation works."""
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_proof_generation(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available, capfd):
+    def test_proof_generation(self, model_name: str, model_dir: Path, pre_compiled_net, tmp_path, copy_to, jstprove_available, capfd):
         """Prover should successfully generate proofs for witnessed slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        from dsperse.src.cli.slice import slice_model
-        from dsperse.src.cli.compile import compile_model
         from dsperse.src.cli.run import run_inference
-        from dsperse.src.prover import Prover
+        from dsperse.src.prove.prover import Prover
         import re
 
         input_file = model_dir / "input.json"
-
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs"
-        ))
-
-        compile_model(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=str(input_file),
-            layers=None,
-            backend="jstprove"
-        ))
+        work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
         capfd.readouterr()
         run_inference(SimpleNamespace(
-            path=str(slices_output_dir),
+            path=str(work_dir),
             input_file=str(input_file),
             output_file=None,
             force_backend=None
@@ -209,7 +172,7 @@ class TestProofGeneration:
         run_dir = Path(match.group(1).strip())
 
         prover = Prover()
-        prover.prove(str(run_dir), str(slices_output_dir))
+        prover.prove(str(run_dir), str(work_dir))
 
         run_results = json.loads((run_dir / "run_results.json").read_text())
         exec_results = run_results.get("execution_chain", {}).get("execution_results", [])
@@ -225,37 +188,22 @@ class TestVerification:
     """Verify proof verification works."""
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_proof_verification(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available, capfd):
+    def test_proof_verification(self, model_name: str, model_dir: Path, pre_compiled_net, tmp_path, copy_to, jstprove_available, capfd):
         """Verifier should successfully verify generated proofs."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        from dsperse.src.cli.slice import slice_model
-        from dsperse.src.cli.compile import compile_model
         from dsperse.src.cli.run import run_inference
-        from dsperse.src.prover import Prover
+        from dsperse.src.prove.prover import Prover
         from dsperse.src.verifier import Verifier
         import re
 
         input_file = model_dir / "input.json"
-
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs"
-        ))
-
-        compile_model(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=str(input_file),
-            layers=None,
-            backend="jstprove"
-        ))
+        work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
         capfd.readouterr()
         run_inference(SimpleNamespace(
-            path=str(slices_output_dir),
+            path=str(work_dir),
             input_file=str(input_file),
             output_file=None,
             force_backend=None
@@ -266,10 +214,10 @@ class TestVerification:
         run_dir = Path(match.group(1).strip())
 
         prover = Prover()
-        prover.prove(str(run_dir), str(slices_output_dir))
+        prover.prove(str(run_dir), str(work_dir))
 
         verifier = Verifier()
-        verifier.verify(str(run_dir), str(slices_output_dir))
+        verifier.verify(str(run_dir), str(work_dir))
 
         run_results = json.loads((run_dir / "run_results.json").read_text())
         exec_results = run_results.get("execution_chain", {}).get("execution_results", [])
@@ -284,6 +232,7 @@ class TestVerification:
 class TestEndToEnd:
     """Full pipeline end-to-end test."""
 
+    @pytest.mark.slow
     @pytest.mark.parametrize("model_name", ["net"])
     def test_full_pipeline_correctness(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available, capfd):
         """
@@ -296,7 +245,7 @@ class TestEndToEnd:
         from dsperse.src.cli.slice import slice_model
         from dsperse.src.cli.compile import compile_model
         from dsperse.src.cli.run import run_inference
-        from dsperse.src.prover import Prover
+        from dsperse.src.prove.prover import Prover
         from dsperse.src.verifier import Verifier
         import re
 

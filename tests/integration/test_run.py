@@ -22,9 +22,9 @@ class TestRunE2E:
         assert (run_dir / "metadata.json").exists()
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_run_onnx_only(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd):
-        """1. test with slicing (no compilation), then we run and see the output that it was onnx only"""
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
+    def test_run_onnx_only(self, model_name: str, model_dir: Path, pre_sliced_net: Path, pre_sliced_doom: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+        source = pre_sliced_net if model_name == "net" else pre_sliced_doom
+        slices_output_dir = copy_to(source, tmp_path / "slices")
         
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
@@ -44,13 +44,8 @@ class TestRunE2E:
             assert slice_res["method"].startswith("onnx")
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_default_compiled(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, jstprove_available, ezkl_available, capfd):
-        """2. then compile (default compile, both ezkl and jstprove) and run, we should see that by default jstprove is chosen"""
-        if not jstprove_available or not ezkl_available:
-            pytest.skip("Backends unavailable")
-
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
-        compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers=None, backend=None))
+    def test_run_default_compiled(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
         
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None)
@@ -66,13 +61,8 @@ class TestRunE2E:
         self._verify_run_artifacts(run_dir)
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_backend_flags(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, jstprove_available, ezkl_available, capfd):
-        """3. we add a backend flag = ezkl, backendflag = jstprove, backendflag = onnx and the output should show that"""
-        if not jstprove_available or not ezkl_available:
-            pytest.skip("Backends unavailable")
-
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
-        compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers=None, backend=None))
+    def test_run_backend_flags(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
         input_file = model_dir / "input.json"
         
         # Test force_backend=onnx (guaranteed to work, no fallback)
@@ -98,9 +88,8 @@ class TestRunE2E:
         assert "inference completed" in out
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_single_slice_uncompiled(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd):
-        """4. we run with a single slice (slice = path/to/slice_0) and verify that it runs only that one slice (no compilation)"""
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
+    def test_run_single_slice_uncompiled(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_sliced_net, tmp_path / "slices")
         
         slice_0_path = slices_output_dir / "slice_0"
         input_file = model_dir / "input.json"
@@ -118,17 +107,8 @@ class TestRunE2E:
         self._verify_run_artifacts(run_dir)
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_single_slice_compiled(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd):
-        """5. we run single slice with compilation (default) and verify with default behavior then with ezkl then with jstprove then with onnx"""
-        try:
-            from dsperse.src.backends.jstprove import JSTprove
-            from dsperse.src.backends.ezkl import EZKL
-            _j, _e = JSTprove(), EZKL()
-        except Exception as e:
-            pytest.skip(f"Backends unavailable: {e}")
-
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
-        compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers="0", backend=None))
+    def test_run_single_slice_compiled(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
         
         slice_0_path = slices_output_dir / "slice_0"
         input_file = model_dir / "input.json"
@@ -184,9 +164,8 @@ class TestRunE2E:
         assert "Inference completed" in capfd.readouterr().out
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_output_file(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, tmp_path):
-        """7. we test the output_file flag"""
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
+    def test_run_output_file(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path, copy_to):
+        slices_output_dir = copy_to(pre_sliced_net, tmp_path / "slices")
         input_file = model_dir / "input.json"
         custom_out = tmp_path / "custom_results.json"
         
@@ -198,16 +177,10 @@ class TestRunE2E:
         assert "output" in data
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_mixed_compilation(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd):
-        """8. we test with a crazy compile `0;2:jstprove;3-4:ezkl` and verify that it runs all slices by default settings."""
-        try:
-            from dsperse.src.backends.jstprove import JSTprove
-            from dsperse.src.backends.ezkl import EZKL
-            _j, _e = JSTprove(), EZKL()
-        except Exception as e:
-            pytest.skip(f"Backends unavailable: {e}")
-
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
+    def test_run_mixed_compilation(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path, copy_to, jstprove_available, ezkl_available, capfd):
+        if not jstprove_available or not ezkl_available:
+            pytest.skip("Backends unavailable")
+        slices_output_dir = copy_to(pre_sliced_net, tmp_path / "slices")
         compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=None, layers="0;2:jstprove;3-4:ezkl", backend=None))
         
         input_file = model_dir / "input.json"
@@ -229,29 +202,8 @@ class TestRunE2E:
         assert "slice_1: onnx" in out_lower
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_with_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, jstprove_available):
-        """9. Verify that running a tiled model works and produces correct run_results.json."""
-        if not jstprove_available:
-            pytest.skip("JSTprove unavailable")
-
-        # 1. Slice with tiling
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs",
-            tile_size=1000
-        ))
-
-        # 2. Compile
-        compile_model(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=None,
-            layers=None,
-            backend="jstprove"
-        ))
-
-        # 3. Run
+    def test_run_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_compiled_doom_tiled, tmp_path / "slices")
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(
             path=str(slices_output_dir),
@@ -359,29 +311,8 @@ class TestRunE2E:
         assert run_results["tensor_shape"] == [1, c_out, spatial, spatial]
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_parallel_tiling(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, caplog, jstprove_available):
-        """11. Verify that parallel execution (threads > 1) works for tiling."""
-        if not jstprove_available:
-            pytest.skip("JSTprove unavailable")
-
-        # 1. Slice with tiling
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs",
-            tile_size=1000
-        ))
-
-        # 2. Compile
-        compile_model(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=None,
-            layers=None,
-            backend="jstprove"
-        ))
-
-        # 3. Run with parallel threads
+    def test_run_parallel_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled: Path, tmp_path, copy_to, capfd, caplog):
+        slices_output_dir = copy_to(pre_compiled_doom_tiled, tmp_path / "slices")
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(
             path=str(slices_output_dir),
@@ -401,19 +332,10 @@ class TestRunE2E:
         assert "slice_0: tiled" in out
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_tiling_ezkl(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd, ezkl_available):
-        """12. Verify that tiling works with EZKL backend."""
+    def test_run_tiling_ezkl(self, model_name: str, model_dir: Path, pre_sliced_doom_tiled: Path, tmp_path, copy_to, capfd, ezkl_available):
         if not ezkl_available:
             pytest.skip("EZKL unavailable")
-
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs",
-            tile_size=1000
-        ))
-
+        slices_output_dir = copy_to(pre_sliced_doom_tiled, tmp_path / "slices")
         compile_model(SimpleNamespace(
             path=str(slices_output_dir),
             input_file=None,
@@ -438,15 +360,8 @@ class TestRunE2E:
         assert "slice_0: tiled" in out
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_tiling_onnx_fallback(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
-        """13. Verify that tiling falls back to ONNX if no circuits are available."""
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs",
-            tile_size=1000
-        ))
+    def test_run_tiling_onnx_fallback(self, model_name: str, model_dir: Path, pre_sliced_doom_tiled: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_sliced_doom_tiled, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(
@@ -466,15 +381,8 @@ class TestRunE2E:
         assert "onnx_only" in out.lower()
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_resume_complex(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
-        """14. Verify that resuming works for tiled/channel-split runs."""
-        slice_model(SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(slices_output_dir),
-            save_file=None,
-            output_type="dirs",
-            tile_size=1000
-        ))
+    def test_run_resume_complex(self, model_name: str, model_dir: Path, pre_sliced_doom_tiled: Path, tmp_path, copy_to, capfd):
+        slices_output_dir = copy_to(pre_sliced_doom_tiled, tmp_path / "slices")
         
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(

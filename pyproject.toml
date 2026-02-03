@@ -28,6 +28,10 @@ dependencies = [
 [project.scripts]
 dsperse = "dsperse.main:main"
 
+[tool.pytest.ini_options]
+markers = ["slow: full pipeline tests (skip with -m 'not slow')"]
+addopts = "--durations=0"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dsperse*"]

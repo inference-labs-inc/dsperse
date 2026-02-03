@@ -82,19 +82,17 @@ class TestFullRunE2E:
 
     @pytest.mark.parametrize("model_name", ["net"])
     def test_full_run_happy_path(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, analysis_output_dir: Path, jstprove_available, capfd):
-        """
-        Test the full-run command happy path:
-        - Slices are created
-        - Compilation uses jstprove (as requested by user)
-        - Inference run
-        - Proof generated
-        - Verification completed
-        """
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
         input_file = model_dir / "input.json"
-        
+        actual_slices_dir = model_dir / "slices"
+        actual_run_dir = model_dir / "run"
+        if actual_slices_dir.exists():
+            shutil.rmtree(actual_slices_dir)
+        if actual_run_dir.exists():
+            shutil.rmtree(actual_run_dir)
+
         args = SimpleNamespace(
             model_dir=str(model_dir),
             input_file=str(input_file),
@@ -102,53 +100,56 @@ class TestFullRunE2E:
             layers=None
         )
 
-        capfd.readouterr() # clear buffers
-        full_run(args)
-        out = capfd.readouterr().out
-        
-        # Verify output
-        assert "Step 1/5: Slicing model" in out
-        assert "Step 2/5: Compiling slices (JSTprove circuitization)" in out
-        assert "Step 3/5: Running inference over slices" in out
-        assert "Step 4/5: Generating proof" in out
-        assert "Step 5/5: Verifying proof" in out
-        assert "Full pipeline completed" in out
+        try:
+            capfd.readouterr()
+            full_run(args)
+            out = capfd.readouterr().out
 
-        # Verify artifacts
-        assert slices_output_dir.exists()
-        assert (slices_output_dir / "metadata.json").exists()
-        
-        slice_ids = sorted([d.name for d in slices_output_dir.iterdir() if d.is_dir() and d.name.startswith("slice_")])
-        assert slice_ids
+            assert "Step 1/5: Slicing model" in out
+            assert "Step 2/5: Compiling slices (JSTprove circuitization)" in out
+            assert "Step 3/5: Running inference over slices" in out
+            assert "Step 4/5: Generating proof" in out
+            assert "Step 5/5: Verifying proof" in out
+            assert "Full pipeline completed" in out
 
-        # At least some slices should have jstprove compilation (some may be skipped for unsupported ops)
-        compiled_count = 0
-        for slice_id in slice_ids:
-            jst_dir = slices_output_dir / slice_id / "jstprove"
-            if jst_dir.exists() and any(jst_dir.iterdir()):
-                compiled_count += 1
-        assert compiled_count >= 1, "At least one slice should have jstprove artifacts"
+            assert actual_slices_dir.exists()
+            assert (actual_slices_dir / "metadata.json").exists()
 
-        assert run_output_dir.exists()
-        run_dirs = sorted(list(run_output_dir.glob("run_*")))
-        assert len(run_dirs) >= 1
-        latest_run = run_dirs[-1]
+            slice_ids = sorted([d.name for d in actual_slices_dir.iterdir() if d.is_dir() and d.name.startswith("slice_")])
+            assert slice_ids
 
-        run_results_path = latest_run / "run_results.json"
-        assert run_results_path.exists()
+            compiled_count = 0
+            for slice_id in slice_ids:
+                jst_dir = actual_slices_dir / slice_id / "jstprove"
+                if jst_dir.exists() and any(jst_dir.iterdir()):
+                    compiled_count += 1
+            assert compiled_count >= 1, "At least one slice should have jstprove artifacts"
 
-        run_results = json.loads(run_results_path.read_text())
-        exec_chain = run_results["execution_chain"]
+            assert actual_run_dir.exists()
+            run_dirs = sorted(list(actual_run_dir.glob("run_*")))
+            assert len(run_dirs) >= 1
+            latest_run = run_dirs[-1]
 
-        # Check that compiled slices have proof/verification, others may not
-        proved_count = 0
-        for res in exec_chain["execution_results"]:
-            proof_exec = res.get("proof_execution", {})
-            verif_exec = res.get("verification_execution", {})
-            if proof_exec.get("success") and verif_exec.get("success"):
-                proved_count += 1
-        assert proved_count >= 1, "At least one slice should have successful proof and verification"
+            run_results_path = latest_run / "run_results.json"
+            assert run_results_path.exists()
 
+            run_results = json.loads(run_results_path.read_text())
+            exec_chain = run_results["execution_chain"]
+
+            proved_count = 0
+            for res in exec_chain["execution_results"]:
+                proof_exec = res.get("proof_execution", {})
+                verif_exec = res.get("verification_execution", {})
+                if proof_exec.get("success") and verif_exec.get("success"):
+                    proved_count += 1
+            assert proved_count >= 1, "At least one slice should have successful proof and verification"
+        finally:
+            if actual_slices_dir.exists():
+                shutil.rmtree(actual_slices_dir, ignore_errors=True)
+            if actual_run_dir.exists():
+                shutil.rmtree(actual_run_dir, ignore_errors=True)
+
+    @pytest.mark.slow
     @pytest.mark.parametrize("model_name", ["doom"])
     def test_tiled_full_run(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, capfd, jstprove_available):
         """Verify end-to-end full cycle with tiling: slice -> compile -> run -> prove -> verify."""
@@ -186,7 +187,7 @@ class TestFullRunE2E:
         assert len(tiled_slices) >= 1, "At least one slice should be tiled"
 
         # 4. Prove
-        from dsperse.src.prover import Prover
+        from dsperse.src.prove.prover import Prover
         prover = Prover()
         prover.prove(str(run_dir), str(slices_output_dir))
 

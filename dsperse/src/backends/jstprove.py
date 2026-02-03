@@ -1,10 +1,9 @@
 """
 JSTprove backend for zero-knowledge proof generation.
-This module provides a backend for generating ZK proofs using the JSTprove CLI.
 """
+import importlib.metadata
 import json
 import os
-import subprocess
 import tempfile
 import torch
 import logging
@@ -13,21 +12,18 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
 from python.core.circuit_models.generic_onnx import GenericModelONNX
-from python.core.utils.helper_functions import read_from_json
+from python.core.utils.helper_functions import CircuitExecutionConfig, RunType, read_from_json
+from python.frontend.commands.base import BaseCommand
 from python.frontend.commands.batch import _run_witness_chunk_piped
 
-from dsperse.src.constants import JSTPROVE_COMMAND
 from dsperse.src.backends.utils.jstprove_utils import JSTproveUtils, JSTPROVE_SUPPORTED_OPS
 
 logger = logging.getLogger(__name__)
 
 
 class JSTprove:
-    """JSTprove backend for zero-knowledge proof generation using the JSTprove CLI."""
+    """JSTprove backend for zero-knowledge proof generation."""
 
-    # Class constants
-    COMMAND = JSTPROVE_COMMAND
-    DEFAULT_FLAGS = ["--no-banner"]
     SUPPORTED_OPS = JSTPROVE_SUPPORTED_OPS
 
     @staticmethod
@@ -36,71 +32,17 @@ class JSTprove:
         return JSTproveUtils.is_compatible(model_path)
 
     def __init__(self, model_directory: Optional[str] = None) -> None:
-        """
-        Initialize the JSTprove backend.
-
-        Args:
-            model_directory: Optional path to the model directory for organizing artifacts.
-
-        Raises:
-            RuntimeError: If JSTprove CLI is not available
-        """
         self.env = os.environ.copy()
         self.model_directory = Path(model_directory) if model_directory else None
         self._witness_format = "jstprove"
         self._circuit_cache: Dict[str, GenericModelONNX] = {}
 
-        try:
-            result = subprocess.run(
-                [self.COMMAND, "--help"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.returncode != 0:
-                raise RuntimeError("JSTprove CLI not found. Please install JSTprove first.")
-        except FileNotFoundError:
-            raise RuntimeError("JSTprove CLI not found. Please install JSTprove: uv tool install jstprove")
-
-    def _run_command(
-        self,
-        subcommand: str,
-        args: List[str],
-        check: bool = True,
-        capture_output: bool = True,
-    ) -> subprocess.CompletedProcess:
-        """
-        Execute a JSTprove CLI command.
-
-        Args:
-            subcommand: The jst subcommand (compile, witness, prove, verify)
-            args: Additional arguments for the subcommand
-            check: Whether to check return code
-            capture_output: Whether to capture output
-
-        Returns:
-            subprocess.CompletedProcess: The completed process
-
-        Raises:
-            RuntimeError: If command fails
-        """
-        cmd = [self.COMMAND] + self.DEFAULT_FLAGS + [subcommand] + args
-        try:
-            logger.debug(f"Running JSTprove command: {' '.join(cmd)}")
-            process = subprocess.run(
-                cmd,
-                env=self.env,
-                check=check,
-                capture_output=capture_output,
-                text=True,
-            )
-            return process
-        except subprocess.CalledProcessError as e:
-            error_msg = f"JSTprove command failed: {' '.join(cmd)}"
-            if e.stderr:
-                error_msg += f"\nError output: {e.stderr}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+    def _build_circuit(self, model_path):
+        circuit = BaseCommand._build_circuit(Path(model_path).stem)
+        circuit.model_file_name = str(model_path)
+        circuit.onnx_path = str(model_path)
+        circuit.model_path = str(model_path)
+        return circuit
 
     def _get_circuit(self, circuit_path: Path) -> GenericModelONNX:
         key = str(circuit_path)
@@ -286,45 +228,31 @@ class JSTprove:
         witness_path: Union[str, Path],
         circuit_path: Union[str, Path],
         proof_path: Union[str, Path],
-        pk_path: Optional[Union[str, Path]] = None,  # Kept for backward compatibility but not used
-        check_mode: str = "unsafe",  # Kept for backward compatibility but not used
-        settings_path: Optional[Union[str, Path]] = None  # Kept for backward compatibility but not used
+        pk_path: Optional[Union[str, Path]] = None,
+        check_mode: str = "unsafe",
+        settings_path: Optional[Union[str, Path]] = None
     ) -> Tuple[bool, Union[str, Path]]:
-        """
-        Generate a proof for the given witness and circuit using JSTprove.
-
-        Args:
-            witness_path: Path to the witness file
-            circuit_path: Path to the compiled circuit
-            proof_path: Path where to save the proof
-            pk_path: Ignored (kept for backward compatibility)
-            check_mode: Ignored (kept for backward compatibility)
-            settings_path: Ignored (kept for backward compatibility)
-
-        Returns:
-            Tuple of (success: bool, results: Union[str, Path]) where results is the proof path
-        """
-        # Normalize paths
         witness_path = Path(witness_path)
         circuit_path = Path(circuit_path)
         proof_path = Path(proof_path)
 
-        # Validate required files exist
         if not witness_path.exists():
             raise FileNotFoundError(f"Witness file not found: {witness_path}")
         if not circuit_path.exists():
             raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
 
-        # Create output directory if it doesn't exist
         proof_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            self._run_command("prove", [
-                "-c", str(circuit_path),
-                "-w", str(witness_path),
-                "-p", str(proof_path),
-            ])
-        except RuntimeError as e:
+            circuit = self._build_circuit("cli")
+            circuit.base_testing(CircuitExecutionConfig(
+                run_type=RunType.PROVE_WITNESS,
+                circuit_path=str(circuit_path),
+                witness_file=str(witness_path),
+                proof_file=str(proof_path),
+                ecc=False,
+            ))
+        except Exception as e:
             error_msg = f"Proof generation failed: {e}"
             logger.error(error_msg)
             return False, error_msg
@@ -355,15 +283,18 @@ class JSTprove:
         veri_output_path = self._prepare_verification_output(circuit_path, output_path)
 
         try:
-            self._run_command("verify", [
-                "-c", str(circuit_path),
-                "-i", str(input_path),
-                "-o", str(veri_output_path),
-                "-w", str(witness_path),
-                "-p", str(proof_path),
-            ])
+            circuit = self._build_circuit("cli")
+            circuit.base_testing(CircuitExecutionConfig(
+                run_type=RunType.GEN_VERIFY,
+                circuit_path=str(circuit_path),
+                input_file=str(input_path),
+                output_file=str(veri_output_path),
+                witness_file=str(witness_path),
+                proof_file=str(proof_path),
+                ecc=False,
+            ))
             return True
-        except RuntimeError as e:
+        except Exception as e:
             logger.error(f"Proof verification failed: {e}")
             return False
 
@@ -415,17 +346,6 @@ class JSTprove:
         circuit_path: Union[str, Path],
         settings_path: Optional[Union[str, Path]] = None
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Compile a circuit from an ONNX model using JSTprove.
-
-        Args:
-            model_path: Path to the original ONNX model
-            circuit_path: Path where to save the compiled circuit
-            settings_path: Ignored (kept for backward compatibility)
-
-        Returns:
-            Tuple of (success: bool, error: Optional[str])
-        """
         model_path = Path(model_path)
         circuit_path = Path(circuit_path)
 
@@ -441,10 +361,11 @@ class JSTprove:
         os.close(fd)
         try:
             onnx.save(model, preprocessed_path)
-            self._run_command("compile", [
-                "-m", preprocessed_path,
-                "-c", str(circuit_path),
-            ])
+            circuit = self._build_circuit(preprocessed_path)
+            circuit.base_testing(CircuitExecutionConfig(
+                run_type=RunType.COMPILE_CIRCUIT,
+                circuit_path=str(circuit_path),
+            ))
             if not circuit_path.exists():
                 return False, f"Rust binary exited successfully but did not produce circuit file at {circuit_path}"
             return True, None
@@ -535,23 +456,8 @@ class JSTprove:
 
     @classmethod
     def get_version(cls) -> Optional[str]:
-        """
-        Get the JSTprove version.
-
-        Returns:
-            str: JSTprove version string, or None if version cannot be determined
-        """
         try:
-            result = subprocess.run(
-                [cls.COMMAND, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                # Parse version from output
-                version_output = result.stdout.strip() or result.stderr.strip()
-                return version_output
+            return importlib.metadata.version("jstprove")
         except Exception as e:
             logger.debug(f"Could not get JSTprove version: {e}")
         return None

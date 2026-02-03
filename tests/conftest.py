@@ -42,96 +42,30 @@ def output_dir(tmp_path: Path) -> Path:
             shutil.rmtree(out, ignore_errors=True)
 
 
-# Cleanup fixture for the default CLI output directory (<model_dir>/slices)
 @pytest.fixture()
-def slices_output_dir(model_dir: Path) -> Path:
-    out = model_dir / "slices"
-    # Pre-clean to avoid leftovers from previous runs
-    if out.exists():
-        shutil.rmtree(out, ignore_errors=True)
-    # Also remove any sibling dsperse artifact that may be generated
-    dsperse_artifact = out.parent / f"{out.name}.dsperse"
-    if dsperse_artifact.exists():
-        try:
-            dsperse_artifact.unlink()
-        except Exception:
-            pass
-    try:
-        yield out
-    finally:
-        if out.exists():
-            shutil.rmtree(out, ignore_errors=True)
-        if dsperse_artifact.exists():
-            try:
-                dsperse_artifact.unlink()
-            except Exception:
-                pass
-
-
-# Relative custom output directory for integration tests
-@pytest.fixture()
-def hardcoded_output_dir(project_root: Path) -> Path:
-    """Provide a relative output directory under tests/models and ensure cleanup.
-
-    Target (relative to project root): tests/models/output
-    """
-    out = project_root / "tests" / "models" / "output"
-    # Pre-clean to avoid leftovers from previous runs
-    if out.exists():
-        shutil.rmtree(out, ignore_errors=True)
+def slices_output_dir(tmp_path: Path) -> Path:
+    out = tmp_path / "slices"
     out.mkdir(parents=True, exist_ok=True)
-    # Also remove any sibling dsperse artifact that may be generated
-    dsperse_artifact = out.parent / f"{out.name}.dsperse"
-    if dsperse_artifact.exists():
-        try:
-            dsperse_artifact.unlink()
-        except Exception:
-            pass
-    try:
-        yield out
-    finally:
-        if out.exists():
-            shutil.rmtree(out, ignore_errors=True)
-        if dsperse_artifact.exists():
-            try:
-                dsperse_artifact.unlink()
-            except Exception:
-                pass
+    yield out
 
 
-# Cleanup for model analysis metadata directory (<model_dir>/analysis)
 @pytest.fixture()
-def analysis_output_dir(model_dir: Path) -> Path:
-    analysis = model_dir / "analysis"
-    # Pre-clean
-    if analysis.exists():
-        shutil.rmtree(analysis, ignore_errors=True)
-    try:
-        yield analysis
-    finally:
-        if analysis.exists():
-            shutil.rmtree(analysis, ignore_errors=True)
+def hardcoded_output_dir(tmp_path: Path) -> Path:
+    out = tmp_path / "output"
+    out.mkdir(parents=True, exist_ok=True)
+    yield out
 
 
-# Cleanup for model run artifacts directory (<model_dir>/run)
 @pytest.fixture()
-def run_output_dir(model_dir: Path) -> Path:
-    """Ensure the <model_dir>/run directory is cleaned before and after tests."""
-    run_dir = model_dir / "run"
-    # Also handle the run directory that might appear in tests/models/ when using hardcoded_output_dir
-    tests_models_run = model_dir.parents[0] / "run"
+def analysis_output_dir(tmp_path: Path) -> Path:
+    analysis = tmp_path / "analysis"
+    yield analysis
 
-    # Pre-clean
-    for d in [run_dir, tests_models_run]:
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
 
-    try:
-        yield run_dir
-    finally:
-        for d in [run_dir, tests_models_run]:
-            if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
+@pytest.fixture()
+def run_output_dir(tmp_path: Path) -> Path:
+    run_dir = tmp_path / "run"
+    yield run_dir
 
 
 @pytest.fixture(scope="session")
@@ -154,3 +88,91 @@ def ezkl_available():
         return True
     except Exception:
         return False
+
+
+def _copy_to(src: Path, dest: Path) -> Path:
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    return dest
+
+
+def _do_slice(model_dir: Path, output_dir: Path, **extra_args):
+    from types import SimpleNamespace
+    from dsperse.src.cli.slice import slice_model
+    args = dict(model_dir=str(model_dir), output_dir=str(output_dir), save_file=None, output_type="dirs")
+    args.update(extra_args)
+    slice_model(SimpleNamespace(**args))
+    return output_dir
+
+
+@pytest.fixture(scope="session")
+def session_cache_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("session_cache")
+
+
+@pytest.fixture(scope="session")
+def pre_sliced_net(models_root, session_cache_dir):
+    out = session_cache_dir / "net_sliced"
+    return _do_slice(models_root / "net", out)
+
+
+@pytest.fixture(scope="session")
+def pre_sliced_doom(models_root, session_cache_dir):
+    out = session_cache_dir / "doom_sliced"
+    return _do_slice(models_root / "doom", out)
+
+
+@pytest.fixture(scope="session")
+def pre_sliced_doom_tiled(models_root, session_cache_dir):
+    out = session_cache_dir / "doom_tiled_sliced"
+    return _do_slice(models_root / "doom", out, tile_size=1000)
+
+
+def _do_compile(src, dest, session_cache_dir, **kwargs):
+    from types import SimpleNamespace
+    from dsperse.src.cli.compile import compile_model
+    work = _copy_to(src, dest)
+    args = dict(path=str(work), input_file=None, layers=None, backend=None)
+    args.update(kwargs)
+    compile_model(SimpleNamespace(**args))
+    return work
+
+
+@pytest.fixture(scope="session")
+def pre_compiled_net(pre_sliced_net, session_cache_dir, jstprove_available):
+    if not jstprove_available:
+        pytest.skip("JSTprove unavailable")
+    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_jst", session_cache_dir, backend="jstprove")
+
+
+@pytest.fixture(scope="session")
+def pre_compiled_net_both(pre_sliced_net, session_cache_dir, jstprove_available, ezkl_available):
+    if not jstprove_available or not ezkl_available:
+        pytest.skip("Both backends required")
+    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_both", session_cache_dir)
+
+
+@pytest.fixture(scope="session")
+def pre_sliced_doom_tiled_14(models_root, session_cache_dir):
+    out = session_cache_dir / "doom_tiled14_sliced"
+    return _do_slice(models_root / "doom", out, tile_size=14)
+
+
+@pytest.fixture(scope="session")
+def pre_compiled_doom_tiled(pre_sliced_doom_tiled, session_cache_dir, jstprove_available):
+    if not jstprove_available:
+        pytest.skip("JSTprove unavailable")
+    return _do_compile(pre_sliced_doom_tiled, session_cache_dir / "doom_tiled_compiled", session_cache_dir, backend="jstprove")
+
+
+@pytest.fixture(scope="session")
+def pre_compiled_doom_tiled_14(pre_sliced_doom_tiled_14, session_cache_dir, jstprove_available):
+    if not jstprove_available:
+        pytest.skip("JSTprove unavailable")
+    return _do_compile(pre_sliced_doom_tiled_14, session_cache_dir / "doom_tiled14_compiled", session_cache_dir, backend="jstprove")
+
+
+@pytest.fixture()
+def copy_to():
+    return _copy_to

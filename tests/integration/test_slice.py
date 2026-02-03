@@ -10,10 +10,9 @@ from dsperse.src.cli.slice import slice_model, slice_convert
 class TestSliceE2E:
     @pytest.mark.parametrize("model_name", ["net", "doom"])
     def test_slice_dirs(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
-        # Use default-like CLI values by explicitly passing the computed default output dir
         args = SimpleNamespace(
             model_dir=str(model_dir),
-            output_dir=None,  # default would be <model_dir>/slices
+            output_dir=str(slices_output_dir),
             save_file=None,
             output_type="dirs",
         )

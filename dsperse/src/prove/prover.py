@@ -177,11 +177,14 @@ class Prover:
         detected = Converter.detect_type(model_dir)
 
         # --- Dispatch to Specific Handler ---
-        if is_run_root:
-            return self._handle_run_root_proving(run_path, model_dir, detected, output_path, backend)
-
+        # Check is_slice_run first: a per-slice directory may also have
+        # run_results.json (written by a prior prove step), which would
+        # incorrectly match is_run_root.
         if is_slice_run:
             return self._handle_single_slice_proving(run_path, model_dir, detected, backend, tiles_range)
+
+        if is_run_root:
+            return self._handle_run_root_proving(run_path, model_dir, detected, output_path, backend)
 
         raise FileNotFoundError(f"Run path invalid at {run_path}")
 

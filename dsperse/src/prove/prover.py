@@ -217,8 +217,13 @@ class Prover:
                             tiles_range: range | list[int] | None = None) -> dict:
         """Internal: prove exactly one slice (detects tiling)."""
         # --- Initialization ---
-        run_path, dirs_root = Path(run_path), Utils.dirs_root_from(Path(model_dir))
+        model_dir_path = Path(model_dir)
+        run_path, dirs_root = Path(run_path), Utils.dirs_root_from(model_dir_path)
         run_meta = ProverUtils.initialize_prove_metadata(run_path, dirs_root)
+
+        target_name = model_dir_path.name
+        if target_name.startswith("slice_") and target_name in run_meta.slices and len(run_meta.slices) > 1:
+            run_meta.slices = {target_name: run_meta.slices[target_name]}
 
         if len(run_meta.slices) != 1:
             raise ValueError(f"Slices path must represent exactly one slice; found {len(run_meta.slices)}")

@@ -171,7 +171,7 @@ class TestSliceE2E:
 
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_slice_dirs_with_save_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, analysis_output_dir: Path, capfd):
+    def test_slice_dirs_with_save_default(self, model_name: str, model_dir: Path, slices_output_dir: Path, capfd):
         """Using --save default should write analysis/model_metadata.json under the model directory."""
         args = SimpleNamespace(
             model_dir=str(model_dir),
@@ -188,8 +188,7 @@ class TestSliceE2E:
         assert "ONNX model sliced successfully" in out
         assert "Model analysis saved to" in out
 
-        # Verify analysis metadata file
-        metadata_file = analysis_output_dir / "model_metadata.json"
+        metadata_file = model_dir / "analysis" / "model_metadata.json"
         assert metadata_file.exists(), f"Expected analysis metadata at {metadata_file}"
         data = json.loads(metadata_file.read_text())
         # Spot-check a few key fields
@@ -252,7 +251,7 @@ class TestSliceE2E:
             if output_dir.exists():
                 shutil.rmtree(output_dir)
 
-    def test_slice_with_channel_splitting(self, tmp_path, _capfd):
+    def test_slice_with_channel_splitting(self, tmp_path):
         """Verify end-to-end channel splitting when spatial tiling is not possible."""
         import onnx
         from onnx import helper, TensorProto, numpy_helper

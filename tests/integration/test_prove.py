@@ -32,8 +32,8 @@ class TestProveE2E:
         
         return results
 
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_prove_happy_path(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path: Path, copy_to, capfd):
+    @pytest.mark.parametrize("_model_name", ["net"])
+    def test_prove_happy_path(self, _model_name: str, model_dir: Path, pre_compiled_net_both: Path, _run_output_dir: Path, tmp_path: Path, copy_to, capfd):
         work_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
@@ -53,8 +53,8 @@ class TestProveE2E:
             assert "proof_execution" in res
             assert res["proof_execution"]["success"] is True
 
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_prove_single_slice(self, model_name: str, model_dir: Path, pre_compiled_net: Path, run_output_dir: Path, tmp_path: Path, copy_to, capfd):
+    @pytest.mark.parametrize("_model_name", ["net"])
+    def test_prove_single_slice(self, _model_name: str, model_dir: Path, pre_compiled_net: Path, _run_output_dir: Path, tmp_path: Path, copy_to, capfd):
         work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
@@ -79,8 +79,8 @@ class TestProveE2E:
         assert "proof_execution" in slice_0_res
         assert slice_0_res["proof_execution"]["success"] is True
 
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_prove_mixed_backends(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path: Path, copy_to, capfd):
+    @pytest.mark.parametrize("_model_name", ["net"])
+    def test_prove_mixed_backends(self, _model_name: str, model_dir: Path, pre_sliced_net: Path, _run_output_dir: Path, tmp_path: Path, copy_to, capfd):
         try:
             from dsperse.src.backends.jstprove import JSTprove
             from dsperse.src.backends.ezkl import EZKL
@@ -106,8 +106,8 @@ class TestProveE2E:
         results = self._verify_prove_artifacts(run_dir)
         assert results["execution_chain"]["jstprove_proved_slices"] > 0
 
-    @pytest.mark.parametrize("model_name", ["doom"])
-    def test_prove_backend_filter_doom(self, model_name: str, model_dir: Path, pre_sliced_doom: Path, run_output_dir: Path, tmp_path: Path, copy_to, capfd):
+    @pytest.mark.parametrize("_model_name", ["doom"])
+    def test_prove_backend_filter_doom(self, _model_name: str, model_dir: Path, pre_sliced_doom: Path, _run_output_dir: Path, tmp_path: Path, copy_to, capfd):
         try:
             from dsperse.src.backends.jstprove import JSTprove
             from dsperse.src.backends.ezkl import EZKL
@@ -149,8 +149,8 @@ class TestProveE2E:
         assert found_slice_0, "slice_0 not found in execution_results"
         assert found_slice_1, "slice_1 not found in execution_results"
 
-    @pytest.mark.parametrize("model_name", ["doom"])
-    def test_prove_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled_14: Path, run_output_dir: Path, tmp_path: Path, copy_to, capfd):
+    @pytest.mark.parametrize("_model_name", ["doom"])
+    def test_prove_with_tiling(self, _model_name: str, model_dir: Path, pre_compiled_doom_tiled_14: Path, _run_output_dir: Path, tmp_path: Path, copy_to, capfd):
         work_dir = copy_to(pre_compiled_doom_tiled_14, tmp_path / "slices")
 
         input_file = model_dir / "input.json"

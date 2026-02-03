@@ -129,7 +129,7 @@ def pre_sliced_doom_tiled(models_root, session_cache_dir):
     return _do_slice(models_root / "doom", out, tile_size=1000)
 
 
-def _do_compile(src, dest, session_cache_dir, **kwargs):
+def _do_compile(src, dest, **kwargs):
     from types import SimpleNamespace
     from dsperse.src.cli.compile import compile_model
     work = _copy_to(src, dest)
@@ -143,14 +143,14 @@ def _do_compile(src, dest, session_cache_dir, **kwargs):
 def pre_compiled_net(pre_sliced_net, session_cache_dir, jstprove_available):
     if not jstprove_available:
         pytest.skip("JSTprove unavailable")
-    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_jst", session_cache_dir, backend="jstprove")
+    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_jst", backend="jstprove")
 
 
 @pytest.fixture(scope="session")
 def pre_compiled_net_both(pre_sliced_net, session_cache_dir, jstprove_available, ezkl_available):
     if not jstprove_available or not ezkl_available:
         pytest.skip("Both backends required")
-    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_both", session_cache_dir)
+    return _do_compile(pre_sliced_net, session_cache_dir / "net_compiled_both")
 
 
 @pytest.fixture(scope="session")
@@ -163,14 +163,14 @@ def pre_sliced_doom_tiled_14(models_root, session_cache_dir):
 def pre_compiled_doom_tiled(pre_sliced_doom_tiled, session_cache_dir, jstprove_available):
     if not jstprove_available:
         pytest.skip("JSTprove unavailable")
-    return _do_compile(pre_sliced_doom_tiled, session_cache_dir / "doom_tiled_compiled", session_cache_dir, backend="jstprove")
+    return _do_compile(pre_sliced_doom_tiled, session_cache_dir / "doom_tiled_compiled", backend="jstprove")
 
 
 @pytest.fixture(scope="session")
 def pre_compiled_doom_tiled_14(pre_sliced_doom_tiled_14, session_cache_dir, jstprove_available):
     if not jstprove_available:
         pytest.skip("JSTprove unavailable")
-    return _do_compile(pre_sliced_doom_tiled_14, session_cache_dir / "doom_tiled14_compiled", session_cache_dir, backend="jstprove")
+    return _do_compile(pre_sliced_doom_tiled_14, session_cache_dir / "doom_tiled14_compiled", backend="jstprove")
 
 
 @pytest.fixture()

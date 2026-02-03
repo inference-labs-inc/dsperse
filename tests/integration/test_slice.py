@@ -252,7 +252,7 @@ class TestSliceE2E:
             if output_dir.exists():
                 shutil.rmtree(output_dir)
 
-    def test_slice_with_channel_splitting(self, tmp_path, capfd):
+    def test_slice_with_channel_splitting(self, tmp_path, _capfd):
         """Verify end-to-end channel splitting when spatial tiling is not possible."""
         import onnx
         from onnx import helper, TensorProto, numpy_helper

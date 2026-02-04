@@ -362,6 +362,8 @@ class OnnxAnalyzer:
         Returns:
             dict: Complete metadata for the sliced models
         """
+        if output_dir is None and not self.onnx_path:
+            raise ValueError("output_dir is required when analyzer is initialized without onnx_path")
         model_overview = self._get_model_metadata(model_metadata, slice_points)
         tiled_info = tiled_info or {}
 

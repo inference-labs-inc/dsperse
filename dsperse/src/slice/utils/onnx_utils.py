@@ -415,7 +415,8 @@ class OnnxUtils:
 
     @staticmethod
     def build_and_save_slices(segments: List[Dict], traced_shapes: dict | None = None,
-                              traced_dtypes: dict | None = None) -> Dict[int, str]:
+                              traced_dtypes: dict | None = None,
+                              opset_imports: list | None = None) -> Dict[int, str]:
         """Build slice models in-memory, finalize (apply shapes + validate), and write once to disk."""
         results = {}
         failures = []
@@ -433,7 +434,7 @@ class OnnxUtils:
                     seg['segment_outputs'],
                     seg['segment_initializers']
                 )
-                model = onnx.helper.make_model(segment_graph)
+                model = onnx.helper.make_model(segment_graph, opset_imports=opset_imports)
 
                 if traced_shapes:
                     OnnxUtils.apply_traced_shapes(model, traced_shapes, traced_dtypes)

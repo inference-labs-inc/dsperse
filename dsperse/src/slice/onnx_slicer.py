@@ -132,7 +132,8 @@ class OnnxSlicer:
         )
 
         abs_paths_dict = OnnxUtils.build_and_save_slices(
-            segment_data, self.traced_shapes, self.traced_dtypes
+            segment_data, self.traced_shapes, self.traced_dtypes,
+            opset_imports=list(self.onnx_model.opset_import),
         )
 
         tiled_info = {}
@@ -156,6 +157,8 @@ class OnnxSlicer:
             Dict[str, Any]: Metadata about the sliced model
         """
         self._ensure_analysis()
+        if output_path is None:
+            output_path = os.path.join(os.path.dirname(self.onnx_path), "slices")
         slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
         slices_paths, tiled_info, _tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)

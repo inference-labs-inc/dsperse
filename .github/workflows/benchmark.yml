@@ -47,14 +47,7 @@ jobs:
           fi
 
       - name: Compare results
-        id: compare
-        run: |
-          uv run python benchmarks/compare.py main.json pr.json --output comment.md || true
-          {
-            echo 'BODY<<BENCH_EOF'
-            cat comment.md
-            echo 'BENCH_EOF'
-          } >> "$GITHUB_OUTPUT"
+        run: uv run python benchmarks/compare.py main.json pr.json --output comment.md || true
 
       - name: Find existing comment
         uses: peter-evans/find-comment@v3
@@ -68,5 +61,5 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-id: ${{ steps.find.outputs.comment-id }}
-          body: ${{ steps.compare.outputs.BODY }}
+          body-path: comment.md
           edit-mode: replace

@@ -302,25 +302,23 @@ class TestSliceE2E:
         assert groups_dir.exists()
         assert (groups_dir / "group_0.onnx").exists()
 
-    def test_slice_extraction_fallback(self, tmp_path, capfd):
-        """Verify fallback to manual graph building if extract_model fails."""
+    def test_slice_in_memory_build(self, tmp_path, capfd):
+        """Verify slices are built directly from in-memory graph data."""
         import onnx
         from onnx import helper, TensorProto
-        from unittest.mock import patch
-        
-        # Create a simple model
+
         X = helper.make_tensor_value_info("X", TensorProto.FLOAT, [1, 1, 4, 4])
         nodes = [helper.make_node("Relu", ["X"], ["Y"])]
         Y = helper.make_tensor_value_info("Y", TensorProto.FLOAT, [1, 1, 4, 4])
         graph = helper.make_graph(nodes, "test", [X], [Y], [])
         model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
-        
-        model_dir = tmp_path / "fallback_model"
+
+        model_dir = tmp_path / "inmem_model"
         model_dir.mkdir()
         model_path = model_dir / "model.onnx"
         onnx.save(model, str(model_path))
-        
-        output_dir = tmp_path / "fallback_output"
+
+        output_dir = tmp_path / "inmem_output"
         args = SimpleNamespace(
             model_dir=str(model_path),
             output_dir=str(output_dir),
@@ -328,17 +326,11 @@ class TestSliceE2E:
             output_type="dirs",
             tile_size=None
         )
-        
-        # Mock extract_single_slice to return None
-        with patch("dsperse.src.slice.utils.onnx_utils.OnnxUtils.extract_single_slice", return_value=None):
-            slice_model(args)
-        
-        # Verify it still succeeded via fallback
+
+        slice_model(args)
+
         out = capfd.readouterr().out
-        assert "Fallback: building slice" in out
         assert "ONNX model sliced successfully" in out
-        
-        # Verify slice exists
         assert (output_dir / "slice_0" / "payload" / "slice_0.onnx").exists()
 
     def test_slice_constant_filtering(self, tmp_path):

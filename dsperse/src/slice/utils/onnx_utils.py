@@ -4,7 +4,6 @@ import shutil
 import tempfile
 import numpy as np
 import onnxruntime as ort
-from onnx.utils import extract_model
 from onnx import helper, TensorProto
 from pathlib import Path
 from typing import Tuple, List, Dict
@@ -68,10 +67,10 @@ class OnnxUtils:
         return index_to_node_name, index_to_segment_name
 
     @staticmethod
-    def initialize_tensor_graph(onnx_path: str):
-        """Initialize TensorGraph from ONNX path."""
+    def initialize_tensor_graph(onnx_model: onnx.ModelProto):
+        """Initialize TensorGraph from in-memory ONNX model."""
         from dsperse.src.slice.tensor_graph import TensorGraph
-        tensor_graph = TensorGraph(onnx_path)
+        tensor_graph = TensorGraph(onnx_model)
         logger.info(f"Built tensor graph: {tensor_graph}")
         return tensor_graph
 
@@ -364,14 +363,13 @@ class OnnxUtils:
         return segment_inputs_map
 
     @staticmethod
-    def prepare_extraction_specs(onnx_path: str, slice_points: List[int], output_path: str,
-                                 index_to_node_name: Dict, index_to_segment_name: Dict,
-                                 node_map: Dict, node_type_index_map: Dict,
-                                 initializer_map: Dict, graph: onnx.GraphProto,
-                                 segment_inputs_map: Dict[int, set]) -> Tuple[List, Dict]:
-        """Prepare slice specifications and fallback data."""
-        slice_specs = []
-        fallback_data = {}
+    def prepare_segments(slice_points: List[int], output_path: str,
+                         index_to_node_name: Dict, index_to_segment_name: Dict,
+                         node_map: Dict, node_type_index_map: Dict,
+                         initializer_map: Dict, graph: onnx.GraphProto,
+                         segment_inputs_map: Dict[int, set]) -> List[Dict]:
+        """Prepare in-memory segment data (nodes, inputs, outputs, initializers, file path) for each slice."""
+        segments = []
 
         segment_idx = 0
         for i in range(len(slice_points)):
@@ -383,7 +381,6 @@ class OnnxUtils:
 
             segment_nodes = OnnxUtils.get_nodes_by_index_range(start_idx, end_idx, index_to_node_name,
                                                                index_to_segment_name, node_map, node_type_index_map, segment_idx)
-
             if not segment_nodes:
                 continue
 
@@ -400,101 +397,59 @@ class OnnxUtils:
             file_path = os.path.join(payload_dir, f"slice_{segment_idx}.onnx")
 
             input_names = Utils.filter_inputs(segment_inputs, graph)
-            output_names = [output_info.name for output_info in segment_outputs]
+            output_names = [o.name for o in segment_outputs]
 
-            spec = (onnx_path, segment_idx, input_names, output_names, file_path)
-            slice_specs.append(spec)
-
-            fallback_data[segment_idx] = {
+            segments.append({
+                'segment_idx': segment_idx,
                 'segment_nodes': segment_nodes,
                 'segment_inputs': segment_inputs,
                 'segment_outputs': segment_outputs,
                 'segment_initializers': segment_initializers,
                 'file_path': file_path,
-            }
+            })
 
             logger.info(f"Prepared slice {segment_idx}: {input_names} -> {output_names}")
             segment_idx += 1
 
-        return slice_specs, fallback_data
+        return segments
 
     @staticmethod
-    def run_extraction_pipeline(slice_specs: List, fallback_data: Dict) -> Dict[int, str]:
-        """Run slice extraction with manual fallback."""
-        extracted = {}
+    def build_and_save_slices(segments: List[Dict], traced_shapes: dict = None,
+                              traced_dtypes: dict = None) -> Dict[int, str]:
+        """Build slice models in-memory, finalize (apply shapes + validate), and write once to disk."""
+        results = {}
 
-        print(f"Extracting {len(slice_specs)} slices...")
-        for spec in slice_specs:
-            # spec: (onnx_path, segment_idx, input_names, output_names, file_path)
-            segment_idx = spec[1]
-            file_path = spec[4]
+        print(f"Building {len(segments)} slices...")
+        for seg in segments:
+            segment_idx = seg['segment_idx']
+            file_path = seg['file_path']
 
-            result = OnnxUtils.extract_single_slice(spec)
-            if result:
-                idx, path = result
-                extracted[idx] = path
-                print(f"  Extracted slice {idx}")
-            else:
-                # Fallback: building manually
-                data = fallback_data[segment_idx]
-                try:
-                    print(f"  Fallback: building slice {segment_idx} manually...")
-                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    segment_graph = onnx.helper.make_graph(
-                        data['segment_nodes'],
-                        f"segment_{segment_idx}_graph",
-                        data['segment_inputs'],
-                        data['segment_outputs'],
-                        data['segment_initializers']
-                    )
-                    segment_model = onnx.helper.make_model(segment_graph)
-                    segment_model = OnnxUtils.concretize_symbolic_dims(segment_model, value=1)
-                    Utils.save_onnx_model(segment_model, file_path)
-                    extracted[segment_idx] = file_path
-                except Exception as e:
-                    logger.error(f"Fallback failed for segment {segment_idx}: {e}")
+            try:
+                segment_graph = onnx.helper.make_graph(
+                    seg['segment_nodes'],
+                    f"segment_{segment_idx}_graph",
+                    seg['segment_inputs'],
+                    seg['segment_outputs'],
+                    seg['segment_initializers']
+                )
+                model = onnx.helper.make_model(segment_graph)
 
-        return extracted
+                if traced_shapes:
+                    OnnxUtils.apply_traced_shapes(model, traced_shapes, traced_dtypes)
+                else:
+                    model = OnnxUtils.concretize_symbolic_dims(model, value=1)
 
-    @staticmethod
-    def extract_single_slice(spec: Tuple[str, int, List[str], List[str], str]) -> Tuple[int, str] | None:
-        """Extract a single slice using ONNX's extract_model."""
-        onnx_path, segment_idx, input_names, output_names, file_path = spec
-        try:
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            extract_model(
-                input_path=onnx_path,
-                output_path=file_path,
-                input_names=input_names,
-                output_names=output_names
-            )
-            return (segment_idx, file_path)
-        except Exception as e:
-            err_msg = str(e) if str(e) else f"{type(e).__name__}"
-            logger.warning(
-                f"extract_model failed for slice {segment_idx}: {err_msg} (inputs={input_names}, outputs={output_names})")
-            return None
+                onnx.checker.check_model(model)
 
-    @staticmethod
-    def finalize_slice(path: str, traced_shapes: dict = None, traced_dtypes: dict = None) -> str | None:
-        """
-        Finalize a sliced model by applying shapes, validating the graph, and saving.
-        """
-        abs_path = os.path.abspath(path)
-        try:
-            model = onnx.load(path)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                Utils.save_onnx_model(model, file_path)
 
-            if traced_shapes:
-                OnnxUtils.apply_traced_shapes(model, traced_shapes, traced_dtypes)
-            else:
-                model = OnnxUtils.concretize_symbolic_dims(model, value=1)
+                results[segment_idx] = os.path.abspath(file_path)
+                print(f"  Built slice {segment_idx}")
+            except Exception as e:
+                logger.error(f"Failed to build slice {segment_idx}: {e}")
 
-            onnx.checker.check_model(model)
-            Utils.save_onnx_model(model, path)
-            return abs_path
-        except Exception as e:
-            logger.error(f"Error processing {path}: {e}")
-            return None
+        return results
 
     # =========================================================================
     # Section 5: Graph Analysis Utilities

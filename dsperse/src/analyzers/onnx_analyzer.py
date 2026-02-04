@@ -18,12 +18,16 @@ class OnnxAnalyzer:
     A class for analyzing ONNX models and generating metadata.
     """
 
-    def __init__(self, model_path:str):
+    def __init__(self, model: onnx.ModelProto | str, onnx_path: str = None):
         """
         Initialize the OnnxAnalyzer with either an ONNX model or a path to an ONNX model.
         """
-        self.onnx_path = os.path.abspath(model_path)
-        self.onnx_model = onnx.load(self.onnx_path)
+        if isinstance(model, str):
+            self.onnx_path = os.path.abspath(model)
+            self.onnx_model = onnx.load(self.onnx_path)
+        else:
+            self.onnx_path = os.path.abspath(onnx_path) if onnx_path else None
+            self.onnx_model = model
 
         self.model_metadata = None
 

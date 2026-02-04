@@ -22,9 +22,11 @@ class TensorInfo:
 
 
 class TensorGraph:
-    def __init__(self, model_path: str | Path):
-        self.model_path = Path(model_path)
-        self.model = onnx.load(str(model_path))
+    def __init__(self, model: onnx.ModelProto | str | Path):
+        if isinstance(model, (str, Path)):
+            self.model = onnx.load(str(model))
+        else:
+            self.model = model
         self.graph = self.model.graph
 
         self.tensors: dict[str, TensorInfo] = {}
@@ -224,4 +226,4 @@ class TensorGraph:
         return result
 
     def __repr__(self):
-        return f"TensorGraph({self.model_path.name}: {len(self.tensors)} tensors, {len(self.graph.node)} nodes)"
+        return f"TensorGraph({len(self.tensors)} tensors, {len(self.graph.node)} nodes)"

@@ -18,12 +18,16 @@ class OnnxAnalyzer:
     A class for analyzing ONNX models and generating metadata.
     """
 
-    def __init__(self, model_path:str):
+    def __init__(self, model: onnx.ModelProto | str, onnx_path: str | None = None):
         """
         Initialize the OnnxAnalyzer with either an ONNX model or a path to an ONNX model.
         """
-        self.onnx_path = os.path.abspath(model_path)
-        self.onnx_model = onnx.load(self.onnx_path)
+        if isinstance(model, str):
+            self.onnx_path = os.path.abspath(model)
+            self.onnx_model = onnx.load(self.onnx_path)
+        else:
+            self.onnx_path = os.path.abspath(onnx_path) if onnx_path else None
+            self.onnx_model = model
 
         self.model_metadata = None
 
@@ -75,8 +79,9 @@ class OnnxAnalyzer:
 
         # Warn (but continue) if default opset is below 18
         if default_opset_version is not None and default_opset_version < 18:
+            model_label = self.onnx_path or "<in-memory model>"
             msg = (
-                f"ONNX opset {default_opset_version} detected for model {self.onnx_path}. "
+                f"ONNX opset {default_opset_version} detected for model {model_label}. "
                 "Opset < 18 is not officially supported; continuing anyway."
             )
             logger.warning(msg)
@@ -357,6 +362,8 @@ class OnnxAnalyzer:
         Returns:
             dict: Complete metadata for the sliced models
         """
+        if output_dir is None and not self.onnx_path:
+            raise ValueError("output_dir is required when analyzer is initialized without onnx_path")
         model_overview = self._get_model_metadata(model_metadata, slice_points)
         tiled_info = tiled_info or {}
 

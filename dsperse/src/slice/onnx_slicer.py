@@ -23,7 +23,6 @@ class OnnxSlicer:
         self.onnx_analyzer = None
         self.analysis = None
         self.slice_points = None
-        self._traced_model_path = None
 
     def _ensure_analysis(self):
         """Lazy initialization of shape tracing and model analysis."""
@@ -34,12 +33,7 @@ class OnnxSlicer:
         self.traced_shapes, self.traced_dtypes = OnnxUtils.trace_shapes(self.onnx_model)
         OnnxUtils.apply_traced_shapes(self.onnx_model, self.traced_shapes, self.traced_dtypes)
 
-        # Save a temporary traced model for the analyzer and tensor graph
-        self._traced_model_path = self.onnx_path.replace(".onnx", "_traced.onnx")
-        onnx.save(self.onnx_model, self._traced_model_path)
-        self.onnx_path = self._traced_model_path
-
-        self.onnx_analyzer = OnnxAnalyzer(self.onnx_path)
+        self.onnx_analyzer = OnnxAnalyzer(self.onnx_model, onnx_path=self.onnx_path)
         self.analysis = self.onnx_analyzer.analyze(save_path=self.save_path)
 
     def determine_slice_points(self, model_metadata=None, tile_size:int = None, isolate_convolutions=True) -> List[int]:
@@ -102,6 +96,10 @@ class OnnxSlicer:
         """
         Slice the ONNX model based on the provided slice points.
 
+        All operations work from the in-memory model graph. Slices are built
+        directly from graph nodes/initializers and only written to disk once
+        after finalization (shape application + validation).
+
         Args:
             slice_points: List of indices representing nodes with parameter details
             model_metadata: The model analysis metadata containing node information
@@ -117,31 +115,26 @@ class OnnxSlicer:
         if not model_metadata or "nodes" not in model_metadata:
             raise ValueError("Invalid model metadata. Please run 'analyze()' first.")
 
-        # Section 1: Shape inference and graph initialization
         self.onnx_model = OnnxUtils.apply_symbolic_shape_inference(self.onnx_model)
-        tensor_graph = OnnxUtils.initialize_tensor_graph(self.onnx_path)
+        tensor_graph = OnnxUtils.initialize_tensor_graph(self.onnx_model)
 
-        # Section 2: Setup lookup maps and finalize slice points
         (graph, node_map, node_type_index_map, initializer_map, _value_info_map,
          index_to_node_name, index_to_segment_name, output_path) = self._slice_setup(model_metadata, output_path)
 
-        # Section 3: Pre-calculate segment inputs to determine future dependencies
         segment_inputs_map = OnnxUtils.analyze_future_dependencies(
             slice_points, index_to_node_name, index_to_segment_name,
             node_map, node_type_index_map, initializer_map
         )
 
-        # Section 4: Prepare slice specifications
-        slice_specs, fallback_data = OnnxUtils.prepare_extraction_specs(
-            self.onnx_path, slice_points, output_path, index_to_node_name, index_to_segment_name,
+        segment_data = OnnxUtils.prepare_segments(
+            slice_points, output_path, index_to_node_name, index_to_segment_name,
             node_map, node_type_index_map, initializer_map, graph, segment_inputs_map
         )
 
-        # Section 5: Extract slices & Section 6: Fallback for failed extractions
-        extracted = OnnxUtils.run_extraction_pipeline(slice_specs, fallback_data)
-
-        # Section 7: Post-process slices (apply traced shapes/dtypes)
-        abs_paths_dict = self.slice_post_process(extracted, traced_shapes=self.traced_shapes, traced_dtypes=self.traced_dtypes)
+        abs_paths_dict = OnnxUtils.build_and_save_slices(
+            segment_data, self.traced_shapes, self.traced_dtypes,
+            opset_imports=list(self.onnx_model.opset_import),
+        )
 
         tiled_info = {}
         if tile_size:
@@ -151,32 +144,9 @@ class OnnxSlicer:
         return abs_paths_dict, tiled_info, tensor_graph
 
 
-    @staticmethod
-    def slice_post_process(extracted: dict, traced_shapes: dict = None, traced_dtypes: dict = None) -> dict:
-        """Post-process sliced models with traced shape and dtype application.
-
-        Args:
-            extracted: Dict mapping segment_idx -> file_path
-            traced_shapes: Dict of traced tensor shapes
-            traced_dtypes: Dict of traced tensor dtypes
-
-        Returns:
-            Dict mapping segment_idx -> processed absolute path (failed entries omitted)
-        """
-        results = {}
-        for segment_idx, path in extracted.items():
-            result = OnnxUtils.finalize_slice(path, traced_shapes, traced_dtypes)
-            if result:
-                results[segment_idx] = result
-        return results
-
     def slice_model(self, output_path=None, tile_size: int = None):
         """
         Run the complete workflow: determine slice points, slice, and optionally tile.
-
-        Two-phase approach:
-        1. Slice model (isolating Convs into separate slices)
-        2. Apply tiling transform (inject split/concat into bridge slices)
 
         Args:
             output_path: The path to save the slices to.
@@ -187,18 +157,12 @@ class OnnxSlicer:
             Dict[str, Any]: Metadata about the sliced model
         """
         self._ensure_analysis()
-        try:
-            slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
-            
-            slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
-
-            self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
-
-            return slices_paths
-        finally:
-            if self._traced_model_path and os.path.exists(self._traced_model_path):
-                logger.info(f"Cleaning up temporary traced model: {self._traced_model_path}")
-                os.remove(self._traced_model_path)
+        if output_path is None:
+            output_path = os.path.join(os.path.dirname(self.onnx_path), "slices")
+        slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
+        slices_paths, tiled_info, _tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
+        self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
+        return slices_paths
 
 
 if __name__ == "__main__":

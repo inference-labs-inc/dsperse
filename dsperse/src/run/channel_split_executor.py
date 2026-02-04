@@ -33,7 +33,10 @@ class ChannelSplitExecutor:
         )
         input_tensor = self.tensor_cache.get(input_name)
         if input_tensor is None:
-            return None, None, None
+            raise ValueError(
+                f"Channel-split input tensor '{input_name}' not found in tensor cache. "
+                f"Available: {list(self.tensor_cache.keys())}"
+            )
 
         target_shape = meta.get_target_shape()
         output_shape = (

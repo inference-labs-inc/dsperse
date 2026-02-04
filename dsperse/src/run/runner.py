@@ -71,8 +71,12 @@ class Runner:
         if info.channel_split:
             logger.info(f"Running channel-split slice {slice_id} with {info.channel_split.num_groups} groups")
             exec_info = self.run_channel_split_inference(slice_id, info, tensor_cache, run_dir, slices_path, backend=backend)
-            output_name = info.channel_split.output_name or (info.dependencies.output[0] if info.dependencies.output else "output")
+            output_name = info.channel_split.output_name or (info.dependencies.output[0] if info.dependencies.output else None)
+            if not output_name:
+                raise ValueError(f"Channel-split slice {slice_id} has no output name in metadata")
             output_tensor = tensor_cache.get(output_name)
+            if output_tensor is None:
+                raise ValueError(f"Channel-split slice {slice_id}: output '{output_name}' not in tensor cache after execution")
             return exec_info.success, {"output": output_tensor}, exec_info
 
         # --- Tiled Execution ---
@@ -80,7 +84,11 @@ class Runner:
             logger.info(f"Running tiled slice {slice_id} with parallel tiles")
             exec_info = self.run_tiled_inference(slice_id, info, tensor_cache, run_dir, backend=backend)
             output_name = info.tiling.output_name
+            if not output_name:
+                raise ValueError(f"Tiled slice {slice_id} has no output_name in tiling metadata")
             output_tensor = tensor_cache.get(output_name)
+            if output_tensor is None:
+                raise ValueError(f"Tiled slice {slice_id}: output '{output_name}' not in tensor cache after execution")
             return exec_info.success, {"output": output_tensor}, exec_info
 
         # --- Standard Circuit Execution ---

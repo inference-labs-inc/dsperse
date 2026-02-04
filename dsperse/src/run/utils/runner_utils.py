@@ -444,7 +444,12 @@ class RunnerUtils:
     def prepare_slice_input(info: RunSliceMetadata, tensor_cache: dict, model_input_tensor: torch.Tensor, in_file: Path, skip_write: bool = False) -> torch.Tensor:
         filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
         input_name = filtered_inputs[0] if filtered_inputs else "input"
-        current_tensor = tensor_cache.get(input_name, model_input_tensor)
+        current_tensor = tensor_cache.get(input_name)
+        if current_tensor is None:
+            raise ValueError(
+                f"Input tensor '{input_name}' not found in tensor cache. "
+                f"Available: {list(tensor_cache.keys())}"
+            )
         if not skip_write:
             Utils.write_input(current_tensor, str(in_file))
         return current_tensor

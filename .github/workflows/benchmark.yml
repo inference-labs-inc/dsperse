@@ -24,9 +24,6 @@ jobs:
           enable-cache: true
           python-version: "3.13"
 
-      - name: Install OpenMPI
-        run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
-
       - name: Benchmark PR branch
         run: uv run python benchmarks/bench.py --output pr.json
 

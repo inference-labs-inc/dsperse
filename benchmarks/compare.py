@@ -71,7 +71,7 @@ def main():
 
     table, regressions = build_table(base, head)
 
-    header = "## Benchmark Results\n\n"
+    header = "<!-- dsperse-benchmark -->\n## Benchmark Results\n\n"
     footer = f"\n\n<sub>{len(base)} benchmarks compared, {REGRESSION_THRESHOLD*100:.0f}% regression threshold</sub>"
 
     if regressions:

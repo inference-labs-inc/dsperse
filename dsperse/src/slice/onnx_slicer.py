@@ -157,7 +157,7 @@ class OnnxSlicer:
         """
         self._ensure_analysis()
         slice_points = self.determine_slice_points(self.analysis, tile_size=tile_size)
-        slices_paths, tiled_info, tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
+        slices_paths, tiled_info, _tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
         return slices_paths
 

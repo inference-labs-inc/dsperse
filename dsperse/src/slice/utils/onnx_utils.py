@@ -414,10 +414,11 @@ class OnnxUtils:
         return segments
 
     @staticmethod
-    def build_and_save_slices(segments: List[Dict], traced_shapes: dict = None,
-                              traced_dtypes: dict = None) -> Dict[int, str]:
+    def build_and_save_slices(segments: List[Dict], traced_shapes: dict | None = None,
+                              traced_dtypes: dict | None = None) -> Dict[int, str]:
         """Build slice models in-memory, finalize (apply shapes + validate), and write once to disk."""
         results = {}
+        failures = []
 
         print(f"Building {len(segments)} slices...")
         for seg in segments:
@@ -447,7 +448,15 @@ class OnnxUtils:
                 results[segment_idx] = os.path.abspath(file_path)
                 print(f"  Built slice {segment_idx}")
             except Exception as e:
-                logger.error(f"Failed to build slice {segment_idx}: {e}")
+                logger.exception(f"Failed to build slice {segment_idx}")
+                failures.append((segment_idx, e))
+
+        if failures:
+            indices = [idx for idx, _ in failures]
+            raise RuntimeError(
+                f"Failed to build {len(failures)} slice(s): {indices}. "
+                f"First error: {failures[0][1]}"
+            )
 
         return results
 

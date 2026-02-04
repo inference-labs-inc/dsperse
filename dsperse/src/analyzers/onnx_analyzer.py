@@ -18,7 +18,7 @@ class OnnxAnalyzer:
     A class for analyzing ONNX models and generating metadata.
     """
 
-    def __init__(self, model: onnx.ModelProto | str, onnx_path: str = None):
+    def __init__(self, model: onnx.ModelProto | str, onnx_path: str | None = None):
         """
         Initialize the OnnxAnalyzer with either an ONNX model or a path to an ONNX model.
         """
@@ -79,8 +79,9 @@ class OnnxAnalyzer:
 
         # Warn (but continue) if default opset is below 18
         if default_opset_version is not None and default_opset_version < 18:
+            model_label = self.onnx_path or "<in-memory model>"
             msg = (
-                f"ONNX opset {default_opset_version} detected for model {self.onnx_path}. "
+                f"ONNX opset {default_opset_version} detected for model {model_label}. "
                 "Opset < 18 is not officially supported; continuing anyway."
             )
             logger.warning(msg)

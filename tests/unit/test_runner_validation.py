@@ -1,6 +1,5 @@
 import pytest
 import torch
-from pathlib import Path
 from dsperse.src.analyzers.schema import (
     Dependencies, RunSliceMetadata, TilingInfo, TileInfo, ChannelSplitInfo, ChannelGroupInfo
 )
@@ -44,9 +43,9 @@ class TestPrepareSliceInput:
 
 
 class TestTileExecutorValidation:
-    def test_missing_input_tensor_raises(self):
+    def test_missing_input_tensor_raises(self, tmp_path):
         cache = {}
-        executor = TileExecutor(Path("/tmp"), cache)
+        executor = TileExecutor(tmp_path, cache)
         tiling = TilingInfo(
             slice_idx=0, tile_size=4, num_tiles=4, tiles_y=2, tiles_x=2,
             halo=(1, 1), out_tile=(2, 2), stride=(1, 1), c_in=3, c_out=8,
@@ -57,9 +56,9 @@ class TestTileExecutorValidation:
         with pytest.raises(ValueError, match="conv_input"):
             executor.get_input_tensor("slice_0", tiling, meta)
 
-    def test_missing_tile_output_raises(self):
+    def test_missing_tile_output_raises(self, tmp_path):
         cache = {}
-        executor = TileExecutor(Path("/tmp"), cache)
+        executor = TileExecutor(tmp_path, cache)
         tiling = TilingInfo(
             slice_idx=0, tile_size=4, num_tiles=4, tiles_y=2, tiles_x=2,
             halo=(1, 1), out_tile=(2, 2), stride=(1, 1), c_in=3, c_out=8,
@@ -71,9 +70,9 @@ class TestTileExecutorValidation:
 
 
 class TestChannelSplitExecutorValidation:
-    def test_missing_input_tensor_raises(self):
+    def test_missing_input_tensor_raises(self, tmp_path):
         cache = {"other_tensor": torch.randn(1, 3, 4, 4)}
-        executor = ChannelSplitExecutor(Path("/tmp"), cache)
+        executor = ChannelSplitExecutor(tmp_path, cache)
         meta = RunSliceMetadata(
             path="slice_0.onnx",
             dependencies=Dependencies(filtered_inputs=["missing_input"]),
@@ -89,9 +88,9 @@ class TestChannelSplitExecutorValidation:
         with pytest.raises(ValueError, match="missing_input.*not found"):
             executor.prepare_config(meta)
 
-    def test_error_shows_available_keys(self):
+    def test_error_shows_available_keys(self, tmp_path):
         cache = {"tensor_x": torch.randn(1), "tensor_y": torch.randn(1)}
-        executor = ChannelSplitExecutor(Path("/tmp"), cache)
+        executor = ChannelSplitExecutor(tmp_path, cache)
         meta = RunSliceMetadata(
             path="slice_0.onnx",
             dependencies=Dependencies(filtered_inputs=["bad_name"]),

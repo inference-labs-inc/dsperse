@@ -111,6 +111,9 @@ def full_run(args):
             args.model_dir = normalize_path(args.model_dir)
         else:
             args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory', required=True)
+            if not args.model_dir:
+                print(f"{Fore.RED}Error: model path is required.{Style.RESET_ALL}")
+                return
             args.model_dir = normalize_path(args.model_dir)
         canonical_model_dir = _determine_model_dir(args.model_dir)
 
@@ -127,6 +130,10 @@ def full_run(args):
     slices_dir = None
     if getattr(args, 'slices_dir', None):
         slices_dir = normalize_path(args.slices_dir)
+        if not os.path.isdir(slices_dir):
+            print(f"{Fore.RED}Error: slices directory '{slices_dir}' does not exist.{Style.RESET_ALL}")
+            logger.error(f"Slices directory does not exist: {slices_dir}")
+            return
 
     # 2) Slice (unless slices-dir provided)
     if not slices_dir:

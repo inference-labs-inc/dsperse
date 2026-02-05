@@ -74,7 +74,7 @@ def full_run(args):
     builtin_name = None
 
     # 1) Resolve inputs interactively
-    if (not hasattr(args, 'model_dir') or not args.model_dir) and (not hasattr(args, 'input_file') or not args.input_file):
+    if not getattr(args, 'model_dir', None) and not getattr(args, 'input_file', None):
         # Special prompt that accepts either a filesystem location or a built-in token
         choice = prompt_for_value(
             'selection',
@@ -107,14 +107,18 @@ def full_run(args):
             args.model_dir = normalize_path(choice)
             canonical_model_dir = _determine_model_dir(args.model_dir)
     else:
-        # Normalize provided values
-        if hasattr(args, 'model_dir') and args.model_dir:
+        if getattr(args, 'model_dir', None):
             args.model_dir = normalize_path(args.model_dir)
-        # Determine canonical model directory for downstream steps
+        else:
+            args.model_dir = prompt_for_value('model-dir', 'Enter the path to the model file or directory', required=True)
+            if not args.model_dir:
+                print(f"{Fore.RED}Error: model path is required.{Style.RESET_ALL}")
+                return
+            args.model_dir = normalize_path(args.model_dir)
         canonical_model_dir = _determine_model_dir(args.model_dir)
 
     # Input file resolution
-    if hasattr(args, 'input_file') and args.input_file:
+    if getattr(args, 'input_file', None):
         args.input_file = normalize_path(args.input_file)
     else:
         # Suggest default input.json in the (canonical) model directory unless using built-in (already set)
@@ -124,19 +128,20 @@ def full_run(args):
 
     # If user provided an existing slices directory, skip slicing step
     slices_dir = None
-    if hasattr(args, 'slices_dir') and args.slices_dir:
+    if getattr(args, 'slices_dir', None):
         slices_dir = normalize_path(args.slices_dir)
+        if not os.path.isdir(slices_dir):
+            print(f"{Fore.RED}Error: slices directory '{slices_dir}' does not exist.{Style.RESET_ALL}")
+            logger.error(f"Slices directory does not exist: {slices_dir}")
+            return
 
     # 2) Slice (unless slices-dir provided)
     if not slices_dir:
         # Default slices dir depends on whether we're using a built-in selection
         default_slices_dir = os.path.join(canonical_model_dir, 'slices')
         analysis_dir = os.path.join(canonical_model_dir, 'analysis')
-        try:
-            os.makedirs(default_slices_dir, exist_ok=True)
-            os.makedirs(analysis_dir, exist_ok=True)
-        except Exception:
-            pass
+        os.makedirs(default_slices_dir, exist_ok=True)
+        os.makedirs(analysis_dir, exist_ok=True)
         # Call existing slice command; keep its logic and interactivity.
         # For built-ins, we point the slicer to the built-in model file but output to ~/dsperse/{name}/slices
         model_metadata_path = os.path.join(analysis_dir, 'model_metadata.json')
@@ -155,10 +160,7 @@ def full_run(args):
 
     # 4) Run inference
     run_root_dir = os.path.join(canonical_model_dir, 'run')
-    try:
-        os.makedirs(run_root_dir, exist_ok=True)
-    except Exception:
-        pass
+    os.makedirs(run_root_dir, exist_ok=True)
     inference_output_path = os.path.join(run_root_dir, 'inference_results.json')
     # run_inference expects 'path' for slices, and doesn't use output_file directly for run_results.json anymore (it saves to run_results.json in the run dir)
     run_args = Namespace(path=slices_dir, input_file=args.input_file, output_file=inference_output_path, force_backend=None)

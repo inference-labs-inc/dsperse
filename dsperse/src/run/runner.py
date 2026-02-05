@@ -51,6 +51,7 @@ class Runner:
         self.run_metadata = None
         self.slices_path: Path | None = None
         self.last_run_dir: Path | None = None
+        self.tensor_cache: dict | None = None
 
         try:
             self.ezkl_runner = EZKL()
@@ -545,6 +546,7 @@ class Runner:
             current_slice_id = nodes[current_slice_id].next
 
         # --- Finalization ---
+        self.tensor_cache = tensor_cache
         return RunnerUtils.finalize_run_results(self.run_metadata, input_tensor, final_tensor, slice_results, run_dir)
 
     def run(self, input_json_path, slice_path: str, output_path: str = None, backend: str | None = None) -> dict:

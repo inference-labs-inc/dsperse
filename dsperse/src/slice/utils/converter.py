@@ -22,7 +22,7 @@ class Converter:
     def convert(
         path: str,
         output_type: str = "dirs",
-        output_path: str = None,
+        output_path: str | None = None,
         cleanup: bool = True,
     ):
         """Convert between dslices, dsperse, or directory outputs.
@@ -148,7 +148,7 @@ class Converter:
 
     # ===== dirs -> dslice =====
     @staticmethod
-    def _dirs_to_dslice(path: Path, output_path: str = None) -> str:
+    def _dirs_to_dslice(path: Path, output_path: str | None = None) -> str:
         """Convert directory format to dslice files.
 
         Zips each slice_* directory (containing payload/ and metadata.json) into a .dslice file.
@@ -220,7 +220,7 @@ class Converter:
 
     # ===== dirs -> dsperse =====
     @staticmethod
-    def _dirs_to_dsperse(path: Path, output_path: str = None) -> str:
+    def _dirs_to_dsperse(path: Path, output_path: str | None = None) -> str:
         """Convert directory format to a single dsperse file.
 
         Zips each slice_* directory into .dslice files at the root level,
@@ -294,7 +294,7 @@ class Converter:
 
     # ===== dslice -> dirs =====
     @staticmethod
-    def _dslice_to_dirs(path: Path, output_path: str = None) -> str:
+    def _dslice_to_dirs(path: Path, output_path: str | None = None) -> str:
         """Convert dslice files to directory format.
 
         Unzips .dslice files back into slice_* directories.
@@ -337,7 +337,7 @@ class Converter:
     # ===== dsperse -> dirs =====
     @staticmethod
     def _dsperse_to_dirs(
-        path: Path, output_path: str = None, expand_slices: bool = False
+        path: Path, output_path: str | None = None, expand_slices: bool = False
     ) -> str:
         """Convert dsperse file to directory format.
 
@@ -376,7 +376,7 @@ class Converter:
     # ===== Helper methods =====
     @staticmethod
     def _zip_directory(
-        source_dir: Path, output_file: Path, exclude_patterns: list = None
+        source_dir: Path, output_file: Path, exclude_patterns: list | None = None
     ):
         """Zip a directory to a file, preserving the internal structure."""
         exclude_patterns = exclude_patterns or []
@@ -422,7 +422,7 @@ class Converter:
 
     @staticmethod
     def extract_metadata_only(
-        archive_path: str | Path, output_dir: str | Path = None
+        archive_path: str | Path, output_dir: str | Path | None = None
     ) -> Path:
         """Extract only the top-level metadata.json from a .dsperse archive.
 
@@ -458,7 +458,7 @@ class Converter:
 
     @staticmethod
     def extract_single_slice(
-        archive_path: str | Path, slice_id: str, output_dir: str | Path = None
+        archive_path: str | Path, slice_id: str, output_dir: str | Path | None = None
     ) -> Path:
         """Extract a single slice from a .dsperse archive or directory of .dslice files.
 
@@ -483,7 +483,13 @@ class Converter:
             )
         out.mkdir(parents=True, exist_ok=True)
 
-        slice_dir = out / slice_id
+        slice_dir = (out / slice_id).resolve()
+        out_resolved = out.resolve()
+        if not slice_dir.is_relative_to(out_resolved):
+            raise ValueError(
+                f"Invalid slice_id '{slice_id}': path traversal detected"
+            )
+
         if Converter._is_slice_dir(slice_dir):
             logger.debug(f"Slice {slice_id} already extracted at {slice_dir}")
             return slice_dir

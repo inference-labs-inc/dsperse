@@ -6,12 +6,15 @@ to execute slices incrementally, where each slice's computation happens remotely
 are fed back to continue the chain.
 """
 
+import io
 import json
 import logging
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+import numpy as np
 import torch
 
 from dsperse.src.analyzers.runner_analyzer import RunnerAnalyzer
@@ -22,10 +25,18 @@ from dsperse.src.analyzers.schema import (
     RunSliceMetadata,
     Dependencies,
 )
+from dsperse.src.backends.ezkl import EZKL
+from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
+
+try:
+    from python.core.utils.witness_utils import load_witness, ZKProofSystems
+    HAS_WITNESS_UTILS = True
+except ImportError:
+    HAS_WITNESS_UTILS = False
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +61,19 @@ class SliceTask:
 
 @dataclass
 class SliceResult:
-    """Result from a remotely executed slice."""
+    """Result from a remotely executed slice.
+
+    For circuit slices, only proof and witness are required - outputs are
+    extracted from the witness after verification. For ONNX-only slices,
+    outputs should be provided directly.
+    """
 
     slice_id: str
     success: bool
     outputs: Optional[dict[str, Any]] = None
     error: Optional[str] = None
-    proof: Optional[Any] = None
+    proof: Optional[bytes] = None
+    witness: Optional[bytes] = None
     proof_time: float = 0.0
 
 
@@ -80,25 +97,61 @@ class IncrementalRunner:
     yields SliceTasks that can be executed remotely. The caller is responsible for
     executing each slice and feeding outputs back.
 
+    Security Model:
+        Circuit slices (use_circuit=True):
+            - CAN be sent to miners
+            - Outputs are EXTRACTED from the witness after proof verification
+            - Miner-provided `result.outputs` is IGNORED
+            - Witness contains public_inputs = [inputs..., outputs..., scale]
+              which are cryptographically bound to the proof
+
+        ONNX-only slices (use_circuit=False):
+            - MUST be run locally by the validator
+            - There is no proof, so miner outputs cannot be verified
+            - NEVER send these to miners - they could return anything
+
     Usage:
-        runner = IncrementalRunner()
+        runner = IncrementalRunner(verify_proofs=True)
         state = runner.initialize(slice_path, input_data)
 
         for task in runner.iter_tasks(state):
             if task.use_circuit:
-                # Send to remote miner for execution + proof
+                # Safe to send to miner - outputs verified via proof
                 result = send_to_miner(task)
-                runner.apply_result(state, result)
+                if not runner.apply_result(state, result):
+                    handle_verification_failure(task)
             else:
-                # Execute ONNX-only slice locally
+                # MUST run locally - no proof means no verification
                 result = runner.execute_onnx_slice(state, task)
                 runner.apply_result(state, result)
 
         final_output = runner.get_final_output(state)
     """
 
-    def __init__(self):
+    def __init__(self, verify_proofs: bool = True):
+        """
+        Initialize the IncrementalRunner.
+
+        Args:
+            verify_proofs: If True, verify proofs before accepting results.
+                          Should always be True in production for security.
+        """
         self._onnx_sessions: dict[str, Any] = {}
+        self._verify_proofs = verify_proofs
+
+        self._jstprove_runner: Optional[JSTprove] = None
+        self._ezkl_runner: Optional[EZKL] = None
+
+        if verify_proofs:
+            try:
+                self._jstprove_runner = JSTprove()
+            except Exception:
+                logger.warning("JSTprove not available for verification")
+
+            try:
+                self._ezkl_runner = EZKL()
+            except Exception:
+                logger.warning("EZKL not available for verification")
 
     def initialize(
         self,
@@ -133,7 +186,15 @@ class IncrementalRunner:
         )
 
         if isinstance(input_data, dict):
-            input_tensor = Utils.dict_to_tensor(input_data)
+            for key in ["input_data", "input", "data", "inputs"]:
+                if key in input_data:
+                    input_tensor = torch.tensor(input_data[key])
+                    break
+            else:
+                if len(input_data) == 1:
+                    input_tensor = torch.tensor(next(iter(input_data.values())))
+                else:
+                    raise ValueError(f"Cannot find input tensor in dict keys: {list(input_data.keys())}")
         else:
             input_tensor = input_data
 
@@ -227,7 +288,9 @@ class IncrementalRunner:
         """
         Apply a slice execution result to the run state.
 
-        Updates the tensor cache with outputs and advances to the next slice.
+        For circuit slices: verifies proof and extracts outputs FROM the witness
+        (outputs are cryptographically bound to the proof).
+        For ONNX-only slices: uses provided outputs directly.
 
         Args:
             state: The run state
@@ -249,16 +312,278 @@ class IncrementalRunner:
             return False
 
         meta = state.run_metadata.get_slice(result.slice_id)
-        if meta and result.outputs:
-            self._update_tensor_cache(state, meta, result.outputs)
-
-        state.completed_slices.append(result.slice_id)
-
         nodes = state.run_metadata.execution_chain.nodes
         node = nodes.get(state.current_slice_id)
+
+        if not meta or not node:
+            logger.error(f"Metadata not found for slice {result.slice_id}")
+            state.failed_slices.append(result.slice_id)
+            return False
+
+        outputs_to_use = result.outputs
+
+        if node.use_circuit and self._verify_proofs:
+            verified_outputs = self._verify_and_extract_outputs(state, meta, node, result)
+            if verified_outputs is None:
+                state.failed_slices.append(result.slice_id)
+                logger.error(f"Proof verification failed for {result.slice_id}")
+                return False
+            outputs_to_use = verified_outputs
+
+        if outputs_to_use:
+            validation_error = self._validate_outputs(meta, outputs_to_use)
+            if validation_error:
+                state.failed_slices.append(result.slice_id)
+                logger.error(f"Output validation failed for {result.slice_id}: {validation_error}")
+                return False
+
+            self._update_tensor_cache(state, meta, outputs_to_use)
+
+        state.completed_slices.append(result.slice_id)
         state.current_slice_id = node.next if node else None
 
         return True
+
+    def _validate_outputs(self, meta: RunSliceMetadata, outputs: dict[str, Any]) -> Optional[str]:
+        """Validate output data for shape correctness and NaN/Inf values."""
+        output_data = outputs.get("output_data") or outputs.get("output") or outputs
+
+        if output_data is None:
+            return "No output data provided"
+
+        try:
+            if isinstance(output_data, dict):
+                for name, value in output_data.items():
+                    err = self._validate_tensor_value(value, name)
+                    if err:
+                        return err
+            else:
+                err = self._validate_tensor_value(output_data, "output")
+                if err:
+                    return err
+
+            if meta.output_shape:
+                tensor = self._to_tensor(
+                    output_data if not isinstance(output_data, dict)
+                    else next(iter(output_data.values()))
+                )
+                if tensor is not None:
+                    expected_shape = meta.output_shape[0] if meta.output_shape else None
+                    if expected_shape:
+                        expected_numel = 1
+                        for dim in expected_shape:
+                            if isinstance(dim, int):
+                                expected_numel *= dim
+                        if tensor.numel() != expected_numel:
+                            return f"Output size mismatch: got {tensor.numel()}, expected {expected_numel}"
+
+        except Exception as e:
+            return f"Validation error: {e}"
+
+        return None
+
+    def _validate_tensor_value(self, value: Any, name: str) -> Optional[str]:
+        """Check a tensor value for NaN/Inf."""
+        try:
+            arr = np.asarray(value, dtype=np.float32)
+            if np.any(np.isnan(arr)):
+                return f"NaN values detected in {name}"
+            if np.any(np.isinf(arr)):
+                return f"Inf values detected in {name}"
+        except Exception:
+            pass
+        return None
+
+    def _verify_and_extract_outputs(
+        self,
+        state: IncrementalRunState,
+        meta: RunSliceMetadata,
+        node: Any,
+        result: SliceResult,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Verify the proof and extract outputs from the witness.
+
+        The outputs are extracted FROM the witness's public_inputs, which are
+        cryptographically bound to the proof. This ensures the miner cannot
+        claim different outputs than what was actually computed.
+
+        Returns:
+            Extracted outputs dict if verification succeeds, None otherwise.
+        """
+        if not result.proof:
+            logger.error(f"Missing proof for circuit slice {result.slice_id}")
+            return None
+
+        if not result.witness:
+            logger.error(f"Missing witness for circuit slice {result.slice_id}")
+            return None
+
+        backend = (node.backend or meta.backend or "").lower()
+        circuit_path = node.circuit_path or meta.jstprove_circuit_path or meta.ezkl_circuit_path
+
+        if not circuit_path:
+            logger.error(f"No circuit path for slice {result.slice_id}")
+            return None
+
+        circuit_path = RunnerUtils.resolve_relative_path(circuit_path, state.slices_path)
+        if not circuit_path or not Path(circuit_path).exists():
+            logger.error(f"Circuit not found: {circuit_path}")
+            return None
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                proof_path = tmp / "proof.bin"
+                witness_path = tmp / "witness.bin"
+
+                with open(proof_path, "wb") as f:
+                    f.write(result.proof if isinstance(result.proof, bytes) else result.proof.encode())
+                with open(witness_path, "wb") as f:
+                    f.write(result.witness if isinstance(result.witness, bytes) else result.witness.encode())
+
+                extracted_outputs = self._extract_outputs_from_witness(
+                    witness_path, meta, backend
+                )
+                if extracted_outputs is None:
+                    logger.error(f"Failed to extract outputs from witness for {result.slice_id}")
+                    return None
+
+                inputs = self._prepare_slice_inputs(state, meta)
+                input_path = tmp / "input.json"
+                output_path = tmp / "output.json"
+
+                with open(input_path, "w") as f:
+                    json.dump(inputs, f)
+                with open(output_path, "w") as f:
+                    json.dump(extracted_outputs, f)
+
+                if backend == Backend.JSTPROVE and self._jstprove_runner:
+                    verified = self._jstprove_runner.verify(
+                        proof_path=proof_path,
+                        circuit_path=circuit_path,
+                        input_path=input_path,
+                        output_path=output_path,
+                        witness_path=witness_path,
+                    )
+                elif backend == Backend.EZKL and self._ezkl_runner:
+                    settings_path = meta.ezkl_settings_path or meta.settings_path
+                    vk_path = meta.ezkl_vk_path or meta.vk_path
+                    if settings_path:
+                        settings_path = RunnerUtils.resolve_relative_path(settings_path, state.slices_path)
+                    if vk_path:
+                        vk_path = RunnerUtils.resolve_relative_path(vk_path, state.slices_path)
+                    verified = self._ezkl_runner.verify(
+                        proof_path=proof_path,
+                        settings_path=settings_path,
+                        vk_path=vk_path,
+                    )
+                else:
+                    logger.error(f"No verifier available for backend {backend}")
+                    return None
+
+                if not verified:
+                    logger.error(f"Proof verification failed for {result.slice_id}")
+                    return None
+
+                return extracted_outputs
+
+        except Exception as e:
+            logger.exception(f"Proof verification error for {result.slice_id}: {e}")
+            return None
+
+    def _extract_outputs_from_witness(
+        self,
+        witness_path: Path,
+        meta: RunSliceMetadata,
+        backend: str,
+    ) -> Optional[dict[str, Any]]:
+        """
+        Extract output values from the witness file.
+
+        For JSTprove/Expander, the witness public_inputs contain:
+        [input_values..., output_values..., scale_base, scale_exponent]
+        """
+        if backend == Backend.JSTPROVE:
+            return self._extract_jstprove_outputs(witness_path, meta)
+        elif backend == Backend.EZKL:
+            return self._extract_ezkl_outputs(witness_path, meta)
+        else:
+            logger.error(f"Unknown backend for output extraction: {backend}")
+            return None
+
+    def _extract_jstprove_outputs(
+        self,
+        witness_path: Path,
+        meta: RunSliceMetadata,
+    ) -> Optional[dict[str, Any]]:
+        """Extract outputs from JSTprove/Expander witness format."""
+        if not HAS_WITNESS_UTILS:
+            logger.error("JSTprove witness_utils not available")
+            return None
+
+        try:
+            witness_data = load_witness(str(witness_path), ZKProofSystems.Expander)
+            public_inputs = witness_data["witnesses"][0]["public_inputs"]
+            modulus = witness_data["modulus"]
+
+            scale_base = public_inputs[-2]
+            scale_exponent = public_inputs[-1]
+
+            num_inputs = sum(
+                np.prod([d for d in shape if isinstance(d, int)])
+                for shape in (meta.input_shape or [])
+            )
+            num_inputs = int(num_inputs) if num_inputs > 0 else 0
+
+            raw_outputs = public_inputs[num_inputs:-2]
+
+            def from_field(val: int) -> int:
+                if val > modulus // 2:
+                    return val - modulus
+                return val
+
+            signed_outputs = [from_field(v) for v in raw_outputs]
+
+            if scale_base > 0 and scale_exponent > 0:
+                scale = scale_base ** scale_exponent
+                rescaled = [v / scale for v in signed_outputs]
+            else:
+                rescaled = [float(v) for v in signed_outputs]
+
+            return {
+                "output": signed_outputs,
+                "rescaled_output": rescaled,
+                "raw_output": raw_outputs,
+            }
+
+        except Exception as e:
+            logger.exception(f"Failed to extract JSTprove outputs: {e}")
+            return None
+
+    def _extract_ezkl_outputs(
+        self,
+        witness_path: Path,
+        meta: RunSliceMetadata,
+    ) -> Optional[dict[str, Any]]:
+        """Extract outputs from EZKL witness format."""
+        try:
+            with open(witness_path, "r") as f:
+                witness_data = json.load(f)
+
+            if "pretty_elements" in witness_data:
+                rescaled = witness_data["pretty_elements"].get("rescaled_outputs", [[]])[0]
+                return {"output": rescaled, "rescaled_output": rescaled}
+
+            if "outputs" in witness_data:
+                return {"output": witness_data["outputs"]}
+
+            logger.error("Could not parse EZKL witness format")
+            return None
+
+        except Exception as e:
+            logger.exception(f"Failed to extract EZKL outputs: {e}")
+            return None
 
     def _update_tensor_cache(
         self,
@@ -278,7 +603,8 @@ class IncrementalRunner:
             output_names = meta.dependencies.output
             tensor = self._to_tensor(output_data)
             if tensor is not None and output_names:
-                state.tensor_cache[output_names[0]] = tensor
+                for oname in output_names:
+                    state.tensor_cache[oname] = tensor
 
     def _to_tensor(self, value: Any) -> Optional[torch.Tensor]:
         """Convert value to tensor."""

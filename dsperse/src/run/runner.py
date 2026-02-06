@@ -869,6 +869,7 @@ class Runner:
             self._cleanup_slice_if_lazy(prev_slice_id)
 
         # --- Finalization ---
+        self.tensor_cache = tensor_cache
         return RunnerUtils.finalize_run_results(
             self.run_metadata, input_tensor, final_tensor, slice_results, run_dir
         )

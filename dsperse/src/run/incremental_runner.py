@@ -358,7 +358,8 @@ class IncrementalRunner:
             tile_tensor = state.tensor_cache.get(cache_name)
 
             if tile_tensor is None:
-                logger.error(f"Tile input {cache_name} not found in cache")
+                logger.error(f"Tile input {cache_name} not found in cache for slice {slice_id}")
+                state.pending_tiled_slice.failed_tiles.append(tile_idx)
                 continue
 
             tile_inputs = {"input_data": tile_tensor.tolist()}
@@ -512,10 +513,13 @@ class IncrementalRunner:
                 return False
             outputs_to_use = verified_outputs
 
-        if outputs_to_use:
+        if outputs_to_use is not None:
             self._store_tile_output(state, tiling, result.tile_idx, outputs_to_use)
-
-        pending.completed_tiles[result.tile_idx] = result
+            pending.completed_tiles[result.tile_idx] = result
+        else:
+            pending.failed_tiles.append(result.tile_idx)
+            logger.error(f"Tile {result.task_id} has no outputs to store")
+            return False
 
         if pending.is_complete:
             return self._finalize_tiled_slice(state)
@@ -562,14 +566,68 @@ class IncrementalRunner:
             with tempfile.TemporaryDirectory() as tmpdir:
                 tmp = Path(tmpdir)
                 witness_path = tmp / "witness.bin"
+                proof_path = tmp / "proof.bin"
 
                 with open(witness_path, "wb") as f:
                     f.write(result.witness if isinstance(result.witness, bytes) else result.witness.encode())
+                with open(proof_path, "wb") as f:
+                    f.write(result.proof if isinstance(result.proof, bytes) else result.proof.encode())
 
                 if backend == Backend.JSTPROVE:
-                    return self._extract_jstprove_tile_outputs(witness_path, num_inputs, tiling)
+                    if not self._jstprove_runner:
+                        logger.error(f"JSTprove runner not available for tile {result.task_id}")
+                        return None
+
+                    input_path = tmp / "input.json"
+                    output_path = tmp / "output.json"
+                    tile_inputs = {"input_data": state.tensor_cache.get(f"tile_{tiling.slice_idx}_{result.tile_idx}_in", torch.tensor([])).tolist()}
+                    with open(input_path, "w") as f:
+                        json.dump(tile_inputs, f)
+
+                    extracted = self._extract_jstprove_tile_outputs(witness_path, num_inputs, tiling)
+                    if extracted is None:
+                        logger.error(f"Failed to extract outputs from tile witness {result.task_id}")
+                        return None
+
+                    with open(output_path, "w") as f:
+                        json.dump(extracted, f)
+
+                    verified = self._jstprove_runner.verify(
+                        proof_path=proof_path,
+                        circuit_path=circuit_path,
+                        input_path=input_path,
+                        output_path=output_path,
+                        witness_path=witness_path,
+                    )
+                    if not verified:
+                        logger.error(f"Tile proof verification failed for {result.task_id}")
+                        return None
+
+                    return extracted
+
                 elif backend == Backend.EZKL:
+                    if not self._ezkl_runner:
+                        logger.error(f"EZKL runner not available for tile {result.task_id}")
+                        return None
+
+                    settings_path = meta.ezkl_settings_path or meta.settings_path
+                    vk_path = meta.ezkl_vk_path or meta.vk_path
+                    if settings_path:
+                        settings_path = RunnerUtils.resolve_relative_path(settings_path, state.slices_path)
+                    if vk_path:
+                        vk_path = RunnerUtils.resolve_relative_path(vk_path, state.slices_path)
+
+                    verified = self._ezkl_runner.verify(
+                        proof_path=proof_path,
+                        settings_path=settings_path,
+                        vk_path=vk_path,
+                    )
+                    if not verified:
+                        logger.error(f"Tile proof verification failed for {result.task_id}")
+                        return None
+
                     return self._extract_ezkl_outputs(witness_path, meta)
+
                 else:
                     logger.error(f"Unknown backend for tile output extraction: {backend}")
                     return None

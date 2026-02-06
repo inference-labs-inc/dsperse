@@ -668,7 +668,7 @@ class Runner:
             ezkl_runner=self.ezkl_runner,
         )
 
-        input_tensor, output_shape, input_name = cs_executor.prepare_config(meta)
+        input_tensor, output_shape, _input_name = cs_executor.prepare_config(meta)
         if input_tensor is None:
             err = (
                 "missing_channel_split_info"
@@ -922,15 +922,16 @@ class Runner:
             )
         )
 
-        results = self._run(input_json_path=input_json_path, backend=backend)
-
-        if detected_format != "dirs" and self.lazy and self.slices_path.exists():
-            shutil.rmtree(self.slices_path, ignore_errors=True)
-            logger.debug(f"Lazy mode: cleaned up metadata directory {self.slices_path}")
-        elif detected_format != "dirs" and not self.lazy:
-            self.slices_path = Converter.convert(
-                str(self.slices_path), output_type=detected_format, cleanup=True
-            )
+        try:
+            results = self._run(input_json_path=input_json_path, backend=backend)
+        finally:
+            if detected_format != "dirs" and self.lazy and self.slices_path.exists():
+                shutil.rmtree(self.slices_path, ignore_errors=True)
+                logger.debug(f"Lazy mode: cleaned up metadata directory {self.slices_path}")
+            elif detected_format != "dirs" and not self.lazy:
+                self.slices_path = Converter.convert(
+                    str(self.slices_path), output_type=detected_format, cleanup=True
+                )
 
         return results
 

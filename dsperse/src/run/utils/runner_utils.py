@@ -196,6 +196,8 @@ class RunnerUtils:
                 input_data = input_data['input_data']
             elif 'input' in input_data:
                 input_data = input_data['input']
+            elif len(input_data) == 1:
+                input_data = next(iter(input_data.values()))
 
         if isinstance(input_data, list) and len(input_data) == 0:
             raise ValueError("Input data list is empty")

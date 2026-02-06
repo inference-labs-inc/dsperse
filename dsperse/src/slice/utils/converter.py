@@ -6,6 +6,7 @@ This module centralizes conversion so higher-level orchestrators (like Slicer) c
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import shutil
@@ -442,11 +443,16 @@ class Converter:
             out = archive_path.parent / archive_path.stem
         out.mkdir(parents=True, exist_ok=True)
 
+        found_metadata = False
         with zipfile.ZipFile(archive_path, "r") as zipf:
             for name in zipf.namelist():
                 if name == "metadata.json" or name.endswith("/metadata.json"):
                     zipf.extract(name, out)
                     logger.info(f"Extracted {name} from {archive_path.name}")
+                    found_metadata = True
+
+        if not found_metadata:
+            raise FileNotFoundError(f"No metadata.json found in {archive_path}")
 
         return out
 
@@ -493,18 +499,10 @@ class Converter:
                 if dslice_data is None:
                     raise ValueError(f"Slice {slice_id} not found in {archive_path}")
 
-                import tempfile
-
-                with tempfile.NamedTemporaryFile(suffix=".dslice", delete=False) as tmp:
-                    tmp.write(dslice_data)
-                    tmp_path = Path(tmp.name)
-
-                try:
-                    slice_dir.mkdir(parents=True, exist_ok=True)
-                    Converter._unzip_file(tmp_path, slice_dir)
-                    logger.info(f"Extracted {slice_id} from {archive_path.name}")
-                finally:
-                    tmp_path.unlink(missing_ok=True)
+                slice_dir.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(io.BytesIO(dslice_data), "r") as inner_zipf:
+                    inner_zipf.extractall(slice_dir)
+                logger.info(f"Extracted {slice_id} from {archive_path.name}")
 
         elif archive_path.is_dir():
             dslice_file = archive_path / dslice_name

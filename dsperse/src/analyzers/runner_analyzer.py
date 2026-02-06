@@ -106,13 +106,20 @@ class RunnerAnalyzer:
                 settings_rel = jst.files.settings
                 pk_rel = None
                 vk_rel = None
-            else:
+            elif ezkl_comp.compiled:
                 backend = Backend.EZKL
-                compiled_flag = ezkl_comp.compiled
+                compiled_flag = True
                 compiled_rel = ezkl_comp.files.compiled
                 settings_rel = ezkl_comp.files.settings
                 pk_rel = ezkl_comp.files.pk_key
                 vk_rel = ezkl_comp.files.vk_key
+            else:
+                backend = Backend.ONNX
+                compiled_flag = False
+                compiled_rel = None
+                settings_rel = None
+                pk_rel = None
+                vk_rel = None
 
             circuit_path = _norm(compiled_rel)
             settings_path = _norm(settings_rel)
@@ -220,13 +227,20 @@ class RunnerAnalyzer:
                 settings_path = _join(jst.files.settings)
                 pk_path = None
                 vk_path = None
-            else:
+            elif ezkl_comp.compiled:
                 backend = Backend.EZKL
-                compiled_flag = ezkl_comp.compiled
+                compiled_flag = True
                 circuit_path = _join(ezkl_comp.files.compiled)
                 settings_path = _join(ezkl_comp.files.settings)
                 pk_path = _join(ezkl_comp.files.pk_key)
                 vk_path = _join(ezkl_comp.files.vk_key)
+            else:
+                backend = Backend.ONNX
+                compiled_flag = False
+                circuit_path = None
+                settings_path = None
+                pk_path = None
+                vk_path = None
 
             jstprove_circuit_path = _join(jst.files.compiled)
             ezkl_circuit_path = _join(ezkl_comp.files.compiled)
@@ -322,7 +336,7 @@ class RunnerAnalyzer:
                 continue
             circuit_path = meta.circuit_path
             onnx_path = meta.path
-            backend = meta.backend or Backend.EZKL
+            backend = meta.backend or Backend.ONNX
             jst_circuit = meta.jstprove_circuit_path
             ezkl_circuit = meta.ezkl_circuit_path
             has_jst = bool(jst_circuit)

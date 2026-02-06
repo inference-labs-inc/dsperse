@@ -166,7 +166,10 @@ class RunnerUtils:
         elif isinstance(data, dict) and len(data) == 1:
             tensor_data = next(iter(data.values()))
         else:
-            tensor_data = []
+            raise ValueError(
+                f"Cannot extract tensor data from input file {in_file}: "
+                f"expected 'input_data', 'input', or single-key dict, got keys {list(data.keys()) if isinstance(data, dict) else type(data).__name__}"
+            )
         tensor = torch.tensor(tensor_data)
         flattened = tensor.flatten().tolist()
         ezkl_file = in_file.parent / "input_ezkl.json"

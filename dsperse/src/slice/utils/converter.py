@@ -484,7 +484,7 @@ class Converter:
         out.mkdir(parents=True, exist_ok=True)
 
         slice_dir = out / slice_id
-        if slice_dir.exists() and (slice_dir / "payload").exists():
+        if Converter._is_slice_dir(slice_dir):
             logger.debug(f"Slice {slice_id} already extracted at {slice_dir}")
             return slice_dir
 

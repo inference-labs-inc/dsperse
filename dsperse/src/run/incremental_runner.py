@@ -731,6 +731,9 @@ class IncrementalRunner:
         except Exception as e:
             state.failed_slices.append(pending.slice_id)
             logger.exception(f"Failed to reconstruct tiled slice {pending.slice_id}: {e}")
+            nodes = state.run_metadata.execution_chain.nodes
+            node = nodes.get(pending.slice_id)
+            state.current_slice_id = node.next if node else None
             state.pending_tiled_slice = None
             return False
 
@@ -1078,13 +1081,17 @@ class IncrementalRunner:
                 )
 
             output_tensor = RunnerUtils.extract_output_tensor(result)
-            outputs = {
-                "output_data": (
-                    output_tensor.tolist()
-                    if hasattr(output_tensor, "tolist")
-                    else output_tensor
-                )
-            }
+            if output_tensor is None:
+                logger.error(f"Failed to extract output tensor for slice {task.slice_id}")
+                outputs = {"output_data": None}
+            else:
+                outputs = {
+                    "output_data": (
+                        output_tensor.tolist()
+                        if hasattr(output_tensor, "tolist")
+                        else output_tensor
+                    )
+                }
 
             return SliceResult(
                 slice_id=task.slice_id,

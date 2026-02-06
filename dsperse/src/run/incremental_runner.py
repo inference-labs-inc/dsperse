@@ -344,7 +344,15 @@ class IncrementalRunner:
             return
 
         tile_executor = TileExecutor(state.slices_path, state.tensor_cache)
-        input_tensor = tile_executor.get_input_tensor(slice_id, tiling, meta)
+        try:
+            input_tensor = tile_executor.get_input_tensor(slice_id, tiling, meta)
+        except ValueError as e:
+            logger.error(f"Failed to get input tensor for tiled slice {slice_id}: {e}")
+            state.failed_slices.append(slice_id)
+            nodes = state.run_metadata.execution_chain.nodes
+            node = nodes.get(slice_id)
+            state.current_slice_id = node.next if node else None
+            return
         tile_executor.split_into_tiles(slice_id, tiling, input_tensor)
 
         state.pending_tiled_slice = PendingTiledSlice(
@@ -711,6 +719,9 @@ class IncrementalRunner:
                 f"Tiled slice {pending.slice_id} failed: "
                 f"{len(pending.failed_tiles)} tiles failed"
             )
+            nodes = state.run_metadata.execution_chain.nodes
+            node = nodes.get(pending.slice_id)
+            state.current_slice_id = node.next if node else None
             state.pending_tiled_slice = None
             return False
 
@@ -913,11 +924,12 @@ class IncrementalRunner:
         try:
             witness_data = load_witness(str(witness_path), ZKProofSystems.Expander)
 
-            num_inputs = sum(
-                np.prod([d for d in shape if isinstance(d, int)])
-                for shape in (meta.input_shape or [])
-            )
-            num_inputs = int(num_inputs) if num_inputs > 0 else 0
+            num_inputs = 0
+            for shape in (meta.input_shape or []):
+                int_dims = [d for d in shape if isinstance(d, int)]
+                if int_dims:
+                    num_inputs += int(np.prod(int_dims))
+            num_inputs = num_inputs if num_inputs > 0 else 0
 
             extracted = extract_io_from_witness(witness_data, num_inputs)
             if extracted is None:

@@ -1049,6 +1049,16 @@ class IncrementalRunner:
                 )
 
             if not onnx_path or not Path(onnx_path).exists():
+                dslice_path = state.slices_path / f"{task.slice_id}.dslice"
+                if dslice_path.exists():
+                    logger.info(f"Extracting {task.slice_id} from {dslice_path}")
+                    Converter.extract_single_slice(state.slices_path, task.slice_id, state.slices_path)
+                    if meta:
+                        onnx_path = RunnerUtils.resolve_relative_path(
+                            task.onnx_path or meta.path, state.slices_path / task.slice_id
+                        )
+
+            if not onnx_path or not Path(onnx_path).exists():
                 return SliceResult(
                     slice_id=task.slice_id,
                     success=False,

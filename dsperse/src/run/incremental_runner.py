@@ -595,11 +595,17 @@ class IncrementalRunner:
 
                     input_path = tmp / "input.json"
                     output_path = tmp / "output.json"
-                    tile_inputs = {"input_data": state.tensor_cache.get(f"tile_{tiling.slice_idx}_{result.tile_idx}_in", torch.tensor([])).tolist()}
+                    cache_key = f"tile_{tiling.slice_idx}_{result.tile_idx}_in"
+                    if cache_key not in state.tensor_cache:
+                        raise RuntimeError(
+                            f"Missing tile input in tensor_cache: {cache_key} "
+                            f"(slice_idx={tiling.slice_idx}, tile_idx={result.tile_idx})"
+                        )
+                    tile_inputs = {"input_data": state.tensor_cache[cache_key].tolist()}
                     with open(input_path, "w") as f:
                         json.dump(tile_inputs, f)
 
-                    extracted = self._extract_jstprove_tile_outputs(witness_path, num_inputs, tiling)
+                    extracted = self._extract_jstprove_tile_outputs(witness_path, num_inputs)
                     if extracted is None:
                         logger.error(f"Failed to extract outputs from tile witness {result.task_id}")
                         return None
@@ -641,7 +647,7 @@ class IncrementalRunner:
                         logger.error(f"Tile proof verification failed for {result.task_id}")
                         return None
 
-                    return self._extract_ezkl_outputs(witness_path, meta)
+                    return self._extract_ezkl_outputs(witness_path)
 
                 else:
                     logger.error(f"Unknown backend for tile output extraction: {backend}")
@@ -655,7 +661,6 @@ class IncrementalRunner:
         self,
         witness_path: Path,
         num_inputs: int,
-        tiling: TilingInfo,
     ) -> Optional[dict[str, Any]]:
         """Extract outputs from JSTprove witness for a tile."""
         if not HAS_WITNESS_UTILS:
@@ -687,7 +692,11 @@ class IncrementalRunner:
         outputs: dict[str, Any],
     ) -> bool:
         """Store tile output in tensor cache for later reconstruction."""
-        output_data = outputs.get("output_data") or outputs.get("output") or outputs
+        output_data = outputs.get("output_data")
+        if output_data is None:
+            output_data = outputs.get("output")
+        if output_data is None:
+            output_data = outputs
 
         tensor = self._to_tensor(output_data)
         if tensor is None:
@@ -756,7 +765,11 @@ class IncrementalRunner:
 
     def _validate_outputs(self, meta: RunSliceMetadata, outputs: dict[str, Any]) -> Optional[str]:
         """Validate output data for shape correctness and NaN/Inf values."""
-        output_data = outputs.get("output_data") or outputs.get("output") or outputs
+        output_data = outputs.get("output_data")
+        if output_data is None:
+            output_data = outputs.get("output")
+        if output_data is None:
+            output_data = outputs
 
         if output_data is None:
             return "No output data provided"
@@ -917,7 +930,7 @@ class IncrementalRunner:
         if backend == Backend.JSTPROVE:
             return self._extract_jstprove_outputs(witness_path, meta)
         elif backend == Backend.EZKL:
-            return self._extract_ezkl_outputs(witness_path, meta)
+            return self._extract_ezkl_outputs(witness_path)
         else:
             logger.error(f"Unknown backend for output extraction: {backend}")
             return None
@@ -960,7 +973,6 @@ class IncrementalRunner:
     def _extract_ezkl_outputs(
         self,
         witness_path: Path,
-        meta: RunSliceMetadata,
     ) -> Optional[dict[str, Any]]:
         """Extract outputs from EZKL witness format."""
         try:
@@ -992,12 +1004,13 @@ class IncrementalRunner:
         outputs: dict[str, Any],
     ) -> None:
         """Update tensor cache with slice outputs."""
-        output_data = (
-            outputs.get("output_data")
-            or outputs.get("rescaled_output")
-            or outputs.get("output")
-            or outputs
-        )
+        output_data = outputs.get("output_data")
+        if output_data is None:
+            output_data = outputs.get("rescaled_output")
+        if output_data is None:
+            output_data = outputs.get("output")
+        if output_data is None:
+            output_data = outputs
 
         if isinstance(output_data, dict):
             for name, value in output_data.items():
@@ -1105,15 +1118,19 @@ class IncrementalRunner:
             output_tensor = RunnerUtils.extract_output_tensor(result)
             if output_tensor is None:
                 logger.error(f"Failed to extract output tensor for slice {task.slice_id}")
-                outputs = {"output_data": None}
-            else:
-                outputs = {
-                    "output_data": (
-                        output_tensor.tolist()
-                        if hasattr(output_tensor, "tolist")
-                        else output_tensor
-                    )
-                }
+                return SliceResult(
+                    slice_id=task.slice_id,
+                    success=False,
+                    error="Failed to extract output tensor from ONNX inference result",
+                )
+
+            outputs = {
+                "output_data": (
+                    output_tensor.tolist()
+                    if hasattr(output_tensor, "tolist")
+                    else output_tensor
+                )
+            }
 
             return SliceResult(
                 slice_id=task.slice_id,

@@ -3,6 +3,7 @@ Utility functions to convert sliced directory outputs into dslice files or a sin
 
 This module centralizes conversion so higher-level orchestrators (like Slicer) can remain minimal.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,12 @@ logger = logging.getLogger(__name__)
 class Converter:
 
     @staticmethod
-    def convert(path: str, output_type: str = "dirs", output_path: str = None, cleanup: bool = True):
+    def convert(
+        path: str,
+        output_type: str = "dirs",
+        output_path: str = None,
+        cleanup: bool = True,
+    ):
         """Convert between dslices, dsperse, or directory outputs.
 
         Args:
@@ -68,54 +74,63 @@ class Converter:
         elif current_type == "dsperse":
             if output_type == "dirs":
                 # Extract and expand contained .dslice files into slice_* directories
-                result = Converter._dsperse_to_dirs(path_obj, output_path, expand_slices=True)
+                result = Converter._dsperse_to_dirs(
+                    path_obj, output_path, expand_slices=True
+                )
                 if cleanup:
                     try:
                         path_obj.unlink()
                         logger.info(f"Removed source dsperse file: {path_obj}")
                     except Exception as e:
-                        logger.warning(f"Could not remove source dsperse file {path_obj}: {e}")
+                        logger.warning(
+                            f"Could not remove source dsperse file {path_obj}: {e}"
+                        )
                 return result
             elif output_type == "dslice":
                 # Convert dsperse -> dirs (without expanding slices)
-                temp_dirs = Converter._dsperse_to_dirs(path_obj, None, expand_slices=False)
+                temp_dirs = Converter._dsperse_to_dirs(
+                    path_obj, None, expand_slices=False
+                )
                 # The dsperse already contains dslices, so just return the directory
-                logger.info(f"Extracted dsperse to directory with dslice files: {temp_dirs}")
+                logger.info(
+                    f"Extracted dsperse to directory with dslice files: {temp_dirs}"
+                )
                 if cleanup:
                     try:
                         path_obj.unlink()
                         logger.info(f"Removed source dsperse file: {path_obj}")
                     except Exception as e:
-                        logger.warning(f"Could not remove source dsperse file {path_obj}: {e}")
+                        logger.warning(
+                            f"Could not remove source dsperse file {path_obj}: {e}"
+                        )
                 return temp_dirs
 
     @staticmethod
     def detect_type(path: str | Path) -> str:
-        """Detect the type of the given path.
-        """
+        """Detect the type of the given path."""
         # Convert string to Path if needed
         path = Path(path) if isinstance(path, str) else path
 
         if path.is_file():
-            if path.suffix == '.dsperse':
-                return 'dsperse'
-            elif path.suffix == '.dslice':
-                return 'dslice'
+            if path.suffix == ".dsperse":
+                return "dsperse"
+            elif path.suffix == ".dslice":
+                return "dslice"
             else:
                 raise ValueError(f"Unknown file type: {path.suffix}")
 
         elif path.is_dir():
             # Check if it contains slice_* directories (dirs format)
-            if any(d.is_dir() and d.name.startswith('slice_') for d in path.iterdir()):
-                return 'dirs'
+            if any(d.is_dir() and d.name.startswith("slice_") for d in path.iterdir()):
+                return "dirs"
 
             # Check if it's a single slice directory
             if Converter._is_slice_dir(path):
-                return 'dirs'
+                return "dirs"
 
             # Check if it contains dslice files at root
-            if any(f.is_file() and f.suffix == '.dslice' for f in path.iterdir()):
-                return 'dslice'
+            if any(f.is_file() and f.suffix == ".dslice" for f in path.iterdir()):
+                return "dslice"
 
             raise ValueError(f"Cannot determine type of directory at {path}")
 
@@ -139,7 +154,17 @@ class Converter:
         Also supports zipping a single slice directory (metadata.json + payload/) into <dir>.dslice.
         """
         # Find all slice_* directories
-        slice_dirs = sorted([d for d in path.iterdir() if d.is_dir() and d.name.startswith('slice_')]) if path.is_dir() else []
+        slice_dirs = (
+            sorted(
+                [
+                    d
+                    for d in path.iterdir()
+                    if d.is_dir() and d.name.startswith("slice_")
+                ]
+            )
+            if path.is_dir()
+            else []
+        )
 
         # If no slice_* subdirectories, but the provided path itself is a slice directory, zip it directly
         if not slice_dirs:
@@ -163,7 +188,9 @@ class Converter:
                         shutil.rmtree(path)
                         logger.info(f"Removed {path}")
                     except Exception as e:
-                        logger.warning(f"Could not remove source slice directory {path}: {e}")
+                        logger.warning(
+                            f"Could not remove source slice directory {path}: {e}"
+                        )
 
                 return str(dslice_out)
             else:
@@ -205,7 +232,9 @@ class Converter:
         - metadata.json
         """
         # Find all slice_* directories
-        slice_dirs = sorted([d for d in path.iterdir() if d.is_dir() and d.name.startswith('slice_')])
+        slice_dirs = sorted(
+            [d for d in path.iterdir() if d.is_dir() and d.name.startswith("slice_")]
+        )
 
         if not slice_dirs:
             raise ValueError(f"No slice_* directories found in {path}")
@@ -214,7 +243,7 @@ class Converter:
         dslice_files = []
         for slice_dir in slice_dirs:
             # Extract the number from slice_X to name the dslice file
-            slice_num = slice_dir.name.split('_')[-1]
+            slice_num = slice_dir.name.split("_")[-1]
             dslice_out = path / f"slice_{slice_num}.dslice"
             Converter._zip_directory(slice_dir, dslice_out)
             dslice_files.append(dslice_out)
@@ -235,7 +264,7 @@ class Converter:
 
         # Zip the entire directory: *.dslice + metadata.json -> <slices_name>.dsperse
         # Exclude slice_* directories since we already have them as .dslice files
-        Converter._zip_directory(path, dsperse_out, exclude_patterns=['slice_*'])
+        Converter._zip_directory(path, dsperse_out, exclude_patterns=["slice_*"])
         logger.info(f"Created dsperse archive: {dsperse_out}")
 
         # Cleanup: remove .dslice files and slice_* dirs
@@ -284,7 +313,7 @@ class Converter:
 
         elif path.is_dir():
             # Directory containing multiple dslice files
-            dslice_files = sorted([f for f in path.iterdir() if f.suffix == '.dslice'])
+            dslice_files = sorted([f for f in path.iterdir() if f.suffix == ".dslice"])
 
             if not dslice_files:
                 raise ValueError(f"No .dslice files found in {path}")
@@ -306,13 +335,15 @@ class Converter:
 
     # ===== dsperse -> dirs =====
     @staticmethod
-    def _dsperse_to_dirs(path: Path, output_path: str = None, expand_slices: bool = False) -> str:
+    def _dsperse_to_dirs(
+        path: Path, output_path: str = None, expand_slices: bool = False
+    ) -> str:
         """Convert dsperse file to directory format.
 
         Unzips .dsperse file (contains *.dslice + metadata.json at root level),
         optionally expanding the .dslice files into slice_* directories.
         """
-        if not path.is_file() or path.suffix != '.dsperse':
+        if not path.is_file() or path.suffix != ".dsperse":
             raise ValueError(f"Expected .dsperse file, got {path}")
 
         if output_path:
@@ -328,7 +359,9 @@ class Converter:
 
         # If expand_slices is True, extract the dslice files into slice_* directories
         if expand_slices:
-            dslice_files = sorted([f for f in output_dir.iterdir() if f.suffix == '.dslice'])
+            dslice_files = sorted(
+                [f for f in output_dir.iterdir() if f.suffix == ".dslice"]
+            )
             for dslice_file in dslice_files:
                 # Extract to slice_* directory at the output_dir level
                 slice_dir = output_dir / dslice_file.stem
@@ -341,11 +374,13 @@ class Converter:
 
     # ===== Helper methods =====
     @staticmethod
-    def _zip_directory(source_dir: Path, output_file: Path, exclude_patterns: list = None):
+    def _zip_directory(
+        source_dir: Path, output_file: Path, exclude_patterns: list = None
+    ):
         """Zip a directory to a file, preserving the internal structure."""
         exclude_patterns = exclude_patterns or []
 
-        with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        with zipfile.ZipFile(output_file, "w", zipfile.ZIP_DEFLATED) as zipf:
             for root, dirs, files in os.walk(source_dir):
                 root_path = Path(root)
 
@@ -354,10 +389,10 @@ class Converter:
                     rel_root = root_path.relative_to(source_dir)
                     skip = False
                     for pattern in exclude_patterns:
-                        if pattern.startswith('*'):
+                        if pattern.startswith("*"):
                             # Match file extension patterns
                             pass  # We'll check files individually
-                        elif str(rel_root).startswith(pattern.replace('*', '')):
+                        elif str(rel_root).startswith(pattern.replace("*", "")):
                             skip = True
                             break
                     if skip:
@@ -368,7 +403,7 @@ class Converter:
                     if exclude_patterns:
                         skip_file = False
                         for pattern in exclude_patterns:
-                            if pattern.startswith('*') and file.endswith(pattern[1:]):
+                            if pattern.startswith("*") and file.endswith(pattern[1:]):
                                 skip_file = True
                                 break
                         if skip_file:
@@ -381,8 +416,127 @@ class Converter:
     @staticmethod
     def _unzip_file(zip_file: Path, output_dir: Path):
         """Unzip a file to a directory, preserving the internal structure."""
-        with zipfile.ZipFile(zip_file, 'r') as zipf:
+        with zipfile.ZipFile(zip_file, "r") as zipf:
             zipf.extractall(output_dir)
+
+    @staticmethod
+    def extract_metadata_only(
+        archive_path: str | Path, output_dir: str | Path = None
+    ) -> Path:
+        """Extract only the top-level metadata.json from a .dsperse archive.
+
+        Args:
+            archive_path: Path to the .dsperse file
+            output_dir: Optional output directory. If not provided, extracts alongside the archive.
+
+        Returns:
+            Path to the directory containing metadata.json (and .dslice files still inside archive)
+        """
+        archive_path = Path(archive_path)
+        if not archive_path.is_file() or archive_path.suffix != ".dsperse":
+            raise ValueError(f"Expected .dsperse file, got {archive_path}")
+
+        if output_dir:
+            out = Path(output_dir)
+        else:
+            out = archive_path.parent / archive_path.stem
+        out.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(archive_path, "r") as zipf:
+            for name in zipf.namelist():
+                if name == "metadata.json" or name.endswith("/metadata.json"):
+                    zipf.extract(name, out)
+                    logger.info(f"Extracted {name} from {archive_path.name}")
+
+        return out
+
+    @staticmethod
+    def extract_single_slice(
+        archive_path: str | Path, slice_id: str, output_dir: str | Path = None
+    ) -> Path:
+        """Extract a single slice from a .dsperse archive or directory of .dslice files.
+
+        Args:
+            archive_path: Path to the .dsperse file or directory containing .dslice files
+            slice_id: The slice identifier (e.g., "slice_0")
+            output_dir: Optional output directory. If not provided, extracts alongside the archive.
+
+        Returns:
+            Path to the extracted slice directory
+        """
+        archive_path = Path(archive_path)
+        dslice_name = f"{slice_id}.dslice"
+
+        if output_dir:
+            out = Path(output_dir)
+        else:
+            out = (
+                archive_path.parent / archive_path.stem
+                if archive_path.is_file()
+                else archive_path
+            )
+        out.mkdir(parents=True, exist_ok=True)
+
+        slice_dir = out / slice_id
+        if slice_dir.exists() and (slice_dir / "payload").exists():
+            logger.debug(f"Slice {slice_id} already extracted at {slice_dir}")
+            return slice_dir
+
+        if archive_path.is_file() and archive_path.suffix == ".dsperse":
+            with zipfile.ZipFile(archive_path, "r") as zipf:
+                dslice_data = None
+                for name in zipf.namelist():
+                    if name == dslice_name or name.endswith(f"/{dslice_name}"):
+                        dslice_data = zipf.read(name)
+                        break
+
+                if dslice_data is None:
+                    raise ValueError(f"Slice {slice_id} not found in {archive_path}")
+
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(suffix=".dslice", delete=False) as tmp:
+                    tmp.write(dslice_data)
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    slice_dir.mkdir(parents=True, exist_ok=True)
+                    Converter._unzip_file(tmp_path, slice_dir)
+                    logger.info(f"Extracted {slice_id} from {archive_path.name}")
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+
+        elif archive_path.is_dir():
+            dslice_file = archive_path / dslice_name
+            if not dslice_file.exists():
+                dslice_file = out / dslice_name
+
+            if dslice_file.exists():
+                slice_dir.mkdir(parents=True, exist_ok=True)
+                Converter._unzip_file(dslice_file, slice_dir)
+                logger.info(f"Extracted {slice_id} from {dslice_file}")
+            else:
+                raise ValueError(
+                    f"Slice file {dslice_name} not found in {archive_path}"
+                )
+        else:
+            raise ValueError(f"Cannot extract slice from {archive_path}")
+
+        return slice_dir
+
+    @staticmethod
+    def cleanup_extracted_slice(slices_dir: str | Path, slice_id: str) -> None:
+        """Remove an extracted slice directory to free disk space.
+
+        Args:
+            slices_dir: Path to the slices directory
+            slice_id: The slice identifier (e.g., "slice_0")
+        """
+        slice_dir = Path(slices_dir) / slice_id
+        if slice_dir.exists() and slice_dir.is_dir():
+            shutil.rmtree(slice_dir)
+            logger.debug(f"Cleaned up extracted slice: {slice_dir}")
+
 
 if __name__ == "__main__":
     # Basic logger setup when running this module directly

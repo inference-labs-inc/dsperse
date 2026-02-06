@@ -981,7 +981,12 @@ class IncrementalRunner:
         outputs: dict[str, Any],
     ) -> None:
         """Update tensor cache with slice outputs."""
-        output_data = outputs.get("output_data") or outputs.get("output") or outputs
+        output_data = (
+            outputs.get("output_data")
+            or outputs.get("rescaled_output")
+            or outputs.get("output")
+            or outputs
+        )
 
         if isinstance(output_data, dict):
             for name, value in output_data.items():

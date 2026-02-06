@@ -192,9 +192,9 @@ class Utils:
         return shapes
 
     @staticmethod
-    def write_input(tensor: torch.Tensor, file_path):
-        """Write tensor to input.json format."""
-        data = {"input_data": tensor.tolist()}
+    def write_input(tensor: torch.Tensor, file_path, input_name: str = "input_data"):
+        """Write tensor to input.json format with the specified input name as key."""
+        data = {input_name: tensor.tolist()}
         with open(file_path, 'w') as f:
             json.dump(data, f)
 
@@ -225,6 +225,11 @@ class Utils:
             if isinstance(first, dict) and "data" in first:
                 found_key = "inputs[0].data"
                 array_like = first["data"]
+
+        # If still not found and dict has exactly one key, use that value
+        if array_like is None and isinstance(data, dict) and len(data) == 1:
+            found_key = next(iter(data.keys()))
+            array_like = data[found_key]
 
         if array_like is None:
             raise KeyError("Could not find input tensor data in JSON. Expected one of keys: " + ", ".join(candidate_keys))

@@ -534,8 +534,11 @@ class Converter:
         """
         slice_dir = Path(slices_dir) / slice_id
         if slice_dir.exists() and slice_dir.is_dir():
-            shutil.rmtree(slice_dir)
-            logger.debug(f"Cleaned up extracted slice: {slice_dir}")
+            try:
+                shutil.rmtree(slice_dir)
+                logger.debug(f"Cleaned up extracted slice: {slice_dir}")
+            except OSError as e:
+                logger.warning(f"Could not clean up slice {slice_dir}: {e}")
 
 
 if __name__ == "__main__":

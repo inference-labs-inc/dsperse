@@ -4,6 +4,7 @@ Runner for EzKL Circuit and ONNX Inference
 
 import logging
 import os
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
@@ -64,7 +65,6 @@ class Runner:
         self.last_run_dir: Path | None = None
         self.tensor_cache: dict | None = None
         self._archive_path: Path | None = None
-        self._archive_format: str | None = None
         self._extracted_slices: set[str] = set()
 
         try:
@@ -532,6 +532,7 @@ class Runner:
 
         jobs = []
         has_tensors = "tile_tensor" in tile_args_list[0]
+        tile_input_name = tiling.input_name or "tile_in"
         for args in tile_args_list:
             tile_out = Path(args["tile_out"])
             witness_path = tile_out.parent / f"{tile_out.stem}_witness.bin"
@@ -540,7 +541,7 @@ class Runner:
                 "witness": str(witness_path),
             }
             if has_tensors:
-                job["_tensor_inputs"] = {"input_data": args["tile_tensor"].tolist()}
+                job["_tensor_inputs"] = {tile_input_name: args["tile_tensor"].tolist()}
             else:
                 job["input"] = args["tile_in"]
             jobs.append(job)
@@ -895,17 +896,16 @@ class Runner:
             raise Exception("A valid path must be provided for slices")
         self.slices_path = Path(slice_path)
 
-        format = Converter.detect_type(self.slices_path)
-        self._archive_format = format
-        self._archive_path = self.slices_path if format != "dirs" else None
+        detected_format = Converter.detect_type(self.slices_path)
+        self._archive_path = self.slices_path if detected_format != "dirs" else None
         self._extracted_slices.clear()
 
-        if format != "dirs":
+        if detected_format != "dirs":
             if self.lazy:
                 slices_path = Converter.extract_metadata_only(str(self.slices_path))
                 self.slices_path = Path(slices_path)
                 logger.info(
-                    f"Lazy mode: extracted metadata only, slices will be extracted on-demand"
+                    "Lazy mode: extracted metadata only, slices will be extracted on-demand"
                 )
             else:
                 slices_path = Converter.convert(
@@ -918,15 +918,18 @@ class Runner:
                 self.slices_path,
                 run_dir=self.run_dir,
                 output_path=output_path,
-                format=format,
+                format=detected_format,
             )
         )
 
         results = self._run(input_json_path=input_json_path, backend=backend)
 
-        if format != "dirs" and not self.lazy:
+        if detected_format != "dirs" and self.lazy and self.slices_path.exists():
+            shutil.rmtree(self.slices_path, ignore_errors=True)
+            logger.debug(f"Lazy mode: cleaned up metadata directory {self.slices_path}")
+        elif detected_format != "dirs" and not self.lazy:
             self.slices_path = Converter.convert(
-                str(self.slices_path), output_type=format, cleanup=True
+                str(self.slices_path), output_type=detected_format, cleanup=True
             )
 
         return results

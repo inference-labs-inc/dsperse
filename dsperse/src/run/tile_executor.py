@@ -139,7 +139,8 @@ class TileExecutor:
             tile_run_dir = run_dir / f"slice_{slice_idx}" / f"tile_{tile_idx}"
             tile_run_dir.mkdir(parents=True, exist_ok=True)
             tile_in, tile_out = tile_run_dir / "input.json", tile_run_dir / "output.json"
-            Utils.write_input(tile_tensor, str(tile_in))
+            tile_input_name = tiling.input_name or "tile_in"
+            Utils.write_input(tile_tensor, str(tile_in), tile_input_name)
 
             this_tile_onnx = (
                 self._resolve_path(tiling.tiles[tile_idx].path) if config['has_per_tile_onnx']

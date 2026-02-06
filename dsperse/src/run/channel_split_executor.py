@@ -63,7 +63,8 @@ class ChannelSplitExecutor:
         group_dir.mkdir(parents=True, exist_ok=True)
         in_file = group_dir / "input.json"
         out_file = group_dir / "output.json"
-        Utils.write_input(torch.from_numpy(input_arr), in_file)
+        group_input_name = f"group_{group.group_idx}_in"
+        Utils.write_input(torch.from_numpy(input_arr), in_file, group_input_name)
 
         def _extract_and_reshape(result):
             tensor = self._extract_output_tensor(result)

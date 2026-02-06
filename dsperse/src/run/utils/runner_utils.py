@@ -159,7 +159,15 @@ class RunnerUtils:
         """Create flattened rank-2 input file for EZKL, return path to it."""
         with open(in_file, 'r') as f:
             data = json.load(f)
-        tensor = torch.tensor(data.get("input_data", data.get("input", [])))
+        if "input_data" in data:
+            tensor_data = data["input_data"]
+        elif "input" in data:
+            tensor_data = data["input"]
+        elif isinstance(data, dict) and len(data) == 1:
+            tensor_data = next(iter(data.values()))
+        else:
+            tensor_data = []
+        tensor = torch.tensor(tensor_data)
         flattened = tensor.flatten().tolist()
         ezkl_file = in_file.parent / "input_ezkl.json"
         with open(ezkl_file, 'w') as f:
@@ -451,7 +459,7 @@ class RunnerUtils:
                 f"Available: {list(tensor_cache.keys())}"
             )
         if not skip_write:
-            Utils.write_input(current_tensor, str(in_file))
+            Utils.write_input(current_tensor, str(in_file), input_name)
         return current_tensor
 
     @staticmethod

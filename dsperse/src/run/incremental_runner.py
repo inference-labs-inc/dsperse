@@ -992,6 +992,16 @@ class IncrementalRunner:
             output_names = meta.dependencies.output
             tensor = self._to_tensor(output_data)
             if tensor is not None and output_names:
+                if meta.output_shape and len(meta.output_shape) > 0:
+                    expected_shape = meta.output_shape[0]
+                    int_shape = [d for d in expected_shape if isinstance(d, int)]
+                    if int_shape and tensor.dim() == 1:
+                        expected_numel = 1
+                        for d in int_shape:
+                            expected_numel *= d
+                        if tensor.numel() == expected_numel:
+                            tensor = tensor.reshape(int_shape)
+                            logger.debug(f"Reshaped output tensor to {int_shape}")
                 for oname in output_names:
                     state.tensor_cache[oname] = tensor
 

@@ -308,6 +308,9 @@ class IncrementalRunner:
 
             if meta.tiling and meta.tiling.num_tiles > 1:
                 yield from self._expand_tiled_slice(state, slice_id, node, meta)
+                if state.pending_tiled_slice and state.pending_tiled_slice.is_complete:
+                    self._finalize_tiled_slice(state)
+                    continue
             else:
                 inputs = self._prepare_slice_inputs(state, meta)
                 task = SliceTask(
@@ -514,8 +517,12 @@ class IncrementalRunner:
             outputs_to_use = verified_outputs
 
         if outputs_to_use is not None:
-            self._store_tile_output(state, tiling, result.tile_idx, outputs_to_use)
-            pending.completed_tiles[result.tile_idx] = result
+            if self._store_tile_output(state, tiling, result.tile_idx, outputs_to_use):
+                pending.completed_tiles[result.tile_idx] = result
+            else:
+                pending.failed_tiles.append(result.tile_idx)
+                logger.error(f"Tile {result.task_id} output storage failed")
+                return False
         else:
             pending.failed_tiles.append(result.tile_idx)
             logger.error(f"Tile {result.task_id} has no outputs to store")
@@ -670,14 +677,14 @@ class IncrementalRunner:
         tiling: TilingInfo,
         tile_idx: int,
         outputs: dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Store tile output in tensor cache for later reconstruction."""
         output_data = outputs.get("output_data") or outputs.get("output") or outputs
 
         tensor = self._to_tensor(output_data)
         if tensor is None:
-            logger.warning(f"Failed to convert tile {tile_idx} output to tensor")
-            return
+            logger.error(f"Failed to convert tile {tile_idx} output to tensor")
+            return False
 
         c_out = tiling.c_out
         if tiling.tile and tiling.tile.conv_out:
@@ -690,6 +697,7 @@ class IncrementalRunner:
 
         cache_name = f"tile_{tiling.slice_idx}_{tile_idx}_out"
         state.tensor_cache[cache_name] = tensor
+        return True
 
     def _finalize_tiled_slice(self, state: IncrementalRunState) -> bool:
         """Finalize a tiled slice after all tiles complete."""
@@ -937,7 +945,11 @@ class IncrementalRunner:
                 witness_data = json.load(f)
 
             if "pretty_elements" in witness_data:
-                rescaled = witness_data["pretty_elements"].get("rescaled_outputs", [[]])[0]
+                rescaled_outputs = witness_data["pretty_elements"].get("rescaled_outputs")
+                if rescaled_outputs and len(rescaled_outputs) > 0:
+                    rescaled = rescaled_outputs[0]
+                else:
+                    rescaled = []
                 return {"output": rescaled, "rescaled_output": rescaled}
 
             if "outputs" in witness_data:

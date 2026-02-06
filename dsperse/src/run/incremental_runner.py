@@ -1038,9 +1038,9 @@ class IncrementalRunner:
                     error="No input tensor available",
                 )
 
-            success, result = OnnxModels.run_inference(
-                model_path=onnx_path,
+            success, result = OnnxModels.run_inference_tensor(
                 input_tensor=input_tensor,
+                model_path=onnx_path,
             )
 
             if not success:

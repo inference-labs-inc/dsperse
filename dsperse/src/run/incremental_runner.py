@@ -727,7 +727,15 @@ class IncrementalRunner:
 
         try:
             tile_executor = TileExecutor(state.slices_path, state.tensor_cache)
+            output_name = pending.tiling_info.output_name
+            logger.info(f"[HANDOFF] Reconstructing tiled slice {pending.slice_id}, output_name={output_name}")
             tile_executor.reconstruct_from_tiles(pending.slice_id, pending.tiling_info)
+            logger.info(f"[HANDOFF] After reconstruct, tensor_cache keys: {list(state.tensor_cache.keys())}")
+            if output_name in state.tensor_cache:
+                t = state.tensor_cache[output_name]
+                logger.info(f"[HANDOFF] Output tensor stored: shape={list(t.shape) if hasattr(t, 'shape') else 'N/A'}")
+            else:
+                logger.error(f"[HANDOFF] OUTPUT NOT FOUND in tensor_cache after reconstruct!")
         except Exception as e:
             state.failed_slices.append(pending.slice_id)
             logger.exception(f"Failed to reconstruct tiled slice {pending.slice_id}: {e}")
@@ -1066,12 +1074,16 @@ class IncrementalRunner:
                 )
 
             input_tensor = None
+            logger.info(f"[HANDOFF] execute_onnx_slice {task.slice_id}: looking for inputs {task.input_tensor_names}")
+            logger.info(f"[HANDOFF] tensor_cache keys: {list(state.tensor_cache.keys())}")
             for name in task.input_tensor_names:
                 if name in state.tensor_cache:
                     input_tensor = state.tensor_cache[name]
+                    logger.info(f"[HANDOFF] Found input tensor '{name}' in cache")
                     break
 
             if input_tensor is None:
+                logger.error(f"[HANDOFF] No input tensor found for {task.slice_id}! Expected: {task.input_tensor_names}")
                 return SliceResult(
                     slice_id=task.slice_id,
                     success=False,

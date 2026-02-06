@@ -12,7 +12,20 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
 from python.core.circuit_models.generic_onnx import GenericModelONNX
-from python.core.utils.helper_functions import CircuitExecutionConfig, RunType, read_from_json
+from python.core.utils.helper_functions import (
+    CircuitExecutionConfig,
+    ExpanderMode,
+    RunType,
+    read_from_json,
+    run_expander_raw,
+)
+from python.core.utils.witness_utils import (
+    compare_field_values,
+    extract_io_from_witness,
+    load_witness,
+    scale_to_field,
+    ZKProofSystems,
+)
 from python.frontend.commands.base import BaseCommand
 from python.frontend.commands.batch import _run_witness_chunk_piped
 
@@ -297,6 +310,113 @@ class JSTprove:
         except Exception as e:
             logger.error(f"Proof verification failed: {e}")
             return False
+
+    def verify_with_io_extraction(
+        self,
+        circuit_path: Union[str, Path],
+        witness_bytes: bytes,
+        proof_bytes: bytes,
+        num_inputs: int,
+        expected_inputs: Optional[List] = None,
+    ) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        Verify a proof and extract cryptographically-bound inputs/outputs from the witness.
+
+        This method performs trustless verification by:
+        1. Loading the witness and extracting public inputs
+        2. Parsing inputs, outputs, and scaling parameters from the witness
+        3. Optionally comparing extracted inputs against expected inputs
+        4. Verifying the proof directly against the witness
+
+        Args:
+            circuit_path: Path to the circuit file
+            witness_bytes: Raw witness bytes
+            proof_bytes: Raw proof bytes
+            num_inputs: Number of input values in the witness public inputs
+            expected_inputs: Optional flat list of expected input values for comparison
+
+        Returns:
+            Tuple of (success, extracted_io) where extracted_io contains:
+                - "inputs": raw input values from witness
+                - "outputs": raw output values from witness
+                - "rescaled_outputs": outputs converted back to original scale
+                - "scale_base": scaling base from witness
+                - "scale_exponent": scaling exponent from witness
+                - "inputs_match": whether inputs matched expected (if provided)
+        """
+        circuit_path = Path(circuit_path)
+        if not circuit_path.exists():
+            logger.error(f"Circuit file not found: {circuit_path}")
+            return False, None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            witness_path = tmp_path / "witness.bin"
+            proof_path = tmp_path / "proof.bin"
+
+            with open(witness_path, "wb") as f:
+                f.write(witness_bytes)
+            with open(proof_path, "wb") as f:
+                f.write(proof_bytes)
+
+            try:
+                witness_data = load_witness(str(witness_path), ZKProofSystems.Expander)
+            except Exception as e:
+                logger.error(f"Failed to load witness: {e}")
+                return False, None
+
+            extracted = extract_io_from_witness(witness_data, num_inputs)
+            if extracted is None:
+                logger.error("Invalid witness structure")
+                return False, None
+
+            inputs_match = None
+            if expected_inputs is not None:
+                if len(expected_inputs) != len(extracted["inputs"]):
+                    logger.error(
+                        f"Input length mismatch: expected {len(expected_inputs)}, "
+                        f"witness has {len(extracted['inputs'])}"
+                    )
+                    return False, None
+
+                scaled_expected = scale_to_field(
+                    expected_inputs,
+                    extracted["scale_base"],
+                    extracted["scale_exponent"],
+                    extracted["modulus"],
+                )
+                inputs_match = compare_field_values(
+                    scaled_expected, extracted["inputs"], extracted["modulus"]
+                )
+                if not inputs_match:
+                    logger.error("Input verification failed: witness inputs don't match expected")
+                    return False, None
+
+            try:
+                result = run_expander_raw(
+                    mode=ExpanderMode.VERIFY,
+                    circuit_file=str(circuit_path),
+                    witness_file=str(witness_path),
+                    proof_file=str(proof_path),
+                )
+                success = result.returncode == 0
+            except Exception as e:
+                logger.error(f"Proof verification failed: {e}")
+                return False, None
+
+            if not success:
+                logger.error("Proof verification failed")
+                return False, None
+
+            extracted_io = {
+                "inputs": extracted["inputs"],
+                "outputs": extracted["outputs"],
+                "rescaled_outputs": extracted["rescaled_outputs"],
+                "scale_base": extracted["scale_base"],
+                "scale_exponent": extracted["scale_exponent"],
+                "inputs_match": inputs_match,
+            }
+            return True, extracted_io
 
     @staticmethod
     def _prepare_verification_output(circuit_path: Path, output_path: Path) -> Path:

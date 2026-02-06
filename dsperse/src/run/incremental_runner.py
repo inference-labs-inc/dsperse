@@ -24,16 +24,22 @@ from dsperse.src.analyzers.schema import (
     RunMetadata,
     RunSliceMetadata,
     Dependencies,
+    TilingInfo,
 )
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
+from dsperse.src.run.tile_executor import TileExecutor
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 try:
-    from python.core.utils.witness_utils import load_witness, ZKProofSystems
+    from python.core.utils.witness_utils import (
+        extract_io_from_witness,
+        load_witness,
+        ZKProofSystems,
+    )
     HAS_WITNESS_UTILS = True
 except ImportError:
     HAS_WITNESS_UTILS = False
@@ -60,6 +66,21 @@ class SliceTask:
 
 
 @dataclass
+class TileTask:
+    """Represents an individual tile of a tiled slice."""
+
+    task_id: str
+    slice_id: str
+    tile_idx: int
+    inputs: dict[str, Any]
+    use_circuit: bool
+    backend: str
+    circuit_path: Optional[str] = None
+    tiling_info: Optional[Any] = None
+    metadata: Optional[RunSliceMetadata] = None
+
+
+@dataclass
 class SliceResult:
     """Result from a remotely executed slice.
 
@@ -78,6 +99,40 @@ class SliceResult:
 
 
 @dataclass
+class TileResult:
+    """Result from a tile execution."""
+
+    task_id: str
+    slice_id: str
+    tile_idx: int
+    success: bool
+    outputs: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+    proof: Optional[bytes] = None
+    witness: Optional[bytes] = None
+
+
+@dataclass
+class PendingTiledSlice:
+    """Tracks pending tiles for a tiled slice."""
+
+    slice_id: str
+    total_tiles: int
+    completed_tiles: dict[int, TileResult] = field(default_factory=dict)
+    failed_tiles: list[int] = field(default_factory=list)
+    tiling_info: Optional[Any] = None
+    metadata: Optional[RunSliceMetadata] = None
+
+    @property
+    def is_complete(self) -> bool:
+        return len(self.completed_tiles) + len(self.failed_tiles) >= self.total_tiles
+
+    @property
+    def all_success(self) -> bool:
+        return len(self.completed_tiles) == self.total_tiles and len(self.failed_tiles) == 0
+
+
+@dataclass
 class IncrementalRunState:
     """State for an incremental run."""
 
@@ -87,6 +142,7 @@ class IncrementalRunState:
     current_slice_id: Optional[str] = None
     completed_slices: list[str] = field(default_factory=list)
     failed_slices: list[str] = field(default_factory=list)
+    pending_tiled_slice: Optional[PendingTiledSlice] = None
 
 
 class IncrementalRunner:
@@ -214,24 +270,31 @@ class IncrementalRunner:
             current_slice_id=head_id,
         )
 
-    def iter_tasks(self, state: IncrementalRunState) -> Iterator[SliceTask]:
+    def iter_tasks(
+        self, state: IncrementalRunState
+    ) -> Iterator[SliceTask | TileTask]:
         """
-        Iterate over slices that need execution.
+        Iterate over slices/tiles that need execution.
 
-        Yields SliceTask objects for each slice in execution order.
-        The caller should execute each task and call apply_result() before
-        continuing iteration.
+        For non-tiled slices: yields SliceTask objects.
+        For tiled slices: yields N TileTask objects (one per tile).
+
+        The caller should execute each task and call apply_result() or
+        apply_tile_result() before continuing iteration.
 
         Args:
             state: The run state from initialize()
 
         Yields:
-            SliceTask for each slice needing execution
+            SliceTask for non-tiled slices, TileTask for each tile of tiled slices
         """
         nodes = state.run_metadata.execution_chain.nodes
         slice_index = 0
 
         while state.current_slice_id:
+            if state.pending_tiled_slice and not state.pending_tiled_slice.is_complete:
+                return
+
             slice_id = state.current_slice_id
             node = nodes.get(slice_id)
             if not node:
@@ -243,25 +306,74 @@ class IncrementalRunner:
                 logger.error(f"Metadata not found for slice {slice_id}")
                 break
 
-            inputs = self._prepare_slice_inputs(state, meta)
+            if meta.tiling and meta.tiling.num_tiles > 1:
+                yield from self._expand_tiled_slice(state, slice_id, node, meta)
+            else:
+                inputs = self._prepare_slice_inputs(state, meta)
+                task = SliceTask(
+                    slice_id=slice_id,
+                    slice_index=slice_index,
+                    inputs=inputs,
+                    input_tensor_names=meta.dependencies.filtered_inputs,
+                    output_tensor_names=meta.dependencies.output,
+                    use_circuit=node.use_circuit,
+                    backend=node.backend,
+                    is_tiled=False,
+                    tile_count=0,
+                    circuit_path=node.circuit_path,
+                    onnx_path=node.onnx_path or meta.path,
+                    metadata=meta,
+                )
+                yield task
 
-            task = SliceTask(
+            slice_index += 1
+
+    def _expand_tiled_slice(
+        self,
+        state: IncrementalRunState,
+        slice_id: str,
+        node: Any,
+        meta: RunSliceMetadata,
+    ) -> Iterator[TileTask]:
+        """Expand a tiled slice into individual tile tasks."""
+        tiling = meta.tiling
+        if not tiling:
+            return
+
+        tile_executor = TileExecutor(state.slices_path, state.tensor_cache)
+        input_tensor = tile_executor.get_input_tensor(slice_id, tiling, meta)
+        tile_executor.split_into_tiles(slice_id, tiling, input_tensor)
+
+        state.pending_tiled_slice = PendingTiledSlice(
+            slice_id=slice_id,
+            total_tiles=tiling.num_tiles,
+            tiling_info=tiling,
+            metadata=meta,
+        )
+
+        slice_idx = tiling.slice_idx
+
+        for tile_idx in range(tiling.num_tiles):
+            cache_name = f"tile_{slice_idx}_{tile_idx}_in"
+            tile_tensor = state.tensor_cache.get(cache_name)
+
+            if tile_tensor is None:
+                logger.error(f"Tile input {cache_name} not found in cache")
+                continue
+
+            tile_inputs = {"input_data": tile_tensor.tolist()}
+
+            yield TileTask(
+                task_id=f"{slice_id}_tile_{tile_idx}",
                 slice_id=slice_id,
-                slice_index=slice_index,
-                inputs=inputs,
-                input_tensor_names=meta.dependencies.filtered_inputs,
-                output_tensor_names=meta.dependencies.output,
+                tile_idx=tile_idx,
+                inputs=tile_inputs,
                 use_circuit=node.use_circuit,
                 backend=node.backend,
-                is_tiled=meta.tiling is not None,
-                tile_count=meta.tiling.num_tiles if meta.tiling else 0,
                 circuit_path=node.circuit_path,
-                onnx_path=node.onnx_path or meta.path,
+                tiling_info=tiling,
                 metadata=meta,
             )
-
-            yield task
-            slice_index += 1
 
     def _prepare_slice_inputs(
         self, state: IncrementalRunState, meta: RunSliceMetadata
@@ -282,7 +394,7 @@ class IncrementalRunner:
             key = list(inputs.keys())[0]
             return {"input_data": inputs[key]}
 
-        return {"input_data": inputs}
+        return inputs
 
     def apply_result(self, state: IncrementalRunState, result: SliceResult) -> bool:
         """
@@ -341,6 +453,216 @@ class IncrementalRunner:
 
         state.completed_slices.append(result.slice_id)
         state.current_slice_id = node.next if node else None
+
+        return True
+
+    def apply_tile_result(self, state: IncrementalRunState, result: TileResult) -> bool:
+        """
+        Apply a tile execution result to the run state.
+
+        For circuit tiles: verifies proof and extracts outputs FROM the witness.
+        For ONNX-only tiles: uses provided outputs directly.
+
+        When all tiles for a slice complete, automatically reconstructs the
+        full output and advances to the next slice.
+
+        Args:
+            state: The run state
+            result: The tile execution result
+
+        Returns:
+            True if result was applied successfully
+        """
+        pending = state.pending_tiled_slice
+        if not pending:
+            logger.error(f"No pending tiled slice for tile result {result.task_id}")
+            return False
+
+        if result.slice_id != pending.slice_id:
+            logger.error(
+                f"Tile result slice_id {result.slice_id} doesn't match "
+                f"pending slice {pending.slice_id}"
+            )
+            return False
+
+        if not result.success:
+            pending.failed_tiles.append(result.tile_idx)
+            logger.error(f"Tile {result.task_id} failed: {result.error}")
+            return False
+
+        meta = pending.metadata
+        tiling = pending.tiling_info
+        nodes = state.run_metadata.execution_chain.nodes
+        node = nodes.get(pending.slice_id)
+
+        if not meta or not node or not tiling:
+            logger.error(f"Missing metadata for tiled slice {pending.slice_id}")
+            pending.failed_tiles.append(result.tile_idx)
+            return False
+
+        outputs_to_use = result.outputs
+
+        if node.use_circuit and self._verify_proofs:
+            verified_outputs = self._verify_and_extract_tile_outputs(
+                state, meta, node, result, tiling
+            )
+            if verified_outputs is None:
+                pending.failed_tiles.append(result.tile_idx)
+                logger.error(f"Tile proof verification failed for {result.task_id}")
+                return False
+            outputs_to_use = verified_outputs
+
+        if outputs_to_use:
+            self._store_tile_output(state, tiling, result.tile_idx, outputs_to_use)
+
+        pending.completed_tiles[result.tile_idx] = result
+
+        if pending.is_complete:
+            return self._finalize_tiled_slice(state)
+
+        return True
+
+    def _verify_and_extract_tile_outputs(
+        self,
+        state: IncrementalRunState,
+        meta: RunSliceMetadata,
+        node: Any,
+        result: TileResult,
+        tiling: TilingInfo,
+    ) -> Optional[dict[str, Any]]:
+        """Verify tile proof and extract outputs from witness."""
+        if not result.proof:
+            logger.error(f"Missing proof for tile {result.task_id}")
+            return None
+
+        if not result.witness:
+            logger.error(f"Missing witness for tile {result.task_id}")
+            return None
+
+        backend = (node.backend or meta.backend or "").lower()
+        circuit_path = node.circuit_path or meta.jstprove_circuit_path or meta.ezkl_circuit_path
+
+        if not circuit_path:
+            logger.error(f"No circuit path for tile {result.task_id}")
+            return None
+
+        circuit_path = RunnerUtils.resolve_relative_path(circuit_path, state.slices_path)
+        if not circuit_path or not Path(circuit_path).exists():
+            logger.error(f"Circuit not found: {circuit_path}")
+            return None
+
+        tile_size = tiling.tile_size
+        halo = tiling.halo
+        c_in = tiling.c_in or 1
+        tile_h = tile_size + 2 * halo[0]
+        tile_w = tile_size + 2 * halo[1]
+        num_inputs = c_in * tile_h * tile_w
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                witness_path = tmp / "witness.bin"
+
+                with open(witness_path, "wb") as f:
+                    f.write(result.witness if isinstance(result.witness, bytes) else result.witness.encode())
+
+                if backend == Backend.JSTPROVE:
+                    return self._extract_jstprove_tile_outputs(witness_path, num_inputs, tiling)
+                elif backend == Backend.EZKL:
+                    return self._extract_ezkl_outputs(witness_path, meta)
+                else:
+                    logger.error(f"Unknown backend for tile output extraction: {backend}")
+                    return None
+
+        except Exception as e:
+            logger.exception(f"Tile proof verification error for {result.task_id}: {e}")
+            return None
+
+    def _extract_jstprove_tile_outputs(
+        self,
+        witness_path: Path,
+        num_inputs: int,
+        tiling: TilingInfo,
+    ) -> Optional[dict[str, Any]]:
+        """Extract outputs from JSTprove witness for a tile."""
+        if not HAS_WITNESS_UTILS:
+            logger.error("JSTprove witness_utils not available")
+            return None
+
+        try:
+            witness_data = load_witness(str(witness_path), ZKProofSystems.Expander)
+            extracted = extract_io_from_witness(witness_data, num_inputs)
+            if extracted is None:
+                logger.error("Failed to extract I/O from tile witness")
+                return None
+
+            return {
+                "output": extracted["outputs"],
+                "rescaled_output": extracted["rescaled_outputs"],
+                "raw_output": extracted["raw_outputs"],
+            }
+
+        except Exception as e:
+            logger.exception(f"Failed to extract JSTprove tile outputs: {e}")
+            return None
+
+    def _store_tile_output(
+        self,
+        state: IncrementalRunState,
+        tiling: TilingInfo,
+        tile_idx: int,
+        outputs: dict[str, Any],
+    ) -> None:
+        """Store tile output in tensor cache for later reconstruction."""
+        output_data = outputs.get("output_data") or outputs.get("output") or outputs
+
+        tensor = self._to_tensor(output_data)
+        if tensor is None:
+            logger.warning(f"Failed to convert tile {tile_idx} output to tensor")
+            return
+
+        c_out = tiling.c_out
+        if tiling.tile and tiling.tile.conv_out:
+            h_out, w_out = tiling.tile.conv_out
+        else:
+            h_out, w_out = 0, 0
+
+        if c_out and h_out and w_out and tensor.numel() == (1 * c_out * h_out * w_out):
+            tensor = tensor.reshape(1, c_out, h_out, w_out)
+
+        cache_name = f"tile_{tiling.slice_idx}_{tile_idx}_out"
+        state.tensor_cache[cache_name] = tensor
+
+    def _finalize_tiled_slice(self, state: IncrementalRunState) -> bool:
+        """Finalize a tiled slice after all tiles complete."""
+        pending = state.pending_tiled_slice
+        if not pending:
+            return False
+
+        if pending.failed_tiles:
+            state.failed_slices.append(pending.slice_id)
+            logger.error(
+                f"Tiled slice {pending.slice_id} failed: "
+                f"{len(pending.failed_tiles)} tiles failed"
+            )
+            state.pending_tiled_slice = None
+            return False
+
+        try:
+            tile_executor = TileExecutor(state.slices_path, state.tensor_cache)
+            tile_executor.reconstruct_from_tiles(pending.slice_id, pending.tiling_info)
+        except Exception as e:
+            state.failed_slices.append(pending.slice_id)
+            logger.exception(f"Failed to reconstruct tiled slice {pending.slice_id}: {e}")
+            state.pending_tiled_slice = None
+            return False
+
+        nodes = state.run_metadata.execution_chain.nodes
+        node = nodes.get(pending.slice_id)
+
+        state.completed_slices.append(pending.slice_id)
+        state.current_slice_id = node.next if node else None
+        state.pending_tiled_slice = None
 
         return True
 
@@ -524,11 +846,6 @@ class IncrementalRunner:
 
         try:
             witness_data = load_witness(str(witness_path), ZKProofSystems.Expander)
-            public_inputs = witness_data["witnesses"][0]["public_inputs"]
-            modulus = witness_data["modulus"]
-
-            scale_base = public_inputs[-2]
-            scale_exponent = public_inputs[-1]
 
             num_inputs = sum(
                 np.prod([d for d in shape if isinstance(d, int)])
@@ -536,25 +853,15 @@ class IncrementalRunner:
             )
             num_inputs = int(num_inputs) if num_inputs > 0 else 0
 
-            raw_outputs = public_inputs[num_inputs:-2]
-
-            def from_field(val: int) -> int:
-                if val > modulus // 2:
-                    return val - modulus
-                return val
-
-            signed_outputs = [from_field(v) for v in raw_outputs]
-
-            if scale_base > 0 and scale_exponent > 0:
-                scale = scale_base ** scale_exponent
-                rescaled = [v / scale for v in signed_outputs]
-            else:
-                rescaled = [float(v) for v in signed_outputs]
+            extracted = extract_io_from_witness(witness_data, num_inputs)
+            if extracted is None:
+                logger.error("Failed to extract I/O from witness")
+                return None
 
             return {
-                "output": signed_outputs,
-                "rescaled_output": rescaled,
-                "raw_output": raw_outputs,
+                "output": extracted["outputs"],
+                "rescaled_output": extracted["rescaled_outputs"],
+                "raw_output": extracted["raw_outputs"],
             }
 
         except Exception as e:
@@ -635,12 +942,11 @@ class IncrementalRunner:
         """
         try:
             onnx_path = task.onnx_path
-            if not onnx_path:
-                meta = state.run_metadata.get_slice(task.slice_id)
-                if meta:
-                    onnx_path = RunnerUtils.resolve_relative_path(
-                        meta.path, state.slices_path / task.slice_id
-                    )
+            meta = state.run_metadata.get_slice(task.slice_id)
+            if meta:
+                onnx_path = RunnerUtils.resolve_relative_path(
+                    onnx_path or meta.path, state.slices_path / task.slice_id
+                )
 
             if not onnx_path or not Path(onnx_path).exists():
                 return SliceResult(

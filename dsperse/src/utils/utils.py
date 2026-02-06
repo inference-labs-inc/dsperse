@@ -231,6 +231,12 @@ class Utils:
             found_key = next(iter(data.keys()))
             array_like = data[found_key]
 
+        # Handle multi-input dicts (e.g., tensor name keys) by concatenating
+        if array_like is None and isinstance(data, dict) and len(data) > 1:
+            arrays = [torch.tensor(data[k]) for k in sorted(data.keys())]
+            found_key = "multi-input"
+            return torch.cat([a.flatten() for a in arrays])
+
         if array_like is None:
             raise KeyError("Could not find input tensor data in JSON. Expected one of keys: " + ", ".join(candidate_keys))
 

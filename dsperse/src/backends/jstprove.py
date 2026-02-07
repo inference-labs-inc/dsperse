@@ -115,7 +115,7 @@ class JSTprove:
             circuit_inputs, formatted = self._process_inputs(circuit, inputs)
 
             metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
-            _run_witness_chunk_piped(
+            result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
                 metadata_path=metadata_path,
@@ -125,6 +125,13 @@ class JSTprove:
                     "witness": str(witness_path),
                 }],
             )
+
+            if result.get("failed", 0) > 0:
+                errors = result.get("errors", [])
+                raise RuntimeError(f"Witness generation failed: {errors}")
+
+            if not witness_path.exists():
+                raise FileNotFoundError(f"Witness file not created: {witness_path}")
 
             with open(output_file, "w") as f:
                 json.dump(formatted, f)

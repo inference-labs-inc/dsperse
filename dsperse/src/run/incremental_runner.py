@@ -694,6 +694,8 @@ class IncrementalRunner:
         """Store tile output in tensor cache for later reconstruction."""
         output_data = outputs.get("output_data")
         if output_data is None:
+            output_data = outputs.get("rescaled_output")
+        if output_data is None:
             output_data = outputs.get("output")
         if output_data is None:
             output_data = outputs

@@ -181,7 +181,7 @@ def slice_model(args):
             return
 
         logger.info(f"Creating slicer for model: {onnx_path}")
-        slicer = Slicer.create(onnx_path, save_path)
+        slicer = Slicer(onnx_path, save_path)
         output_type = getattr(args, 'output_type', 'dirs') or 'dirs'
         tile_size = getattr(args, 'tile_size', None)
 

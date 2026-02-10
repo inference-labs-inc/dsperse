@@ -158,31 +158,24 @@ class ChannelGroupInfo:
             ezkl_vk_path=d.get("ezkl_vk_path"),
         )
 
+    _PATH_FIELDS = (
+        "jstprove_circuit_path", "ezkl_circuit_path", "settings_path",
+        "vk_path", "pk_path", "jstprove_settings_path",
+        "ezkl_settings_path", "ezkl_pk_path", "ezkl_vk_path",
+    )
+
+    def transform_paths(self, fn):
+        """Apply fn to path and all optional path fields in-place."""
+        self.path = fn(self.path)
+        for attr in self._PATH_FIELDS:
+            setattr(self, attr, fn(getattr(self, attr)))
+
     def to_dict(self) -> dict:
-        d = {
-            "group_idx": self.group_idx,
-            "c_start": self.c_start,
-            "c_end": self.c_end,
-            "path": self.path,
-        }
-        if self.jstprove_circuit_path:
-            d["jstprove_circuit_path"] = self.jstprove_circuit_path
-        if self.ezkl_circuit_path:
-            d["ezkl_circuit_path"] = self.ezkl_circuit_path
-        if self.settings_path:
-            d["settings_path"] = self.settings_path
-        if self.vk_path:
-            d["vk_path"] = self.vk_path
-        if self.pk_path:
-            d["pk_path"] = self.pk_path
-        if self.jstprove_settings_path:
-            d["jstprove_settings_path"] = self.jstprove_settings_path
-        if self.ezkl_settings_path:
-            d["ezkl_settings_path"] = self.ezkl_settings_path
-        if self.ezkl_pk_path:
-            d["ezkl_pk_path"] = self.ezkl_pk_path
-        if self.ezkl_vk_path:
-            d["ezkl_vk_path"] = self.ezkl_vk_path
+        d = {"group_idx": self.group_idx, "c_start": self.c_start, "c_end": self.c_end, "path": self.path}
+        for attr in self._PATH_FIELDS:
+            val = getattr(self, attr)
+            if val:
+                d[attr] = val
         return d
 
 

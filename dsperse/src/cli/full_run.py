@@ -10,7 +10,8 @@ from dsperse.src.cli.base import prompt_for_value, normalize_path, logger
 from dsperse.src.cli.slice import slice_model
 from dsperse.src.cli.compile import compile_model
 from dsperse.src.cli.run import run_inference
-from dsperse.src.cli.prove import run_proof, get_latest_run
+from dsperse.src.cli.base import get_latest_run
+from dsperse.src.cli.prove import run_proof
 from dsperse.src.cli.verify import verify_proof
 
 

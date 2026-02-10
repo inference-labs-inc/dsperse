@@ -41,12 +41,6 @@ class ModelUtils:
                 elif 'net' in self.state_dict:
                     self.state_dict = self.state_dict['net']
 
-                # Debug - print the keys
-                # if isinstance(self.state_dict, dict):
-                #     print(f"State dict keys: {list(self.state_dict.keys())[:5]} (showing first 5)")
-                # else:
-                #     print(f"State dict is not a dictionary but {type(self.state_dict)}")
-
             return True
         except Exception as e:
             print(f"Error loading model: {str(e)}")
@@ -537,15 +531,3 @@ class ModelUtils:
 
         return metadata
 
-
-# Example usage:
-if __name__ == "__main__":
-    # model_dir = "models/test_model_embedded"
-    # model_path = os.path.join(model_dir, "test_model_embedded.pth")
-
-    model_dir = "../models/net"
-    model_path = os.path.join(model_dir, "model.pth")
-
-    print(f"Analyzing model: {model_path}")
-    model_utils = ModelUtils(model_path)
-    result = model_utils.analyze_model(True)

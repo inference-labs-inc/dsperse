@@ -5,6 +5,7 @@ Contains common utilities and classes used by all CLI commands.
 
 import argparse
 import glob as _glob
+from pathlib import Path
 try:
     import readline
 except ImportError:
@@ -343,3 +344,28 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return default if not required else None
+
+
+def get_all_runs(run_root_dir):
+    """Get all run directories in the provided runs root directory, sorted by name (latest last)."""
+    if not os.path.exists(run_root_dir):
+        return []
+    run_root_dir = normalize_path(run_root_dir)
+    run_dirs = sorted(_glob.glob(os.path.join(run_root_dir, "run_*")))
+    return [normalize_path(d) for d in run_dirs]
+
+
+def get_latest_run(run_root_dir):
+    """Get the latest run directory in the provided runs root directory, or None if no runs found."""
+    run_dirs = get_all_runs(run_root_dir)
+    return run_dirs[-1] if run_dirs else None
+
+
+def validate_run_dir(run_dir):
+    """Validate that run_dir contains recognized run artifacts. Returns True if valid."""
+    rd = Path(run_dir)
+    is_run_root = (rd / 'metadata.json').exists() or (rd / 'run_results.json').exists()
+    is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
+    is_tiled_slice_run = (rd / 'split').exists() or (rd / 'tile_0').exists()
+    has_slice_dirs = any((rd / f'slice_{i}').exists() for i in range(10))
+    return is_run_root or is_slice_run or is_tiled_slice_run or has_slice_dirs

@@ -24,6 +24,7 @@ from dsperse.src.cli import (
     logger,
     setup_slice_parser,
     slice_model,
+    slice_convert,
     setup_run_parser,
     run_inference,
     setup_prove_parser,
@@ -103,7 +104,6 @@ def main():
     if args.command == "slice":
         # Dispatch slice sub-commands
         if getattr(args, "slice_subcommand", None) == "convert":
-            from dsperse.src.cli.slice import slice_convert
             slice_convert(args)
         else:
             slice_model(args)

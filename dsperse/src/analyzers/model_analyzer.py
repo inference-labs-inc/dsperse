@@ -109,13 +109,7 @@ class ModelAnalyzer:
                     source = f.read()
                 tree = ast.parse(source)
 
-                # Create containers for extract_forward_flow results
-                layer_order = []
-                functional_activations = {}
-                reshape_ops = {}
-
-                # Call extract_forward_flow with correct self reference
-                self._extract_forward_flow_inner(tree, class_name, layer_order, functional_activations, reshape_ops)
+                layer_order, functional_activations, reshape_ops = self.extract_forward_flow(tree, class_name)
 
                 # Add functional activations to the results
                 for layer, info in functional_activations.items():
@@ -188,23 +182,6 @@ class ModelAnalyzer:
                                     layers_info[attr_name] = ast.unparse(stmt.value)
 
         return layers_info
-
-    def _extract_forward_flow_inner(self, tree, class_name, layer_order, activations, reshape_ops):
-        """Helper method that implements extract_forward_flow with explicit arguments."""
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                for method in node.body:
-                    if isinstance(method, ast.FunctionDef) and method.name == "forward":
-                        # Analyze forward method body
-                        for i, stmt in enumerate(method.body):
-                            # Check for activations with layers
-                            if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
-                                self.analyze_assignment(stmt, layer_order, activations, reshape_ops)
-
-                            # Check for nested calls like pool(relu(conv))
-                            elif isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Call):
-                                self.analyze_return_statement(stmt, layer_order, activations)
-
 
     def extract_forward_flow(self, tree, class_name):
         """Extract layer execution order, activations, and reshape operations from forward method."""
@@ -398,16 +375,4 @@ class ModelAnalyzer:
             class_def += f"        return self.{layer_name}(x)\n"
 
         return class_def
-
-
-# Example usage:
-if __name__ == "__main__":
-    model_path = "../models/net/model.py"
-    torch_path = "../models/net/model.pth"
-    analyzer = ModelAnalyzer(model_path)
-
-    segment_classes = analyzer.break_model_into_segments(model_path, "Net")
-    print(segment_classes)
-    # activation_functions = analyzer.get_activation_functions(torch_path, model_path, "Net")
-    # print(activation_functions)
 

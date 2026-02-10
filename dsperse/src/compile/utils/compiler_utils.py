@@ -160,77 +160,27 @@ class CompilerUtils:
         return os.path.join(slice_dirname, rel_path)
 
 
+    _JSTPROVE_ARTIFACT_KEYS = ('settings', 'compiled', 'witness_solver', 'wandb', 'quantized_model', 'metadata', 'architecture')
+    _EZKL_ARTIFACT_KEYS = ('settings', 'compiled', 'vk_key', 'pk_key')
+
     @staticmethod
     def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Compute relative paths for compiled artifacts and the calibration file.
-        If slice_dir is provided, paths are relative to it. Otherwise, they are
-        relative starting from the 'payload' directory.
-        Returns a tuple of (rel_dict, calibration_rel_path).
-        """
-        if slice_dir:
-            def _rel(p):
-                if not p: return None
+        """Compute relative paths for compiled artifacts and the calibration file."""
+        def _rel(p):
+            if not p: return None
+            if slice_dir:
                 try: return os.path.relpath(p, slice_dir)
                 except ValueError: return None
-            calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
-        else:
-            calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
+            return CompilerUtils._rel_from_payload(p)
 
-        # Detect backend by fields present in compilation_data
+        calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(str(calibration_input)) else None
+
         is_jstprove = bool(compilation_data.get('compiled')) and not bool(compilation_data.get('vk_key'))
+        keys = CompilerUtils._JSTPROVE_ARTIFACT_KEYS if is_jstprove else CompilerUtils._EZKL_ARTIFACT_KEYS
 
-        if is_jstprove:
-            relative_paths = CompilerUtils.get_relative_paths_jstprove(compilation_data, calibration_rel, slice_dir)
-        else:
-            relative_paths = CompilerUtils.get_relative_paths_ezkl(compilation_data, calibration_rel, slice_dir)
-
-        return relative_paths
-
-    @staticmethod
-    def get_relative_paths_jstprove(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Build relative files mapping for JSTprove artifacts using backend-provided keys.
-        """
-        def _rel(key):
-            p = compilation_data.get(key)
-            if not p: return None
-            if slice_dir:
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
-            return CompilerUtils._rel_from_payload(p)
-
-        return {
-            'settings': _rel('settings'),
-            'compiled': _rel('compiled'),
-            'witness_solver': _rel('witness_solver'),
-            'wandb': _rel('wandb'),
-            'quantized_model': _rel('quantized_model'),
-            'metadata': _rel('metadata'),
-            'architecture': _rel('architecture'),
-            'calibration': calibration_rel,
-        }
-
-    @staticmethod
-    def get_relative_paths_ezkl(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Build relative files mapping for EZKL artifacts using backend-provided keys.
-        """
-        def _rel(key):
-            p = compilation_data.get(key)
-            if not p: return None
-            if slice_dir:
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
-            return CompilerUtils._rel_from_payload(p)
-
-        return {
-            'settings': _rel('settings'),
-            'compiled': _rel('compiled'),
-            'vk_key': _rel('vk_key'),
-            'pk_key': _rel('pk_key'),
-            'calibration': calibration_rel,
-        }
+        result = {k: _rel(compilation_data.get(k)) for k in keys}
+        result['calibration'] = calibration_rel
+        return result
 
     @staticmethod
     def apply_payload_rel_to_comp_data(compilation_data: Dict[str, Any], payload_rel: Dict[str, Optional[str]]) -> Dict[str, Any]:

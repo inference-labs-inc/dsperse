@@ -143,16 +143,7 @@ class RunnerAnalyzer:
 
             if meta.channel_split:
                 for group in meta.channel_split.groups:
-                    group.path = _norm(group.path)
-                    group.jstprove_circuit_path = _norm(group.jstprove_circuit_path)
-                    group.ezkl_circuit_path = _norm(group.ezkl_circuit_path)
-                    group.settings_path = _norm(group.settings_path)
-                    group.vk_path = _norm(group.vk_path)
-                    group.pk_path = _norm(group.pk_path)
-                    group.jstprove_settings_path = _norm(group.jstprove_settings_path)
-                    group.ezkl_settings_path = _norm(group.ezkl_settings_path)
-                    group.ezkl_vk_path = _norm(group.ezkl_vk_path)
-                    group.ezkl_pk_path = _norm(group.ezkl_pk_path)
+                    group.transform_paths(_norm)
                 if meta.channel_split.bias_path:
                     meta.channel_split.bias_path = _norm(meta.channel_split.bias_path)
 
@@ -259,16 +250,7 @@ class RunnerAnalyzer:
 
             if meta.channel_split:
                 for group in meta.channel_split.groups:
-                    group.path = _join(group.path)
-                    group.jstprove_circuit_path = _join(group.jstprove_circuit_path)
-                    group.ezkl_circuit_path = _join(group.ezkl_circuit_path)
-                    group.settings_path = _join(group.settings_path)
-                    group.vk_path = _join(group.vk_path)
-                    group.pk_path = _join(group.pk_path)
-                    group.jstprove_settings_path = _join(group.jstprove_settings_path)
-                    group.ezkl_settings_path = _join(group.ezkl_settings_path)
-                    group.ezkl_vk_path = _join(group.ezkl_vk_path)
-                    group.ezkl_pk_path = _join(group.ezkl_pk_path)
+                    group.transform_paths(_join)
                 if meta.channel_split.bias_path:
                     meta.channel_split.bias_path = _join(meta.channel_split.bias_path)
 
@@ -623,16 +605,3 @@ class RunnerAnalyzer:
             logger.info(f"Started new run in directory: {actual_run_dir}")
             
         return actual_run_dir, resume, run_metadata
-
-if __name__ == "__main__":
-    model_choice = 1
-    base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet"
-    }
-    model_dir = base_paths[model_choice]
-    model_path = Path(model_dir).resolve()
-    print(f"Model path: {model_path}")
-    out = RunnerAnalyzer.generate_run_metadata(str(model_path))
-    print(json.dumps(out, indent=2)[:500] + "...")

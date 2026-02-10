@@ -292,57 +292,6 @@ class OnnxAnalyzer:
 
         return activation
 
-    @staticmethod
-    def _create_layer_info(node_name, node_info):
-        """
-        Create layer information from node info.
-
-        Args:
-            node_name: Name of the node
-            node_info: Dictionary of node information
-
-        Returns:
-            dict: Layer information
-        """
-        layer_info = {
-            "name": node_name,
-            "type": node_info["type"],
-            "activation": node_info["activation"]
-        }
-
-        # Add shape information if available
-        if node_info["input_shape"]:
-            layer_info["input_shape"] = node_info["input_shape"]
-        if node_info["output_shape"]:
-            layer_info["output_shape"] = node_info["output_shape"]
-
-        # Add parameter details if available
-        if "parameter_details" in node_info and node_info["parameter_details"]:
-            layer_info["parameters"] = {}
-            for param_name, param_info in node_info["parameter_details"].items():
-                layer_info["parameters"][param_name] = param_info
-
-        # Add in/out features if available
-        if node_info.get("in_features") is not None:
-            layer_info["in_features"] = node_info["in_features"]
-            layer_info["in_channels"] = node_info["in_features"]  # For compatibility with conv layers
-
-        if node_info.get("out_features") is not None:
-            layer_info["out_features"] = node_info["out_features"]
-            layer_info["out_channels"] = node_info["out_features"]  # For compatibility with conv layers
-
-        # For Conv layers, add kernel_size, stride, padding if available
-        if node_info["type"] == "conv" and "parameter_details" in node_info:
-            for param_name, param_info in node_info["parameter_details"].items():
-                if len(param_info["shape"]) == 4:  # Conv weight shape: [out_channels, in_channels, kernel_h, kernel_w]
-                    layer_info["kernel_size"] = [param_info["shape"][2], param_info["shape"][3]]
-                    # Default stride and padding (could be extracted from attributes if needed)
-                    layer_info["stride"] = [1, 1]
-                    layer_info["padding"] = [0, 0]
-                    break
-
-        return layer_info
-
     def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None, tiled_info=None):
         """
         Generate metadata for sliced ONNX models.

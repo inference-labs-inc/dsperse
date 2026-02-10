@@ -167,10 +167,13 @@ class CompilerUtils:
     def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
         """Compute relative paths for compiled artifacts and the calibration file."""
         def _rel(p):
-            if not p: return None
+            if not p:
+                return None
             if slice_dir:
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
+                try:
+                    return os.path.relpath(p, slice_dir)
+                except ValueError:
+                    return None
             return CompilerUtils._rel_from_payload(p)
 
         calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(str(calibration_input)) else None

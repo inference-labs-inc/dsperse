@@ -91,7 +91,7 @@ def install_ezkl_official():
         return False
 
 
-def install_deps(skip_pip=True, interactive=False):
+def install_deps(interactive=False):
     """Main installation function that can be called programmatically"""
 
     ezkl_path, ezkl_version = check_ezkl()
@@ -100,7 +100,12 @@ def install_deps(skip_pip=True, interactive=False):
         logger.info(f"EZKL already installed: {ezkl_path}")
         if ezkl_version:
             logger.info(f"EZKL version: {ezkl_version}")
-            if version.parse(ezkl_version) < version.parse(MIN_EZKL_VERSION):
+            try:
+                needs_upgrade = version.parse(ezkl_version) < version.parse(MIN_EZKL_VERSION)
+            except version.InvalidVersion:
+                logger.warning(f"Could not parse EZKL version '{ezkl_version}', skipping version check")
+                needs_upgrade = False
+            if needs_upgrade:
                 logger.warning(
                     f"EZKL version {ezkl_version} is older than recommended {MIN_EZKL_VERSION}"
                 )

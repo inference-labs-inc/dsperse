@@ -348,9 +348,9 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
 
 def get_all_runs(run_root_dir):
     """Get all run directories in the provided runs root directory, sorted by name (latest last)."""
+    run_root_dir = normalize_path(run_root_dir)
     if not os.path.exists(run_root_dir):
         return []
-    run_root_dir = normalize_path(run_root_dir)
     run_dirs = sorted(_glob.glob(os.path.join(run_root_dir, "run_*")))
     return [normalize_path(d) for d in run_dirs]
 

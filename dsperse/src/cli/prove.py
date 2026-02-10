@@ -63,7 +63,9 @@ def run_proof(args):
         return
     if not validate_run_dir(run_dir):
         print(
-            f"{Fore.RED}Error: run-dir must contain either run-root files (metadata.json/run_results.json) or per-slice files (input.json + output.json): {run_dir}{Style.RESET_ALL}")
+            f"{Fore.RED}Error: run-dir does not contain recognized run artifacts "
+            f"(metadata.json, run_results.json, input.json + output.json, "
+            f"split/, tile_*, or slice_* directories): {run_dir}{Style.RESET_ALL}")
         return
 
     print("proving...")

@@ -8,7 +8,7 @@ import traceback
 from colorama import Fore, Style
 
 from dsperse.src.verify.verifier import Verifier
-from dsperse.src.verify.utils.verifier_utils import VerifierUtils
+from dsperse.src.utils.pipeline_utils import parse_tiles_range
 from dsperse.src.cli.base import normalize_path, logger, prompt_for_value, validate_run_dir
 
 
@@ -78,7 +78,7 @@ def verify_proof(args):
         start_time = time.time()
 
         # Parse the tile range from CLI args
-        tiles_range = VerifierUtils.parse_tiles_range(getattr(args, 'tiles', None))
+        tiles_range = parse_tiles_range(getattr(args, 'tiles', None))
 
         result = verifier.verify(
             run_dir,

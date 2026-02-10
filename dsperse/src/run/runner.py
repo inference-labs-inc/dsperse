@@ -18,6 +18,7 @@ from dsperse.src.analyzers.schema import (
     Backend,
     ExecutionMethod,
 )
+from dsperse.src.backends.dispatch import WITNESS_FILENAME
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
@@ -317,7 +318,7 @@ class Runner:
         # --- Witness Generation ---
         try:
             witness_file_path = Path(output_witness_path).with_name(
-                "output_witness.bin"
+                WITNESS_FILENAME[Backend.JSTPROVE]
             )
             success, output_tensor = self.jstprove_runner.generate_witness(
                 input_file=str(input_tensor_path),
@@ -327,7 +328,7 @@ class Runner:
         except Exception as e:
             success, output_tensor = False, str(e)
             witness_file_path = Path(output_witness_path).with_name(
-                "output_witness.bin"
+                WITNESS_FILENAME[Backend.JSTPROVE]
             )
 
         # --- Result Packaging ---

@@ -11,7 +11,7 @@ from typing import Tuple, List, Dict
 import onnx
 import logging
 
-from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, SliceShape, TensorShape, WeightShape, TilingInfo, ChannelSplitInfo
+from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, SliceShape, TensorShape, TilingInfo, ChannelSplitInfo
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from dsperse.src.slice.autotiler import ELEMENTWISE_OPS
 from dsperse.src.utils.utils import Utils
@@ -741,7 +741,6 @@ class OnnxUtils:
 
         shape = SliceShape(
             tensor_shape=TensorShape(input=input_shapes, output=output_shapes),
-            weight_shape=orig_slice.shape.weight_shape if orig_slice.shape.weight_shape else WeightShape(),
         )
 
         slice_metadata_path = slice_dir / "metadata.json"
@@ -753,7 +752,6 @@ class OnnxUtils:
             parameters=orig_slice.parameters,
             shape=shape,
             dependencies=orig_slice.dependencies,
-            layers=orig_slice.layers,
             tiling=tiling,
             channel_split=channel_split,
             compilation=orig_slice.compilation,

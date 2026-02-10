@@ -292,28 +292,3 @@ class Compiler:
             slice_path = Converter.convert(slice_path, output_type=format, cleanup=True)
 
         return slice_path
-
-
-if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 2  # Change this to test different models
-
-    base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/age",
-        5: "../../models/version",
-        6: "../../models/bert",
-        7: "../../models/roberta",
-        8: "../../models/yolov8"
-    }
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = abs_path
-    slices_dir = os.path.join(abs_path, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")
-    input_file = os.path.join(model_dir, "input.json")
-
-    compiler = Compiler(parallel=4)
-    result = compiler.compile(model_path=slices_dir, input_file=input_file, layers='jstprove')#layers="0-4:jstprove; 5-8:ezkl")
-    print(f"Compilation finished.")

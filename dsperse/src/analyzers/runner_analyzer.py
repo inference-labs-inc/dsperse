@@ -67,7 +67,7 @@ class RunnerAnalyzer:
             slices_data = [slices_data]
 
         first = slices_data[0] if slices_data else {}
-        is_per_slice = isinstance(first, dict) and "slice_metadata" in first and "layers" not in first
+        is_per_slice = isinstance(first, dict) and "slice_metadata" in first and "dependencies" not in first
         if is_per_slice:
             return RunnerAnalyzer._process_slices_per_slice(slices_dir, slices_data)
         return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)

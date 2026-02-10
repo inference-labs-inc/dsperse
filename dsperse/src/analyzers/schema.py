@@ -49,26 +49,9 @@ class TensorShape:
 
 
 @dataclass
-class WeightShape:
-    """Shape info from weight parameters."""
-    input: list[int] = field(default_factory=list)
-    output: list[int] = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "WeightShape":
-        if not d:
-            return cls()
-        return cls(
-            input=d.get("input", []),
-            output=d.get("output", []),
-        )
-
-
-@dataclass
 class SliceShape:
     """Combined shape info for a slice."""
     tensor_shape: TensorShape = field(default_factory=TensorShape)
-    weight_shape: WeightShape = field(default_factory=WeightShape)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "SliceShape":
@@ -76,7 +59,6 @@ class SliceShape:
             return cls()
         return cls(
             tensor_shape=TensorShape.from_dict(d.get("tensor_shape")),
-            weight_shape=WeightShape.from_dict(d.get("weight_shape")),
         )
 
 
@@ -376,7 +358,6 @@ class SliceMetadata:
     parameters: int = 0
     shape: SliceShape = field(default_factory=SliceShape)
     dependencies: Dependencies = field(default_factory=Dependencies)
-    layers: list[dict] = field(default_factory=list)
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
     compilation: Compilation = field(default_factory=Compilation)
@@ -395,7 +376,6 @@ class SliceMetadata:
             parameters=d.get("parameters", 0),
             shape=SliceShape.from_dict(d.get("shape")),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
-            layers=d.get("layers", []),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             compilation=Compilation.from_dict(d.get("compilation")),
@@ -427,11 +407,6 @@ class SliceMetadata:
     def output_names(self) -> list[str]:
         """Convenience accessor for output tensor names."""
         return self.dependencies.output
-
-    @property
-    def input_names(self) -> list[str]:
-        """Convenience accessor for filtered input tensor names."""
-        return self.dependencies.filtered_inputs
 
 
 @dataclass

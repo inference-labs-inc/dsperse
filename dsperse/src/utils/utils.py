@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import onnx
 
-from dsperse.src.analyzers.schema import ModelMetadata, RunSliceMetadata
+from dsperse.src.analyzers.schema import RunSliceMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -161,35 +161,6 @@ class Utils:
             slice_filtered_inputs.append(slice_inputs[0].name)
 
         return slice_filtered_inputs
-
-    @staticmethod
-    def _get_original_model_shapes(model_metadata: dict):
-        """
-        Extract shape information from model metadata.
-
-        Args:
-            model_metadata: Dictionary containing model metadata with shape information
-
-        Returns:
-            dict: Dictionary mapping tensor names to their shapes
-        """
-        meta = ModelMetadata.from_dict(model_metadata)
-        shapes = {}
-
-        if meta.input_shape and len(meta.input_shape) > 0:
-            shapes["input"] = meta.input_shape[0]
-
-        if meta.output_shapes and len(meta.output_shapes) > 0:
-            shapes["output"] = meta.output_shapes[0]
-
-        nodes = model_metadata.get("nodes", {})
-        for node_name, node_info in nodes.items():
-            if "parameter_details" in node_info:
-                for param_name, param_info in node_info["parameter_details"].items():
-                    if "shape" in param_info:
-                        shapes[param_name] = param_info["shape"]
-
-        return shapes
 
     @staticmethod
     def write_input(tensor: torch.Tensor, file_path, input_name: str = "input_data"):

@@ -183,30 +183,6 @@ class CompilerUtils:
         return result
 
     @staticmethod
-    def apply_payload_rel_to_comp_data(compilation_data: Dict[str, Any], payload_rel: Dict[str, Optional[str]]) -> Dict[str, Any]:
-        """
-        Produce a shallow copy of compilation_data with payload-relative overrides
-        for keys present in payload_rel.
-        """
-        copy = dict(compilation_data)
-        for k, v in payload_rel.items():
-            if v:
-                copy[k] = v
-        return copy
-
-    @staticmethod
-    def get_slice_dirs(slice_path: str) -> tuple[str, str]:
-        """
-        From a slice ONNX path '.../payload/slice_X.onnx', return a tuple of
-        (slice_dir, slice_metadata_path), where slice_dir is the parent directory
-        of 'payload' (i.e., the slice folder), and slice_metadata_path is
-        'slice_dir/metadata.json'.
-        """
-        slice_dir = os.path.dirname(os.path.dirname(slice_path))
-        slice_metadata_path = os.path.join(slice_dir, 'metadata.json')
-        return slice_dir, slice_metadata_path
-
-    @staticmethod
     def build_model_level_ezkl(payload_rel: Dict[str, Optional[str]], calibration_rel: Optional[str], slice_dirname: str, compilation_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Build the model-level 'ezkl' dictionary using slice-prefixed payload-relative paths.
@@ -389,14 +365,14 @@ class CompilerUtils:
     @staticmethod
     def initialize_compilation_metadata(dir_path: str) -> tuple[dict, str, str, list]:
         """Loads and prepares metadata for compilation."""
-        print(f"Loading metadata from {dir_path}...")
+        logger.info(f"Loading metadata from {dir_path}...")
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
-        print(f"Found {len(slices_data)} slices", flush=True)
+        logger.info(f"Found {len(slices_data)} slices")
         return metadata, metadata_path, base_path, slices_data
 
     @staticmethod
@@ -518,7 +494,7 @@ class CompilerUtils:
             slice_meta_rel = slice_data.get('slice_metadata_relative_path')
             check_dir = os.path.join(base_path, os.path.dirname(slice_meta_rel)) if slice_meta_rel else os.path.join(base_path, f"slice_{idx}")
             if CompilerUtils.is_slice_compiled(check_dir, slice_data.get('tiling'), slice_data.get('channel_split')):
-                print(f"[resume] slice_{idx}: already compiled, skipping")
+                logger.info(f"[resume] slice_{idx}: already compiled, skipping")
                 return True, "resumed"
 
         return False, None
@@ -526,7 +502,7 @@ class CompilerUtils:
     @staticmethod
     def run_sequential_compilation(work_items: list, worker_func) -> list[dict]:
         """Executes compilation tasks sequentially."""
-        print(f"Compiling {len(work_items)} slices sequentially...")
+        logger.info(f"Compiling {len(work_items)} slices sequentially...")
         return [worker_func(item) for item in work_items]
 
     @staticmethod

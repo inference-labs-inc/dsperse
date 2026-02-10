@@ -149,7 +149,7 @@ class OnnxUtils:
             if os.path.exists(trace_path):
                 os.remove(trace_path)
         
-        print(f"Shape trace complete: captured {len(traced_shapes)} tensor shapes")
+        logger.info(f"Shape trace complete: captured {len(traced_shapes)} tensor shapes")
         return traced_shapes, traced_dtypes
 
     @staticmethod
@@ -421,7 +421,7 @@ class OnnxUtils:
         results = {}
         failures = []
 
-        print(f"Building {len(segments)} slices...")
+        logger.info(f"Building {len(segments)} slices...")
         for seg in segments:
             segment_idx = seg['segment_idx']
             file_path = seg['file_path']
@@ -447,7 +447,7 @@ class OnnxUtils:
                 Utils.save_onnx_model(model, file_path)
 
                 results[segment_idx] = os.path.abspath(file_path)
-                print(f"  Built slice {segment_idx}")
+                logger.info(f"Built slice {segment_idx}")
             except Exception as e:
                 logger.exception(f"Failed to build slice {segment_idx}")
                 failures.append((segment_idx, e))

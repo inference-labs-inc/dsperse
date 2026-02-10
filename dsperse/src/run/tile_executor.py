@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from dsperse.src.analyzers.schema import (
     Backend, ExecutionMethod, RunSliceMetadata, TileResult, TilingInfo
 )
+from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -257,14 +258,7 @@ class TileExecutor:
 
     @staticmethod
     def _extract_output_tensor(result):
-        if result is None:
-            return None
-        if isinstance(result, dict):
-            for key in ['output', 'logits', 'output_tensor']:
-                if key in result and result[key] is not None:
-                    return result[key]
-            return None
-        return result
+        return RunnerUtils.extract_output_tensor(result)
 
     @staticmethod
     def execute_worker(args: dict) -> dict:

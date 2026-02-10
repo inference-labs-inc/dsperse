@@ -62,7 +62,7 @@ class OnnxSlicer:
                     if idx + 1 <= max_idx:
                         slice_points.add(idx + 1)
 
-        print(f"Original slice points: {sorted(slice_points)}")
+        logger.info(f"Original slice points: {sorted(slice_points)}")
         if isolate_convolutions:
             slice_points = OnnxUtils.isolate_conv(slice_points, model_metadata)
         slice_points = OnnxUtils.optimize_jstprove_slices(list(slice_points), model_metadata)
@@ -74,7 +74,7 @@ class OnnxSlicer:
         slice_points = sorted(set(slice_points))
 
         slice_points = OnnxUtils.complete_slice_points(list(slice_points), model_metadata)
-        print(f"Optimized slice points: {slice_points}")
+        logger.info(f"Optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points

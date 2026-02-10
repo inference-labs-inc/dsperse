@@ -80,7 +80,6 @@ class OnnxAnalyzer:
                 "Opset < 18 is not officially supported; continuing anyway."
             )
             logger.warning(msg)
-            print(f"WARNING: {msg}")
 
         # Create model metadata
         model_metadata = {

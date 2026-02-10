@@ -50,7 +50,6 @@ class Converter:
         # If already in desired format, return
         if current_type == output_type:
             logger.info(f"Already in desired format: {output_type}")
-            print(f"Already in desired format: {output_type}")
             return str(path_obj)
 
         logger.info(f"Converting from {current_type} to {output_type}")

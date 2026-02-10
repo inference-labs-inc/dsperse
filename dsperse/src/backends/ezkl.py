@@ -195,15 +195,13 @@ class EZKL:
                 text=True,
             )
             if process.returncode != 0:
-                # Print the error stack from the process itself
                 if process.stderr:
-                    print(process.stderr)
+                    logger.error(process.stderr)
                 return False, process.stderr or "gen-settings failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
             if getattr(e, "stderr", None):
-                print(e.stderr)
+                logger.error(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
     def calibrate_settings(
@@ -284,15 +282,13 @@ class EZKL:
                 text=True,
             )
             if process.returncode != 0:
-                # Print the error stack from the process itself
                 if process.stderr:
-                    print(process.stderr)
+                    logger.error(process.stderr)
                 return False, process.stderr or "compile-circuit failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
             if getattr(e, "stderr", None):
-                print(e.stderr)
+                logger.error(e.stderr)
             return False, getattr(e, "stderr", str(e))
 
     def setup(self, compiled_path: str, vk_path: str, pk_path: str, settings_path: str = None):
@@ -330,15 +326,13 @@ class EZKL:
                 text=True,
             )
             if process.returncode != 0:
-                # Print the error stack from the process itself
                 if process.stderr:
-                    print(process.stderr)
+                    logger.error(process.stderr)
                 return False, process.stderr or "setup failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
             if getattr(e, "stderr", None):
-                print(e.stderr)
+                logger.error(e.stderr)
             return False, getattr(e, "stderr", str(e))
         except RuntimeError as e:
             # SRS error detected and bubbled up

@@ -49,20 +49,6 @@ class TensorShape:
 
 
 @dataclass
-class SliceShape:
-    """Combined shape info for a slice."""
-    tensor_shape: TensorShape = field(default_factory=TensorShape)
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "SliceShape":
-        if not d:
-            return cls()
-        return cls(
-            tensor_shape=TensorShape.from_dict(d.get("tensor_shape")),
-        )
-
-
-@dataclass
 class Dependencies:
     """Input/output dependencies for a slice."""
     input: list[str] = field(default_factory=list)
@@ -356,7 +342,7 @@ class SliceMetadata:
     path: str = ""
     relative_path: str = ""
     parameters: int = 0
-    shape: SliceShape = field(default_factory=SliceShape)
+    shape: TensorShape = field(default_factory=TensorShape)
     dependencies: Dependencies = field(default_factory=Dependencies)
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
@@ -374,7 +360,7 @@ class SliceMetadata:
             path=d.get("path", ""),
             relative_path=d.get("relative_path", ""),
             parameters=d.get("parameters", 0),
-            shape=SliceShape.from_dict(d.get("shape")),
+            shape=TensorShape.from_dict((d.get("shape") or {}).get("tensor_shape") or d.get("shape")),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
@@ -387,6 +373,7 @@ class SliceMetadata:
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        d["shape"] = {"tensor_shape": d["shape"]}
         if self.tiling is None:
             del d["tiling"]
         if self.channel_split is None:
@@ -395,13 +382,11 @@ class SliceMetadata:
 
     @property
     def output_shape(self) -> list[list[int | str]]:
-        """Convenience accessor for output tensor shapes."""
-        return self.shape.tensor_shape.output
+        return self.shape.output
 
     @property
     def input_shape(self) -> list[list[int | str]]:
-        """Convenience accessor for input tensor shapes."""
-        return self.shape.tensor_shape.input
+        return self.shape.input
 
     @property
     def output_names(self) -> list[str]:
@@ -429,8 +414,6 @@ class RunSliceMetadata:
     channel_split: Optional[ChannelSplitInfo] = None
     backend: str = Backend.ONNX
     ezkl: bool = False
-    ezkl_compatible: bool = True
-    circuit_size: int = 0
     circuit_path: Optional[str] = None
     settings_path: Optional[str] = None
     vk_path: Optional[str] = None
@@ -455,8 +438,6 @@ class RunSliceMetadata:
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             backend=d.get("backend", Backend.ONNX),
             ezkl=d.get("ezkl", False),
-            ezkl_compatible=d.get("ezkl_compatible", True),
-            circuit_size=d.get("circuit_size", 0),
             circuit_path=d.get("circuit_path"),
             settings_path=d.get("settings_path"),
             vk_path=d.get("vk_path"),

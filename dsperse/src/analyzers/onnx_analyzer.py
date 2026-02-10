@@ -6,7 +6,7 @@ from typing import Dict, Any
 import onnx
 
 from dsperse.src.analyzers.schema import (
-    SliceMetadata, SliceShape, TensorShape, Dependencies, ModelMetadata
+    SliceMetadata, TensorShape, Dependencies, ModelMetadata
 )
 from dsperse.src.slice.utils.onnx_utils import OnnxUtils
 from dsperse.src.utils.utils import Utils
@@ -471,11 +471,8 @@ class OnnxAnalyzer:
         return Dependencies(input=inputs, output=outputs, filtered_inputs=filtered)
 
     @staticmethod
-    def _get_segment_shape(end_idx, model_metadata, start_idx, slice_path) -> SliceShape:
-        return SliceShape(
-            tensor_shape=OnnxAnalyzer._get_tensor_shape(slice_path),
-        )
-
+    def _get_segment_shape(end_idx, model_metadata, start_idx, slice_path) -> TensorShape:
+        return OnnxAnalyzer._get_tensor_shape(slice_path)
 
     @staticmethod
     def _get_tensor_shape(slice_path) -> TensorShape:

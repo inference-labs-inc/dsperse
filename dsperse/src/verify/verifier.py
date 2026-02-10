@@ -41,7 +41,7 @@ class Verifier(PipelineStage):
         verifs, jst_verified, ezkl_verified = self._process_results(results)
         return VerifierUtils.finalize_verify_results(run_path, verifs, jst_verified, ezkl_verified, len(work_items))
 
-    def _execute_single_slice(self, run_path, model_path, detected, backend, tiles_range):
+    def _execute_single_slice(self, run_path, model_path, backend, tiles_range):
         model_path = Path(model_path)
         run_path, dirs_root = Path(run_path), Utils.dirs_root_from(model_path)
         run_meta = initialize_stage_metadata(run_path, dirs_root)
@@ -76,7 +76,7 @@ class Verifier(PipelineStage):
 
             input_path, output_path = run_path / "input.json", run_path / "output.json"
             wf = get_witness_file(run_path, slice_id)
-            witness_path = Path(wf) if wf else (run_path / WITNESS_FILENAME[Backend.JSTPROVE])
+            witness_path = Path(wf) if wf else (run_path / WITNESS_FILENAME[preferred])
 
             circuit_path = Utils.resolve_under_slice(slice_dir, resolve_circuit_path(meta, preferred))
             settings_path = Utils.resolve_under_slice(slice_dir, meta.settings_path)
@@ -119,7 +119,7 @@ class Verifier(PipelineStage):
 
                 input_path, output_path = run_path / slice_id / "input.json", run_path / slice_id / "output.json"
                 wf = get_witness_file(run_path, slice_id)
-                witness_path = Path(wf) if wf else (run_path / slice_id / WITNESS_FILENAME[Backend.JSTPROVE])
+                witness_path = Path(wf) if wf else (run_path / slice_id / WITNESS_FILENAME[preferred])
 
                 if preferred == Backend.EZKL:
                     if not settings_path or not os.path.exists(settings_path):

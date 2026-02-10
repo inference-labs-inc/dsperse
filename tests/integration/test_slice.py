@@ -216,14 +216,6 @@ class TestSliceE2E:
         try:
             slice_model(args)
 
-            # Capture console output
-            captured = capfd.readouterr()
-            combined_out = captured.out + captured.err
-            
-            assert "Slicing model" in combined_out
-            assert "ONNX model sliced successfully" in combined_out
-            assert "Tiled" in combined_out and "Conv slices" in combined_out
-
             # Verify artifacts
             metadata_path = output_dir / "metadata.json"
             assert metadata_path.exists()

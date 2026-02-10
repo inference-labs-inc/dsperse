@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 class OnnxModels:
-    def __init__(self):
-        self.device = torch.device("cpu")
 
     @staticmethod
     def _create_session(model_path: str) -> ort.InferenceSession:
@@ -301,29 +299,3 @@ class OnnxModels:
                 return {session.get_inputs()[0].name: input_numpy}
             else:
                 return {"input": input_numpy}
-
-
-# Example usage
-if __name__ == "__main__":
-
-    # Choose which model to test
-    model_choice = 1  # Change this to test different models
-
-    # Model configurations
-    base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet"
-    }
-
-    # Get model directory
-    abs_path = os.path.abspath(base_paths[model_choice])
-    slices_dir = os.path.join(abs_path, "slices")
-    input_json = os.path.join(abs_path, "input.json")
-    output_json = os.path.join(abs_path, "output.json")
-
-    print(f"Running inference on {abs_path}")
-
-    result = OnnxModels.run_inference(input_file=input_json, model_path=os.path.join(abs_path, "model.onnx"), output_file="output.json")
-
-    print(result)

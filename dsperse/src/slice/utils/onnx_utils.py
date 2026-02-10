@@ -11,7 +11,7 @@ from typing import Tuple, List, Dict
 import onnx
 import logging
 
-from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, SliceShape, TensorShape, TilingInfo, ChannelSplitInfo
+from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, TensorShape, TilingInfo, ChannelSplitInfo
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from dsperse.src.slice.autotiler import ELEMENTWISE_OPS
 from dsperse.src.utils.utils import Utils
@@ -23,8 +23,6 @@ _MAX_ORT_OPSET_VERSION = 22
 
 
 class OnnxUtils:
-    def __init__(self):
-        pass
 
     @staticmethod
     def clamp_for_ort(model: onnx.ModelProto) -> None:
@@ -726,8 +724,8 @@ class OnnxUtils:
     def _finalize_slice_metadata(idx, seg, root, slice_dir, onnx_path, filename, dsperse_ver, opset_version, global_meta):
         """Build and save authoritative SliceMetadata and ModelMetadata for a slice."""
         orig_slice = SliceMetadata.from_dict({**seg, "index": seg.get("index", idx)})
-        input_shapes = orig_slice.shape.tensor_shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
-        output_shapes = orig_slice.shape.tensor_shape.output or seg.get("output_shape") or seg.get("output_shapes") or []
+        input_shapes = orig_slice.shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
+        output_shapes = orig_slice.shape.output or seg.get("output_shape") or seg.get("output_shapes") or []
 
         tiling = orig_slice.tiling
         if tiling:
@@ -739,9 +737,7 @@ class OnnxUtils:
             channel_split_dict = Utils.relativize_tiling_info(channel_split.to_dict(), root_dir=slice_dir, base_dir=root)
             channel_split = ChannelSplitInfo.from_dict(channel_split_dict)
 
-        shape = SliceShape(
-            tensor_shape=TensorShape(input=input_shapes, output=output_shapes),
-        )
+        shape = TensorShape(input=input_shapes, output=output_shapes)
 
         slice_metadata_path = slice_dir / "metadata.json"
         updated_slice = SliceMetadata(

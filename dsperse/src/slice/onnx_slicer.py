@@ -163,24 +163,3 @@ class OnnxSlicer:
         slices_paths, tiled_info, _tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
         return slices_paths
-
-
-if __name__ == "__main__":
-    model_choice = 1
-
-    base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/age",
-        5: "../../models/version",
-        6: "../../models/bert",
-        7: "../../models/roberta",
-        8: "../../models/yolov8"
-    }
-
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = os.path.join(abs_path, "model.onnx")
-    output_dir = os.path.join(abs_path, "slices")
-    onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir, tile_size=1000)

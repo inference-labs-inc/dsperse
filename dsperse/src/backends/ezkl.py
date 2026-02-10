@@ -414,30 +414,3 @@ class EZKL:
     def process_witness_output(witness_data: dict) -> Optional[dict]:
         """Process the witness.json data to get prediction results."""
         return EZKLUtils.process_witness_output(witness_data)
-
-
-if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 1  # Change this to test different models
-
-    base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet",
-        4: "../models/yolov3",
-    }
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = abs_path
-    slices_dir = os.path.join(abs_path, "slices")
-
-    # Circuitize
-    model_path = os.path.abspath(model_dir)
-    EZKL().compile(model_path=abs_path)
-
-    # # Generate witness
-    # input_file = os.path.join(model_dir, "input.json")
-    # model_path = os.path.join(model_dir, "model.compiled")
-    # vk_path = os.path.join(model_dir, "vk.json")
-    # output_file = os.path.join(model_dir, "witness.json")
-    # result = ezkl.generate_witness(input_file=input_file, model_path=model_path, output_file=output_file, vk_path=vk_path)
-    # print(result)

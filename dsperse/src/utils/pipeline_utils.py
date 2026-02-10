@@ -8,15 +8,7 @@ from dsperse.src.utils.utils import Utils
 logger = logging.getLogger(__name__)
 
 
-def get_witness_backend(run_path: Path, slice_id: str) -> str | None:
-    try:
-        rr = Utils.load_run_results(run_path)
-    except Exception:
-        return None
-    if not rr:
-        return None
-    exec_chain = ExecutionChain.from_dict(rr.get("execution_chain"))
-    entry = exec_chain.get_result_for_slice(slice_id)
+def _backend_from_entry(entry) -> str | None:
     if not entry or not entry.witness_execution:
         return None
     w = entry.witness_execution
@@ -30,15 +22,28 @@ def get_witness_backend(run_path: Path, slice_id: str) -> str | None:
     return None
 
 
-def get_witness_file(run_path: Path, slice_id: str) -> str | None:
+def _load_exec_chain(run_path: Path) -> ExecutionChain | None:
     try:
         rr = Utils.load_run_results(run_path)
     except Exception:
         return None
     if not rr:
         return None
-    exec_chain = ExecutionChain.from_dict(rr.get("execution_chain"))
-    entry = exec_chain.get_result_for_slice(slice_id)
+    return ExecutionChain.from_dict(rr.get("execution_chain"))
+
+
+def get_witness_backend(run_path: Path, slice_id: str) -> str | None:
+    chain = _load_exec_chain(run_path)
+    if not chain:
+        return None
+    return _backend_from_entry(chain.get_result_for_slice(slice_id))
+
+
+def get_witness_file(run_path: Path, slice_id: str) -> str | None:
+    chain = _load_exec_chain(run_path)
+    if not chain:
+        return None
+    entry = chain.get_result_for_slice(slice_id)
     if not entry or not entry.witness_execution:
         return None
     return entry.witness_execution.witness_file
@@ -68,9 +73,12 @@ def filter_circuit_slices(metadata: RunMetadata, backend: Optional[str], run_pat
     slices_iter = list(metadata.iter_circuit_slices())
     if not backend or backend not in (Backend.JSTPROVE, Backend.EZKL):
         return slices_iter
+    chain = _load_exec_chain(run_path)
+    if not chain:
+        return slices_iter
     filtered = []
     for slice_id, meta in slices_iter:
-        wb = get_witness_backend(run_path, slice_id)
+        wb = _backend_from_entry(chain.get_result_for_slice(slice_id))
         if wb == backend:
             filtered.append((slice_id, meta))
     return filtered

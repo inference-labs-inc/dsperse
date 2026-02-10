@@ -153,10 +153,8 @@ class RunnerAnalyzer:
                 path=onnx_path or "",
                 input_shape=meta.input_shape,
                 output_shape=meta.output_shape,
-                ezkl_compatible=True,
                 ezkl=bool(compiled_flag),
                 backend=backend,
-                circuit_size=0,
                 dependencies=meta.dependencies,
                 parameters=meta.parameters,
                 circuit_path=circuit_path,
@@ -186,7 +184,7 @@ class RunnerAnalyzer:
 
         for entry in slices_data_list:
             meta_path = entry.get("slice_metadata")
-            parent_dir = os.path.dirname(entry.get("path")).split(os.sep)[0]
+            parent_dir = os.path.dirname(entry.get("path") or "").split(os.sep)[0]
 
             try:
                 with open(meta_path, "r") as f:
@@ -258,10 +256,8 @@ class RunnerAnalyzer:
                 path=onnx_path,
                 input_shape=meta.input_shape,
                 output_shape=meta.output_shape,
-                ezkl_compatible=True,
                 ezkl=bool(compiled_flag),
                 backend=backend,
-                circuit_size=0,
                 dependencies=meta.dependencies,
                 parameters=meta.parameters,
                 circuit_path=circuit_path,

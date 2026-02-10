@@ -51,18 +51,18 @@ class PipelineStage:
     def _handle_single_slice(self, run_path: Path, model_dir: str | Path, detected: str,
                              backend: str | None, tiles_range: range | list[int] | None) -> dict:
         if backend not in (Backend.JSTPROVE, Backend.EZKL):
-            raise ValueError(f"Single-slice mode requires explicit backend: 'jstprove' or 'ezkl'.")
+            raise ValueError("Single-slice mode requires explicit backend: 'jstprove' or 'ezkl'.")
         dirs_model_path = model_dir
         if detected != "dirs":
             dirs_model_path = Converter.convert(str(model_dir), output_type="dirs", cleanup=False)
-        result = self._execute_single_slice(run_path, dirs_model_path, detected, backend, tiles_range)
+        result = self._execute_single_slice(run_path, dirs_model_path, backend, tiles_range)
         if detected != "dirs":
             Converter.convert(str(Utils.dirs_root_from(Path(dirs_model_path))), output_type=detected, cleanup=True)
         return result
 
     def _execute_packaged(self, run_path: str | Path, pkg_path: str | Path, pkg_type: str,
                           output_path: str | Path | None, backend: str | None) -> dict:
-        temp_dirs = Converter.convert(pkg_path, output_type="dirs", cleanup=False)
+        temp_dirs = Converter.convert(str(pkg_path), output_type="dirs", cleanup=False)
         dirs_root = Utils.dirs_root_from(Path(temp_dirs))
         try:
             summary = self._execute_dirs(run_path, dirs_root, output_path, backend)

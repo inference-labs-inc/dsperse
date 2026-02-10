@@ -134,7 +134,7 @@ class RunnerUtils:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     @staticmethod
-    def preprocess_input(input_path: str, model_directory: str = None, save_reshape: bool = False) -> torch.Tensor:
+    def preprocess_input(input_path: str) -> torch.Tensor:
         """Preprocess input data from JSON."""
         if os.path.isfile(input_path):
             with open(input_path, 'r') as f:

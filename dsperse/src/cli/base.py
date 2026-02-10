@@ -363,7 +363,7 @@ def get_latest_run(run_root_dir):
 
 def validate_run_dir(run_dir):
     """Validate that run_dir contains recognized run artifacts. Returns True if valid."""
-    rd = Path(run_dir)
+    rd = Path(normalize_path(run_dir))
     is_run_root = (rd / 'metadata.json').exists() or (rd / 'run_results.json').exists()
     is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
     is_tiled_slice_run = (rd / 'split').exists() or (rd / 'tile_0').exists()

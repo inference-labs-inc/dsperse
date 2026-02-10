@@ -39,7 +39,7 @@ class Prover(PipelineStage):
         proofs, proved_jst, proved_ezkl = self._process_results(results)
         return ProverUtils.finalize_prove_results(run_path, proofs, proved_jst, proved_ezkl, len(work_items))
 
-    def _execute_single_slice(self, run_path, model_dir, detected, backend, tiles_range):
+    def _execute_single_slice(self, run_path, model_dir, backend, tiles_range):
         model_dir_path = Path(model_dir)
         run_path, dirs_root = Path(run_path), Utils.dirs_root_from(model_dir_path)
         run_meta = initialize_stage_metadata(run_path, dirs_root)

@@ -73,5 +73,5 @@ class PipelineStage:
     def _execute_dirs(self, run_path, dirs_path, output_path, backend) -> dict:
         raise NotImplementedError
 
-    def _execute_single_slice(self, run_path, model_dir, detected, backend, tiles_range) -> dict:
+    def _execute_single_slice(self, run_path, model_dir, backend, tiles_range) -> dict:
         raise NotImplementedError

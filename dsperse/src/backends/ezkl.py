@@ -187,17 +187,13 @@ class EZKL:
                 "--settings-path",
                 settings_path,
             ]
-            process = subprocess.run(
+            subprocess.run(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                if process.stderr:
-                    logger.error(process.stderr)
-                return False, process.stderr or "gen-settings failed"
             return True, None
         except subprocess.CalledProcessError as e:
             if getattr(e, "stderr", None):
@@ -274,17 +270,13 @@ class EZKL:
                 "--compiled-circuit",
                 compiled_path,
             ]
-            process = subprocess.run(
+            subprocess.run(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                if process.stderr:
-                    logger.error(process.stderr)
-                return False, process.stderr or "compile-circuit failed"
             return True, None
         except subprocess.CalledProcessError as e:
             if getattr(e, "stderr", None):
@@ -318,17 +310,13 @@ class EZKL:
                 "--pk-path",
                 pk_path,
             ]
-            process = EZKLUtils.run_ezkl_command_with_srs_check(
+            EZKLUtils.run_ezkl_command_with_srs_check(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                if process.stderr:
-                    logger.error(process.stderr)
-                return False, process.stderr or "setup failed"
             return True, None
         except subprocess.CalledProcessError as e:
             if getattr(e, "stderr", None):

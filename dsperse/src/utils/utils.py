@@ -415,35 +415,3 @@ class Utils:
         except Exception as e:
             logger.warning(f"Failed to write updated metadata to {meta_path}: {e}")
 
-    @staticmethod
-    def get_dsperse_version() -> str:
-        """
-        Read the dsperse project version from the nearest pyproject.toml.
-        Returns a string like "1.0.1" or "unknown" on failure.
-        """
-        try:
-            here = Path(__file__).resolve()
-            for parent in [here.parent, *here.parents]:
-                pyproject = parent / "pyproject.toml"
-                if pyproject.exists():
-                    try:
-                        txt = pyproject.read_text(encoding="utf-8", errors="ignore")
-                        in_project = False
-                        for line in txt.splitlines():
-                            s = line.strip()
-                            if s.startswith("[project]"):
-                                in_project = True
-                                continue
-                            if in_project and s.startswith("[") and s.endswith("]"):
-                                break
-                            if in_project and s.startswith("version") and "=" in s:
-                                try:
-                                    val = s.split("=", 1)[1].strip().strip('"').strip("'")
-                                    if val: return val
-                                except Exception:
-                                    pass
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        return "unknown"

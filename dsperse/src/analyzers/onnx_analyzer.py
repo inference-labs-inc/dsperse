@@ -121,23 +121,14 @@ class OnnxAnalyzer:
         node_inputs = list(node.input)
         node_outputs = list(node.output)
 
-        # gather parameter information
-        parameters, parameter_details = self._get_parameter_info(node, node_inputs, initializer_map)
+        _, parameter_details = self._get_parameter_info(node, node_inputs, initializer_map)
 
-        # Determine in_features and out_features
-        in_features, out_features = self._get_feature_info(node, parameter_details)
-
-        # Determine activation function
         node_type = node.op_type
 
-        # Return node metadata
         return {
             "index": index,
             "slice_name": f"{node_type}_{index}",
-            "parameters": parameters,
             "node_type": node_type,
-            "in_features": in_features,
-            "out_features": out_features,
             "parameter_details": parameter_details,
             "dependencies": {
                 "input": node_inputs,
@@ -231,66 +222,6 @@ class OnnxAnalyzer:
 
         return parameters, parameter_details
 
-    @staticmethod
-    def _get_feature_info(node, parameter_details):
-        """
-        Determine in_features and out_features for a node.
-
-        Args:
-            node: ONNX node
-            parameter_details: Dictionary of parameter details
-
-        Returns:
-            tuple: (in_features, out_features)
-        """
-        in_features = None
-        out_features = None
-
-        if node.op_type == "Conv":
-            # For Conv, in_features is input channels, out_features is output channels
-            if len(parameter_details) >= 1:
-                # Typically weight shape for Conv is [out_channels, in_channels, kernel_h, kernel_w]
-                weight_name = next(iter(parameter_details))
-                weight_shape = parameter_details[weight_name]["shape"]
-                if len(weight_shape) >= 2:
-                    out_features = weight_shape[0]
-                    in_features = weight_shape[1]
-
-        elif node.op_type == "Gemm" or node.op_type == "MatMul":
-            # For Gemm/MatMul, in_features is input dim, out_features is output dim
-            if len(parameter_details) >= 1:
-                # Typically weight shape for Gemm is [out_features, in_features]
-                weight_name = next(iter(parameter_details))
-                weight_shape = parameter_details[weight_name]["shape"]
-                if len(weight_shape) >= 2:
-                    out_features = weight_shape[0]
-                    in_features = weight_shape[1]
-
-        return in_features, out_features
-
-    @staticmethod
-    def _get_activation_info(node):
-        """
-        Determine activation function for a node.
-
-        Args:
-            node: ONNX node
-
-        Returns:
-            str: Activation function name
-        """
-        activation = node.op_type
-        if node.op_type == "Relu":
-            activation = "ReLU"
-        elif node.op_type == "Sigmoid":
-            activation = "Sigmoid"
-        elif node.op_type == "Tanh":
-            activation = "Tanh"
-        elif node.op_type == "Softmax":
-            activation = "Softmax"
-
-        return activation
-
     def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None, tiled_info=None):
         """
         Generate metadata for sliced ONNX models.
@@ -362,28 +293,13 @@ class OnnxAnalyzer:
         Returns:
             dict: Model-level metadata
         """
-        # Get model input and output shapes
-        model_input_shapes = model_metadata["input_shape"]
-        model_output_shapes = model_metadata["output_shapes"]
-
-        # Calculate total parameters
-        total_parameters = sum(node_info.get("parameters", 0) for node_info in model_metadata["nodes"].values())
-
-        # Format the original_model path to be consistent with the expected format
-        original_model_path = model_metadata["original_model"]
-        model_type = model_metadata["model_type"]
-
-        # Create model metadata
-        metadata = {
-            "original_model": original_model_path,
-            "model_type": model_type,
-            "total_parameters": total_parameters,
-            "input_shape": model_input_shapes,
-            "output_shapes": model_output_shapes,
+        return {
+            "original_model": model_metadata["original_model"],
+            "model_type": model_metadata["model_type"],
+            "input_shape": model_metadata["input_shape"],
+            "output_shapes": model_metadata["output_shapes"],
             "slice_points": slice_points[:-1]
         }
-
-        return metadata
 
     def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx, slice_path, output_dir=None):
         """
@@ -406,12 +322,8 @@ class OnnxAnalyzer:
                 if node_info["index"] == idx:
                     segment_nodes.append((node_name, node_info))
 
-        # Skip if no nodes in this segment
         if not segment_nodes:
             return None
-
-        # Calculate segment parameters
-        segment_parameters = sum(node_info.get("parameters", 0) for _, node_info in segment_nodes)
 
         dependencies = self._get_segment_dependencies(model_metadata, start_idx, end_idx)
         shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
@@ -426,7 +338,6 @@ class OnnxAnalyzer:
             index=segment_idx,
             filename=segment_filename,
             path=segment_path,
-            parameters=segment_parameters,
             shape=shape,
             dependencies=dependencies,
         )

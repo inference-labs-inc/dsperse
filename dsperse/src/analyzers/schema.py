@@ -341,14 +341,11 @@ class SliceMetadata:
     filename: str = ""
     path: str = ""
     relative_path: str = ""
-    parameters: int = 0
     shape: TensorShape = field(default_factory=TensorShape)
     dependencies: Dependencies = field(default_factory=Dependencies)
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
     compilation: Compilation = field(default_factory=Compilation)
-    dsperse_version: Optional[str] = None
-    opset_version: Optional[int] = None
     slice_metadata: Optional[str] = None
     slice_metadata_relative_path: Optional[str] = None
 
@@ -359,14 +356,11 @@ class SliceMetadata:
             filename=d.get("filename", ""),
             path=d.get("path", ""),
             relative_path=d.get("relative_path", ""),
-            parameters=d.get("parameters", 0),
             shape=TensorShape.from_dict((d.get("shape") or {}).get("tensor_shape") or d.get("shape")),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             compilation=Compilation.from_dict(d.get("compilation")),
-            dsperse_version=d.get("dsperse_version"),
-            opset_version=d.get("opset_version"),
             slice_metadata=d.get("slice_metadata"),
             slice_metadata_relative_path=d.get("slice_metadata_relative_path"),
         )
@@ -409,7 +403,6 @@ class RunSliceMetadata:
     input_shape: list[list[int | str]] = field(default_factory=list)
     output_shape: list[list[int | str]] = field(default_factory=list)
     dependencies: Dependencies = field(default_factory=Dependencies)
-    parameters: int = 0
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
     backend: str = Backend.ONNX
@@ -424,7 +417,6 @@ class RunSliceMetadata:
     ezkl_settings_path: Optional[str] = None
     ezkl_pk_path: Optional[str] = None
     ezkl_vk_path: Optional[str] = None
-    slice_metadata_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "RunSliceMetadata":
@@ -433,7 +425,6 @@ class RunSliceMetadata:
             input_shape=d.get("input_shape", []),
             output_shape=d.get("output_shape", []),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
-            parameters=d.get("parameters", 0),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             backend=d.get("backend", Backend.ONNX),
@@ -448,7 +439,6 @@ class RunSliceMetadata:
             ezkl_settings_path=d.get("ezkl_settings_path"),
             ezkl_pk_path=d.get("ezkl_pk_path"),
             ezkl_vk_path=d.get("ezkl_vk_path"),
-            slice_metadata_path=d.get("slice_metadata_path"),
         )
 
     def to_dict(self) -> dict:
@@ -471,7 +461,6 @@ class ModelMetadata:
     """Top-level metadata for sliced model."""
     original_model: str = ""
     model_type: str = ""
-    total_parameters: int = 0
     input_shape: list[list[int]] = field(default_factory=list)
     output_shapes: list[list[int]] = field(default_factory=list)
     slice_points: list[int] = field(default_factory=list)
@@ -484,7 +473,6 @@ class ModelMetadata:
         return cls(
             original_model=d.get("original_model", ""),
             model_type=d.get("model_type", ""),
-            total_parameters=d.get("total_parameters", 0),
             input_shape=d.get("input_shape", []),
             output_shapes=d.get("output_shapes", []),
             slice_points=d.get("slice_points", []),
@@ -495,7 +483,6 @@ class ModelMetadata:
         return {
             "original_model": self.original_model,
             "model_type": self.model_type,
-            "total_parameters": self.total_parameters,
             "input_shape": self.input_shape,
             "output_shapes": self.output_shapes,
             "slice_points": self.slice_points,

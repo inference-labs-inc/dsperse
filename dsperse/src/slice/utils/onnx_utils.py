@@ -634,8 +634,6 @@ class OnnxUtils:
             meta = json.load(f)
 
         original_model = meta.get("original_model")
-        dsperse_ver = Utils.get_dsperse_version()
-        opset_version = OnnxUtils._get_opset_version(original_model)
 
         slices = meta.get("slices", []) or []
         for idx, seg in enumerate(slices):
@@ -652,8 +650,7 @@ class OnnxUtils:
 
             # 3. Build and save per-slice metadata
             updated_slice = OnnxUtils._finalize_slice_metadata(
-                idx, seg, root, slice_dir, onnx_path, expected_filename,
-                dsperse_ver, opset_version, meta
+                idx, seg, root, slice_dir, onnx_path, expected_filename, meta
             )
 
             # 4. Update global metadata entry
@@ -662,8 +659,6 @@ class OnnxUtils:
                 "relative_path": str(Path(updated_slice.path).resolve().relative_to(root)),
                 "slice_metadata": updated_slice.slice_metadata,
                 "slice_metadata_relative_path": updated_slice.slice_metadata_relative_path,
-                "dsperse_version": updated_slice.dsperse_version,
-                "opset_version": updated_slice.opset_version
             })
 
         Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)
@@ -721,7 +716,7 @@ class OnnxUtils:
         return desired_path if current_file else None
 
     @staticmethod
-    def _finalize_slice_metadata(idx, seg, root, slice_dir, onnx_path, filename, dsperse_ver, opset_version, global_meta):
+    def _finalize_slice_metadata(idx, seg, root, slice_dir, onnx_path, filename, global_meta):
         """Build and save authoritative SliceMetadata and ModelMetadata for a slice."""
         orig_slice = SliceMetadata.from_dict({**seg, "index": seg.get("index", idx)})
         input_shapes = orig_slice.shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
@@ -745,14 +740,11 @@ class OnnxUtils:
             filename=filename,
             path=str(onnx_path),
             relative_path=str(onnx_path.resolve().relative_to(root).relative_to("slice_" + str(idx))),
-            parameters=orig_slice.parameters,
             shape=shape,
             dependencies=orig_slice.dependencies,
             tiling=tiling,
             channel_split=channel_split,
             compilation=orig_slice.compilation,
-            dsperse_version=dsperse_ver,
-            opset_version=opset_version,
             slice_metadata=str(slice_metadata_path.resolve()),
             slice_metadata_relative_path=str(slice_metadata_path.resolve().relative_to(root)),
         )
@@ -760,7 +752,6 @@ class OnnxUtils:
         model_meta = ModelMetadata(
             original_model=global_meta.get("original_model") or "",
             model_type=global_meta.get("model_type", "ONNX"),
-            total_parameters=updated_slice.parameters,
             input_shape=global_meta.get("input_shape", input_shapes),
             output_shapes=global_meta.get("output_shapes", output_shapes),
             slice_points=[idx],
@@ -769,19 +760,4 @@ class OnnxUtils:
         model_meta.save(slice_metadata_path)
         return updated_slice
 
-    @staticmethod
-    def _get_opset_version(model_path: str) -> int | None:
-        """Best-effort retrieval of ONNX opset version."""
-        if not model_path or not os.path.exists(model_path):
-            return None
-        try:
-            mdl = onnx.load(model_path)
-            for ops in mdl.opset_import:
-                if ops.domain in ("", "ai.onnx"):
-                    return int(ops.version)
-            if mdl.opset_import:
-                return int(mdl.opset_import[0].version)
-        except Exception:
-            pass
-        return None
 

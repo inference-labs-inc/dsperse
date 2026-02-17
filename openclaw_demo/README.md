@@ -11,10 +11,13 @@ It is intentionally minimal and deployable.
 
 ## Visual artifacts
 
-- Dashboard demo page: `openclaw_demo/docs/index.html`
-- Architecture diagram: `openclaw_demo/docs/architechure.html`
+### Architecture
 
-If GitHub Pages is enabled for the repo, the Pages workflow publishes `openclaw_demo/docs/`.
+![Architecture diagram](docs/architechure.png)
+
+### Mock Dashboard (example input/output)
+
+![Mock dashboard](docs/mock-dashboard.png)
 
 ## Run (local)
 

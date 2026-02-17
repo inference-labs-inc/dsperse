@@ -6,7 +6,7 @@ from typing import Optional, Union
 from dsperse.src.analyzers.schema import Backend, RunSliceMetadata, ExecutionMethod, TilingInfo, TileResult, SliceResult
 from dsperse.src.backends.dispatch import WITNESS_FILENAME, instantiate_backend, resolve_circuit_path
 from dsperse.src.utils.utils import Utils
-from dsperse.src.utils.pipeline_utils import get_witness_file, select_backend, initialize_stage_metadata, filter_circuit_slices
+from dsperse.src.utils.pipeline_utils import get_witness_file, select_backend, initialize_stage_metadata, filter_circuit_slices, finalize_stage_results
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +30,10 @@ class ProverUtils:
 
     @staticmethod
     def finalize_prove_results(run_path: Path, proofs: dict, proved_jst: int, proved_ezkl: int, total: int):
-        run_results = Utils.load_run_results(run_path)
-        run_results, _ = Utils.merge_execution_into_run_results(run_results, proofs, "proof")
-        exec_chain = run_results.setdefault("execution_chain", {})
-        exec_chain["jstprove_proved_slices"] = int(proved_jst)
-        exec_chain["ezkl_proved_slices"] = int(proved_ezkl)
-        exec_chain["ezkl_verified_slices"] = exec_chain.get("ezkl_verified_slices", 0) if proved_ezkl == 0 else 0
-
-        Utils.save_run_results(run_path, run_results)
-        Utils.update_metadata_after_execution(run_path, total, proved_jst + proved_ezkl, "proof")
+        run_results = finalize_stage_results(run_path, proofs, "proof", "proved", proved_jst, proved_ezkl, total)
+        if proved_ezkl > 0:
+            run_results.setdefault("execution_chain", {})["ezkl_verified_slices"] = 0
+            Utils.save_run_results(run_path, run_results)
         return run_results
 
     @staticmethod

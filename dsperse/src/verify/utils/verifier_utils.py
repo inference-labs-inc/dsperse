@@ -7,34 +7,30 @@ from typing import Optional, Union
 from dsperse.src.analyzers.schema import Backend, RunSliceMetadata, ExecutionChain, ExecutionMethod, RunMetadata, TilingInfo, TileResult, SliceResult
 from dsperse.src.backends.dispatch import WITNESS_FILENAME, instantiate_backend, resolve_circuit_path
 from dsperse.src.utils.utils import Utils
-from dsperse.src.utils.pipeline_utils import get_witness_backend, get_witness_file, select_backend, initialize_stage_metadata, filter_circuit_slices
+from dsperse.src.utils.pipeline_utils import get_witness_backend, get_witness_file, select_backend, initialize_stage_metadata, filter_circuit_slices, finalize_stage_results
 
 logger = logging.getLogger(__name__)
 
 class VerifierUtils:
 
     @staticmethod
-    def get_proof_paths(run_results: dict) -> dict[str, str]:
+    def get_proof_paths(run_results: dict, run_path: Path | None = None) -> dict[str, str]:
         proof_paths = {}
         try:
             results_chain = ExecutionChain.from_dict((run_results or {}).get("execution_chain"))
             for entry in results_chain.execution_results:
                 if entry.proof_execution and entry.proof_execution.proof_path:
-                    proof_paths[entry.slice_id] = entry.proof_execution.proof_path
+                    pp = entry.proof_execution.proof_path
+                    if run_path:
+                        pp = Utils.resolve_path(pp, run_path) or pp
+                    proof_paths[entry.slice_id] = pp
         except Exception:
             pass
         return proof_paths
 
     @staticmethod
     def finalize_verify_results(run_path: Path, verifs: dict, jst_verified: int, ezkl_verified: int, total: int):
-        run_results = Utils.load_run_results(run_path)
-        run_results, _ = Utils.merge_execution_into_run_results(run_results, verifs, "verification")
-        exec_chain = run_results.setdefault("execution_chain", {})
-        exec_chain["jstprove_verified_slices"] = int(jst_verified)
-        exec_chain["ezkl_verified_slices"] = int(ezkl_verified)
-        Utils.save_run_results(run_path, run_results)
-        Utils.update_metadata_after_execution(run_path, total, (jst_verified + ezkl_verified), "verification")
-        return run_results
+        return finalize_stage_results(run_path, verifs, "verification", "verified", jst_verified, ezkl_verified, total)
 
     @staticmethod
     def verify_with_backend(

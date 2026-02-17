@@ -73,11 +73,68 @@ class RunnerAnalyzer:
         return RunnerAnalyzer._process_slices_model(slices_dir, slices_data)
 
     @staticmethod
+    def _build_run_slice_metadata(meta: SliceMetadata, normalize, onnx_path: str) -> RunSliceMetadata:
+        jst = meta.compilation.jstprove
+        ezkl_comp = meta.compilation.ezkl
+
+        if jst.compiled:
+            backend = Backend.JSTPROVE
+            compiled_flag = True
+            compiled_rel = jst.files.compiled
+            settings_rel = jst.files.settings
+            pk_rel = None
+            vk_rel = None
+        elif ezkl_comp.compiled:
+            backend = Backend.EZKL
+            compiled_flag = True
+            compiled_rel = ezkl_comp.files.compiled
+            settings_rel = ezkl_comp.files.settings
+            pk_rel = ezkl_comp.files.pk_key
+            vk_rel = ezkl_comp.files.vk_key
+        else:
+            backend = Backend.ONNX
+            compiled_flag = False
+            compiled_rel = None
+            settings_rel = None
+            pk_rel = None
+            vk_rel = None
+
+        if meta.tiling:
+            if meta.tiling.tile:
+                meta.tiling.tile.path = normalize(meta.tiling.tile.path)
+            if meta.tiling.tiles:
+                for t in meta.tiling.tiles:
+                    t.path = normalize(t.path)
+
+        if meta.channel_split:
+            for group in meta.channel_split.groups:
+                group.transform_paths(normalize)
+            if meta.channel_split.bias_path:
+                meta.channel_split.bias_path = normalize(meta.channel_split.bias_path)
+
+        return RunSliceMetadata(
+            path=onnx_path or "",
+            input_shape=meta.input_shape,
+            output_shape=meta.output_shape,
+            ezkl=bool(compiled_flag),
+            backend=backend,
+            dependencies=meta.dependencies,
+            circuit_path=normalize(compiled_rel),
+            settings_path=normalize(settings_rel),
+            vk_path=normalize(vk_rel),
+            pk_path=normalize(pk_rel),
+            jstprove_circuit_path=normalize(jst.files.compiled),
+            ezkl_circuit_path=normalize(ezkl_comp.files.compiled),
+            jstprove_settings_path=normalize(jst.files.settings),
+            ezkl_settings_path=normalize(ezkl_comp.files.settings),
+            ezkl_pk_path=normalize(ezkl_comp.files.pk_key),
+            ezkl_vk_path=normalize(ezkl_comp.files.vk_key),
+            tiling=meta.tiling,
+            channel_split=meta.channel_split,
+        )
+
+    @staticmethod
     def _process_slices_model(slices_dir: Path, slices_list: list[dict]) -> dict[str, RunSliceMetadata]:
-        """
-        Build slices dict using model-level metadata entries from slices/metadata.json.
-        Trust the provided metadata; do not perform filesystem checks.
-        """
         slices: dict[str, RunSliceMetadata] = {}
 
         for item in slices_list:
@@ -91,93 +148,17 @@ class RunnerAnalyzer:
             rel_payload = RunnerAnalyzer.rel_from_payload(rel_from_meta) or rel_from_meta
             onnx_path = RunnerAnalyzer.with_slice_prefix(rel_payload, slice_key)
 
-            def _norm(rel: Optional[str]) -> Optional[str]:
+            def _norm(rel: Optional[str], _sk=slice_key) -> Optional[str]:
                 if not rel:
                     return None
-                return RunnerAnalyzer.with_slice_prefix(RunnerAnalyzer.rel_from_payload(rel) or rel, slice_key)
+                return RunnerAnalyzer.with_slice_prefix(RunnerAnalyzer.rel_from_payload(rel) or rel, _sk)
 
-            jst = meta.compilation.jstprove
-            ezkl_comp = meta.compilation.ezkl
-
-            if jst.compiled:
-                backend = Backend.JSTPROVE
-                compiled_flag = True
-                compiled_rel = jst.files.compiled
-                settings_rel = jst.files.settings
-                pk_rel = None
-                vk_rel = None
-            elif ezkl_comp.compiled:
-                backend = Backend.EZKL
-                compiled_flag = True
-                compiled_rel = ezkl_comp.files.compiled
-                settings_rel = ezkl_comp.files.settings
-                pk_rel = ezkl_comp.files.pk_key
-                vk_rel = ezkl_comp.files.vk_key
-            else:
-                backend = Backend.ONNX
-                compiled_flag = False
-                compiled_rel = None
-                settings_rel = None
-                pk_rel = None
-                vk_rel = None
-
-            circuit_path = _norm(compiled_rel)
-            settings_path = _norm(settings_rel)
-            pk_path = _norm(pk_rel)
-            vk_path = _norm(vk_rel)
-
-            jstprove_circuit_path = _norm(jst.files.compiled)
-            ezkl_circuit_path = _norm(ezkl_comp.files.compiled)
-            jstprove_settings_path = _norm(jst.files.settings)
-            ezkl_settings_path = _norm(ezkl_comp.files.settings)
-            ezkl_pk_path = _norm(ezkl_comp.files.pk_key)
-            ezkl_vk_path = _norm(ezkl_comp.files.vk_key)
-
-            # Ensure tiling and channel split paths are also prefixed
-            if meta.tiling:
-                if meta.tiling.tile:
-                    meta.tiling.tile.path = _norm(meta.tiling.tile.path)
-                if meta.tiling.tiles:
-                    for t in meta.tiling.tiles:
-                        t.path = _norm(t.path)
-
-            if meta.channel_split:
-                for group in meta.channel_split.groups:
-                    group.transform_paths(_norm)
-                if meta.channel_split.bias_path:
-                    meta.channel_split.bias_path = _norm(meta.channel_split.bias_path)
-
-            slice_meta_rel = item.get("slice_metadata_relative_path") or os.path.join(slice_key, "metadata.json")
-
-            slices[slice_key] = RunSliceMetadata(
-                path=onnx_path or "",
-                input_shape=meta.input_shape,
-                output_shape=meta.output_shape,
-                ezkl=bool(compiled_flag),
-                backend=backend,
-                dependencies=meta.dependencies,
-                circuit_path=circuit_path,
-                settings_path=settings_path,
-                vk_path=vk_path,
-                pk_path=pk_path,
-                jstprove_circuit_path=jstprove_circuit_path,
-                ezkl_circuit_path=ezkl_circuit_path,
-                jstprove_settings_path=jstprove_settings_path,
-                ezkl_settings_path=ezkl_settings_path,
-                ezkl_pk_path=ezkl_pk_path,
-                ezkl_vk_path=ezkl_vk_path,
-                tiling=meta.tiling,
-                channel_split=meta.channel_split,
-            )
+            slices[slice_key] = RunnerAnalyzer._build_run_slice_metadata(meta, _norm, onnx_path)
 
         return slices
 
     @staticmethod
     def _process_slices_per_slice(slices_dir: Path, slices_data_list: list[dict]) -> dict[str, RunSliceMetadata]:
-        """
-        Build slices dict by reading each per-slice metadata.json referenced by entries.
-        Trust the provided metadata for each slice; do not perform filesystem checks.
-        """
         slices: dict[str, RunSliceMetadata] = {}
 
         for entry in slices_data_list:
@@ -194,82 +175,16 @@ class RunnerAnalyzer:
             slice_raw = (raw_meta.get("slices") or [])[0]
             meta = SliceMetadata.from_dict(slice_raw)
             slice_key = f"slice_{meta.index}"
-
             onnx_path = os.path.join(parent_dir, meta.relative_path)
 
-            def _join(rel: Optional[str]) -> Optional[str]:
+            def _join(rel: Optional[str], _pd=parent_dir) -> Optional[str]:
                 if not rel:
                     return None
-                if rel.split(os.sep)[0] == parent_dir:
+                if rel.split(os.sep)[0] == _pd:
                     return rel
-                return os.path.join(parent_dir, rel)
+                return os.path.join(_pd, rel)
 
-            jst = meta.compilation.jstprove
-            ezkl_comp = meta.compilation.ezkl
-
-            if jst.compiled:
-                backend = Backend.JSTPROVE
-                compiled_flag = True
-                circuit_path = _join(jst.files.compiled)
-                settings_path = _join(jst.files.settings)
-                pk_path = None
-                vk_path = None
-            elif ezkl_comp.compiled:
-                backend = Backend.EZKL
-                compiled_flag = True
-                circuit_path = _join(ezkl_comp.files.compiled)
-                settings_path = _join(ezkl_comp.files.settings)
-                pk_path = _join(ezkl_comp.files.pk_key)
-                vk_path = _join(ezkl_comp.files.vk_key)
-            else:
-                backend = Backend.ONNX
-                compiled_flag = False
-                circuit_path = None
-                settings_path = None
-                pk_path = None
-                vk_path = None
-
-            jstprove_circuit_path = _join(jst.files.compiled)
-            ezkl_circuit_path = _join(ezkl_comp.files.compiled)
-            jstprove_settings_path = _join(jst.files.settings)
-            ezkl_settings_path = _join(ezkl_comp.files.settings)
-            ezkl_pk_path = _join(ezkl_comp.files.pk_key)
-            ezkl_vk_path = _join(ezkl_comp.files.vk_key)
-
-            # Recursively join nested paths for tiling and channel split
-            if meta.tiling:
-                if meta.tiling.tile:
-                    meta.tiling.tile.path = _join(meta.tiling.tile.path)
-                if meta.tiling.tiles:
-                    for t in meta.tiling.tiles:
-                        t.path = _join(t.path)
-
-            if meta.channel_split:
-                for group in meta.channel_split.groups:
-                    group.transform_paths(_join)
-                if meta.channel_split.bias_path:
-                    meta.channel_split.bias_path = _join(meta.channel_split.bias_path)
-
-            slices[slice_key] = RunSliceMetadata(
-                path=onnx_path,
-                input_shape=meta.input_shape,
-                output_shape=meta.output_shape,
-                ezkl=bool(compiled_flag),
-                backend=backend,
-                dependencies=meta.dependencies,
-                circuit_path=circuit_path,
-                settings_path=settings_path,
-                vk_path=vk_path,
-                pk_path=pk_path,
-                jstprove_circuit_path=jstprove_circuit_path,
-                ezkl_circuit_path=ezkl_circuit_path,
-                jstprove_settings_path=jstprove_settings_path,
-                ezkl_settings_path=ezkl_settings_path,
-                ezkl_pk_path=ezkl_pk_path,
-                ezkl_vk_path=ezkl_vk_path,
-                tiling=meta.tiling,
-                channel_split=meta.channel_split,
-            )
+            slices[slice_key] = RunnerAnalyzer._build_run_slice_metadata(meta, _join, onnx_path)
 
         return slices
 
@@ -531,19 +446,21 @@ class RunnerAnalyzer:
 
         # Attach packaging metadata
         run_meta["packaging_type"] = original_format
-        run_meta["source_path"] = str(slice_path)
 
-        # Save
         if save_path is None:
             base = Path(slice_path).resolve()
-            # If slice_path is a model root or slices dir, put run/metadata.json next to it
             base_dir = base if base.is_dir() else base.parent
             save_path = base_dir / "run" / "metadata.json"
         else:
             save_path = Path(save_path).resolve()
 
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        run_meta["run_directory"] = str(save_path.parent)
+        run_root = save_path.parent
+        run_meta["source_path"] = Utils.relativize_path(str(slice_path), run_root)
+        run_meta["run_directory"] = "."
+        if run_meta.get("model_path"):
+            run_meta["model_path"] = Utils.relativize_path(run_meta["model_path"], run_root)
+
+        run_root.mkdir(parents=True, exist_ok=True)
         Utils.save_metadata_file(run_meta, save_path)
 
         return run_meta

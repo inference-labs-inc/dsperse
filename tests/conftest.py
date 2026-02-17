@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 
@@ -188,3 +189,18 @@ def pre_compiled_doom_tiled_14(pre_sliced_doom_tiled_14, session_cache_dir, jstp
 @pytest.fixture()
 def copy_to():
     return _copy_to
+
+
+def _parse_run_dir(output: str) -> Path:
+    match = re.search(r"Run data saved to (.+)", output)
+    if not match:
+        match = re.search(r"within the run directory (.+)", output)
+    assert match, f"Could not find run directory in output: {output}"
+    path_str = match.group(1).strip()
+    path_str = re.sub(r'\x1b\[[0-9;]*m', '', path_str).split()[0]
+    return Path(path_str)
+
+
+@pytest.fixture()
+def parse_run_dir():
+    return _parse_run_dir

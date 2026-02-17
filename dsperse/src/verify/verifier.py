@@ -30,7 +30,7 @@ class Verifier(PipelineStage):
             logger.warning(f"No circuit-capable slices found to verify under run {run_path}. Nothing to do.")
             return run_results
 
-        proof_paths = VerifierUtils.get_proof_paths(run_results)
+        proof_paths = VerifierUtils.get_proof_paths(run_results, run_path)
         work_items = self._prepare_work_items(slices_iter, dirs_path, run_path, proof_paths)
         if not work_items:
             return run_results

@@ -745,7 +745,7 @@ class OnnxUtils:
             tiling=tiling,
             channel_split=channel_split,
             compilation=orig_slice.compilation,
-            slice_metadata=str(slice_metadata_path.resolve()),
+            slice_metadata=str(slice_metadata_path.resolve().relative_to(root)),
             slice_metadata_relative_path=str(slice_metadata_path.resolve().relative_to(root)),
         )
 

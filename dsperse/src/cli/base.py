@@ -368,3 +368,44 @@ def validate_run_dir(run_dir):
     is_run_root, is_slice_run = detect_run_type(rd)
     has_slice_dirs = any((rd / f'slice_{i}').exists() for i in range(10))
     return is_run_root or is_slice_run or has_slice_dirs
+
+
+def resolve_stage_paths(args) -> tuple[str, str] | None:
+    """Resolve and validate run_dir and slices_path from CLI args, prompting if missing. Returns None on failure."""
+    run_dir = getattr(args, 'run_dir', None)
+    slices_path = getattr(args, 'slices_path', None)
+
+    if not run_dir:
+        run_dir = prompt_for_value('run-dir', 'Enter the run directory (run/run_<timestamp>)')
+    if not slices_path:
+        slices_path = prompt_for_value('slices', 'Enter the slices path (dslice file, slices directory, or dsperse file)')
+
+    run_dir = normalize_path(run_dir)
+    slices_path = normalize_path(slices_path)
+
+    if not os.path.exists(run_dir):
+        print(f"{Fore.RED}Error: Run directory not found: {run_dir}{Style.RESET_ALL}")
+        return None
+    if not validate_run_dir(run_dir):
+        print(
+            f"{Fore.RED}Error: run-dir does not contain recognized run artifacts "
+            f"(metadata.json, run_results.json, input.json + output.json, "
+            f"split/, tile_*, or slice_* directories): {run_dir}{Style.RESET_ALL}")
+        return None
+
+    return run_dir, slices_path
+
+
+def add_stage_arguments(parser, stage: str):
+    """Add the shared --run-dir, --slices, --backend, --parallel, --tiles arguments used by prove and verify."""
+    parser.add_argument('--run-dir', '--rd', dest='run_dir',
+                        help='The run directory generated when you run the model')
+    parser.add_argument('--slices', '--sd', '-s', dest='slices_path',
+                        help='The path to the dslice file, the slice directory, or the dsperse file')
+    parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
+                        help=f'Backend to use. In single-slice mode this is required. '
+                             f'In run-root mode, only {stage} slices whose witness backend matches this choice.')
+    parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                        help=f'Number of parallel processes for {stage} (default: 1)')
+    parser.add_argument('--tiles', '-t', dest='tiles',
+                        help=f'Range of tiles to {stage} (e.g., "0-2" or "0,1,5"). Only applicable in single-slice mode.')

@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,15 +11,6 @@ from dsperse.src.cli.slice import slice_model
 from dsperse.src.cli.verify import verify_proof
 
 class TestVerifyE2E:
-    def _get_run_dir(self, output: str) -> Path:
-        match = re.search(r"Run data saved to (.+)", output)
-        if not match:
-             match = re.search(r"within the run directory (.+)", output)
-        assert match, f"Could not find run directory in output: {output}"
-        path_str = match.group(1).strip()
-        path_str = re.sub(r'\x1b\[[0-9;]*m', '', path_str).split()[0]
-        return Path(path_str)
-
     def _verify_verify_artifacts(self, run_dir: Path):
         assert run_dir.exists()
         run_results_path = run_dir / "run_results.json"
@@ -34,13 +24,13 @@ class TestVerifyE2E:
         return results
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_verify_happy_path(self, model_name: str, model_dir: Path, pre_compiled_net_both, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_verify_happy_path(self, model_name: str, model_dir: Path, pre_compiled_net_both, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         work_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(work_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None))
         out = capfd.readouterr().out
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
 
         run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(work_dir), backend=None))
         capfd.readouterr()
@@ -57,13 +47,13 @@ class TestVerifyE2E:
             assert res["verification_execution"]["success"] is True
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_verify_single_slice(self, model_name: str, model_dir: Path, pre_compiled_net, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_verify_single_slice(self, model_name: str, model_dir: Path, pre_compiled_net, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(work_dir), input_file=str(input_file), output_file=None, force_backend="jstprove", run_metadata_path=None))
         out = capfd.readouterr().out
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
 
         run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(work_dir), backend="jstprove"))
         capfd.readouterr()
@@ -90,7 +80,7 @@ class TestVerifyE2E:
         assert slice_0_res["verification_execution"]["success"] is True
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_verify_mixed_backends(self, model_name: str, model_dir: Path, pre_sliced_net, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_verify_mixed_backends(self, model_name: str, model_dir: Path, pre_sliced_net, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         try:
             from dsperse.src.backends.jstprove import JSTprove
             from dsperse.src.backends.ezkl import EZKL
@@ -106,7 +96,7 @@ class TestVerifyE2E:
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(work_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None))
         out = capfd.readouterr().out
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
 
         run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(work_dir), backend=None))
         capfd.readouterr()
@@ -120,7 +110,7 @@ class TestVerifyE2E:
                 results["execution_chain"].get("ezkl_verified_slices", 0)) > 0
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_verify_backend_filter_doom(self, model_name: str, model_dir: Path, pre_sliced_doom, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_verify_backend_filter_doom(self, model_name: str, model_dir: Path, pre_sliced_doom, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         try:
             from dsperse.src.backends.jstprove import JSTprove
             from dsperse.src.backends.ezkl import EZKL
@@ -136,7 +126,7 @@ class TestVerifyE2E:
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(work_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None))
         out = capfd.readouterr().out
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
 
         run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(work_dir), backend=None))
         capfd.readouterr()
@@ -165,14 +155,14 @@ class TestVerifyE2E:
         assert found_slice_1, "slice_1 not found in execution_results"
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_verify_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled_14, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_verify_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled_14, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         work_dir = copy_to(pre_compiled_doom_tiled_14, tmp_path / "slices")
 
         input_file = model_dir / "input.json"
         capfd.readouterr()
         run_inference(SimpleNamespace(path=str(work_dir), input_file=str(input_file), output_file=None, force_backend=None, run_metadata_path=None))
         out = capfd.readouterr().out
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
 
         run_proof(SimpleNamespace(run_dir=str(run_dir), slices_path=str(work_dir), backend="jstprove"))
 
@@ -196,7 +186,7 @@ class TestVerifyE2E:
     @pytest.mark.slow
     @pytest.mark.parametrize("model_name", ["doom"])
     def test_verify_tiled_dslice_loop(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
-                                      run_output_dir: Path, jstprove_available, capfd):
+                                      run_output_dir: Path, jstprove_available, capfd, parse_run_dir):
         """1) Slices doom with tiling and .dslice, runs inference, proves single slices, and verifies them."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
@@ -217,7 +207,7 @@ class TestVerifyE2E:
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
                                       force_backend="jstprove", run_metadata_path=None))
-        run_dir = self._get_run_dir(capfd.readouterr().out)
+        run_dir = parse_run_dir(capfd.readouterr().out)
 
         # 4. Dynamically detect slices from dslice files produced
         dslice_files = sorted(hardcoded_output_dir.glob("slice_*.dslice"))
@@ -256,7 +246,7 @@ class TestVerifyE2E:
     @pytest.mark.slow
     @pytest.mark.parametrize("model_name", ["doom"])
     def test_verify_partial_tile_ranges_cli(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path,
-                                            run_output_dir: Path, jstprove_available, capfd):
+                                            run_output_dir: Path, jstprove_available, capfd, parse_run_dir):
         """2) Proves tiled slices then verifies specific ranges of tiles using CLI logic."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
@@ -270,7 +260,7 @@ class TestVerifyE2E:
         input_file = model_dir / "input.json"
         run_inference(SimpleNamespace(path=str(hardcoded_output_dir), input_file=str(input_file), output_file=None,
                                       force_backend="jstprove", run_metadata_path=None))
-        run_dir = self._get_run_dir(capfd.readouterr().out)
+        run_dir = parse_run_dir(capfd.readouterr().out)
 
         # slice 0: Prove all, then Verify tiles in ranges
         s0_dir = hardcoded_output_dir / "slice_0"

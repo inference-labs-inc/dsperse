@@ -60,9 +60,8 @@ def setup_parser(subparsers):
 
 def slice_convert(args):
     """Convert between dsperse/dslice and directories (sub-command under slice)."""
-    # Lazy import to keep Converter usage confined to explicit conversion command
     from dsperse.src.slice.utils.converter import Converter
-    # Prompt if not provided
+
     if not getattr(args, 'input_path', None):
         args.input_path = prompt_for_value('input', 'Enter input path (.dsperse/.dslice or directory)')
     else:
@@ -77,22 +76,17 @@ def slice_convert(args):
         logger.error(f"Input path does not exist: {p}")
         return
 
-    # Prompt for output type if missing
     if not getattr(args, 'to_type', None):
         valid = {'dirs', 'dslice', 'dsperse'}
-        from pathlib import Path as _P
         while True:
             chosen_raw = prompt_for_value('to', 'Enter desired output type (dirs, dslice, dsperse)')
-            # Sanitize in case prompt_for_value normalized it like a path
-            chosen = _P(str(chosen_raw)).name.strip().lower()
+            chosen = Path(str(chosen_raw)).name.strip().lower()
             if chosen in valid:
                 args.to_type = chosen
                 break
             print(f"{Fore.YELLOW}Invalid choice: '{chosen}'. Please enter one of: dirs, dslice, dsperse{Style.RESET_ALL}")
 
     try:
-        # Delegate all conversions to the central Converter, which handles
-        # the dsperse -> dirs default of fully expanding embedded .dslice files.
         result = Converter.convert(
             input_path,
             output_type=getattr(args, 'to_type', None) or getattr(args, 'output_type', None),

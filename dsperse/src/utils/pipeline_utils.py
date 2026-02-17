@@ -47,7 +47,7 @@ def get_witness_file(run_path: Path, slice_id: str) -> str | None:
     entry = chain.get_result_for_slice(slice_id)
     if not entry or not entry.witness_execution:
         return None
-    return entry.witness_execution.witness_file
+    return Utils.resolve_path(entry.witness_execution.witness_file, run_path)
 
 
 def select_backend(run_path: Path, slice_id: str, meta: RunSliceMetadata) -> str:
@@ -83,6 +83,26 @@ def filter_circuit_slices(metadata: RunMetadata, backend: Optional[str], run_pat
         if wb == backend:
             filtered.append((slice_id, meta))
     return filtered
+
+
+def finalize_stage_results(run_path: Path, results: dict, stage: str, key_suffix: str,
+                           jst_count: int, ezkl_count: int, total: int) -> dict:
+    run_results = Utils.load_run_results(run_path)
+    run_results, _ = Utils.merge_execution_into_run_results(run_results, results, stage)
+    for entry in run_results.get("execution_chain", {}).get("execution_results", []):
+        pe = entry.get("proof_execution")
+        if pe:
+            if pe.get("proof_file"):
+                pe["proof_file"] = Utils.relativize_path(pe["proof_file"], run_path)
+            for tp in pe.get("tile_proofs_info") or []:
+                if tp.get("proof_path"):
+                    tp["proof_path"] = Utils.relativize_path(tp["proof_path"], run_path)
+    exec_chain = run_results.setdefault("execution_chain", {})
+    exec_chain[f"jstprove_{key_suffix}_slices"] = int(jst_count)
+    exec_chain[f"ezkl_{key_suffix}_slices"] = int(ezkl_count)
+    Utils.save_run_results(run_path, run_results)
+    Utils.update_metadata_after_execution(run_path, total, jst_count + ezkl_count, stage)
+    return run_results
 
 
 def parse_tiles_range(tiles_str: str | None) -> range | list[int] | None:

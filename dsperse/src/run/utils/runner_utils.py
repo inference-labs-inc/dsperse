@@ -223,11 +223,17 @@ class RunnerUtils:
 
             execution_results.append({"slice_id": slice_id, "witness_execution": witness_execution})
 
+        run_root = Path(output_path).parent
+        for er in execution_results:
+            we = er.get("witness_execution")
+            if we and we.get("witness_file"):
+                we["witness_file"] = Utils.relativize_path(we["witness_file"], run_root)
+
         circuit_slices = ezkl_complete + jstprove_complete
         security_percent = (circuit_slices / total_slices * 100) if total_slices > 0 else 0
 
         inference_output = {
-            "model_path": model_path,
+            "model_path": Utils.relativize_path(model_path, run_root),
             "output": results["output"],
             "tensor_shape": results["tensor_shape"],
             "execution_chain": {

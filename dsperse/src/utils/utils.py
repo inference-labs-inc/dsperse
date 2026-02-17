@@ -80,6 +80,27 @@ class Utils:
         return tiling
 
     @staticmethod
+    def relativize_path(path_str: str | None, root: Path) -> str | None:
+        if not path_str:
+            return path_str
+        p = Path(path_str)
+        if not p.is_absolute():
+            return path_str
+        try:
+            return str(p.relative_to(root))
+        except ValueError:
+            return path_str
+
+    @staticmethod
+    def resolve_path(path_str: str | None, root: Path) -> str | None:
+        if not path_str:
+            return path_str
+        p = Path(path_str)
+        if p.is_absolute():
+            return path_str
+        return str((root / p).resolve())
+
+    @staticmethod
     def save_metadata_file(metadata, output_path, filename="metadata.json"):
         """
         Save metadata to a JSON file.

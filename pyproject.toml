@@ -13,16 +13,16 @@ authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
 dependencies = [
   "torch==2.6.0",
   "onnx==1.18.0",
-  "pytest>=8.4.1",
   "ezkl==22.2.1",
-  "networkx~=3.4.2",
-  "matplotlib~=3.10.1",
   "numpy~=2.2.3",
-  "tqdm~=4.67.1",
   "onnxruntime>=1.21.0,<2.0.0",
   "colorama~=0.4.6",
-  "onnxslim>=0.1.82",
   "jstprove==2.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.1",
 ]
 
 [project.scripts]

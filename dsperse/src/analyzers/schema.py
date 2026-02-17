@@ -5,6 +5,8 @@ This module defines strongly-typed dataclasses for all metadata structures,
 enforcing consistent access patterns across the codebase.
 """
 
+import json
+
 from dataclasses import dataclass, field, asdict
 from enum import StrEnum
 from typing import Optional
@@ -45,38 +47,6 @@ class TensorShape:
         return cls(
             input=d.get("input", []),
             output=d.get("output", []),
-        )
-
-
-@dataclass
-class WeightShape:
-    """Shape info from weight parameters."""
-    input: list[int] = field(default_factory=list)
-    output: list[int] = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "WeightShape":
-        if not d:
-            return cls()
-        return cls(
-            input=d.get("input", []),
-            output=d.get("output", []),
-        )
-
-
-@dataclass
-class SliceShape:
-    """Combined shape info for a slice."""
-    tensor_shape: TensorShape = field(default_factory=TensorShape)
-    weight_shape: WeightShape = field(default_factory=WeightShape)
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "SliceShape":
-        if not d:
-            return cls()
-        return cls(
-            tensor_shape=TensorShape.from_dict(d.get("tensor_shape")),
-            weight_shape=WeightShape.from_dict(d.get("weight_shape")),
         )
 
 
@@ -158,31 +128,26 @@ class ChannelGroupInfo:
             ezkl_vk_path=d.get("ezkl_vk_path"),
         )
 
+    _PATH_FIELDS = (
+        "jstprove_circuit_path", "ezkl_circuit_path", "settings_path",
+        "vk_path", "pk_path", "jstprove_settings_path",
+        "ezkl_settings_path", "ezkl_pk_path", "ezkl_vk_path",
+    )
+
+    def transform_paths(self, fn):
+        """Apply fn to path and all optional path fields in-place."""
+        self.path = fn(self.path)
+        for attr in self._PATH_FIELDS:
+            val = getattr(self, attr)
+            if val is not None:
+                setattr(self, attr, fn(val))
+
     def to_dict(self) -> dict:
-        d = {
-            "group_idx": self.group_idx,
-            "c_start": self.c_start,
-            "c_end": self.c_end,
-            "path": self.path,
-        }
-        if self.jstprove_circuit_path:
-            d["jstprove_circuit_path"] = self.jstprove_circuit_path
-        if self.ezkl_circuit_path:
-            d["ezkl_circuit_path"] = self.ezkl_circuit_path
-        if self.settings_path:
-            d["settings_path"] = self.settings_path
-        if self.vk_path:
-            d["vk_path"] = self.vk_path
-        if self.pk_path:
-            d["pk_path"] = self.pk_path
-        if self.jstprove_settings_path:
-            d["jstprove_settings_path"] = self.jstprove_settings_path
-        if self.ezkl_settings_path:
-            d["ezkl_settings_path"] = self.ezkl_settings_path
-        if self.ezkl_pk_path:
-            d["ezkl_pk_path"] = self.ezkl_pk_path
-        if self.ezkl_vk_path:
-            d["ezkl_vk_path"] = self.ezkl_vk_path
+        d = {"group_idx": self.group_idx, "c_start": self.c_start, "c_end": self.c_end, "path": self.path}
+        for attr in self._PATH_FIELDS:
+            val = getattr(self, attr)
+            if val:
+                d[attr] = val
         return d
 
 
@@ -380,15 +345,11 @@ class SliceMetadata:
     filename: str = ""
     path: str = ""
     relative_path: str = ""
-    parameters: int = 0
-    shape: SliceShape = field(default_factory=SliceShape)
+    shape: TensorShape = field(default_factory=TensorShape)
     dependencies: Dependencies = field(default_factory=Dependencies)
-    layers: list[dict] = field(default_factory=list)
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
     compilation: Compilation = field(default_factory=Compilation)
-    dsperse_version: Optional[str] = None
-    opset_version: Optional[int] = None
     slice_metadata: Optional[str] = None
     slice_metadata_relative_path: Optional[str] = None
 
@@ -399,21 +360,18 @@ class SliceMetadata:
             filename=d.get("filename", ""),
             path=d.get("path", ""),
             relative_path=d.get("relative_path", ""),
-            parameters=d.get("parameters", 0),
-            shape=SliceShape.from_dict(d.get("shape")),
+            shape=TensorShape.from_dict((d.get("shape") or {}).get("tensor_shape") or d.get("shape")),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
-            layers=d.get("layers", []),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             compilation=Compilation.from_dict(d.get("compilation")),
-            dsperse_version=d.get("dsperse_version"),
-            opset_version=d.get("opset_version"),
             slice_metadata=d.get("slice_metadata"),
             slice_metadata_relative_path=d.get("slice_metadata_relative_path"),
         )
 
     def to_dict(self) -> dict:
         d = asdict(self)
+        d["shape"] = {"tensor_shape": d["shape"]}
         if self.tiling is None:
             del d["tiling"]
         if self.channel_split is None:
@@ -422,23 +380,16 @@ class SliceMetadata:
 
     @property
     def output_shape(self) -> list[list[int | str]]:
-        """Convenience accessor for output tensor shapes."""
-        return self.shape.tensor_shape.output
+        return self.shape.output
 
     @property
     def input_shape(self) -> list[list[int | str]]:
-        """Convenience accessor for input tensor shapes."""
-        return self.shape.tensor_shape.input
+        return self.shape.input
 
     @property
     def output_names(self) -> list[str]:
         """Convenience accessor for output tensor names."""
         return self.dependencies.output
-
-    @property
-    def input_names(self) -> list[str]:
-        """Convenience accessor for filtered input tensor names."""
-        return self.dependencies.filtered_inputs
 
 
 @dataclass
@@ -456,13 +407,10 @@ class RunSliceMetadata:
     input_shape: list[list[int | str]] = field(default_factory=list)
     output_shape: list[list[int | str]] = field(default_factory=list)
     dependencies: Dependencies = field(default_factory=Dependencies)
-    parameters: int = 0
     tiling: Optional[TilingInfo] = None
     channel_split: Optional[ChannelSplitInfo] = None
     backend: str = Backend.ONNX
     ezkl: bool = False
-    ezkl_compatible: bool = True
-    circuit_size: int = 0
     circuit_path: Optional[str] = None
     settings_path: Optional[str] = None
     vk_path: Optional[str] = None
@@ -473,7 +421,6 @@ class RunSliceMetadata:
     ezkl_settings_path: Optional[str] = None
     ezkl_pk_path: Optional[str] = None
     ezkl_vk_path: Optional[str] = None
-    slice_metadata_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "RunSliceMetadata":
@@ -482,13 +429,10 @@ class RunSliceMetadata:
             input_shape=d.get("input_shape", []),
             output_shape=d.get("output_shape", []),
             dependencies=Dependencies.from_dict(d.get("dependencies")),
-            parameters=d.get("parameters", 0),
             tiling=TilingInfo.from_dict(d.get("tiling")),
             channel_split=ChannelSplitInfo.from_dict(d.get("channel_split")),
             backend=d.get("backend", Backend.ONNX),
             ezkl=d.get("ezkl", False),
-            ezkl_compatible=d.get("ezkl_compatible", True),
-            circuit_size=d.get("circuit_size", 0),
             circuit_path=d.get("circuit_path"),
             settings_path=d.get("settings_path"),
             vk_path=d.get("vk_path"),
@@ -499,7 +443,6 @@ class RunSliceMetadata:
             ezkl_settings_path=d.get("ezkl_settings_path"),
             ezkl_pk_path=d.get("ezkl_pk_path"),
             ezkl_vk_path=d.get("ezkl_vk_path"),
-            slice_metadata_path=d.get("slice_metadata_path"),
         )
 
     def to_dict(self) -> dict:
@@ -522,7 +465,6 @@ class ModelMetadata:
     """Top-level metadata for sliced model."""
     original_model: str = ""
     model_type: str = ""
-    total_parameters: int = 0
     input_shape: list[list[int]] = field(default_factory=list)
     output_shapes: list[list[int]] = field(default_factory=list)
     slice_points: list[int] = field(default_factory=list)
@@ -535,7 +477,6 @@ class ModelMetadata:
         return cls(
             original_model=d.get("original_model", ""),
             model_type=d.get("model_type", ""),
-            total_parameters=d.get("total_parameters", 0),
             input_shape=d.get("input_shape", []),
             output_shapes=d.get("output_shapes", []),
             slice_points=d.get("slice_points", []),
@@ -546,7 +487,6 @@ class ModelMetadata:
         return {
             "original_model": self.original_model,
             "model_type": self.model_type,
-            "total_parameters": self.total_parameters,
             "input_shape": self.input_shape,
             "output_shapes": self.output_shapes,
             "slice_points": self.slice_points,
@@ -556,13 +496,11 @@ class ModelMetadata:
     @classmethod
     def load(cls, path: str | Path) -> "ModelMetadata":
         """Load metadata from JSON file."""
-        import json
         with open(path, "r") as f:
             return cls.from_dict(json.load(f))
 
     def save(self, path: str | Path) -> None:
         """Save metadata to JSON file."""
-        import json
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)

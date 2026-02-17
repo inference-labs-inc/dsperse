@@ -6,7 +6,7 @@ from typing import Dict, Any
 import onnx
 
 from dsperse.src.analyzers.schema import (
-    SliceMetadata, SliceShape, TensorShape, WeightShape, Dependencies, ModelMetadata
+    SliceMetadata, TensorShape, Dependencies, ModelMetadata
 )
 from dsperse.src.slice.utils.onnx_utils import OnnxUtils
 from dsperse.src.utils.utils import Utils
@@ -53,7 +53,7 @@ class OnnxAnalyzer:
         # Process each node to collect metadata
         for i, node in enumerate(graph.node):
             # Analyze the node and store metadata
-            node_info = self.analyze_node(node, i, initializer_map)
+            node_info = OnnxAnalyzer.analyze_node(node, i, initializer_map)
             # Use index-based key to handle empty node names
             node_key = node.name if node.name else f"{node.op_type}_{i}"
             node_metadata[node_key] = node_info
@@ -80,7 +80,6 @@ class OnnxAnalyzer:
                 "Opset < 18 is not officially supported; continuing anyway."
             )
             logger.warning(msg)
-            print(f"WARNING: {msg}")
 
         # Create model metadata
         model_metadata = {
@@ -107,7 +106,8 @@ class OnnxAnalyzer:
 
         return model_metadata
 
-    def analyze_node(self, node, index, initializer_map):
+    @staticmethod
+    def analyze_node(node, index, initializer_map):
         """
         Analyze a single node from the ONNX graph and gather metadata.
 
@@ -122,23 +122,14 @@ class OnnxAnalyzer:
         node_inputs = list(node.input)
         node_outputs = list(node.output)
 
-        # gather parameter information
-        parameters, parameter_details = self._get_parameter_info(node, node_inputs, initializer_map)
+        _, parameter_details = OnnxAnalyzer._get_parameter_info(node, node_inputs, initializer_map)
 
-        # Determine in_features and out_features
-        in_features, out_features = self._get_feature_info(node, parameter_details)
-
-        # Determine activation function
         node_type = node.op_type
 
-        # Return node metadata
         return {
             "index": index,
             "slice_name": f"{node_type}_{index}",
-            "parameters": parameters,
             "node_type": node_type,
-            "in_features": in_features,
-            "out_features": out_features,
             "parameter_details": parameter_details,
             "dependencies": {
                 "input": node_inputs,
@@ -232,117 +223,6 @@ class OnnxAnalyzer:
 
         return parameters, parameter_details
 
-    @staticmethod
-    def _get_feature_info(node, parameter_details):
-        """
-        Determine in_features and out_features for a node.
-
-        Args:
-            node: ONNX node
-            parameter_details: Dictionary of parameter details
-
-        Returns:
-            tuple: (in_features, out_features)
-        """
-        in_features = None
-        out_features = None
-
-        if node.op_type == "Conv":
-            # For Conv, in_features is input channels, out_features is output channels
-            if len(parameter_details) >= 1:
-                # Typically weight shape for Conv is [out_channels, in_channels, kernel_h, kernel_w]
-                weight_name = next(iter(parameter_details))
-                weight_shape = parameter_details[weight_name]["shape"]
-                if len(weight_shape) >= 2:
-                    out_features = weight_shape[0]
-                    in_features = weight_shape[1]
-
-        elif node.op_type == "Gemm" or node.op_type == "MatMul":
-            # For Gemm/MatMul, in_features is input dim, out_features is output dim
-            if len(parameter_details) >= 1:
-                # Typically weight shape for Gemm is [out_features, in_features]
-                weight_name = next(iter(parameter_details))
-                weight_shape = parameter_details[weight_name]["shape"]
-                if len(weight_shape) >= 2:
-                    out_features = weight_shape[0]
-                    in_features = weight_shape[1]
-
-        return in_features, out_features
-
-    @staticmethod
-    def _get_activation_info(node):
-        """
-        Determine activation function for a node.
-
-        Args:
-            node: ONNX node
-
-        Returns:
-            str: Activation function name
-        """
-        activation = node.op_type
-        if node.op_type == "Relu":
-            activation = "ReLU"
-        elif node.op_type == "Sigmoid":
-            activation = "Sigmoid"
-        elif node.op_type == "Tanh":
-            activation = "Tanh"
-        elif node.op_type == "Softmax":
-            activation = "Softmax"
-
-        return activation
-
-    @staticmethod
-    def _create_layer_info(node_name, node_info):
-        """
-        Create layer information from node info.
-
-        Args:
-            node_name: Name of the node
-            node_info: Dictionary of node information
-
-        Returns:
-            dict: Layer information
-        """
-        layer_info = {
-            "name": node_name,
-            "type": node_info["type"],
-            "activation": node_info["activation"]
-        }
-
-        # Add shape information if available
-        if node_info["input_shape"]:
-            layer_info["input_shape"] = node_info["input_shape"]
-        if node_info["output_shape"]:
-            layer_info["output_shape"] = node_info["output_shape"]
-
-        # Add parameter details if available
-        if "parameter_details" in node_info and node_info["parameter_details"]:
-            layer_info["parameters"] = {}
-            for param_name, param_info in node_info["parameter_details"].items():
-                layer_info["parameters"][param_name] = param_info
-
-        # Add in/out features if available
-        if node_info.get("in_features") is not None:
-            layer_info["in_features"] = node_info["in_features"]
-            layer_info["in_channels"] = node_info["in_features"]  # For compatibility with conv layers
-
-        if node_info.get("out_features") is not None:
-            layer_info["out_features"] = node_info["out_features"]
-            layer_info["out_channels"] = node_info["out_features"]  # For compatibility with conv layers
-
-        # For Conv layers, add kernel_size, stride, padding if available
-        if node_info["type"] == "conv" and "parameter_details" in node_info:
-            for param_name, param_info in node_info["parameter_details"].items():
-                if len(param_info["shape"]) == 4:  # Conv weight shape: [out_channels, in_channels, kernel_h, kernel_w]
-                    layer_info["kernel_size"] = [param_info["shape"][2], param_info["shape"][3]]
-                    # Default stride and padding (could be extracted from attributes if needed)
-                    layer_info["stride"] = [1, 1]
-                    layer_info["padding"] = [0, 0]
-                    break
-
-        return layer_info
-
     def generate_slices_metadata(self, model_metadata, slice_points, slices_paths, output_dir=None, tiled_info=None):
         """
         Generate metadata for sliced ONNX models.
@@ -403,7 +283,8 @@ class OnnxAnalyzer:
 
         return model_overview
 
-    def _get_model_metadata(self, model_metadata, slice_points):
+    @staticmethod
+    def _get_model_metadata(model_metadata, slice_points):
         """
         Get model-level metadata.
 
@@ -414,28 +295,13 @@ class OnnxAnalyzer:
         Returns:
             dict: Model-level metadata
         """
-        # Get model input and output shapes
-        model_input_shapes = model_metadata["input_shape"]
-        model_output_shapes = model_metadata["output_shapes"]
-
-        # Calculate total parameters
-        total_parameters = sum(node_info.get("parameters", 0) for node_info in model_metadata["nodes"].values())
-
-        # Format the original_model path to be consistent with the expected format
-        original_model_path = model_metadata["original_model"]
-        model_type = model_metadata["model_type"]
-
-        # Create model metadata
-        metadata = {
-            "original_model": original_model_path,
-            "model_type": model_type,
-            "total_parameters": total_parameters,
-            "input_shape": model_input_shapes,
-            "output_shapes": model_output_shapes,
+        return {
+            "original_model": model_metadata["original_model"],
+            "model_type": model_metadata["model_type"],
+            "input_shape": model_metadata["input_shape"],
+            "output_shapes": model_metadata["output_shapes"],
             "slice_points": slice_points[:-1]
         }
-
-        return metadata
 
     def _get_segment_metadata(self, model_metadata, segment_idx, start_idx, end_idx, slice_path, output_dir=None):
         """
@@ -458,21 +324,11 @@ class OnnxAnalyzer:
                 if node_info["index"] == idx:
                     segment_nodes.append((node_name, node_info))
 
-        # Skip if no nodes in this segment
         if not segment_nodes:
             return None
 
-        # Calculate segment parameters
-        segment_parameters = sum(node_info.get("parameters", 0) for _, node_info in segment_nodes)
-
-        # Create layers information
-        layers = []
-        for node_name, node_info in segment_nodes:
-            layer_metadata = self._get_layer_metadata(node_name, node_info)
-            layers.append(layer_metadata)
-
         dependencies = self._get_segment_dependencies(model_metadata, start_idx, end_idx)
-        shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
+        shape = self._get_segment_shape(slice_path)
 
         output_dir = os.path.join(output_dir, f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
         payload_dir = os.path.join(output_dir, "payload")
@@ -484,10 +340,8 @@ class OnnxAnalyzer:
             index=segment_idx,
             filename=segment_filename,
             path=segment_path,
-            parameters=segment_parameters,
             shape=shape,
             dependencies=dependencies,
-            layers=layers,
         )
 
         return metadata.to_dict()
@@ -530,12 +384,10 @@ class OnnxAnalyzer:
         return Dependencies(input=inputs, output=outputs, filtered_inputs=filtered)
 
     @staticmethod
-    def _get_segment_shape(end_idx, model_metadata, start_idx, slice_path) -> SliceShape:
-        return SliceShape(
-            weight_shape=OnnxAnalyzer._get_weight_shape(end_idx, model_metadata, start_idx),
-            tensor_shape=OnnxAnalyzer._get_tensor_shape(slice_path),
-        )
-
+    def _get_segment_shape(slice_path) -> TensorShape:
+        if not slice_path:
+            logger.debug("No slice_path provided; returning empty TensorShape")
+        return OnnxAnalyzer._get_tensor_shape(slice_path)
 
     @staticmethod
     def _get_tensor_shape(slice_path) -> TensorShape:
@@ -567,107 +419,3 @@ class OnnxAnalyzer:
         return TensorShape(input=inputs, output=outputs)
 
 
-    @staticmethod
-    def _get_weight_shape(end_idx, model_metadata, start_idx) -> WeightShape:
-        input_shape = []
-        output_shape = []
-
-        first_node = None
-        last_node = None
-        next_node = None
-        for node_name, node_info in model_metadata['nodes'].items():
-            if node_info['index'] == start_idx:
-                first_node = node_info
-            if node_info['index'] == end_idx - 1:
-                last_node = node_info
-            if node_info['index'] == end_idx:
-                next_node = node_info
-
-        if start_idx == 0:
-            input_shape = model_metadata["input_shape"][0]
-        elif first_node and "parameter_details" in first_node:
-            for param_name, param_info in first_node["parameter_details"].items():
-                if "shape" in param_info:
-                    input_shape = param_info["shape"]
-                    break
-
-        if last_node:
-            if end_idx == len(model_metadata['nodes']):
-                output_shape = model_metadata["output_shapes"][0]
-            elif next_node:
-                if "dependencies" in next_node and "input" in next_node["dependencies"] and next_node["dependencies"]["input"]:
-                    if "parameter_details" in next_node:
-                        for param_name, param_info in next_node["parameter_details"].items():
-                            if "shape" in param_info and len(param_info["shape"]) == 4:
-                                output_shape = param_info["shape"]
-                                break
-
-                        if not output_shape:
-                            for param_name, param_info in next_node["parameter_details"].items():
-                                if "shape" in param_info and len(param_info["shape"]) == 2:
-                                    output_shape = param_info["shape"]
-                                    break
-
-                        if not output_shape:
-                            for param_name, param_info in next_node["parameter_details"].items():
-                                if "shape" in param_info and len(param_info["shape"]) > 1:
-                                    output_shape = param_info["shape"]
-                                    break
-
-                if not output_shape and "out_features" in last_node:
-                    output_shape = ["batch_size", last_node["out_features"]]
-
-        return WeightShape(input=input_shape, output=output_shape)
-
-    def _get_layer_metadata(self, node_name, node_info):
-        """
-        Get metadata for a specific layer.
-
-        Args:
-            node_name: Name of the node
-            node_info: Dictionary of node information
-
-        Returns:
-            dict: Layer metadata
-        """
-        # Determine layer type
-        layer_type = node_info["node_type"]
-
-        # Determine activation function
-        activation = self._get_activation_info(onnx.NodeProto(op_type=node_info["node_type"]))
-
-        # Add parameter details if available
-        node_details = {}
-        if "parameter_details" in node_info and node_info["parameter_details"]:
-            for param_name, param_info in node_info["parameter_details"].items():
-                node_details[param_name] = param_info
-
-        # Add in/out features if available
-        if "in_features" in node_info and node_info["in_features"] is not None:
-            node_details["in_features"] = node_info["in_features"]
-            node_details["in_channels"] = node_info["in_features"]
-
-        if "out_features" in node_info and node_info["out_features"] is not None:
-            node_details["out_features"] = node_info["out_features"]
-            node_details["out_channels"] = node_info["out_features"]
-
-        # For Conv layers, add kernel_size, stride, padding if available
-        if layer_type == "conv" and "parameter_details" in node_info:
-            for param_name, param_info in node_info["parameter_details"].items():
-                if "shape" in param_info and len(
-                        param_info["shape"]) == 4:  # Conv weight shape: [out_channels, in_channels, kernel_h, kernel_w]
-                    node_details["kernel_size"] = [param_info["shape"][2], param_info["shape"][3]]
-                    # Default stride and padding (could be extracted from attributes if needed) TODO: Extract this
-                    node_details["stride"] = [1, 1]
-                    node_details["padding"] = [0, 0]
-                    break
-
-        # Create layer info
-        layer_info = {
-            "name": node_name,
-            "type": layer_type,
-            "activation": activation,
-            "parameter_details": node_details,
-        }
-
-        return layer_info

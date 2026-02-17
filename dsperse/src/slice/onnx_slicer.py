@@ -62,7 +62,7 @@ class OnnxSlicer:
                     if idx + 1 <= max_idx:
                         slice_points.add(idx + 1)
 
-        print(f"Original slice points: {sorted(slice_points)}")
+        logger.info(f"Original slice points: {sorted(slice_points)}")
         if isolate_convolutions:
             slice_points = OnnxUtils.isolate_conv(slice_points, model_metadata)
         slice_points = OnnxUtils.optimize_jstprove_slices(list(slice_points), model_metadata)
@@ -74,7 +74,7 @@ class OnnxSlicer:
         slice_points = sorted(set(slice_points))
 
         slice_points = OnnxUtils.complete_slice_points(list(slice_points), model_metadata)
-        print(f"Optimized slice points: {slice_points}")
+        logger.info(f"Optimized slice points: {slice_points}")
 
         self.slice_points = slice_points
         return slice_points
@@ -163,24 +163,3 @@ class OnnxSlicer:
         slices_paths, tiled_info, _tensor_graph = self.slice(slice_points, self.analysis, output_path, tile_size=tile_size)
         self.onnx_analyzer.generate_slices_metadata(self.analysis, slice_points, slices_paths, output_path, tiled_info)
         return slices_paths
-
-
-if __name__ == "__main__":
-    model_choice = 1
-
-    base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/age",
-        5: "../../models/version",
-        6: "../../models/bert",
-        7: "../../models/roberta",
-        8: "../../models/yolov8"
-    }
-
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = os.path.join(abs_path, "model.onnx")
-    output_dir = os.path.join(abs_path, "slices")
-    onnx_slicer = OnnxSlicer(model_dir, save_path=base_paths[model_choice])
-    onnx_slicer.slice_model(output_path=output_dir, tile_size=1000)

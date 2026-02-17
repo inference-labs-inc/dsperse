@@ -92,7 +92,6 @@ class Compiler:
 
     def _execute_parallel_compilation(self, work_items: list) -> list[dict]:
         """Executes compilation tasks in parallel using ProcessPoolExecutor."""
-        print(f"Compiling {len(work_items)} slices with {self.parallel} parallel processes...")
         logger.info(f"Compiling {len(work_items)} slices with {self.parallel} parallel processes...")
         results = []
         with ProcessPoolExecutor(max_workers=self.parallel) as executor:
@@ -195,7 +194,7 @@ class Compiler:
                 file_paths = CompilerUtils.get_relative_paths(comp_data, calibration_input, slice_dir)
                 
                 status = "OK" if success else "FAILED"
-                print(f"[{be}] {slice_name}: {status}")
+                logger.info(f"[{be}] {slice_name}: {status}")
 
                 results['compilation_blocks'][be] = CompilerUtils.build_compilation_block(
                     be, version, success, file_paths, slice_dir, tiling_info
@@ -223,7 +222,7 @@ class Compiler:
                 output_dir = CompilerUtils.setup_group_compilation_dir(slice_dir, be, group_idx)
                 
                 # --- Group Compilation ---
-                print(f"[{be}] slice_{idx} group_{group_idx}: compiling...")
+                logger.info(f"[{be}] slice_{idx} group_{group_idx}: compiling...")
                 comp_data, _ = Compiler.run_backend_pipeline(be, idx, group_onnx, output_dir, None)
                 
                 # --- Result Collection ---
@@ -248,7 +247,7 @@ class Compiler:
             from dsperse.src.backends.jstprove import JSTprove
             compatible, unsupported_ops = JSTprove.is_compatible(slice_path)
             if not compatible:
-                print(f"[jstprove] slice_{idx}: SKIP - unsupported ops {unsupported_ops}")
+                logger.info(f"[jstprove] slice_{idx}: SKIP - unsupported ops {unsupported_ops}")
                 return None, None
             be_instance = JSTprove()
             data = be_instance.compilation_pipeline(slice_path, output_dir, input_file_path=calibration_input)
@@ -292,28 +291,3 @@ class Compiler:
             slice_path = Converter.convert(slice_path, output_type=format, cleanup=True)
 
         return slice_path
-
-
-if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 2  # Change this to test different models
-
-    base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/age",
-        5: "../../models/version",
-        6: "../../models/bert",
-        7: "../../models/roberta",
-        8: "../../models/yolov8"
-    }
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = abs_path
-    slices_dir = os.path.join(abs_path, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0.dslice")
-    input_file = os.path.join(model_dir, "input.json")
-
-    compiler = Compiler(parallel=4)
-    result = compiler.compile(model_path=slices_dir, input_file=input_file, layers='jstprove')#layers="0-4:jstprove; 5-8:ezkl")
-    print(f"Compilation finished.")

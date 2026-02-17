@@ -1,10 +1,10 @@
 import json
-import os
-import subprocess
-import torch
 import logging
-import traceback
+import os
 import shutil
+import subprocess
+
+import torch
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, Tuple, List
 from dsperse.src.run.utils.runner_utils import RunnerUtils
@@ -187,23 +187,16 @@ class EZKL:
                 "--settings-path",
                 settings_path,
             ]
-            process = subprocess.run(
+            subprocess.run(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                # Print the error stack from the process itself
-                if process.stderr:
-                    print(process.stderr)
-                return False, process.stderr or "gen-settings failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
-            if getattr(e, "stderr", None):
-                print(e.stderr)
+            logger.exception(f"Settings generation failed for {model_path}")
             return False, getattr(e, "stderr", str(e))
 
     def calibrate_settings(
@@ -241,7 +234,7 @@ class EZKL:
                 text=True,
             )
         except Exception as e:
-            logging.getLogger(__name__).error(f"Failed to invoke ezkl calibrate-settings: {e}")
+            logger.exception("Failed to invoke ezkl calibrate-settings")
             return False, str(e)
 
         if process.returncode != 0:
@@ -250,7 +243,7 @@ class EZKL:
             combined = stderr if stderr else stdout
             if stderr and stdout:
                 combined = f"{stderr}\n{stdout}"
-            logging.getLogger(__name__).error(f"EZKL calibrate-settings failed:\n{combined}")
+            logger.error(f"EZKL calibrate-settings failed:\n{combined}")
             return False, combined or "calibrate-settings failed"
 
         return True, None
@@ -276,23 +269,16 @@ class EZKL:
                 "--compiled-circuit",
                 compiled_path,
             ]
-            process = subprocess.run(
+            subprocess.run(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                # Print the error stack from the process itself
-                if process.stderr:
-                    print(process.stderr)
-                return False, process.stderr or "compile-circuit failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
-            if getattr(e, "stderr", None):
-                print(e.stderr)
+            logger.exception(f"Circuit compilation failed for {model_path}")
             return False, getattr(e, "stderr", str(e))
 
     def setup(self, compiled_path: str, vk_path: str, pk_path: str, settings_path: str = None):
@@ -322,23 +308,16 @@ class EZKL:
                 "--pk-path",
                 pk_path,
             ]
-            process = EZKLUtils.run_ezkl_command_with_srs_check(
+            EZKLUtils.run_ezkl_command_with_srs_check(
                 cmd,
                 env=self.env,
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            if process.returncode != 0:
-                # Print the error stack from the process itself
-                if process.stderr:
-                    print(process.stderr)
-                return False, process.stderr or "setup failed"
             return True, None
         except subprocess.CalledProcessError as e:
-            # Print the error stack from the exception
-            if getattr(e, "stderr", None):
-                print(e.stderr)
+            logger.exception(f"Setup (key generation) failed for {compiled_path}")
             return False, getattr(e, "stderr", str(e))
         except RuntimeError as e:
             # SRS error detected and bubbled up
@@ -408,9 +387,8 @@ class EZKL:
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
         except Exception as e:
-            traceback.print_exc()
             error_msg = f"Error during circuitization: {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             compilation_data["error"] = error_msg
 
         return compilation_data
@@ -420,30 +398,3 @@ class EZKL:
     def process_witness_output(witness_data: dict) -> Optional[dict]:
         """Process the witness.json data to get prediction results."""
         return EZKLUtils.process_witness_output(witness_data)
-
-
-if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 1  # Change this to test different models
-
-    base_paths = {
-        1: "../models/doom",
-        2: "../models/net",
-        3: "../models/resnet",
-        4: "../models/yolov3",
-    }
-    abs_path = os.path.abspath(base_paths[model_choice])
-    model_dir = abs_path
-    slices_dir = os.path.join(abs_path, "slices")
-
-    # Circuitize
-    model_path = os.path.abspath(model_dir)
-    EZKL().compile(model_path=abs_path)
-
-    # # Generate witness
-    # input_file = os.path.join(model_dir, "input.json")
-    # model_path = os.path.join(model_dir, "model.compiled")
-    # vk_path = os.path.join(model_dir, "vk.json")
-    # output_file = os.path.join(model_dir, "witness.json")
-    # result = ezkl.generate_witness(input_file=input_file, model_path=model_path, output_file=output_file, vk_path=vk_path)
-    # print(result)

@@ -11,16 +11,11 @@ def ensure_dependencies():
     if ezkl_path:
         return True
 
-    if not ezkl_path:
-        logger.info("EZKL not found. Installing dependencies...")
+    logger.info("EZKL not found. Installing dependencies...")
 
-    logger.info("Running dependency installer...")
-
-    if install_deps(skip_pip=True, interactive=False):
+    if install_deps(interactive=False):
         logger.info("Dependencies installed successfully!")
         return True
-    else:
-        logger.error("Failed to install dependencies automatically.")
-        logger.info("Please install EZKL manually from:")
-        logger.info("https://github.com/zkonduit/ezkl#installation")
-        return False
+
+    logger.error("Automatic dependency installation failed.")
+    return False

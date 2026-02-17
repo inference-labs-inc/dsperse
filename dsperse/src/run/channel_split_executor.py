@@ -9,6 +9,7 @@ from dsperse.src.analyzers.schema import (
     Backend, ChannelGroupInfo, ChannelSplitInfo, ExecutionMethod, RunSliceMetadata
 )
 from dsperse.src.backends.onnx_models import OnnxModels
+from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -119,20 +120,11 @@ class ChannelSplitExecutor:
         return summed
 
     def _resolve_path(self, p: str) -> str | None:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.resolve_relative_path(p, self.slices_path)
 
     def _flatten_input_for_ezkl(self, in_file: Path) -> Path:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.flatten_input_for_ezkl(in_file)
 
     @staticmethod
     def _extract_output_tensor(result):
-        if result is None:
-            return None
-        if isinstance(result, dict):
-            for key in ['output', 'logits', 'output_tensor']:
-                if key in result and result[key] is not None:
-                    return result[key]
-            return None
-        return result
+        return RunnerUtils.extract_output_tensor(result)

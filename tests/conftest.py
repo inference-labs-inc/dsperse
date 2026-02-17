@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 
@@ -111,6 +112,18 @@ def session_cache_dir(tmp_path_factory):
     return tmp_path_factory.mktemp("session_cache")
 
 
+@pytest.fixture(scope="class")
+def doom_sliced_for_compile(models_root, tmp_path_factory):
+    out = tmp_path_factory.mktemp("compile_doom") / "slices"
+    return _do_slice(models_root / "doom", out)
+
+
+@pytest.fixture(scope="class")
+def doom_tiled_for_compile(models_root, tmp_path_factory):
+    out = tmp_path_factory.mktemp("compile_doom_tiled") / "slices"
+    return _do_slice(models_root / "doom", out, tile_size=1000)
+
+
 @pytest.fixture(scope="session")
 def pre_sliced_net(models_root, session_cache_dir):
     out = session_cache_dir / "net_sliced"
@@ -176,3 +189,18 @@ def pre_compiled_doom_tiled_14(pre_sliced_doom_tiled_14, session_cache_dir, jstp
 @pytest.fixture()
 def copy_to():
     return _copy_to
+
+
+def _parse_run_dir(output: str) -> Path:
+    match = re.search(r"Run data saved to (.+)", output)
+    if not match:
+        match = re.search(r"within the run directory (.+)", output)
+    assert match, f"Could not find run directory in output: {output}"
+    path_str = match.group(1).strip()
+    path_str = re.sub(r'\x1b\[[0-9;]*m', '', path_str).split()[0]
+    return Path(path_str)
+
+
+@pytest.fixture()
+def parse_run_dir():
+    return _parse_run_dir

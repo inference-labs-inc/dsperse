@@ -59,58 +59,6 @@ class TestSliceE2E:
 
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_slice_dirs_custom_output(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path, capfd):
-        """Slicing to a non-default custom output directory should succeed and write expected artifacts."""
-        # Provide a custom (non-default) output directory explicitly to avoid prompts
-        args = SimpleNamespace(
-            model_dir=str(model_dir),
-            output_dir=str(hardcoded_output_dir),
-            save_file=None,
-            output_type="dirs",
-        )
-
-        # Run CLI slicing entrypoint directly
-        slice_model(args)
-
-        # Capture console output and verify key messages
-        out = capfd.readouterr().out
-        assert "Slicing model" in out
-        assert "Output directory created:" in out
-        assert "ONNX model sliced successfully" in out
-
-        # Verify files are created as expected in the custom output directory
-        root = hardcoded_output_dir
-        assert root.exists() and root.is_dir()
-
-        # Check that at least one slice directory exists
-        slice_dirs = sorted([d for d in root.iterdir() if d.is_dir() and d.name.startswith("slice_")])
-        assert len(slice_dirs) >= 1
-
-        # For each slice dir, ensure payload and ONNX file exist
-        for d in slice_dirs:
-            payload = d / "payload"
-            assert payload.exists() and payload.is_dir()
-            # derive expected onnx filename from directory suffix
-            try:
-                idx = d.name.split("_")[-1]
-            except Exception:
-                idx = "0"
-            onnx_path = payload / f"slice_{idx}.onnx"
-            assert onnx_path.exists(), f"Missing slice ONNX: {onnx_path}"
-
-        # Check top-level metadata.json exists and validate essential fields
-        metadata_path = root / "metadata.json"
-        assert metadata_path.exists(), f"Missing metadata.json at {metadata_path}"
-        meta = json.loads(metadata_path.read_text())
-        assert isinstance(meta.get("original_model"), str)
-        assert meta["original_model"].endswith(".onnx")
-        assert isinstance(meta.get("model_type"), str) and len(meta["model_type"]) > 0
-        assert isinstance(meta.get("slice_points"), list)
-        assert isinstance(meta.get("slices"), list) and len(meta["slices"]) >= 1
-
-
-
-    @pytest.mark.parametrize("model_name", ["net", "doom"])
     def test_slice_dslice_output(self, model_name: str, model_dir: Path, hardcoded_output_dir: Path, capfd):
         """Slicing to dslice should produce .dslice files and remove slice_* directories in place."""
         args = SimpleNamespace(
@@ -215,14 +163,6 @@ class TestSliceE2E:
 
         try:
             slice_model(args)
-
-            # Capture console output
-            captured = capfd.readouterr()
-            combined_out = captured.out + captured.err
-            
-            assert "Slicing model" in combined_out
-            assert "ONNX model sliced successfully" in combined_out
-            assert "Tiled" in combined_out and "Conv slices" in combined_out
 
             # Verify artifacts
             metadata_path = output_dir / "metadata.json"

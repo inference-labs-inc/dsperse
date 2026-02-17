@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
@@ -11,8 +10,6 @@ import torch
 from dsperse.src.analyzers.schema import (
     Backend, ExecutionInfo, ExecutionMethod, RunMetadata, RunSliceMetadata, TileResult
 )
-from dsperse.src.slice.utils.converter import Converter
-from dsperse.src.utils.torch_utils import ModelUtils
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -31,49 +28,6 @@ class RunnerUtils:
                     return result[key]
             return None
         return result
-
-    @staticmethod
-    def normalize_for_runtime(run_metadata: dict, slices_path: Path) -> tuple[Path, str | None, Path]:
-        packaging_type = (run_metadata or {}).get("packaging_type", "dirs")
-        source_path = (run_metadata or {}).get("source_path") or str(slices_path)
-        model_path = Path((run_metadata or {}).get("model_path", Path(slices_path).parent)).resolve()
-
-        if model_path.name == "slices":
-            model_path = model_path.parent
-
-        if packaging_type == "dsperse":
-            try:
-                converted = Converter.convert(source_path, output_type="dirs", cleanup=False)
-                return Path(converted), "dsperse", model_path
-            except Exception:
-                return (model_path / "slices").resolve(), None, model_path
-
-        if packaging_type == "dslice":
-            try:
-                sp = Path(source_path)
-                if sp.is_file():
-                    slice_dir = Path(Converter.convert(str(sp), output_type="dirs", cleanup=False))
-                    slices_root = slice_dir.parent
-                else:
-                    expanded_dir = Path(Converter.convert(str(sp), output_type="dirs", cleanup=False))
-                    slices_root = expanded_dir
-                return slices_root, "dslice", model_path
-            except Exception:
-                return (model_path / "slices").resolve(), None, model_path
-
-        root = (model_path / "slices").resolve()
-        if not root.exists():
-            root = Path(slices_path)
-        return root, None, model_path
-
-    @staticmethod
-    def make_run_dir(run_metadata: RunMetadata, output_path: str | None, model_path: Path) -> Path:
-        base_run_dir = Path(run_metadata.run_directory or (model_path / "run"))
-        if output_path:
-            return Path(output_path)
-        if base_run_dir.name.startswith("run_"):
-            return base_run_dir
-        return base_run_dir / f"run_{time.strftime('%Y%m%d_%H%M%S')}"
 
     @staticmethod
     def prepare_slice_io(run_dir: Path, slice_id: str) -> tuple[Path, Path]:
@@ -180,14 +134,14 @@ class RunnerUtils:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     @staticmethod
-    def preprocess_input(input_path: str, model_directory: str = None, save_reshape: bool = False) -> torch.Tensor:
+    def preprocess_input(input_path: str) -> torch.Tensor:
         """Preprocess input data from JSON."""
         if os.path.isfile(input_path):
             with open(input_path, 'r') as f:
                 input_data = json.load(f)
         else:
             input_path = os.path.join(RunnerUtils._get_file_path(), input_path)
-            print(f"Warning: Input file not found. Trying to use relative path: {input_path} instead.")
+            logger.warning(f"Input file not found. Trying relative path: {input_path}")
             with open(input_path, 'r') as f:
                 input_data = json.load(f)
 
@@ -218,27 +172,6 @@ class RunnerUtils:
         return {"output": torch_tensor}
 
     @staticmethod
-    def get_segments(slices_directory):
-        metadata = ModelUtils.load_metadata(slices_directory)
-        if metadata is None:
-            return None
-        segments = metadata.get('slices', [])
-        if not segments:
-            print("No segments found in metadata.json")
-            return None
-        return segments
-
-    @staticmethod
-    def save_to_file_shaped(input_tensor: torch.Tensor, file_path: str):
-        tensor_data = input_tensor.tolist()
-        file_dir = os.path.dirname(file_path)
-        if file_dir:
-            os.makedirs(file_dir, exist_ok=True)
-        data = {"input": tensor_data}
-        with open(file_path, 'w') as f:
-            json.dump(data, f)
-
-    @staticmethod
     def save_to_file_flattened(input_tensor: torch.Tensor, file_path: str):
         tensor_data = input_tensor.flatten().tolist()
         file_dir = os.path.dirname(file_path)
@@ -248,100 +181,6 @@ class RunnerUtils:
         with open(file_path, 'w') as f:
             json.dump(data, f)
 
-    @staticmethod
-    def _is_sliced_model(model_path: str) -> tuple[bool, Optional[str]]:
-        """Check if the path is a sliced model (dirs, dslice, or dsperse format)."""
-        path_obj = Path(model_path)
-
-        if path_obj.is_file() and path_obj.suffix in ['.dsperse', '.dslice']:
-            return True, str(path_obj)
-
-        if path_obj.is_dir():
-            dsperse_files = [f for f in path_obj.iterdir() if f.is_file() and f.suffix == '.dsperse']
-            if dsperse_files:
-                return True, str(dsperse_files[0])
-
-            slices_subdir = path_obj / 'slices'
-            if slices_subdir.is_dir():
-                return True, str(slices_subdir)
-
-            try:
-                detected_type = Converter.detect_type(path_obj)
-                if detected_type in ['dirs', 'dslice', 'dsperse']:
-                    return True, str(path_obj)
-            except ValueError:
-                pass
-
-        return False, None
-
-    @staticmethod
-    def filter_tensor(meta: RunSliceMetadata, tensor, strict: bool = True):
-        output = tensor["output"]
-        output_shape = meta.output_shape
-        if output_shape:
-            shape_ok = RunnerUtils.check_expected_shape(output, output_shape, tensor_name="output")
-            if not shape_ok and strict:
-                expected = output_shape[0] if output_shape else output_shape
-                raise ValueError(
-                    f"Shape mismatch: got {list(output.shape)} ({output.numel()} elements), "
-                    f"expected {expected}"
-                )
-        else:
-            logger.debug("Output shape metadata not found for shape check.")
-        return output
-
-    @staticmethod
-    def check_expected_shape(tensor, expected_shape_data, tensor_name="tensor"):
-        """Check if the tensor shape matches the expected shape from metadata."""
-        if isinstance(expected_shape_data, list) and len(expected_shape_data) > 0:
-            shape_values = expected_shape_data[0]
-            expected_elements = 1
-            shape_dict = {
-                "batch_size": tensor.shape[0] if tensor.dim() > 0 else 1,
-                "unk__0": tensor.shape[0] if tensor.dim() > 0 else 1
-            }
-
-            expected_shape = []
-            for dim in shape_values:
-                if isinstance(dim, str):
-                    if dim in shape_dict:
-                        expected_shape.append(shape_dict[dim])
-                        expected_elements *= shape_dict[dim]
-                    else:
-                        logger.warning(f"Unknown dimension placeholder: {dim}")
-                        expected_shape.append(1)
-                        expected_elements *= 1
-                else:
-                    expected_shape.append(dim)
-                    expected_elements *= dim
-
-            tensor_elements = torch.numel(tensor)
-            if tensor_elements != expected_elements:
-                logger.warning(
-                    f"{tensor_name} shape {list(tensor.shape)} has {tensor_elements} elements, "
-                    f"but expected shape {expected_shape} has {expected_elements} elements"
-                )
-                return False
-
-            if len(tensor.shape) == 1 and len(expected_shape) > 1:
-                logger.info(
-                    f"{tensor_name} is flattened ({tensor.shape[0]} elements), "
-                    f"but expected shape is {expected_shape}"
-                )
-                return True
-
-            if len(tensor.shape) == len(expected_shape):
-                for i, (actual, expected) in enumerate(zip(tensor.shape, expected_shape)):
-                    if actual != expected:
-                        logger.warning(
-                            f"Dimension mismatch at index {i}: {tensor_name} has size {actual}, "
-                            f"expected {expected}"
-                        )
-                        return False
-                return True
-
-        logger.debug(f"Could not determine precise expected shape for {tensor_name}")
-        return True
 
     @staticmethod
     def save_run_results(run_metadata: RunMetadata, results: dict, output_path: str):
@@ -384,11 +223,17 @@ class RunnerUtils:
 
             execution_results.append({"slice_id": slice_id, "witness_execution": witness_execution})
 
+        run_root = Path(output_path).parent
+        for er in execution_results:
+            we = er.get("witness_execution")
+            if we and we.get("witness_file"):
+                we["witness_file"] = Utils.relativize_path(we["witness_file"], run_root)
+
         circuit_slices = ezkl_complete + jstprove_complete
         security_percent = (circuit_slices / total_slices * 100) if total_slices > 0 else 0
 
         inference_output = {
-            "model_path": model_path,
+            "model_path": Utils.relativize_path(model_path, run_root),
             "output": results["output"],
             "tensor_shape": results["tensor_shape"],
             "execution_chain": {
@@ -413,19 +258,6 @@ class RunnerUtils:
         run_dirs = sorted(base_dir.glob("run_*"), key=lambda p: p.name, reverse=True)
         return run_dirs[0] if run_dirs else None
 
-    @staticmethod
-    def check_slice_completion_status(run_dir: Path, slice_id: str) -> tuple[bool, dict | None]:
-        """Determine if a specific slice has already been successfully executed and has saved output."""
-        slice_dir = run_dir / slice_id
-        output_file = slice_dir / "output.json"
-        if output_file.exists():
-            try:
-                with open(output_file, 'r') as f:
-                    data = json.load(f)
-                return True, data
-            except Exception:
-                pass
-        return False, None
 
     @staticmethod
     def try_resume_slice(run_dir: Path, slice_id: str) -> tuple[bool, torch.Tensor | None, ExecutionInfo | None]:
@@ -444,7 +276,7 @@ class RunnerUtils:
                     method=cached_data.get('method', 'resumed'),
                     success=True
                 )
-                print(f"[resume] {slice_id}: loaded cached output", flush=True)
+                logger.info(f"[resume] {slice_id}: loaded cached output")
                 return True, cached_tensor, exec_info
             except Exception as e:
                 logger.warning(f"Failed to load cached output for {slice_id}: {e}")

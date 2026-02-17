@@ -74,7 +74,8 @@ class CompilerUtils:
         layer_indices = []
         parts = [p.strip() for p in layers_str.split(',')]
         for part in parts:
-            if not part: continue
+            if not part:
+                continue
             if '-' in part:
                 try:
                     start, end = map(int, part.split('-'))
@@ -160,101 +161,30 @@ class CompilerUtils:
         return os.path.join(slice_dirname, rel_path)
 
 
+    _JSTPROVE_ARTIFACT_KEYS = ('settings', 'compiled', 'witness_solver', 'wandb', 'quantized_model', 'metadata', 'architecture')
+    _EZKL_ARTIFACT_KEYS = ('settings', 'compiled', 'vk_key', 'pk_key')
+
     @staticmethod
     def get_relative_paths(compilation_data: Dict[str, Any], calibration_input: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Compute relative paths for compiled artifacts and the calibration file.
-        If slice_dir is provided, paths are relative to it. Otherwise, they are
-        relative starting from the 'payload' directory.
-        Returns a tuple of (rel_dict, calibration_rel_path).
-        """
-        if slice_dir:
-            def _rel(p):
-                if not p: return None
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
-            calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
-        else:
-            calibration_rel = CompilerUtils._rel_from_payload(calibration_input) if calibration_input and os.path.exists(calibration_input) else None
+        """Compute relative paths for compiled artifacts and the calibration file."""
+        def _rel(p):
+            if not p:
+                return None
+            if slice_dir:
+                try:
+                    return os.path.relpath(p, slice_dir)
+                except ValueError:
+                    return None
+            return CompilerUtils._rel_from_payload(p)
 
-        # Detect backend by fields present in compilation_data
+        calibration_rel = _rel(calibration_input) if calibration_input and os.path.exists(str(calibration_input)) else None
+
         is_jstprove = bool(compilation_data.get('compiled')) and not bool(compilation_data.get('vk_key'))
+        keys = CompilerUtils._JSTPROVE_ARTIFACT_KEYS if is_jstprove else CompilerUtils._EZKL_ARTIFACT_KEYS
 
-        if is_jstprove:
-            relative_paths = CompilerUtils.get_relative_paths_jstprove(compilation_data, calibration_rel, slice_dir)
-        else:
-            relative_paths = CompilerUtils.get_relative_paths_ezkl(compilation_data, calibration_rel, slice_dir)
-
-        return relative_paths
-
-    @staticmethod
-    def get_relative_paths_jstprove(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Build relative files mapping for JSTprove artifacts using backend-provided keys.
-        """
-        def _rel(key):
-            p = compilation_data.get(key)
-            if not p: return None
-            if slice_dir:
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
-            return CompilerUtils._rel_from_payload(p)
-
-        return {
-            'settings': _rel('settings'),
-            'compiled': _rel('compiled'),
-            'witness_solver': _rel('witness_solver'),
-            'wandb': _rel('wandb'),
-            'quantized_model': _rel('quantized_model'),
-            'metadata': _rel('metadata'),
-            'architecture': _rel('architecture'),
-            'calibration': calibration_rel,
-        }
-
-    @staticmethod
-    def get_relative_paths_ezkl(compilation_data: Dict[str, Any], calibration_rel: Optional[str], slice_dir: Optional[str] = None) -> dict[str, str | None]:
-        """
-        Build relative files mapping for EZKL artifacts using backend-provided keys.
-        """
-        def _rel(key):
-            p = compilation_data.get(key)
-            if not p: return None
-            if slice_dir:
-                try: return os.path.relpath(p, slice_dir)
-                except ValueError: return None
-            return CompilerUtils._rel_from_payload(p)
-
-        return {
-            'settings': _rel('settings'),
-            'compiled': _rel('compiled'),
-            'vk_key': _rel('vk_key'),
-            'pk_key': _rel('pk_key'),
-            'calibration': calibration_rel,
-        }
-
-    @staticmethod
-    def apply_payload_rel_to_comp_data(compilation_data: Dict[str, Any], payload_rel: Dict[str, Optional[str]]) -> Dict[str, Any]:
-        """
-        Produce a shallow copy of compilation_data with payload-relative overrides
-        for keys present in payload_rel.
-        """
-        copy = dict(compilation_data)
-        for k, v in payload_rel.items():
-            if v:
-                copy[k] = v
-        return copy
-
-    @staticmethod
-    def get_slice_dirs(slice_path: str) -> tuple[str, str]:
-        """
-        From a slice ONNX path '.../payload/slice_X.onnx', return a tuple of
-        (slice_dir, slice_metadata_path), where slice_dir is the parent directory
-        of 'payload' (i.e., the slice folder), and slice_metadata_path is
-        'slice_dir/metadata.json'.
-        """
-        slice_dir = os.path.dirname(os.path.dirname(slice_path))
-        slice_metadata_path = os.path.join(slice_dir, 'metadata.json')
-        return slice_dir, slice_metadata_path
+        result = {k: _rel(compilation_data.get(k)) for k in keys}
+        result['calibration'] = calibration_rel
+        return result
 
     @staticmethod
     def build_model_level_ezkl(payload_rel: Dict[str, Optional[str]], calibration_rel: Optional[str], slice_dirname: str, compilation_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -353,11 +283,13 @@ class CompilerUtils:
         """Logs a summary of the compilation results."""
         summary = {}
         for backends in stats.values():
-            for be in backends: summary[be] = summary.get(be, 0) + 1
-        
+            for be in backends:
+                summary[be] = summary.get(be, 0) + 1
+
         summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
         msg = f"Compilation completed. ZK compiled: {compiled} slices ({summary_str})."
-        if skipped > 0: msg += f" Skipped: {skipped} slices (pure ONNX)."
+        if skipped > 0:
+            msg += f" Skipped: {skipped} slices (pure ONNX)."
         logger.info(msg)
 
     @staticmethod
@@ -439,14 +371,14 @@ class CompilerUtils:
     @staticmethod
     def initialize_compilation_metadata(dir_path: str) -> tuple[dict, str, str, list]:
         """Loads and prepares metadata for compilation."""
-        print(f"Loading metadata from {dir_path}...")
+        logger.info(f"Loading metadata from {dir_path}...")
         metadata_path = Utils.find_metadata_path(dir_path)
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
         
         base_path = os.path.dirname(metadata_path)
         slices_data = metadata.get('slices', [])
-        print(f"Found {len(slices_data)} slices", flush=True)
+        logger.info(f"Found {len(slices_data)} slices")
         return metadata, metadata_path, base_path, slices_data
 
     @staticmethod
@@ -483,7 +415,8 @@ class CompilerUtils:
         all_parts = []
         for p in parts:
             p = p.strip()
-            if not p: continue
+            if not p:
+                continue
             # Split by whitespace that is followed by digits and optional range/list then colon
             # Use negative lookbehind to avoid splitting on spaces after commas (e.g., "0, 2:jstprove")
             subparts = re.split(r'(?<!,)\s+(?=\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*:)', p)
@@ -491,7 +424,8 @@ class CompilerUtils:
 
         for part in all_parts:
             part = part.strip()
-            if not part: continue
+            if not part:
+                continue
             if ':' not in part:
                 idxs = CompilerUtils.parse_layers(part)
                 if idxs: default_layer_indices.update(idxs)
@@ -568,7 +502,7 @@ class CompilerUtils:
             slice_meta_rel = slice_data.get('slice_metadata_relative_path')
             check_dir = os.path.join(base_path, os.path.dirname(slice_meta_rel)) if slice_meta_rel else os.path.join(base_path, f"slice_{idx}")
             if CompilerUtils.is_slice_compiled(check_dir, slice_data.get('tiling'), slice_data.get('channel_split')):
-                print(f"[resume] slice_{idx}: already compiled, skipping")
+                logger.info(f"[resume] slice_{idx}: already compiled, skipping")
                 return True, "resumed"
 
         return False, None
@@ -576,7 +510,7 @@ class CompilerUtils:
     @staticmethod
     def run_sequential_compilation(work_items: list, worker_func) -> list[dict]:
         """Executes compilation tasks sequentially."""
-        print(f"Compiling {len(work_items)} slices sequentially...")
+        logger.info(f"Compiling {len(work_items)} slices sequentially...")
         return [worker_func(item) for item in work_items]
 
     @staticmethod
@@ -753,7 +687,8 @@ class CompilerUtils:
 
         # --- Update compilation blocks ---
         comp_blocks = result.get('compilation_blocks', {})
-        if 'compilation' not in slice_data: slice_data['compilation'] = {}
+        if 'compilation' not in slice_data:
+            slice_data['compilation'] = {}
         for be, block in comp_blocks.items():
             slice_data['compilation'][be] = block
             if slice_meta_path.exists():

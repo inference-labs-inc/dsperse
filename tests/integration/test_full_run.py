@@ -2,48 +2,37 @@ import json
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
-import os
 import shutil
 
 from dsperse.src.cli.full_run import full_run
 from dsperse.src.cli.slice import slice_model
-from dsperse.src.cli.compile import compile_model
 from dsperse.src.cli.run import run_inference
 from dsperse.src.cli.prove import run_proof
 from dsperse.src.cli.verify import verify_proof
 
 class TestFullRunE2E:
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_full_run_loop_slices(self, model_name: str, model_dir: Path, slices_output_dir: Path, run_output_dir: Path, analysis_output_dir: Path, jstprove_available, capfd):
+    def test_full_run_loop_slices(self, models_root, pre_compiled_net, tmp_path, copy_to, jstprove_available, capfd):
         """
         Test a workflow with looped single-slice proving and verification:
-        - Slice -> Compile (default) -> Run (default)
+        - Run (using pre-compiled slices)
         - Loop through each slice and prove it as a single slice
         - Loop through each slice and verify it as a single slice
         """
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
-        input_file = model_dir / "input.json"
+        input_file = models_root / "net" / "input.json"
+        slices_output_dir = copy_to(pre_compiled_net, tmp_path / "slices")
 
-        # 1. Slice
-        slice_model(SimpleNamespace(model_dir=str(model_dir), output_dir=str(slices_output_dir), save_file=None, output_type="dirs"))
-
-        # 2. Compile (default)
-        compile_model(SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), layers=None, backend=None))
-
-        # 3. Run (default)
-        capfd.readouterr() # clear buffers
+        import re
+        capfd.readouterr()
         run_inference(SimpleNamespace(path=str(slices_output_dir), input_file=str(input_file), output_file=None, force_backend=None))
         out = capfd.readouterr().out
-        
-        # Extract run directory
-        import re
+
         match = re.search(r"Run data saved to (.+)", out)
         assert match
         run_dir = Path(match.group(1).strip())
 
-        # Determine slice IDs
         slice_ids = sorted([d.name for d in slices_output_dir.iterdir() if d.is_dir() and d.name.startswith("slice_")])
         assert slice_ids
 

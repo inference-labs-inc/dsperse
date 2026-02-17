@@ -5,6 +5,8 @@ Contains common utilities and classes used by all CLI commands.
 
 import argparse
 import glob as _glob
+import json
+from pathlib import Path
 try:
     import readline
 except ImportError:
@@ -221,7 +223,6 @@ def detect_model_type(model_path):
     Returns:
         tuple: (is_onnx, error_message) where is_onnx is a boolean and error_message is a string or None
     """
-    import os
     is_onnx = False
     error_message = None
 
@@ -261,9 +262,6 @@ def save_result(result, output_file):
         result: The result to save
         output_file (str): Path to the output file
     """
-    import json
-    from pathlib import Path
-
     def _default(o):
         # Safely convert non-serializable objects
         if isinstance(o, Path):
@@ -336,10 +334,74 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         cancel_msg = "Operation cancelled by user."
         print(f"\n{Fore.YELLOW}{cancel_msg}{Style.RESET_ALL}")
         logger.info(cancel_msg)
-        import sys
         sys.exit(1)
     except Exception as e:
         error_msg = f"Error getting input: {e}"
         print(f"{Fore.RED}{error_msg}{Style.RESET_ALL}")
         logger.error(error_msg)
         return default if not required else None
+
+
+def get_all_runs(run_root_dir):
+    """Get all run directories in the provided runs root directory, sorted by name (latest last)."""
+    run_root_dir = normalize_path(run_root_dir)
+    if not os.path.exists(run_root_dir):
+        return []
+    run_dirs = sorted(_glob.glob(os.path.join(run_root_dir, "run_*")))
+    return [normalize_path(d) for d in run_dirs]
+
+
+def get_latest_run(run_root_dir):
+    """Get the latest run directory in the provided runs root directory, or None if no runs found."""
+    run_dirs = get_all_runs(run_root_dir)
+    return run_dirs[-1] if run_dirs else None
+
+
+def validate_run_dir(run_dir):
+    """Validate that run_dir contains recognized run artifacts. Returns True if valid."""
+    from dsperse.src.pipeline_stage import detect_run_type
+    rd = Path(normalize_path(run_dir))
+    is_run_root, is_slice_run = detect_run_type(rd)
+    has_slice_dirs = any((rd / f'slice_{i}').exists() for i in range(10))
+    return is_run_root or is_slice_run or has_slice_dirs
+
+
+def resolve_stage_paths(args) -> tuple[str, str] | None:
+    """Resolve and validate run_dir and slices_path from CLI args, prompting if missing. Returns None on failure."""
+    run_dir = getattr(args, 'run_dir', None)
+    slices_path = getattr(args, 'slices_path', None)
+
+    if not run_dir:
+        run_dir = prompt_for_value('run-dir', 'Enter the run directory (run/run_<timestamp>)')
+    if not slices_path:
+        slices_path = prompt_for_value('slices', 'Enter the slices path (dslice file, slices directory, or dsperse file)')
+
+    run_dir = normalize_path(run_dir)
+    slices_path = normalize_path(slices_path)
+
+    if not os.path.exists(run_dir):
+        print(f"{Fore.RED}Error: Run directory not found: {run_dir}{Style.RESET_ALL}")
+        return None
+    if not validate_run_dir(run_dir):
+        print(
+            f"{Fore.RED}Error: run-dir does not contain recognized run artifacts "
+            f"(metadata.json, run_results.json, input.json + output.json, "
+            f"split/, tile_*, or slice_* directories): {run_dir}{Style.RESET_ALL}")
+        return None
+
+    return run_dir, slices_path
+
+
+def add_stage_arguments(parser, stage: str):
+    """Add the shared --run-dir, --slices, --backend, --parallel, --tiles arguments used by prove and verify."""
+    parser.add_argument('--run-dir', '--rd', dest='run_dir',
+                        help='The run directory generated when you run the model')
+    parser.add_argument('--slices', '--sd', '-s', dest='slices_path',
+                        help='The path to the dslice file, the slice directory, or the dsperse file')
+    parser.add_argument('--backend', '-b', choices=['jstprove', 'ezkl'],
+                        help=f'Backend to use. In single-slice mode this is required. '
+                             f'In run-root mode, only {stage} slices whose witness backend matches this choice.')
+    parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                        help=f'Number of parallel processes for {stage} (default: 1)')
+    parser.add_argument('--tiles', '-t', dest='tiles',
+                        help=f'Range of tiles to {stage} (e.g., "0-2" or "0,1,5"). Only applicable in single-slice mode.')

@@ -18,6 +18,7 @@ from dsperse.src.analyzers.schema import (
     Backend,
     ExecutionMethod,
 )
+from dsperse.src.backends.dispatch import WITNESS_FILENAME
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.backends.jstprove import JSTprove
 from dsperse.src.backends.onnx_models import OnnxModels
@@ -317,7 +318,7 @@ class Runner:
         # --- Witness Generation ---
         try:
             witness_file_path = Path(output_witness_path).with_name(
-                "output_witness.bin"
+                WITNESS_FILENAME[Backend.JSTPROVE]
             )
             success, output_tensor = self.jstprove_runner.generate_witness(
                 input_file=str(input_tensor_path),
@@ -327,7 +328,7 @@ class Runner:
         except Exception as e:
             success, output_tensor = False, str(e)
             witness_file_path = Path(output_witness_path).with_name(
-                "output_witness.bin"
+                WITNESS_FILENAME[Backend.JSTPROVE]
             )
 
         # --- Result Packaging ---
@@ -406,16 +407,16 @@ class Runner:
         parallel_count = min(self.threads, tiling.num_tiles)
 
         if self.batch and config["has_jst"]:
-            tile_args_list = tile_executor.prepare_tasks_in_memory(
-                tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config
+            tile_args_list = tile_executor.prepare_tasks(
+                tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config, write_to_disk=False
             )
             return self._run_tiles_batch_jst(
                 slice_id, tiling, meta, tile_args_list, tile_executor, run_dir
             )
 
         if self.batch and config["tile_onnx_path"]:
-            tile_args_list = tile_executor.prepare_tasks_in_memory(
-                tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config
+            tile_args_list = tile_executor.prepare_tasks(
+                tiling.num_tiles, tiling.slice_idx, tiling, meta, run_dir, config, write_to_disk=False
             )
             return self._run_tiles_batch_onnx(
                 slice_id, tiling, tile_args_list, tile_executor, config
@@ -957,41 +958,3 @@ class Runner:
 
         Converter.cleanup_extracted_slice(self.slices_path, slice_id)
         self._extracted_slices.discard(slice_id)
-
-
-if __name__ == "__main__":
-    # Choose which model to test
-    model_choice = 2  # Change this to test different models
-
-    # Model configurations
-    base_paths = {
-        1: "../../models/doom",
-        2: "../../models/net",
-        3: "../../models/resnet",
-        4: "../../models/yolov3",
-        5: "../../models/age",
-    }
-
-    # Get model directory
-    abs_path = os.path.abspath(base_paths[model_choice])
-    slices_dir = os.path.join(abs_path, "slices")
-    # slices_dir = os.path.join(slices_dir, "slice_0")
-    input_json = os.path.join(abs_path, "input.json")
-
-    # Initialize runner (auto-generates run metadata if needed). Slices dir is now passed to run(...).
-    runner = Runner()
-
-    # Run inference
-    print(f"Running inference on model {base_paths[model_choice]}...")
-    results = runner.run(input_json, slice_path=slices_dir)  # , backend="ezkl")
-
-    # Display results
-    print(f"\nOutput shape: {results['tensor_shape']}")
-    print("Execution summary:")
-    for slice_id, info in results["slice_results"].items():
-        method = (
-            info.method
-            if isinstance(info, ExecutionInfo)
-            else info.get("method", "unknown")
-        )
-        print(f"  {slice_id}: {method}")

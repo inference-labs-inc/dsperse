@@ -2,15 +2,19 @@
 CLI module for running the full pipeline: slice -> compile -> run -> prove -> verify
 This is a meta-command that orchestrates existing commands without changing their logic.
 """
+import logging
 import os
 from argparse import Namespace
+
 from colorama import Fore, Style
 
-from dsperse.src.cli.base import prompt_for_value, normalize_path, logger
+from dsperse.src.cli.base import prompt_for_value, normalize_path, get_latest_run
+
+logger = logging.getLogger(__name__)
 from dsperse.src.cli.slice import slice_model
 from dsperse.src.cli.compile import compile_model
 from dsperse.src.cli.run import run_inference
-from dsperse.src.cli.prove import run_proof, get_latest_run
+from dsperse.src.cli.prove import run_proof
 from dsperse.src.cli.verify import verify_proof
 
 

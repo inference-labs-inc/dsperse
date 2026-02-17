@@ -11,7 +11,7 @@ from typing import Tuple, List, Dict
 import onnx
 import logging
 
-from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, SliceShape, TensorShape, WeightShape, TilingInfo, ChannelSplitInfo
+from dsperse.src.analyzers.schema import SliceMetadata, ModelMetadata, TensorShape, TilingInfo, ChannelSplitInfo
 from dsperse.src.backends.jstprove import JSTPROVE_SUPPORTED_OPS
 from dsperse.src.slice.autotiler import ELEMENTWISE_OPS
 from dsperse.src.utils.utils import Utils
@@ -23,8 +23,6 @@ _MAX_ORT_OPSET_VERSION = 22
 
 
 class OnnxUtils:
-    def __init__(self):
-        pass
 
     @staticmethod
     def clamp_for_ort(model: onnx.ModelProto) -> None:
@@ -149,7 +147,7 @@ class OnnxUtils:
             if os.path.exists(trace_path):
                 os.remove(trace_path)
         
-        print(f"Shape trace complete: captured {len(traced_shapes)} tensor shapes")
+        logger.info(f"Shape trace complete: captured {len(traced_shapes)} tensor shapes")
         return traced_shapes, traced_dtypes
 
     @staticmethod
@@ -421,7 +419,7 @@ class OnnxUtils:
         results = {}
         failures = []
 
-        print(f"Building {len(segments)} slices...")
+        logger.info(f"Building {len(segments)} slices...")
         for seg in segments:
             segment_idx = seg['segment_idx']
             file_path = seg['file_path']
@@ -447,7 +445,7 @@ class OnnxUtils:
                 Utils.save_onnx_model(model, file_path)
 
                 results[segment_idx] = os.path.abspath(file_path)
-                print(f"  Built slice {segment_idx}")
+                logger.info(f"Built slice {segment_idx}")
             except Exception as e:
                 logger.exception(f"Failed to build slice {segment_idx}")
                 failures.append((segment_idx, e))
@@ -636,8 +634,6 @@ class OnnxUtils:
             meta = json.load(f)
 
         original_model = meta.get("original_model")
-        dsperse_ver = Utils.get_dsperse_version()
-        opset_version = OnnxUtils._get_opset_version(original_model)
 
         slices = meta.get("slices", []) or []
         for idx, seg in enumerate(slices):
@@ -654,8 +650,7 @@ class OnnxUtils:
 
             # 3. Build and save per-slice metadata
             updated_slice = OnnxUtils._finalize_slice_metadata(
-                idx, seg, root, slice_dir, onnx_path, expected_filename,
-                dsperse_ver, opset_version, meta
+                idx, seg, root, slice_dir, onnx_path, expected_filename, meta
             )
 
             # 4. Update global metadata entry
@@ -664,8 +659,6 @@ class OnnxUtils:
                 "relative_path": str(Path(updated_slice.path).resolve().relative_to(root)),
                 "slice_metadata": updated_slice.slice_metadata,
                 "slice_metadata_relative_path": updated_slice.slice_metadata_relative_path,
-                "dsperse_version": updated_slice.dsperse_version,
-                "opset_version": updated_slice.opset_version
             })
 
         Utils.save_metadata_file(meta, metadata_path.parent, metadata_path.name)
@@ -723,11 +716,11 @@ class OnnxUtils:
         return desired_path if current_file else None
 
     @staticmethod
-    def _finalize_slice_metadata(idx, seg, root, slice_dir, onnx_path, filename, dsperse_ver, opset_version, global_meta):
+    def _finalize_slice_metadata(idx, seg, root, slice_dir, onnx_path, filename, global_meta):
         """Build and save authoritative SliceMetadata and ModelMetadata for a slice."""
         orig_slice = SliceMetadata.from_dict({**seg, "index": seg.get("index", idx)})
-        input_shapes = orig_slice.shape.tensor_shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
-        output_shapes = orig_slice.shape.tensor_shape.output or seg.get("output_shape") or seg.get("output_shapes") or []
+        input_shapes = orig_slice.shape.input or seg.get("input_shape") or seg.get("input_shapes") or []
+        output_shapes = orig_slice.shape.output or seg.get("output_shape") or seg.get("output_shapes") or []
 
         tiling = orig_slice.tiling
         if tiling:
@@ -739,10 +732,7 @@ class OnnxUtils:
             channel_split_dict = Utils.relativize_tiling_info(channel_split.to_dict(), root_dir=slice_dir, base_dir=root)
             channel_split = ChannelSplitInfo.from_dict(channel_split_dict)
 
-        shape = SliceShape(
-            tensor_shape=TensorShape(input=input_shapes, output=output_shapes),
-            weight_shape=orig_slice.shape.weight_shape if orig_slice.shape.weight_shape else WeightShape(),
-        )
+        shape = TensorShape(input=input_shapes, output=output_shapes)
 
         slice_metadata_path = slice_dir / "metadata.json"
         updated_slice = SliceMetadata(
@@ -750,23 +740,18 @@ class OnnxUtils:
             filename=filename,
             path=str(onnx_path),
             relative_path=str(onnx_path.resolve().relative_to(root).relative_to("slice_" + str(idx))),
-            parameters=orig_slice.parameters,
             shape=shape,
             dependencies=orig_slice.dependencies,
-            layers=orig_slice.layers,
             tiling=tiling,
             channel_split=channel_split,
             compilation=orig_slice.compilation,
-            dsperse_version=dsperse_ver,
-            opset_version=opset_version,
-            slice_metadata=str(slice_metadata_path.resolve()),
+            slice_metadata=str(slice_metadata_path.resolve().relative_to(root)),
             slice_metadata_relative_path=str(slice_metadata_path.resolve().relative_to(root)),
         )
 
         model_meta = ModelMetadata(
             original_model=global_meta.get("original_model") or "",
             model_type=global_meta.get("model_type", "ONNX"),
-            total_parameters=updated_slice.parameters,
             input_shape=global_meta.get("input_shape", input_shapes),
             output_shapes=global_meta.get("output_shapes", output_shapes),
             slice_points=[idx],
@@ -775,19 +760,4 @@ class OnnxUtils:
         model_meta.save(slice_metadata_path)
         return updated_slice
 
-    @staticmethod
-    def _get_opset_version(model_path: str) -> int | None:
-        """Best-effort retrieval of ONNX opset version."""
-        if not model_path or not os.path.exists(model_path):
-            return None
-        try:
-            mdl = onnx.load(model_path)
-            for ops in mdl.opset_import:
-                if ops.domain in ("", "ai.onnx"):
-                    return int(ops.version)
-            if mdl.opset_import:
-                return int(mdl.opset_import[0].version)
-        except Exception:
-            pass
-        return None
 

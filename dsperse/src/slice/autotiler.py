@@ -13,6 +13,7 @@ The split/concat operations are done in pure Python at runtime, not as ONNX mode
 Only the tile model is an ONNX file.
 """
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from onnx import helper, TensorProto, numpy_helper
 
 from dsperse.src.analyzers.schema import TilingInfo, TileInfo, ChannelSplitInfo, ChannelGroupInfo
 from dsperse.src.utils.utils import Utils
+
+logger = logging.getLogger(__name__)
 
 ELEMENTWISE_OPS = {
     'Sigmoid', 'Mul', 'Add', 'Sub', 'Div', 'Relu', 'LeakyRelu', 'PRelu',
@@ -620,7 +623,7 @@ class Autotiler:
     @staticmethod
     def apply_tiling(slices_paths: dict[int, str | Path], tile_size: int) -> dict[int, Any]:
         """Apply tiling or channel splitting to a set of slices."""
-        print(f"Using dynamic tiling with tile_size={tile_size} elements per tile")
+        logger.info(f"Using dynamic tiling with tile_size={tile_size} elements per tile")
         tiled_results = {}
 
         for idx, onnx_path in slices_paths.items():
@@ -628,7 +631,7 @@ class Autotiler:
             if result:
                 tiled_results[idx] = result
 
-        print(f"Tiled {len(tiled_results)} Conv slices")
+        logger.info(f"Tiled {len(tiled_results)} Conv slices")
         return tiled_results
 
     @staticmethod
@@ -654,7 +657,7 @@ class Autotiler:
         num_groups = tiling_params["num_groups"]
         cpg = tiling_params["channels_per_group"]
         
-        print(f"Channel splitting Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> {num_groups} groups ({cpg} channels/group)")
+        logger.info(f"Channel splitting Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> {num_groups} groups ({cpg} channels/group)")
 
         channel_split_info = Autotiler.apply_channel_splitting_to_slice(
             slice_path=onnx_path,
@@ -664,7 +667,7 @@ class Autotiler:
         )
         
         if not channel_split_info:
-            print(f"  Failed to create channel groups for slice {idx}")
+            logger.warning(f"Failed to create channel groups for slice {idx}")
             return None
 
         return {"channel_split": channel_split_info.to_dict()}
@@ -675,7 +678,7 @@ class Autotiler:
         c_in = tiling_params["c_in"]
         tile_sz = tiling_params["tile_size"]
         
-        print(f"Tiling Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> tile_size={tile_sz} ({tiling_params['num_tiles']} tiles)")
+        logger.info(f"Tiling Conv slice {idx}: {c_in}ch x {tiling_params['h']}x{tiling_params['w']} -> tile_size={tile_sz} ({tiling_params['num_tiles']} tiles)")
 
         tile_info = Autotiler.create_tile_slice(
             slice_path=onnx_path,
@@ -685,7 +688,7 @@ class Autotiler:
         )
         
         if not tile_info:
-            print(f"  Failed to create tile model for slice {idx}")
+            logger.warning(f"Failed to create tile model for slice {idx}")
             return None
 
         tiling_metadata = TilingInfo(
@@ -719,7 +722,7 @@ class Autotiler:
 
         # Section 1: Validation and Metadata Loading
         if not metadata_path.exists():
-            print(f"No metadata.json found in {slices_dir}")
+            logger.warning(f"No metadata.json found in {slices_dir}")
             return {}
 
         with open(metadata_path) as f:
@@ -727,7 +730,7 @@ class Autotiler:
 
         slices_data = metadata.get("slices", [])
         if not slices_data or not tile_size:
-            print("No slices found or no tiling parameters specified")
+            logger.warning("No slices found or no tiling parameters specified")
             return {}
 
         # Section 2: Map Indices to Paths and Apply Tiling

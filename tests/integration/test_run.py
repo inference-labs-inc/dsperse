@@ -1,6 +1,5 @@
 import json
 import shutil
-import re
 import logging
 import pytest
 from pathlib import Path
@@ -11,18 +10,13 @@ from dsperse.src.cli.compile import compile_model
 from dsperse.src.cli.run import run_inference
 
 class TestRunE2E:
-    def _get_run_dir(self, output: str) -> Path:
-        match = re.search(r"Run data saved to (.+)", output)
-        assert match, f"Could not find run directory in output: {output}"
-        return Path(match.group(1).strip())
-
     def _verify_run_artifacts(self, run_dir: Path):
         assert run_dir.exists()
         assert (run_dir / "run_results.json").exists()
         assert (run_dir / "metadata.json").exists()
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
-    def test_run_onnx_only(self, model_name: str, model_dir: Path, pre_sliced_net: Path, pre_sliced_doom: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_run_onnx_only(self, model_name: str, model_dir: Path, pre_sliced_net: Path, pre_sliced_doom: Path, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         source = pre_sliced_net if model_name == "net" else pre_sliced_doom
         slices_output_dir = copy_to(source, tmp_path / "slices")
         
@@ -36,7 +30,7 @@ class TestRunE2E:
         assert "onnx" in out.lower()
         assert "slice_0: onnx" in out  # matches onnx_multi_input
 
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
         self._verify_run_artifacts(run_dir)
 
         results = json.loads((run_dir / "run_results.json").read_text())
@@ -44,7 +38,7 @@ class TestRunE2E:
             assert slice_res["method"].startswith("onnx")
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_default_compiled(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_run_default_compiled(self, model_name: str, model_dir: Path, pre_compiled_net_both: Path, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         slices_output_dir = copy_to(pre_compiled_net_both, tmp_path / "slices")
         
         input_file = model_dir / "input.json"
@@ -57,7 +51,7 @@ class TestRunE2E:
         assert "jstprove" in out.lower()
         assert "slice_0: jstprove" in out
         
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
         self._verify_run_artifacts(run_dir)
 
     @pytest.mark.parametrize("model_name", ["net"])
@@ -88,7 +82,7 @@ class TestRunE2E:
         assert "inference completed" in out
 
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_run_single_slice_uncompiled(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path, copy_to, capfd):
+    def test_run_single_slice_uncompiled(self, model_name: str, model_dir: Path, pre_sliced_net: Path, run_output_dir: Path, tmp_path, copy_to, capfd, parse_run_dir):
         slices_output_dir = copy_to(pre_sliced_net, tmp_path / "slices")
         
         slice_0_path = slices_output_dir / "slice_0"
@@ -103,7 +97,7 @@ class TestRunE2E:
         assert "slice_0: onnx" in out
         assert "slice_1:" not in out # Ensure only one slice ran
         
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
         self._verify_run_artifacts(run_dir)
 
     @pytest.mark.parametrize("model_name", ["net"])
@@ -202,7 +196,7 @@ class TestRunE2E:
         assert "slice_1: onnx" in out_lower
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled: Path, tmp_path, copy_to, capfd):
+    def test_run_with_tiling(self, model_name: str, model_dir: Path, pre_compiled_doom_tiled: Path, tmp_path, copy_to, capfd, parse_run_dir):
         slices_output_dir = copy_to(pre_compiled_doom_tiled, tmp_path / "slices")
         input_file = model_dir / "input.json"
         run_args = SimpleNamespace(
@@ -219,7 +213,7 @@ class TestRunE2E:
         assert "Inference completed" in out
         assert "slice_0: tiled" in out
 
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
         run_results = json.loads((run_dir / "run_results.json").read_text())
 
         # Verify tiled slice execution in execution_chain
@@ -233,7 +227,7 @@ class TestRunE2E:
         for t_info in w_exec["tile_exec_infos"]:
             assert t_info["success"] is True
 
-    def test_run_with_channel_split(self, tmp_path, capfd, jstprove_available):
+    def test_run_with_channel_split(self, tmp_path, capfd, jstprove_available, parse_run_dir):
         """10. Verify that running a channel-split model works."""
         import onnx
         from onnx import helper, TensorProto, numpy_helper
@@ -305,7 +299,7 @@ class TestRunE2E:
         assert "Inference completed" in out
         assert "channel_split" in out.lower()
 
-        run_dir = self._get_run_dir(out)
+        run_dir = parse_run_dir(out)
         run_results = json.loads((run_dir / "run_results.json").read_text())
         assert "output" in run_results
         assert run_results["tensor_shape"] == [1, c_out, spatial, spatial]
@@ -381,7 +375,7 @@ class TestRunE2E:
         assert "onnx_only" in out.lower()
 
     @pytest.mark.parametrize("model_name", ["doom"])
-    def test_run_resume_complex(self, model_name: str, model_dir: Path, pre_sliced_doom_tiled: Path, tmp_path, copy_to, capfd):
+    def test_run_resume_complex(self, model_name: str, model_dir: Path, pre_sliced_doom_tiled: Path, tmp_path, copy_to, capfd, parse_run_dir):
         slices_output_dir = copy_to(pre_sliced_doom_tiled, tmp_path / "slices")
         
         input_file = model_dir / "input.json"
@@ -397,7 +391,7 @@ class TestRunE2E:
         # First run to produce artifacts
         run_inference(run_args)
         out1 = capfd.readouterr().out
-        run_dir = self._get_run_dir(out1)
+        run_dir = parse_run_dir(out1)
         
         # Second run with resume
         run_args.run_dir = str(run_dir)

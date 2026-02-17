@@ -50,7 +50,6 @@ class Converter:
         # If already in desired format, return
         if current_type == output_type:
             logger.info(f"Already in desired format: {output_type}")
-            print(f"Already in desired format: {output_type}")
             return str(path_obj)
 
         logger.info(f"Converting from {current_type} to {output_type}")
@@ -537,60 +536,3 @@ class Converter:
                 logger.debug(f"Cleaned up extracted slice: {slice_dir}")
             except OSError as e:
                 logger.warning(f"Could not clean up slice {slice_dir}: {e}")
-
-
-if __name__ == "__main__":
-    # Basic logger setup when running this module directly
-    logging.basicConfig(level=logging.INFO)
-
-    # Choose which model to test
-    model_choice = 1  # Change this to test different models
-
-    # Model configurations (relative to this file, similar to slicer.py)
-    base_paths = {
-        1: "../../../models/doom",
-        2: "../../../models/net",
-        3: "../../../models/resnet",
-        4: "../../../models/age",
-        5: "../../../models/version",
-        6: "../../../models/bert",
-        7: "../../../models/roberta",
-    }
-
-    # Resolve paths
-    abs_path = os.path.abspath(base_paths[model_choice])
-
-    # Common paths used for conversions
-    slices_dir = os.path.join(abs_path, "slices")
-    dsperse_file = os.path.join(abs_path, "slices.dsperse")
-
-    try:
-        print("\n=== Converter test harness ===")
-        print(f"Selected model root: {abs_path}")
-
-        # DSPERSE -> DIRS
-        # out_path = Converter.convert(dsperse_file, output_type="dirs")
-        # print(f"Extracted dsperse to dirs: {out_path}")
-
-        # DSPERSE -> DSLICE
-        # out_path = Converter.convert(dsperse_file, output_type="dslice")
-        # print(f"Extracted dsperse to dslice: {out_path}")
-
-        # DIRS -> DSPERSE
-        # out_path = Converter.convert(slices_dir, output_type="dsperse")
-        # print(f"Converted dirs to dsperse: {out_path}")
-
-        # DIRS -> DSLICE
-        out_path = Converter.convert(slices_dir, output_type="dslice")
-        print(f"Converted dirs to dslice: {out_path}")
-
-        # DSLICE -> DIRS
-        # out_path = Converter.convert(slices_dir, output_type="dirs")
-        # print(f"Converted dslice to dirs: {out_path}")
-
-        # DSLICE -> DSPERSE
-        # out_path = Converter.convert(slices_dir, output_type="dsperse")
-        # print(f"Converted dslice to dsperse: {out_path}")
-
-    except Exception as e:
-        print(f"Error during conversion: {e}")

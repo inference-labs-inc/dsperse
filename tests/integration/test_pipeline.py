@@ -93,11 +93,9 @@ class TestTilingCorrectness:
 
 
 class TestOnnxInference:
-    """Verify ONNX inference produces valid results."""
 
     @pytest.mark.parametrize("model_name", ["net", "doom"])
     def test_onnx_inference_succeeds(self, model_name: str, model_dir: Path, pre_sliced_net, pre_sliced_doom, tmp_path, copy_to):
-        """ONNX backend should produce valid numeric output."""
         from dsperse.src.run.runner import Runner
 
         input_file = model_dir / "input.json"
@@ -143,75 +141,30 @@ class TestWitnessGeneration:
             assert success, f"JSTprove witness failed for {sid}"
 
 
-class TestProofGeneration:
-    """Verify proof generation works."""
+class TestProvingAndVerification:
+    """Verify proof generation and verification works."""
 
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_proof_generation(self, model_name: str, model_dir: Path, pre_compiled_net, tmp_path, copy_to, jstprove_available, capfd):
-        """Prover should successfully generate proofs for witnessed slices."""
+    @pytest.fixture(scope="class")
+    def inference_run(self, pre_compiled_net, models_root, tmp_path_factory, jstprove_available):
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
+        import shutil
+        from dsperse.src.run.runner import Runner
+        dest = tmp_path_factory.mktemp("proving") / "slices"
+        shutil.copytree(pre_compiled_net, dest)
+        input_file = models_root / "net" / "input.json"
+        runner = Runner()
+        runner.run(str(input_file), str(dest))
+        return dest, Path(runner.last_run_dir)
 
-        from dsperse.src.cli.run import run_inference
-        from dsperse.src.prove.prover import Prover
-        import re
-
-        input_file = model_dir / "input.json"
-        work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
-
-        capfd.readouterr()
-        run_inference(SimpleNamespace(
-            path=str(work_dir),
-            input_file=str(input_file),
-            output_file=None,
-            force_backend=None
-        ))
-        out = capfd.readouterr().out
-        match = re.search(r"Run data saved to (.+)", out)
-        assert match, "Could not find run directory"
-        run_dir = Path(match.group(1).strip())
-
-        prover = Prover()
-        prover.prove(str(run_dir), str(work_dir))
-
-        run_results = json.loads((run_dir / "run_results.json").read_text())
-        exec_results = run_results.get("execution_chain", {}).get("execution_results", [])
-
-        proved_count = sum(
-            1 for e in exec_results
-            if e.get("proof_execution", {}).get("success")
-        )
-        assert proved_count >= 1, "No proofs were successfully generated"
-
-
-class TestVerification:
-    """Verify proof verification works."""
-
-    @pytest.mark.parametrize("model_name", ["net"])
-    def test_proof_verification(self, model_name: str, model_dir: Path, pre_compiled_net, tmp_path, copy_to, jstprove_available, capfd):
+    def test_proof_verification(self, inference_run, jstprove_available):
         """Verifier should successfully verify generated proofs."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
-
-        from dsperse.src.cli.run import run_inference
         from dsperse.src.prove.prover import Prover
         from dsperse.src.verify.verifier import Verifier
-        import re
 
-        input_file = model_dir / "input.json"
-        work_dir = copy_to(pre_compiled_net, tmp_path / "slices")
-
-        capfd.readouterr()
-        run_inference(SimpleNamespace(
-            path=str(work_dir),
-            input_file=str(input_file),
-            output_file=None,
-            force_backend=None
-        ))
-        out = capfd.readouterr().out
-        match = re.search(r"Run data saved to (.+)", out)
-        assert match
-        run_dir = Path(match.group(1).strip())
+        work_dir, run_dir = inference_run
 
         prover = Prover()
         prover.prove(str(run_dir), str(work_dir))
@@ -230,24 +183,18 @@ class TestVerification:
 
 
 class TestEndToEnd:
-    """Full pipeline end-to-end test."""
 
     @pytest.mark.slow
     @pytest.mark.parametrize("model_name", ["net"])
-    def test_full_pipeline_correctness(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available, capfd):
-        """
-        Full pipeline: slice -> compile -> run -> prove -> verify.
-        Verifies output matches original AND proofs verify.
-        """
+    def test_full_pipeline_correctness(self, model_name: str, model_dir: Path, slices_output_dir: Path, jstprove_available):
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
 
         from dsperse.src.cli.slice import slice_model
         from dsperse.src.cli.compile import compile_model
-        from dsperse.src.cli.run import run_inference
+        from dsperse.src.run.runner import Runner
         from dsperse.src.prove.prover import Prover
         from dsperse.src.verify.verifier import Verifier
-        import re
 
         original_model = model_dir / "model.onnx"
         input_file = model_dir / "input.json"
@@ -272,20 +219,10 @@ class TestEndToEnd:
             backend="jstprove"
         ))
 
-        capfd.readouterr()
-        run_inference(SimpleNamespace(
-            path=str(slices_output_dir),
-            input_file=str(input_file),
-            output_file=None,
-            force_backend=None
-        ))
-        out = capfd.readouterr().out
-        match = re.search(r"Run data saved to (.+)", out)
-        assert match
-        run_dir = Path(match.group(1).strip())
-
-        run_results = json.loads((run_dir / "run_results.json").read_text())
-        sliced_output = np.array(run_results["output"])
+        runner = Runner()
+        results = runner.run(str(input_file), str(slices_output_dir))
+        sliced_output = np.array(results["output"])
+        run_dir = Path(runner.last_run_dir)
 
         np.testing.assert_allclose(sliced_output, original_output, rtol=1e-4, atol=1e-4,
             err_msg="Sliced output does not match original")

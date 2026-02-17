@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from dsperse.src.analyzers.schema import (
     Backend, ExecutionMethod, RunSliceMetadata, TileResult, TilingInfo
 )
+from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
@@ -125,57 +126,7 @@ class TileExecutor:
 
     def prepare_tasks(
         self, num_tiles: int, slice_idx: int, tiling: TilingInfo, meta: RunSliceMetadata,
-        run_dir: Path, config: dict
-    ) -> list[dict]:
-        tile_args_list = []
-        slice_specific_dir = self.slices_path / f"slice_{slice_idx}"
-
-        for tile_idx in range(num_tiles):
-            cache_input_name = f"tile_{slice_idx}_{tile_idx}_in"
-            tile_tensor = self.tensor_cache.get(cache_input_name)
-            if tile_tensor is None:
-                raise ValueError(f"Missing tile input tensor '{cache_input_name}'")
-
-            tile_run_dir = run_dir / f"slice_{slice_idx}" / f"tile_{tile_idx}"
-            tile_run_dir.mkdir(parents=True, exist_ok=True)
-            tile_in, tile_out = tile_run_dir / "input.json", tile_run_dir / "output.json"
-            tile_input_name = tiling.input_name or "tile_in"
-            Utils.write_input(tile_tensor, str(tile_in), tile_input_name)
-
-            this_tile_onnx = (
-                self._resolve_path(tiling.tiles[tile_idx].path) if config['has_per_tile_onnx']
-                else config['tile_onnx_path']
-            )
-            conv_out = (
-                tiling.tiles[tile_idx].conv_out if config['has_per_tile_onnx']
-                else (tiling.tile.conv_out if tiling.tile else (0, 0))
-            )
-
-            tile_args_list.append({
-                'tile_idx': tile_idx,
-                'tile_in': str(tile_in),
-                'tile_out': str(tile_out),
-                'tile_onnx_path': str(this_tile_onnx),
-                'jstprove_circuit_path': meta.jstprove_circuit_path,
-                'ezkl_circuit_path': meta.ezkl_circuit_path,
-                'settings_path': meta.settings_path,
-                'vk_path': meta.vk_path,
-                'jstprove_settings_path': meta.jstprove_settings_path,
-                'ezkl_settings_path': meta.ezkl_settings_path,
-                'ezkl_vk_path': meta.ezkl_vk_path,
-                'ezkl_pk_path': meta.ezkl_pk_path,
-                'slice_specific_dir': str(slice_specific_dir),
-                'slices_path': str(self.slices_path),
-                'has_jst': config['has_jst'],
-                'has_ezkl': config['has_ezkl'],
-                'c_out': tiling.c_out,
-                'conv_out': conv_out,
-            })
-        return tile_args_list
-
-    def prepare_tasks_in_memory(
-        self, num_tiles: int, slice_idx: int, tiling: TilingInfo, meta: RunSliceMetadata,
-        run_dir: Path, config: dict
+        run_dir: Path, config: dict, write_to_disk: bool = True
     ) -> list[dict]:
         tile_args_list = []
         slice_specific_dir = self.slices_path / f"slice_{slice_idx}"
@@ -199,9 +150,8 @@ class TileExecutor:
                 else (tiling.tile.conv_out if tiling.tile else (0, 0))
             )
 
-            tile_args_list.append({
+            task = {
                 'tile_idx': tile_idx,
-                'tile_tensor': tile_tensor,
                 'tile_out': str(tile_out),
                 'tile_onnx_path': str(this_tile_onnx),
                 'jstprove_circuit_path': meta.jstprove_circuit_path,
@@ -218,7 +168,17 @@ class TileExecutor:
                 'has_ezkl': config['has_ezkl'],
                 'c_out': tiling.c_out,
                 'conv_out': conv_out,
-            })
+            }
+
+            if write_to_disk:
+                tile_in = tile_run_dir / "input.json"
+                tile_input_name = tiling.input_name or "tile_in"
+                Utils.write_input(tile_tensor, str(tile_in), tile_input_name)
+                task['tile_in'] = str(tile_in)
+            else:
+                task['tile_tensor'] = tile_tensor
+
+            tile_args_list.append(task)
         return tile_args_list
 
     def process_result(self, result, tiling: TilingInfo, slice_idx: int, tile_idx: int):
@@ -252,19 +212,11 @@ class TileExecutor:
         return tile_exec_infos
 
     def _resolve_path(self, p: str) -> str | None:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.resolve_relative_path(p, self.slices_path)
 
     @staticmethod
     def _extract_output_tensor(result):
-        if result is None:
-            return None
-        if isinstance(result, dict):
-            for key in ['output', 'logits', 'output_tensor']:
-                if key in result and result[key] is not None:
-                    return result[key]
-            return None
-        return result
+        return RunnerUtils.extract_output_tensor(result)
 
     @staticmethod
     def execute_worker(args: dict) -> dict:

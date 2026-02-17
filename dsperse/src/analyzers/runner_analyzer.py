@@ -5,19 +5,16 @@ with proper fallback mapping and security calculation.
 import logging
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
 from dsperse.src.analyzers.schema import SliceMetadata, RunSliceMetadata, Compilation, Dependencies, TilingInfo, Backend, ExecutionNode, ExecutionChain, RunMetadata
 from dsperse.src.utils.utils import Utils
-from dsperse.src.slice.utils.converter import Converter
 
 logger = logging.getLogger(__name__)
 
 class RunnerAnalyzer:
-    def __init__(self):
-        """Stateless analyzer. Use static methods."""
-        pass
 
     # ---------- Small path helpers ----------
     @staticmethod
@@ -116,7 +113,7 @@ class RunnerAnalyzer:
             path=onnx_path or "",
             input_shape=meta.input_shape,
             output_shape=meta.output_shape,
-            ezkl=bool(compiled_flag),
+            ezkl=compiled_flag,
             backend=backend,
             dependencies=meta.dependencies,
             circuit_path=normalize(compiled_rel),
@@ -228,8 +225,8 @@ class RunnerAnalyzer:
             backend = meta.backend or Backend.ONNX
             jst_circuit = meta.jstprove_circuit_path
             ezkl_circuit = meta.ezkl_circuit_path
-            has_jst = bool(jst_circuit)
-            has_ezkl = bool(ezkl_circuit) and (bool(meta.ezkl_vk_path) or bool(meta.vk_path))
+            has_jst = jst_circuit is not None
+            has_ezkl = ezkl_circuit is not None and (meta.ezkl_vk_path or meta.vk_path)
             use_circuit = has_jst or has_ezkl
 
             next_slice = ordered_keys[i + 1] if i < len(ordered_keys) - 1 else None
@@ -285,83 +282,6 @@ class RunnerAnalyzer:
         total_slices = len(slices)
         circuit_slices = sum(1 for slice_data in slices.values() if slice_data.ezkl)
         return round((circuit_slices / total_slices) * 100, 1)
-
-    @staticmethod
-    def _normalize_to_dirs(slice_path: str):
-        """Normalize input to (model_root, slices_dir, original_format).
-        Handles:
-        - slices dir containing slice_* dirs
-        - slices dir containing .dslice files + metadata.json (no conversion)
-        - single slice directory (payload + metadata.json)
-        - model root containing 'slices/'
-        - single .dslice file or .dsperse archive (convert to dirs temporarily)
-        """
-        path_obj = Path(slice_path)
-        original_format = 'dirs'
-
-        # Directory-first handling for readability
-        if path_obj.is_dir():
-            # Case: model root with 'slices/metadata.json'
-            if (path_obj / 'slices' / 'metadata.json').exists():
-                sdir = (path_obj / 'slices').resolve()
-                # Mixed layout allowed: .dslice files under slices/
-                return sdir, 'dirs'
-
-            # Case: provided a slices directory directly
-            if (path_obj / 'metadata.json').exists():
-                # If this directory has .dslice files at root, do NOT convert. Treat as slices dir.
-                try:
-                    has_dslice_files = any(f.is_file() and f.suffix == '.dslice' for f in path_obj.iterdir())
-                except Exception:
-                    has_dslice_files = False
-                if has_dslice_files:
-                    return path_obj.resolve(), 'dirs'
-
-            # If it contains slice_* directories, treat as slices dir
-            try:
-                if any(d.is_dir() and d.name.startswith('slice_') for d in path_obj.iterdir()):
-                    return path_obj.resolve(), 'dirs'
-            except Exception:
-                pass
-
-            # If it is a single slice directory (has metadata.json + payload)
-            if (path_obj / 'metadata.json').exists() and (path_obj / 'payload').exists():
-                return path_obj.resolve(), 'dirs'
-
-        # File-based handling (or unknown dir): detect and convert when needed
-        detected = None
-        try:
-            detected = Converter.detect_type(path_obj)
-        except Exception:
-            detected = None
-
-        # Only convert when the source itself is a file, or an explicit compressed type
-        if path_obj.is_file() and detected in ['dslice', 'dsperse']:
-            original_format = detected
-            logger.info(f"Converting {path_obj} to directory format")
-            converted = Converter.convert(str(path_obj), output_type="dirs", cleanup=False)
-            sdir = Path(converted)
-            return sdir.resolve(), original_format
-
-        # Directory recognized by Converter as 'dirs' (slice dir or slices folder)
-        if detected == 'dirs':
-            sdir = path_obj
-            # If this looks like a slices folder (has metadata.json), parent is model root
-            model_root = sdir.parent if (sdir / 'metadata.json').exists() else sdir.parent
-            return sdir.resolve(), 'dirs'
-
-        # Fallbacks
-        if path_obj.is_dir() and (path_obj / 'slices').is_dir():
-            sdir = (path_obj / 'slices').resolve()
-            return sdir, 'dirs'
-
-        if path_obj.is_dir() and detected == 'dslice':
-            # a folder of dslice files, for each dslice, convert to dirs
-            converted = Converter.convert(str(path_obj), output_type="dirs", cleanup=False)
-            sdir = Path(converted)
-            return sdir.resolve(), 'dslice'
-
-        return (path_obj.parent / 'slices').resolve(), 'dirs'
 
     @staticmethod
     def _has_model_metadata(path: Path) -> bool:
@@ -468,7 +388,6 @@ class RunnerAnalyzer:
     @staticmethod
     def initialize_run_metadata(slices_path: Path, run_dir: Path = None, output_path: str = None, format: str = "dirs") -> tuple[Path, bool, RunMetadata]:
         """Set up the run directory and prepare the run metadata, handling resumes if applicable."""
-        import time
         from dsperse.src.run.utils.runner_utils import RunnerUtils
 
         # 1. Determine base run directory logic

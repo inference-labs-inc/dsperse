@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -34,8 +35,6 @@ class Utils:
         if not tiling_info or not root_dir:
             return tiling_info
 
-        # Work on a copy to avoid side effects
-        import copy
         tiling = copy.deepcopy(tiling_info)
         root = Path(root_dir).resolve()
 

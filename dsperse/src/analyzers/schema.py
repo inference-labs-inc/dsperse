@@ -5,6 +5,8 @@ This module defines strongly-typed dataclasses for all metadata structures,
 enforcing consistent access patterns across the codebase.
 """
 
+import json
+
 from dataclasses import dataclass, field, asdict
 from enum import StrEnum
 from typing import Optional
@@ -494,13 +496,11 @@ class ModelMetadata:
     @classmethod
     def load(cls, path: str | Path) -> "ModelMetadata":
         """Load metadata from JSON file."""
-        import json
         with open(path, "r") as f:
             return cls.from_dict(json.load(f))
 
     def save(self, path: str | Path) -> None:
         """Save metadata to JSON file."""
-        import json
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)

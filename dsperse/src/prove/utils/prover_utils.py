@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -86,7 +87,6 @@ class ProverUtils:
         settings_path: str | None,
         output_path: str | Path | None = None,
     ) -> dict:
-        import time
         tile_name = f"tile_{tile_idx}"
 
         if (run_path / slice_id / tile_name).exists():
@@ -172,7 +172,6 @@ class ProverUtils:
         run_path: str,
         tiles_range: Optional[Union[range, list[int]]] = None
     ) -> dict:
-        import time
         result = SliceResult(
             slice_id=slice_id,
             success=False,

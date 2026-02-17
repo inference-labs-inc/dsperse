@@ -5,6 +5,7 @@ Contains common utilities and classes used by all CLI commands.
 
 import argparse
 import glob as _glob
+import json
 from pathlib import Path
 try:
     import readline
@@ -222,7 +223,6 @@ def detect_model_type(model_path):
     Returns:
         tuple: (is_onnx, error_message) where is_onnx is a boolean and error_message is a string or None
     """
-    import os
     is_onnx = False
     error_message = None
 
@@ -262,9 +262,6 @@ def save_result(result, output_file):
         result: The result to save
         output_file (str): Path to the output file
     """
-    import json
-    from pathlib import Path
-
     def _default(o):
         # Safely convert non-serializable objects
         if isinstance(o, Path):
@@ -337,7 +334,6 @@ def prompt_for_value(param_name, prompt_message, default=None, required=True):
         cancel_msg = "Operation cancelled by user."
         print(f"\n{Fore.YELLOW}{cancel_msg}{Style.RESET_ALL}")
         logger.info(cancel_msg)
-        import sys
         sys.exit(1)
     except Exception as e:
         error_msg = f"Error getting input: {e}"

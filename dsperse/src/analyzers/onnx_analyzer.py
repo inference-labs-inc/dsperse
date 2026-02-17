@@ -383,6 +383,8 @@ class OnnxAnalyzer:
 
     @staticmethod
     def _get_segment_shape(slice_path) -> TensorShape:
+        if not slice_path:
+            logger.debug("No slice_path provided; returning empty TensorShape")
         return OnnxAnalyzer._get_tensor_shape(slice_path)
 
     @staticmethod

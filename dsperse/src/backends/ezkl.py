@@ -234,7 +234,7 @@ class EZKL:
                 text=True,
             )
         except Exception as e:
-            logger.error(f"Failed to invoke ezkl calibrate-settings: {e}")
+            logger.exception("Failed to invoke ezkl calibrate-settings")
             return False, str(e)
 
         if process.returncode != 0:

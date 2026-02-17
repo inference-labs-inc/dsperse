@@ -448,8 +448,10 @@ class TestCompileE2E:
             # Path should be relative to top-level slices_dir
             assert (slices_dir / files["compiled"]).exists()
 
-    def test_compile_parallel(self, doom_sliced_for_compile, slices_output_dir, copy_to):
+    def test_compile_parallel(self, doom_sliced_for_compile, slices_output_dir, copy_to, jstprove_available, ezkl_available):
         """Verify that parallel compilation works without errors."""
+        if not jstprove_available and not ezkl_available:
+            pytest.skip("No backends available for parallel compilation test")
         copy_to(doom_sliced_for_compile, slices_output_dir)
 
         compile_model(SimpleNamespace(

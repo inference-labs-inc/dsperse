@@ -20,7 +20,7 @@ class Verifier(PipelineStage):
     def verify(self, run_path, model_path, backend=None, tiles_range=None):
         return self._dispatch(run_path, model_path, backend=backend, tiles_range=tiles_range)
 
-    def _execute_dirs(self, run_path, dirs_path, output_path, backend):
+    def _execute_dirs(self, run_path, dirs_path, _output_path, backend):
         run_path, dirs_path = Path(run_path), Utils.dirs_root_from(Path(dirs_path))
         metadata = initialize_stage_metadata(run_path, dirs_path)
         run_results = Utils.load_run_results(run_path)

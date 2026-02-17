@@ -24,8 +24,42 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Preflight Pages enabled (or token provided)
+        env:
+          GH_TOKEN_FOR_PAGES: ${{ secrets.PAGES_ENABLE_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          code="$(curl -sS -o /tmp/pages.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/pages" || true)"
+
+          if [[ "${code}" == "200" ]]; then
+            echo "Pages already enabled."
+            exit 0
+          fi
+
+          if [[ "${code}" == "404" && -z "${GH_TOKEN_FOR_PAGES}" ]]; then
+            echo "GitHub Pages is not enabled for ${REPO} and no PAGES_ENABLE_TOKEN secret is set."
+            echo "Enable Pages in repo settings: Settings -> Pages -> Build and deployment -> Source: GitHub Actions"
+            exit 1
+          fi
+
+          if [[ -n "${GH_TOKEN_FOR_PAGES}" ]]; then
+            echo "Pages not enabled yet; will attempt enablement using PAGES_ENABLE_TOKEN."
+            exit 0
+          fi
+
+          echo "Unexpected Pages API status: ${code}"
+          cat /tmp/pages.json || true
+          exit 1
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          token: ${{ secrets.PAGES_ENABLE_TOKEN || github.token }}
+          enablement: ${{ secrets.PAGES_ENABLE_TOKEN && 'true' || 'false' }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

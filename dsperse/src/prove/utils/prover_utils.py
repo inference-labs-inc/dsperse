@@ -159,7 +159,7 @@ class ProverUtils:
 
     @staticmethod
     def prove_slice_logic(args: tuple) -> dict:
-        (slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling_info, run_path, slice_dir) = args
+        (slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling_info, run_path) = args
         return ProverUtils.execute_slice_proving(
             slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path, tiling_info, run_path
         )

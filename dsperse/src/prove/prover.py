@@ -108,7 +108,7 @@ class Prover(PipelineStage):
 
             work_items.append((
                 slice_id, preferred, witness_path, circuit_path, proof_path, pk_path, settings_path,
-                tiling.to_dict() if tiling else None, str(run_path), str(slice_dir)
+                tiling.to_dict() if tiling else None, str(run_path)
             ))
         return work_items
 

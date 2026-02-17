@@ -53,7 +53,7 @@ class OnnxAnalyzer:
         # Process each node to collect metadata
         for i, node in enumerate(graph.node):
             # Analyze the node and store metadata
-            node_info = self.analyze_node(node, i, initializer_map)
+            node_info = OnnxAnalyzer.analyze_node(node, i, initializer_map)
             # Use index-based key to handle empty node names
             node_key = node.name if node.name else f"{node.op_type}_{i}"
             node_metadata[node_key] = node_info
@@ -106,7 +106,8 @@ class OnnxAnalyzer:
 
         return model_metadata
 
-    def analyze_node(self, node, index, initializer_map):
+    @staticmethod
+    def analyze_node(node, index, initializer_map):
         """
         Analyze a single node from the ONNX graph and gather metadata.
 
@@ -121,7 +122,7 @@ class OnnxAnalyzer:
         node_inputs = list(node.input)
         node_outputs = list(node.output)
 
-        _, parameter_details = self._get_parameter_info(node, node_inputs, initializer_map)
+        _, parameter_details = OnnxAnalyzer._get_parameter_info(node, node_inputs, initializer_map)
 
         node_type = node.op_type
 
@@ -282,7 +283,8 @@ class OnnxAnalyzer:
 
         return model_overview
 
-    def _get_model_metadata(self, model_metadata, slice_points):
+    @staticmethod
+    def _get_model_metadata(model_metadata, slice_points):
         """
         Get model-level metadata.
 

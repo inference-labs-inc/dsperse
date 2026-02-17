@@ -1,0 +1,4 @@
+[submodule "openclaw_demo/picoclaw"]
+	path = openclaw_demo/picoclaw
+	url = https://github.com/shirin-shahabi/TestVerifiedpicoclaw.git
+	branch = verification

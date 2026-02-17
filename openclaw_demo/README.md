@@ -60,11 +60,19 @@ OpenRouter's OpenClaw integration guide:
 
 ## PicoClaw (mock-only) verification path
 
-If you want a mock-only demo with Grafana table panels and zero external API calls, use the `verification` branch in:
+This repo includes a PicoClaw mock-only demo as a git submodule at `openclaw_demo/picoclaw` (pinned to the `verification` branch commit).
+
+If you cloned without submodules, initialize it:
+
+```bash
+git submodule update --init --recursive
+```
+
+Source repo:
 
 - https://github.com/shirin-shahabi/TestVerifiedpicoclaw
 
-That demo includes:
+That submodule demo includes:
 
 - a mock OpenRouter backend
 - Loki/Promtail JSONL log shipping

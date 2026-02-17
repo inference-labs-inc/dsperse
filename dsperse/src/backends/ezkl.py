@@ -1,10 +1,10 @@
 import json
-import os
-import subprocess
-import torch
 import logging
-import traceback
+import os
 import shutil
+import subprocess
+
+import torch
 from pathlib import Path
 from typing import Optional, Dict, Any, Union, Tuple, List
 from dsperse.src.run.utils.runner_utils import RunnerUtils
@@ -196,8 +196,7 @@ class EZKL:
             )
             return True, None
         except subprocess.CalledProcessError as e:
-            if getattr(e, "stderr", None):
-                logger.error(e.stderr)
+            logger.exception(f"Settings generation failed for {model_path}")
             return False, getattr(e, "stderr", str(e))
 
     def calibrate_settings(
@@ -235,7 +234,7 @@ class EZKL:
                 text=True,
             )
         except Exception as e:
-            logging.getLogger(__name__).error(f"Failed to invoke ezkl calibrate-settings: {e}")
+            logger.error(f"Failed to invoke ezkl calibrate-settings: {e}")
             return False, str(e)
 
         if process.returncode != 0:
@@ -244,7 +243,7 @@ class EZKL:
             combined = stderr if stderr else stdout
             if stderr and stdout:
                 combined = f"{stderr}\n{stdout}"
-            logging.getLogger(__name__).error(f"EZKL calibrate-settings failed:\n{combined}")
+            logger.error(f"EZKL calibrate-settings failed:\n{combined}")
             return False, combined or "calibrate-settings failed"
 
         return True, None
@@ -279,8 +278,7 @@ class EZKL:
             )
             return True, None
         except subprocess.CalledProcessError as e:
-            if getattr(e, "stderr", None):
-                logger.error(e.stderr)
+            logger.exception(f"Circuit compilation failed for {model_path}")
             return False, getattr(e, "stderr", str(e))
 
     def setup(self, compiled_path: str, vk_path: str, pk_path: str, settings_path: str = None):
@@ -319,8 +317,7 @@ class EZKL:
             )
             return True, None
         except subprocess.CalledProcessError as e:
-            if getattr(e, "stderr", None):
-                logger.error(e.stderr)
+            logger.exception(f"Setup (key generation) failed for {compiled_path}")
             return False, getattr(e, "stderr", str(e))
         except RuntimeError as e:
             # SRS error detected and bubbled up
@@ -390,9 +387,8 @@ class EZKL:
 
             logger.info(f"Circuitization pipeline completed for {model_path}")
         except Exception as e:
-            traceback.print_exc()
             error_msg = f"Error during circuitization: {str(e)}"
-            logger.error(error_msg)
+            logger.exception(error_msg)
             compilation_data["error"] = error_msg
 
         return compilation_data

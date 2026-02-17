@@ -212,7 +212,6 @@ class TileExecutor:
         return tile_exec_infos
 
     def _resolve_path(self, p: str) -> str | None:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.resolve_relative_path(p, self.slices_path)
 
     @staticmethod

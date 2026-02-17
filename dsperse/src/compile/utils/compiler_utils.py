@@ -74,7 +74,8 @@ class CompilerUtils:
         layer_indices = []
         parts = [p.strip() for p in layers_str.split(',')]
         for part in parts:
-            if not part: continue
+            if not part:
+                continue
             if '-' in part:
                 try:
                     start, end = map(int, part.split('-'))
@@ -282,11 +283,13 @@ class CompilerUtils:
         """Logs a summary of the compilation results."""
         summary = {}
         for backends in stats.values():
-            for be in backends: summary[be] = summary.get(be, 0) + 1
-        
+            for be in backends:
+                summary[be] = summary.get(be, 0) + 1
+
         summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
         msg = f"Compilation completed. ZK compiled: {compiled} slices ({summary_str})."
-        if skipped > 0: msg += f" Skipped: {skipped} slices (pure ONNX)."
+        if skipped > 0:
+            msg += f" Skipped: {skipped} slices (pure ONNX)."
         logger.info(msg)
 
     @staticmethod
@@ -412,7 +415,8 @@ class CompilerUtils:
         all_parts = []
         for p in parts:
             p = p.strip()
-            if not p: continue
+            if not p:
+                continue
             # Split by whitespace that is followed by digits and optional range/list then colon
             # Use negative lookbehind to avoid splitting on spaces after commas (e.g., "0, 2:jstprove")
             subparts = re.split(r'(?<!,)\s+(?=\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*:)', p)
@@ -420,7 +424,8 @@ class CompilerUtils:
 
         for part in all_parts:
             part = part.strip()
-            if not part: continue
+            if not part:
+                continue
             if ':' not in part:
                 idxs = CompilerUtils.parse_layers(part)
                 if idxs: default_layer_indices.update(idxs)
@@ -682,7 +687,8 @@ class CompilerUtils:
 
         # --- Update compilation blocks ---
         comp_blocks = result.get('compilation_blocks', {})
-        if 'compilation' not in slice_data: slice_data['compilation'] = {}
+        if 'compilation' not in slice_data:
+            slice_data['compilation'] = {}
         for be, block in comp_blocks.items():
             slice_data['compilation'][be] = block
             if slice_meta_path.exists():

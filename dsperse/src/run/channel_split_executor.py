@@ -120,11 +120,9 @@ class ChannelSplitExecutor:
         return summed
 
     def _resolve_path(self, p: str) -> str | None:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.resolve_relative_path(p, self.slices_path)
 
     def _flatten_input_for_ezkl(self, in_file: Path) -> Path:
-        from dsperse.src.run.utils.runner_utils import RunnerUtils
         return RunnerUtils.flatten_input_for_ezkl(in_file)
 
     @staticmethod

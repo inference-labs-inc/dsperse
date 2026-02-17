@@ -50,7 +50,12 @@ class ProverUtils:
         pk_path: str | None,
         settings_path: str | None,
     ) -> tuple[bool, str, str | Path | None]:
-        method = ExecutionMethod.JSTPROVE_PROVE if backend_name == Backend.JSTPROVE else ExecutionMethod.EZKL_PROVE
+        if backend_name == Backend.JSTPROVE:
+            method = ExecutionMethod.JSTPROVE_PROVE
+        elif backend_name == Backend.EZKL:
+            method = ExecutionMethod.EZKL_PROVE
+        else:
+            return False, "unknown", f"Unknown backend: {backend_name}"
 
         if backend_name == Backend.EZKL and (not pk_path or not os.path.exists(pk_path)):
             return False, method, f"Proving key not found at {pk_path}"

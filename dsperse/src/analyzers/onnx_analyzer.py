@@ -326,7 +326,7 @@ class OnnxAnalyzer:
             return None
 
         dependencies = self._get_segment_dependencies(model_metadata, start_idx, end_idx)
-        shape = self._get_segment_shape(end_idx, model_metadata, start_idx, slice_path)
+        shape = self._get_segment_shape(slice_path)
 
         output_dir = os.path.join(output_dir, f"slice_{segment_idx}") if output_dir else os.path.join(os.path.dirname(self.onnx_path), "slices", f"slice_{segment_idx}")
         payload_dir = os.path.join(output_dir, "payload")
@@ -382,7 +382,7 @@ class OnnxAnalyzer:
         return Dependencies(input=inputs, output=outputs, filtered_inputs=filtered)
 
     @staticmethod
-    def _get_segment_shape(end_idx, model_metadata, start_idx, slice_path) -> TensorShape:
+    def _get_segment_shape(slice_path) -> TensorShape:
         return OnnxAnalyzer._get_tensor_shape(slice_path)
 
     @staticmethod

@@ -11,7 +11,7 @@ from dsperse.src.cli.compile import compile_model
 
 class TestCompileE2E:
     def test_compile_default(self, doom_sliced_for_compile, slices_output_dir: Path, jstprove_available,
-                             ezkl_available, copy_to, capfd):
+                             ezkl_available, copy_to):
         """
         Happy-path compile flow (default settings):
         - Compile with defaults (fallback jstprove -> ezkl -> onnx)
@@ -336,7 +336,7 @@ class TestCompileE2E:
                 shutil.rmtree(temp_extract)
 
     def test_compile_with_tiling(self, doom_tiled_for_compile, slices_output_dir: Path, jstprove_available,
-                                 copy_to, capfd):
+                                 copy_to):
         """Verify that compilation correctly handles tiled slices."""
         if not jstprove_available:
             pytest.skip("JSTprove unavailable")
@@ -448,16 +448,13 @@ class TestCompileE2E:
             # Path should be relative to top-level slices_dir
             assert (slices_dir / files["compiled"]).exists()
 
-    def test_compile_parallel(self, doom_sliced_for_compile, slices_output_dir, copy_to, jstprove_available, capfd):
+    def test_compile_parallel(self, doom_sliced_for_compile, slices_output_dir, copy_to):
         """Verify that parallel compilation works without errors."""
         copy_to(doom_sliced_for_compile, slices_output_dir)
 
-        # Compile with 2 parallel processes
         compile_model(SimpleNamespace(
             path=str(slices_output_dir), input_file=None, layers=None, backend=None, parallel=2
         ))
-        
-        capfd.readouterr()
 
     def test_compile_resume(self, doom_sliced_for_compile, slices_output_dir, copy_to, jstprove_available, capfd):
         """Verify that resume mode skips already compiled slices."""

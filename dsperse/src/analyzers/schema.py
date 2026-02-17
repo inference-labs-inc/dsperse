@@ -136,7 +136,9 @@ class ChannelGroupInfo:
         """Apply fn to path and all optional path fields in-place."""
         self.path = fn(self.path)
         for attr in self._PATH_FIELDS:
-            setattr(self, attr, fn(getattr(self, attr)))
+            val = getattr(self, attr)
+            if val is not None:
+                setattr(self, attr, fn(val))
 
     def to_dict(self) -> dict:
         d = {"group_idx": self.group_idx, "c_start": self.c_start, "c_end": self.c_end, "path": self.path}

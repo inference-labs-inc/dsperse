@@ -25,7 +25,8 @@ def _backend_from_entry(entry) -> str | None:
 def _load_exec_chain(run_path: Path) -> ExecutionChain | None:
     try:
         rr = Utils.load_run_results(run_path)
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Could not load execution chain from {run_path}: {e}")
         return None
     if not rr:
         return None

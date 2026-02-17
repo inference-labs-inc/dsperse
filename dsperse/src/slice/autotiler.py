@@ -23,9 +23,9 @@ import onnx
 from onnx import helper, TensorProto, numpy_helper
 
 from dsperse.src.analyzers.schema import TilingInfo, TileInfo, ChannelSplitInfo, ChannelGroupInfo
+from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
-from dsperse.src.utils.utils import Utils
 
 ELEMENTWISE_OPS = {
     'Sigmoid', 'Mul', 'Add', 'Sub', 'Div', 'Relu', 'LeakyRelu', 'PRelu',

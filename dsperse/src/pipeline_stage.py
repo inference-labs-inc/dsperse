@@ -1,9 +1,9 @@
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from dsperse.src.analyzers.schema import Backend
-from dsperse.src.backends.ezkl import EZKL
-from dsperse.src.backends.jstprove import JSTprove
+from dsperse.src.backends.dispatch import instantiate_backend
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
@@ -15,12 +15,12 @@ class PipelineStage:
     def __init__(self, parallel: int = 1):
         self.parallel = max(1, parallel)
         try:
-            self.ezkl_runner = EZKL()
-        except RuntimeError:
+            self.ezkl_runner = instantiate_backend(Backend.EZKL)
+        except Exception:
             self.ezkl_runner = None
             logger.warning("EZKL CLI not available. EZKL backend will be disabled.")
         try:
-            self.jstprove_runner = JSTprove()
+            self.jstprove_runner = instantiate_backend(Backend.JSTPROVE)
         except Exception:
             self.jstprove_runner = None
             logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
@@ -55,9 +55,11 @@ class PipelineStage:
         dirs_model_path = model_dir
         if detected != "dirs":
             dirs_model_path = Converter.convert(str(model_dir), output_type="dirs", cleanup=False)
-        result = self._execute_single_slice(run_path, dirs_model_path, backend, tiles_range)
-        if detected != "dirs":
-            Converter.convert(str(Utils.dirs_root_from(Path(dirs_model_path))), output_type=detected, cleanup=True)
+        try:
+            result = self._execute_single_slice(run_path, dirs_model_path, backend, tiles_range)
+        finally:
+            if detected != "dirs":
+                Converter.convert(str(Utils.dirs_root_from(Path(dirs_model_path))), output_type=detected, cleanup=True)
         return result
 
     def _execute_packaged(self, run_path: str | Path, pkg_path: str | Path, pkg_type: str,
@@ -69,6 +71,31 @@ class PipelineStage:
         finally:
             Converter.convert(str(dirs_root), output_type=pkg_type, cleanup=True)
         return summary
+
+    def _run_work_items(self, work_items: list, worker_func, label: str, error_result_func) -> list:
+        if self.parallel > 1 and len(work_items) > 1:
+            logger.info(f"{label} {len(work_items)} slices with {self.parallel} parallel processes...")
+            results = []
+            with ProcessPoolExecutor(max_workers=self.parallel) as executor:
+                futures = {executor.submit(worker_func, item): item[0] for item in work_items}
+                for future in as_completed(futures):
+                    slice_id = futures[future]
+                    try:
+                        results.append(future.result())
+                    except Exception as e:
+                        logger.exception(f"Slice {slice_id} {label.lower()} failed: {e}")
+                        results.append(error_result_func(slice_id, e))
+            return results
+
+        results = []
+        for item in work_items:
+            slice_id = item[0]
+            try:
+                results.append(worker_func(item))
+            except Exception as e:
+                logger.exception(f"Slice {slice_id} {label.lower()} failed: {e}")
+                results.append(error_result_func(slice_id, e))
+        return results
 
     def _execute_dirs(self, run_path, dirs_path, output_path, backend) -> dict:
         raise NotImplementedError

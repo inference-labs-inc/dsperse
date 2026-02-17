@@ -3,7 +3,6 @@ Orchestration for verifying proofs.
 """
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from dsperse.src.analyzers.schema import TileResult, SliceResult, Backend, ExecutionMethod
@@ -137,21 +136,12 @@ class Verifier(PipelineStage):
         return work_items
 
     def _execute_verification(self, work_items):
-        if self.parallel > 1 and len(work_items) > 1:
-            logger.info(f"Verifying {len(work_items)} slices with {self.parallel} parallel processes...")
-            results = []
-            with ProcessPoolExecutor(max_workers=self.parallel) as executor:
-                futures = {executor.submit(VerifierUtils.verify_slice_logic, item): item[0] for item in work_items}
-                for future in as_completed(futures):
-                    slice_id = futures[future]
-                    try:
-                        results.append(future.result())
-                    except Exception as e:
-                        logger.exception(f"Slice {slice_id} verification failed: {e}")
-                        results.append(SliceResult(slice_id=slice_id, success=False, error=str(e)).to_dict())
-            return results
-        else:
-            return [VerifierUtils.verify_slice_logic(item) for item in work_items]
+        return self._run_work_items(
+            work_items,
+            VerifierUtils.verify_slice_logic,
+            "Verifying",
+            lambda sid, e: SliceResult(slice_id=sid, success=False, error=str(e)).to_dict(),
+        )
 
     @staticmethod
     def _process_results(results):

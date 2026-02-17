@@ -3,7 +3,6 @@ Orchestration for various provers.
 """
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from dsperse.src.analyzers.schema import Backend, ExecutionMethod
@@ -64,6 +63,8 @@ class Prover(PipelineStage):
                 witness_path = Path(wf) if wf else (run_path / WITNESS_FILENAME[Backend.JSTPROVE])
             else:
                 witness_path = run_path / WITNESS_FILENAME[Backend.EZKL]
+            if not witness_path.exists():
+                raise FileNotFoundError(f"Witness not found at {witness_path}")
             proof_path = run_path / "proof.json"
 
         result_dict = ProverUtils.execute_slice_proving(
@@ -112,29 +113,12 @@ class Prover(PipelineStage):
         return work_items
 
     def _execute_proving(self, work_items):
-        if self.parallel > 1 and len(work_items) > 1:
-            logger.info(f"Proving {len(work_items)} slices with {self.parallel} parallel processes...")
-            results = []
-            with ProcessPoolExecutor(max_workers=self.parallel) as executor:
-                futures = {executor.submit(ProverUtils.prove_slice_logic, item): item[0] for item in work_items}
-                for future in as_completed(futures):
-                    slice_id = futures[future]
-                    try:
-                        results.append(future.result())
-                    except Exception as e:
-                        logger.error(f"Slice {slice_id} proving failed: {e}")
-                        results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
-            return results
-        else:
-            results = []
-            for item in work_items:
-                slice_id = item[0]
-                try:
-                    results.append(ProverUtils.prove_slice_logic(item))
-                except Exception as e:
-                    logger.error(f"Slice {slice_id} proving failed: {e}")
-                    results.append({'slice_id': slice_id, 'success': False, 'method': None, 'error': str(e)})
-            return results
+        return self._run_work_items(
+            work_items,
+            ProverUtils.prove_slice_logic,
+            "Proving",
+            lambda sid, e: {'slice_id': sid, 'success': False, 'method': None, 'error': str(e)},
+        )
 
     @staticmethod
     def _process_results(results):

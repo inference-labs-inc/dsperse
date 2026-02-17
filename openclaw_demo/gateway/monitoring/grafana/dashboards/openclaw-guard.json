@@ -1,0 +1,106 @@
+{
+  "title": "OpenClaw Guard Observability",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "table",
+      "title": "Recent Requests (Table)",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": "Loki",
+      "targets": [
+        {
+          "expr": "{job=\"guard_gateway\"}",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": {
+            "source": "line",
+            "format": "json",
+            "replace": false
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "labels": true,
+              "line": true
+            },
+            "indexByName": {
+              "timestamp": 0,
+              "request_id": 1,
+              "decision": 2,
+              "detection_type": 3,
+              "proof_verified": 4,
+              "proof_hash_sha256": 5
+            }
+          }
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocked Requests Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "expr": "sum(rate(guard_requests_total{decision=\"block\"}[5m]))",
+          "legendFormat": "blocked/sec"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Allowed Requests Rate",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        {
+          "expr": "sum(rate(guard_requests_total{decision=\"allow\"}[5m]))",
+          "legendFormat": "allowed/sec"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proof Failures",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "expr": "sum(rate(guard_proof_total{status=\"fail\"}[5m]))",
+          "legendFormat": "proof_fail/sec"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Inference Latency P95",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(guard_inference_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95_seconds"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Block Reasons (Rate)",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 26 },
+      "targets": [
+        {
+          "expr": "sum(rate(guard_block_reason_total[5m])) by (reason)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    }
+  ]
+}

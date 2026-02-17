@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Guard Dashboard</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; background: #0b1020; color: #e6e9f2; }
+      header { padding: 16px 18px; border-bottom: 1px solid #1b2446; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      header h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 0.2px; }
+      header .controls { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      input { background: #121a33; color: #e6e9f2; border: 1px solid #27315e; border-radius: 6px; padding: 8px 10px; width: min(520px, 78vw); }
+      button { background: #2a3a7a; color: #e6e9f2; border: 1px solid #2a3a7a; border-radius: 6px; padding: 8px 12px; cursor: pointer; }
+      button:disabled { opacity: 0.6; cursor: not-allowed; }
+      main { padding: 16px 18px; display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+      .card { background: #0f1730; border: 1px solid #1b2446; border-radius: 10px; padding: 12px; }
+      .span-12 { grid-column: span 12; }
+      .span-6 { grid-column: span 6; }
+      .span-4 { grid-column: span 4; }
+      .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; }
+      .kv div { padding: 6px 0; border-bottom: 1px solid #1b2446; }
+      .kv div:nth-last-child(-n + 2) { border-bottom: none; }
+      .muted { color: #a8b1d6; font-size: 12px; }
+      canvas { width: 100%; height: 260px; }
+      .error { color: #ffb4b4; }
+      .events-container { overflow: auto; max-height: 420px; border: 1px solid #1b2446; border-radius: 8px; margin-top: 10px; }
+      table.events { width: 100%; border-collapse: collapse; font-size: 12px; }
+      table.events th { text-align: left; padding: 8px; border-bottom: 1px solid #1b2446; }
+      table.events td { padding: 8px; border-bottom: 1px solid #1b2446; white-space: nowrap; }
+      @media (max-width: 980px) { .span-6 { grid-column: span 12; } .span-4 { grid-column: span 12; } }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>OpenClaw Guard Dashboard</h1>
+      <div class="controls">
+        <label class="muted" for="metricsUrl">Metrics URL</label>
+        <input id="metricsUrl" value="http://localhost:8000/metrics" aria-label="Metrics URL" />
+        <button id="toggle">Start</button>
+      </div>
+      <div class="muted span-12">
+        This page fetches Prometheus exposition text from the Guard Gateway and renders a lightweight dashboard. It is intended for demos (including GitHub Pages).
+      </div>
+    </header>
+
+    <main>
+      <section class="card span-4">
+        <div class="muted">Status</div>
+        <div id="status" class="muted">Idle</div>
+        <div id="statusError" class="muted error"></div>
+      </section>
+
+      <section class="card span-4">
+        <div class="muted">Totals</div>
+        <div class="kv">
+          <div>allowed</div><div id="allowedTotal">-</div>
+          <div>blocked</div><div id="blockedTotal">-</div>
+          <div>proof_ok</div><div id="proofOkTotal">-</div>
+          <div>proof_fail</div><div id="proofFailTotal">-</div>
+        </div>
+      </section>
+
+      <section class="card span-4">
+        <div class="muted">Block Reasons</div>
+        <div class="kv">
+          <div>prompt_injection</div><div id="blockPiTotal">-</div>
+          <div>toxicity</div><div id="blockToxTotal">-</div>
+        </div>
+      </section>
+
+      <section class="card span-6">
+        <div class="muted">Requests over time</div>
+        <canvas id="reqChart"></canvas>
+      </section>
+
+      <section class="card span-6">
+        <div class="muted">Block reasons over time</div>
+        <canvas id="reasonChart"></canvas>
+      </section>
+
+      <section class="card span-12">
+        <div class="muted">Recent Requests (Table)</div>
+        <div class="muted">Source: <code>/events</code> endpoint (last 200)</div>
+        <div class="events-container">
+          <table id="eventsTable" class="events">
+            <thead>
+              <tr>
+                <th>timestamp</th>
+                <th>request_id</th>
+                <th>decision</th>
+                <th>block_reason</th>
+                <th>proof_verified</th>
+                <th>proof_hash_sha256</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const MAX_POINTS = 120;
+      let timer = null;
+
+      const statusEl = document.getElementById("status");
+      const statusErrorEl = document.getElementById("statusError");
+
+      const allowedTotalEl = document.getElementById("allowedTotal");
+      const blockedTotalEl = document.getElementById("blockedTotal");
+      const proofOkTotalEl = document.getElementById("proofOkTotal");
+      const proofFailTotalEl = document.getElementById("proofFailTotal");
+      const blockPiTotalEl = document.getElementById("blockPiTotal");
+      const blockToxTotalEl = document.getElementById("blockToxTotal");
+
+      function parseLabels(labelText) {
+        const out = {};
+        if (!labelText) return out;
+        const parts = labelText.split(",");
+        for (const part of parts) {
+          const idx = part.indexOf("=");
+          if (idx === -1) continue;
+          const k = part.slice(0, idx).trim();
+          const v = part.slice(idx + 1).trim().replace(/^"|"$/g, "");
+          out[k] = v;
+        }
+        return out;
+      }
+
+      function parsePrometheusText(text) {
+        const metrics = [];
+        const lines = text.split("\n");
+        for (const line of lines) {
+          if (!line || line.startsWith("#")) continue;
+          const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{([^}]*)\})?\s+(-?\d+(\.\d+)?([eE][+-]?\d+)?)$/);
+          if (!m) continue;
+          const name = m[1];
+          const labels = parseLabels(m[3] || "");
+          const value = Number(m[4]);
+          metrics.push({ name, labels, value });
+        }
+        return metrics;
+      }
+
+      function getCounter(metrics, name, labelK, labelV) {
+        for (const item of metrics) {
+          if (item.name !== name) continue;
+          if (labelK && item.labels[labelK] !== labelV) continue;
+          return item.value;
+        }
+        return 0;
+      }
+
+      function nowLabel() {
+        const d = new Date();
+        return d.toLocaleTimeString();
+      }
+
+      const reqCtx = document.getElementById("reqChart");
+      const reasonCtx = document.getElementById("reasonChart");
+
+      const reqChart = new Chart(reqCtx, {
+        type: "line",
+        data: { labels: [], datasets: [
+          { label: "allowed", data: [], borderColor: "#4ade80", tension: 0.25 },
+          { label: "blocked", data: [], borderColor: "#fb7185", tension: 0.25 },
+        ]},
+        options: { responsive: true, animation: false, plugins: { legend: { labels: { color: "#e6e9f2" } } },
+          scales: { x: { ticks: { color: "#a8b1d6" } }, y: { ticks: { color: "#a8b1d6" } } }
+        }
+      });
+
+      const reasonChart = new Chart(reasonCtx, {
+        type: "line",
+        data: { labels: [], datasets: [
+          { label: "prompt_injection", data: [], borderColor: "#fbbf24", tension: 0.25 },
+          { label: "toxicity", data: [], borderColor: "#60a5fa", tension: 0.25 },
+        ]},
+        options: { responsive: true, animation: false, plugins: { legend: { labels: { color: "#e6e9f2" } } },
+          scales: { x: { ticks: { color: "#a8b1d6" } }, y: { ticks: { color: "#a8b1d6" } } }
+        }
+      });
+
+      async function pollOnce() {
+        const url = document.getElementById("metricsUrl").value.trim();
+        statusEl.textContent = "Fetching " + url;
+        statusErrorEl.textContent = "";
+
+        const resp = await fetch(url, { cache: "no-store" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const text = await resp.text();
+        const metrics = parsePrometheusText(text);
+
+        const allowed = getCounter(metrics, "guard_requests_total", "decision", "allow");
+        const blocked = getCounter(metrics, "guard_requests_total", "decision", "block");
+        const proofOk = getCounter(metrics, "guard_proof_total", "status", "ok");
+        const proofFail = getCounter(metrics, "guard_proof_total", "status", "fail");
+        const blockPi = getCounter(metrics, "guard_block_reason_total", "reason", "prompt_injection");
+        const blockTox = getCounter(metrics, "guard_block_reason_total", "reason", "toxicity");
+
+        allowedTotalEl.textContent = String(allowed);
+        blockedTotalEl.textContent = String(blocked);
+        proofOkTotalEl.textContent = String(proofOk);
+        proofFailTotalEl.textContent = String(proofFail);
+        blockPiTotalEl.textContent = String(blockPi);
+        blockToxTotalEl.textContent = String(blockTox);
+
+        const t = nowLabel();
+        reqChart.data.labels.push(t);
+        reqChart.data.datasets[0].data.push(allowed);
+        reqChart.data.datasets[1].data.push(blocked);
+
+        reasonChart.data.labels.push(t);
+        reasonChart.data.datasets[0].data.push(blockPi);
+        reasonChart.data.datasets[1].data.push(blockTox);
+
+        for (const ch of [reqChart, reasonChart]) {
+          if (ch.data.labels.length > MAX_POINTS) {
+            ch.data.labels.shift();
+            for (const ds of ch.data.datasets) ds.data.shift();
+          }
+          ch.update();
+        }
+
+        statusEl.textContent = "OK (" + t + ")";
+
+        try {
+          const eventsUrl = url.replace(/\/metrics\s*$/i, "/events");
+          const evResp = await fetch(eventsUrl, { cache: "no-store" });
+          if (evResp.ok) {
+            const events = await evResp.json();
+            const tbody = document.querySelector("#eventsTable tbody");
+            tbody.innerHTML = "";
+            const rows = (events || []).slice().reverse();
+            for (const e of rows) {
+              const tr = document.createElement("tr");
+              const cols = ["timestamp","request_id","decision","block_reason","proof_verified","proof_hash_sha256"];
+              for (const c of cols) {
+                const td = document.createElement("td");
+                td.textContent = (e && e[c] !== undefined && e[c] !== null) ? String(e[c]) : "";
+                tr.appendChild(td);
+              }
+              tbody.appendChild(tr);
+            }
+          }
+        } catch (_) {}
+      }
+
+      async function loop() {
+        try {
+          await pollOnce();
+        } catch (e) {
+          statusEl.textContent = "Error";
+          statusErrorEl.textContent = String(e);
+        }
+      }
+
+      function start() {
+        if (timer) return;
+        timer = setInterval(loop, 5000);
+        loop();
+      }
+
+      function stop() {
+        if (!timer) return;
+        clearInterval(timer);
+        timer = null;
+        statusEl.textContent = "Stopped";
+      }
+
+      const toggleBtn = document.getElementById("toggle");
+      toggleBtn.addEventListener("click", () => {
+        if (timer) {
+          stop();
+          toggleBtn.textContent = "Start";
+        } else {
+          start();
+          toggleBtn.textContent = "Stop";
+        }
+      });
+    </script>
+  </body>
+</html>

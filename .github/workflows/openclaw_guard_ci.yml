@@ -1,0 +1,44 @@
+name: OpenClaw Guard Demo CI
+
+on:
+  push:
+    branches: ["openclaw"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  demo-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest onnx pyyaml
+
+      - name: Build demo ONNX model
+        run: |
+          python openclaw_demo/models/build_guard_onnx.py
+
+      - name: Validate syntax
+        run: |
+          python -m py_compile openclaw_demo/gateway/app.py openclaw_demo/gateway/proof_runner.py openclaw_demo/gateway/openrouter_client.py
+
+      - name: Run tests
+        run: |
+          pytest -q openclaw_demo/tests/test_guard_system.py
+
+      - name: Workflow summary
+        if: always()
+        run: |
+          echo "## OpenClaw Guard Demo CI" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Demo: openclaw_demo/" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tests: openclaw_demo/tests/test_guard_system.py" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dashboard: openclaw_demo/gateway/monitoring/grafana/dashboards/openclaw-guard.json" >> "$GITHUB_STEP_SUMMARY"

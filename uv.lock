@@ -67,8 +67,12 @@ dependencies = [
     { name = "numpy" },
     { name = "onnx" },
     { name = "onnxruntime" },
-    { name = "pytest" },
     { name = "torch" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
 ]
 
 [package.metadata]
@@ -79,9 +83,10 @@ requires-dist = [
     { name = "numpy", specifier = "~=2.2.3" },
     { name = "onnx", specifier = "==1.18.0" },
     { name = "onnxruntime", specifier = ">=1.21.0,<2.0.0" },
-    { name = "pytest", specifier = ">=8.4.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.1" },
     { name = "torch", specifier = "==2.6.0" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "ezkl"

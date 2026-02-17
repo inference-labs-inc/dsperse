@@ -9,6 +9,19 @@
 
 DSperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
+## OpenClaw / PicoClaw verification demo (branch: `openclaw`)
+
+This branch includes `openclaw_demo/`, a minimal demo showing:
+
+- guardrail scanning (prompt injection, toxicity, PII anonymization)
+- ONNX inference using a small supported op set
+- DSperse slice/compile/run/prove/verify on the output layer only
+- a dashboard-style request table (events + metrics)
+
+Entry point:
+
+- `openclaw_demo/README.md`
+
 ## Features
 
 - **Model Slicing**: Split neural network models into individual layers or custom segments

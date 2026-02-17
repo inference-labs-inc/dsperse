@@ -363,9 +363,8 @@ def get_latest_run(run_root_dir):
 
 def validate_run_dir(run_dir):
     """Validate that run_dir contains recognized run artifacts. Returns True if valid."""
+    from dsperse.src.pipeline_stage import detect_run_type
     rd = Path(normalize_path(run_dir))
-    is_run_root = (rd / 'metadata.json').exists() or (rd / 'run_results.json').exists()
-    is_slice_run = (rd / 'input.json').exists() and (rd / 'output.json').exists()
-    is_tiled_slice_run = (rd / 'split').exists() or (rd / 'tile_0').exists()
+    is_run_root, is_slice_run = detect_run_type(rd)
     has_slice_dirs = any((rd / f'slice_{i}').exists() for i in range(10))
-    return is_run_root or is_slice_run or is_tiled_slice_run or has_slice_dirs
+    return is_run_root or is_slice_run or has_slice_dirs

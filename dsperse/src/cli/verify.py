@@ -2,17 +2,15 @@
 CLI module for verifying proofs for models.
 """
 
-import logging
 import os
 import time
+import traceback
 
 from colorama import Fore, Style
 
 from dsperse.src.verify.verifier import Verifier
 from dsperse.src.utils.pipeline_utils import parse_tiles_range
 from dsperse.src.cli.base import normalize_path, prompt_for_value, validate_run_dir
-
-logger = logging.getLogger(__name__)
 
 
 def setup_parser(subparsers):
@@ -115,4 +113,4 @@ def verify_proof(args):
 
     except Exception as e:
         print(f"{Fore.RED}Error verifying run: {e}{Style.RESET_ALL}")
-        logger.exception("Verification failed")
+        traceback.print_exc()

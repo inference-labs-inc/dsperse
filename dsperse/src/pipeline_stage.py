@@ -3,37 +3,34 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 from dsperse.src.analyzers.schema import Backend
-from dsperse.src.backends.dispatch import instantiate_backend
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
 
 logger = logging.getLogger(__name__)
 
 
+def detect_run_type(run_path: str | Path) -> tuple[bool, bool]:
+    p = Path(run_path)
+    is_run_root = (p / "metadata.json").exists() or (p / "run_results.json").exists()
+    is_slice_run = ((p / "input.json").exists() and (p / "output.json").exists()) or \
+                   (p / "split").exists() or (p / "tile_0").exists()
+    return is_run_root, is_slice_run
+
+
 class PipelineStage:
 
     def __init__(self, parallel: int = 1):
         self.parallel = max(1, parallel)
-        try:
-            self.ezkl_runner = instantiate_backend(Backend.EZKL)
-        except Exception:
-            self.ezkl_runner = None
-            logger.warning("EZKL CLI not available. EZKL backend will be disabled.")
-        try:
-            self.jstprove_runner = instantiate_backend(Backend.JSTPROVE)
-        except Exception:
-            self.jstprove_runner = None
-            logger.warning("JSTprove CLI not available. JSTprove backend will be disabled.")
 
     def _dispatch(self, run_path: str | Path, model_dir: str | Path,
                   backend: str | None = None, output_path: str | Path | None = None,
                   tiles_range: range | list[int] | None = None) -> dict:
         run_path = Path(run_path)
-        is_run_root = (run_path / "metadata.json").exists() or (run_path / "run_results.json").exists()
-        is_slice_run = ((run_path / "input.json").exists() and (run_path / "output.json").exists()) or \
-                       (run_path / "split").exists() or (run_path / "tile_0").exists()
+        is_run_root, is_slice_run = detect_run_type(run_path)
         detected = Converter.detect_type(model_dir)
 
+        # is_slice_run first: a per-slice dir may also have run_results.json
+        # from a prior prove step, which would incorrectly match is_run_root.
         if is_slice_run:
             return self._handle_single_slice(run_path, model_dir, detected, backend, tiles_range)
         if is_run_root:

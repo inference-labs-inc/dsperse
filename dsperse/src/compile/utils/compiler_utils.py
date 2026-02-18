@@ -17,6 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class CompilationTask:
+    idx: int
+    slice_data: dict
+    base_path: str
+    slice_dir: str
+    backends_to_build: list[str]
+    tiling_info: Optional[dict]
+    channel_split_info: Optional[dict]
+    compilation_slice_data: dict
+    weights_as_inputs: bool = False
+
+
+@dataclass
 class BackendParseResult:
     default_backend: Optional[str]
     use_fallback: bool
@@ -306,7 +319,7 @@ class CompilerUtils:
 
     @staticmethod
     def build_compilation_block(backend: str, version: str, success: bool, file_paths: dict, slice_dir: str,
-                                tiling_info: Optional[dict]) -> dict:
+                                tiling_info: Optional[dict], weights_as_inputs: bool = False) -> dict:
         sdn = os.path.basename(slice_dir)
 
         def _prefix(p):
@@ -322,6 +335,8 @@ class CompilerUtils:
             "backend": backend,
             "backend_version": version,
         }
+        if backend == Backend.JSTPROVE:
+            block["weights_as_inputs"] = weights_as_inputs
 
         if tiling_info:
             num_tiles = tiling_info.get("num_tiles", 1)
@@ -457,7 +472,7 @@ class CompilerUtils:
         return backends
 
     @staticmethod
-    def prepare_compilation_tasks(slices_data: list, base_path: str, layer_indices: list[int] | None, resume: bool, layer_backends: dict, default_layer_indices: set, default_backend: str | None, use_fallback: bool):
+    def prepare_compilation_tasks(slices_data: list, base_path: str, layer_indices: list[int] | None, resume: bool, layer_backends: dict, default_layer_indices: set, default_backend: str | None, use_fallback: bool, weights_as_inputs: bool = False):
         """Determines which slices need compilation and what backends to use."""
         work_items, slice_info_map = [], {}
         stats = {'compiled_count': 0, 'skipped_count': 0, 'backend_stats': {}}
@@ -479,7 +494,12 @@ class CompilerUtils:
 
             backends = CompilerUtils.get_backends_to_build(idx, layer_backends, default_layer_indices, default_backend, use_fallback)
             
-            work_items.append((idx, slice_data, base_path, slice_dir, backends, tiling_info, channel_split_info, comp_slice_data))
+            work_items.append(CompilationTask(
+                idx=idx, slice_data=slice_data, base_path=base_path, slice_dir=slice_dir,
+                backends_to_build=backends, tiling_info=tiling_info,
+                channel_split_info=channel_split_info, compilation_slice_data=comp_slice_data,
+                weights_as_inputs=weights_as_inputs,
+            ))
             slice_info_map[idx] = {
                 'slice_data': slice_data, 'slice_dir': slice_dir, 'tiling_info': tiling_info,
                 'channel_split_info': channel_split_info, 'original_slice_entry': slice_data
@@ -637,7 +657,7 @@ class CompilerUtils:
         return output_dir
 
     @staticmethod
-    def build_channel_split_block(backend: str, num_groups: int, group_results: list, slice_dir: str) -> dict:
+    def build_channel_split_block(backend: str, num_groups: int, group_results: list, slice_dir: str, weights_as_inputs: bool = False) -> dict:
         """Constructs the metadata compilation block for a channel-split slice."""
         sdn = os.path.basename(slice_dir)
         def _prefix(p):
@@ -645,7 +665,7 @@ class CompilerUtils:
                 return os.path.join(sdn, p)
             return p
 
-        return {
+        block = {
             "compiled": True,
             "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "backend": backend,
@@ -656,6 +676,9 @@ class CompilerUtils:
                 for g in group_results if g.get('success')
             }
         }
+        if backend == Backend.JSTPROVE:
+            block["weights_as_inputs"] = weights_as_inputs
+        return block
 
     @staticmethod
     def is_compilation_successful(compilation_data: Dict[str, Any]) -> bool:

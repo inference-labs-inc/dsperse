@@ -471,7 +471,8 @@ class JSTprove:
         self,
         model_path: Union[str, Path],
         circuit_path: Union[str, Path],
-        settings_path: Optional[Union[str, Path]] = None
+        _settings_path: Optional[Union[str, Path]] = None,
+        weights_as_inputs: bool = False
     ) -> Tuple[bool, Optional[str]]:
         model_path = Path(model_path)
         circuit_path = Path(circuit_path)
@@ -489,6 +490,7 @@ class JSTprove:
         try:
             onnx.save(model, preprocessed_path)
             circuit = self._build_circuit(preprocessed_path)
+            circuit.weights_as_inputs = weights_as_inputs
             circuit.base_testing(CircuitExecutionConfig(
                 run_type=RunType.COMPILE_CIRCUIT,
                 circuit_path=str(circuit_path),
@@ -509,7 +511,8 @@ class JSTprove:
         model_path: Union[str, Path],
         output_path: Union[str, Path],
         input_file_path: Optional[Union[str, Path]] = None,
-        segment_details: Optional[Dict[str, Any]] = None
+        _segment_details: Optional[Dict[str, Any]] = None,
+        weights_as_inputs: bool = False
     ) -> Dict[str, Any]:
         """Run the JSTprove circuitization pipeline."""
         # --- Validation & Normalization ---
@@ -527,7 +530,7 @@ class JSTprove:
         # --- Circuit Compilation ---
         try:
             logger.info(f"Compiling circuit for {model_path.stem}")
-            ok, err = self.compile_circuit(model_path=model_path, circuit_path=circuit_path)
+            ok, err = self.compile_circuit(model_path=model_path, circuit_path=circuit_path, weights_as_inputs=weights_as_inputs)
             
             if not ok:
                 logger.warning(f"Failed to compile circuit: {err}")

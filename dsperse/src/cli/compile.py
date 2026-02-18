@@ -71,6 +71,8 @@ def setup_parser(subparsers):
                                 help='Number of parallel processes for compilation (default: 1)')
     compile_parser.add_argument('--resume', '-r', action='store_true', default=False,
                                 help='Resume compilation, skipping slices that already have compiled circuits')
+    compile_parser.add_argument('--weights-as-inputs', '--wai', action='store_true', default=False, dest='weights_as_inputs',
+                                help='Treat model weights as witness inputs instead of compile-time constants (JSTprove only)')
 
     return compile_parser
 
@@ -101,8 +103,9 @@ def compile_model(args):
     print(f"Initializing compiler...")
     try:
         compiler = Compiler(
-            parallel=getattr(args, 'parallel', 1), 
-            resume=getattr(args, 'resume', False)
+            parallel=getattr(args, 'parallel', 1),
+            resume=getattr(args, 'resume', False),
+            weights_as_inputs=getattr(args, 'weights_as_inputs', False)
         )
     except RuntimeError as e:
         print(f"{Fore.RED}Error initializing Compiler: {e}{Style.RESET_ALL}")

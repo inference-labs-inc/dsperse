@@ -40,7 +40,8 @@ def setup_parser(subparsers):
     full_run_parser.add_argument('--slices-dir', '--slices-directory', '--slices-directroy', '--sd', '-s', dest='slices_dir',
                                  help='Optional: Pre-existing slices directory to reuse (skips slicing step)')
     full_run_parser.add_argument('--layers', '-l', help='Optional: Layers to compile (e.g., "3, 20-22") passed through to compile')
-    # Optional: allow non-interactive mode later if desired; kept interactive by default
+    full_run_parser.add_argument('--weights-as-inputs', '--wai', action='store_true', default=False, dest='weights_as_inputs',
+                                 help='Treat model weights as witness inputs instead of compile-time constants (JSTprove only)')
     return full_run_parser
 
 
@@ -158,7 +159,7 @@ def full_run(args):
 
     # 3) Compile (circuitize) with calibration input
     # User requested: compilation should just be jstprove.
-    compile_args = Namespace(path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None), backend='jstprove')
+    compile_args = Namespace(path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None), backend='jstprove', weights_as_inputs=getattr(args, 'weights_as_inputs', False))
     print(f"{Fore.CYAN}Step 2/5: Compiling slices (JSTprove circuitization)...{Style.RESET_ALL}")
     compile_model(compile_args)
 

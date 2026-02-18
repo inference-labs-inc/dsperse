@@ -17,6 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class CompilationTask:
+    idx: int
+    slice_data: dict
+    base_path: str
+    slice_dir: str
+    backends_to_build: list[str]
+    tiling_info: Optional[dict]
+    channel_split_info: Optional[dict]
+    compilation_slice_data: dict
+    weights_as_inputs: bool = False
+
+
+@dataclass
 class BackendParseResult:
     default_backend: Optional[str]
     use_fallback: bool
@@ -480,7 +493,11 @@ class CompilerUtils:
 
             backends = CompilerUtils.get_backends_to_build(idx, layer_backends, default_layer_indices, default_backend, use_fallback)
             
-            work_items.append((idx, slice_data, base_path, slice_dir, backends, tiling_info, channel_split_info, comp_slice_data))
+            work_items.append(CompilationTask(
+                idx=idx, slice_data=slice_data, base_path=base_path, slice_dir=slice_dir,
+                backends_to_build=backends, tiling_info=tiling_info,
+                channel_split_info=channel_split_info, compilation_slice_data=comp_slice_data,
+            ))
             slice_info_map[idx] = {
                 'slice_data': slice_data, 'slice_dir': slice_dir, 'tiling_info': tiling_info,
                 'channel_split_info': channel_split_info, 'original_slice_entry': slice_data

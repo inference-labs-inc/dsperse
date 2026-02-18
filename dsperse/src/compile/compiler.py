@@ -7,7 +7,7 @@ import torch
 
 from dsperse.src.analyzers.schema import Backend
 from dsperse.src.backends.onnx_models import OnnxModels
-from dsperse.src.compile.utils.compiler_utils import CompilerUtils, BackendParseResult
+from dsperse.src.compile.utils.compiler_utils import CompilerUtils, CompilationTask, BackendParseResult
 from dsperse.src.run.utils.runner_utils import RunnerUtils
 from dsperse.src.slice.utils.converter import Converter
 from dsperse.src.utils.utils import Utils
@@ -33,22 +33,20 @@ class Compiler:
         self.use_fallback = True
 
     @staticmethod
-    def _compile_slice_worker(args: tuple) -> dict:
+    def _compile_slice_worker(task: CompilationTask) -> dict:
         """Worker function for parallel slice compilation."""
-        idx, _slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data, weights_as_inputs = args
-
         results = {
-            'idx': idx,
+            'idx': task.idx,
             'successful_backends': [],
             'compilation_blocks': {},
             'errors': [],
             'channel_group_circuits': {}
         }
 
-        if channel_split_info:
-            Compiler.compile_channel_split_groups(idx, slice_dir, base_path, backends_to_build, channel_split_info, results, weights_as_inputs=weights_as_inputs)
+        if task.channel_split_info:
+            Compiler.compile_channel_split_groups(task.idx, task.slice_dir, task.base_path, task.backends_to_build, task.channel_split_info, results, weights_as_inputs=task.weights_as_inputs)
         else:
-            Compiler.compile_slice(idx, base_path, slice_dir, backends_to_build, tiling_info, compilation_slice_data, results, weights_as_inputs=weights_as_inputs)
+            Compiler.compile_slice(task.idx, task.base_path, task.slice_dir, task.backends_to_build, task.tiling_info, task.compilation_slice_data, results, weights_as_inputs=task.weights_as_inputs)
 
         return results
     
@@ -74,7 +72,8 @@ class Compiler:
             slices_data, base_path, layer_indices, self.resume,
             self.layer_backends, self.default_layer_indices, self.default_backend, self.use_fallback
         )
-        work_items = [(*item, self.weights_as_inputs) for item in work_items]
+        for task in work_items:
+            task.weights_as_inputs = self.weights_as_inputs
 
         # --- Compilation Execution ---
         if self.parallel > 1 and len(work_items) > 1:
@@ -97,7 +96,7 @@ class Compiler:
         logger.info(f"Compiling {len(work_items)} slices with {self.parallel} parallel processes...")
         results = []
         with ProcessPoolExecutor(max_workers=self.parallel) as executor:
-            futures = {executor.submit(Compiler._compile_slice_worker, item): item[0] for item in work_items}
+            futures = {executor.submit(Compiler._compile_slice_worker, task): task.idx for task in work_items}
             for future in as_completed(futures):
                 idx = futures[future]
                 try:

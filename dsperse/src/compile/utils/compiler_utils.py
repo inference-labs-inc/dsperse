@@ -334,8 +334,9 @@ class CompilerUtils:
             "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "backend": backend,
             "backend_version": version,
-            "weights_as_inputs": weights_as_inputs,
         }
+        if backend == Backend.JSTPROVE:
+            block["weights_as_inputs"] = weights_as_inputs
 
         if tiling_info:
             num_tiles = tiling_info.get("num_tiles", 1)
@@ -664,18 +665,20 @@ class CompilerUtils:
                 return os.path.join(sdn, p)
             return p
 
-        return {
+        block = {
             "compiled": True,
             "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "backend": backend,
             "channel_split": True,
             "num_groups": num_groups,
-            "weights_as_inputs": weights_as_inputs,
             "group_files": {
                 g['group_idx']: {k: _prefix(v) for k, v in g.get('files', {}).items()}
                 for g in group_results if g.get('success')
             }
         }
+        if backend == Backend.JSTPROVE:
+            block["weights_as_inputs"] = weights_as_inputs
+        return block
 
     @staticmethod
     def is_compilation_successful(compilation_data: Dict[str, Any]) -> bool:

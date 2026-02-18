@@ -35,7 +35,7 @@ class Compiler:
     @staticmethod
     def _compile_slice_worker(args: tuple) -> dict:
         """Worker function for parallel slice compilation."""
-        idx, slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data, weights_as_inputs = args
+        idx, _slice_data, base_path, slice_dir, backends_to_build, tiling_info, channel_split_info, compilation_slice_data, weights_as_inputs = args
 
         results = {
             'idx': idx,
@@ -240,7 +240,7 @@ class Compiler:
             results['channel_group_circuits'][be] = group_results
             if all_success and group_results:
                 results['successful_backends'].append(be)
-                results['compilation_blocks'][be] = CompilerUtils.build_channel_split_block(be, len(groups), group_results, slice_dir)
+                results['compilation_blocks'][be] = CompilerUtils.build_channel_split_block(be, len(groups), group_results, slice_dir, weights_as_inputs=(weights_as_inputs and be == Backend.JSTPROVE))
 
     @staticmethod
     def run_backend_pipeline(backend: str, idx: int, slice_path: str, output_dir: str, calibration_input: str | None, weights_as_inputs: bool = False):

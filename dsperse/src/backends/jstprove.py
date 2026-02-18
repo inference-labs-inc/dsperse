@@ -471,7 +471,7 @@ class JSTprove:
         self,
         model_path: Union[str, Path],
         circuit_path: Union[str, Path],
-        settings_path: Optional[Union[str, Path]] = None,
+        _settings_path: Optional[Union[str, Path]] = None,
         weights_as_inputs: bool = False
     ) -> Tuple[bool, Optional[str]]:
         model_path = Path(model_path)
@@ -511,7 +511,7 @@ class JSTprove:
         model_path: Union[str, Path],
         output_path: Union[str, Path],
         input_file_path: Optional[Union[str, Path]] = None,
-        segment_details: Optional[Dict[str, Any]] = None,
+        _segment_details: Optional[Dict[str, Any]] = None,
         weights_as_inputs: bool = False
     ) -> Dict[str, Any]:
         """Run the JSTprove circuitization pipeline."""

@@ -638,7 +638,7 @@ class CompilerUtils:
         return output_dir
 
     @staticmethod
-    def build_channel_split_block(backend: str, num_groups: int, group_results: list, slice_dir: str) -> dict:
+    def build_channel_split_block(backend: str, num_groups: int, group_results: list, slice_dir: str, weights_as_inputs: bool = False) -> dict:
         """Constructs the metadata compilation block for a channel-split slice."""
         sdn = os.path.basename(slice_dir)
         def _prefix(p):
@@ -652,6 +652,7 @@ class CompilerUtils:
             "backend": backend,
             "channel_split": True,
             "num_groups": num_groups,
+            "weights_as_inputs": weights_as_inputs,
             "group_files": {
                 g['group_idx']: {k: _prefix(v) for k, v in g.get('files', {}).items()}
                 for g in group_results if g.get('success')

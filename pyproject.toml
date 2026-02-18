@@ -17,7 +17,7 @@ dependencies = [
   "numpy~=2.2.3",
   "onnxruntime>=1.21.0,<2.0.0",
   "colorama~=0.4.6",
-  "jstprove==2.4.0",
+  "jstprove==2.6.0",
 ]
 
 [project.optional-dependencies]

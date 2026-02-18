@@ -471,7 +471,7 @@ class CompilerUtils:
         return backends
 
     @staticmethod
-    def prepare_compilation_tasks(slices_data: list, base_path: str, layer_indices: list[int] | None, resume: bool, layer_backends: dict, default_layer_indices: set, default_backend: str | None, use_fallback: bool):
+    def prepare_compilation_tasks(slices_data: list, base_path: str, layer_indices: list[int] | None, resume: bool, layer_backends: dict, default_layer_indices: set, default_backend: str | None, use_fallback: bool, weights_as_inputs: bool = False):
         """Determines which slices need compilation and what backends to use."""
         work_items, slice_info_map = [], {}
         stats = {'compiled_count': 0, 'skipped_count': 0, 'backend_stats': {}}
@@ -497,6 +497,7 @@ class CompilerUtils:
                 idx=idx, slice_data=slice_data, base_path=base_path, slice_dir=slice_dir,
                 backends_to_build=backends, tiling_info=tiling_info,
                 channel_split_info=channel_split_info, compilation_slice_data=comp_slice_data,
+                weights_as_inputs=weights_as_inputs,
             ))
             slice_info_map[idx] = {
                 'slice_data': slice_data, 'slice_dir': slice_dir, 'tiling_info': tiling_info,

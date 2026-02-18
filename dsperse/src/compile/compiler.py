@@ -70,10 +70,9 @@ class Compiler:
         # --- Task Preparation ---
         work_items, slice_info_map, stats = CompilerUtils.prepare_compilation_tasks(
             slices_data, base_path, layer_indices, self.resume,
-            self.layer_backends, self.default_layer_indices, self.default_backend, self.use_fallback
+            self.layer_backends, self.default_layer_indices, self.default_backend, self.use_fallback,
+            weights_as_inputs=self.weights_as_inputs,
         )
-        for task in work_items:
-            task.weights_as_inputs = self.weights_as_inputs
 
         # --- Compilation Execution ---
         if self.parallel > 1 and len(work_items) > 1:
@@ -188,7 +187,8 @@ class Compiler:
 
                 # --- Compilation ---
                 comp_data, version = Compiler.run_backend_pipeline(be, idx, slice_path, output_dir, calibration_input, weights_as_inputs=weights_as_inputs)
-                if not comp_data: continue
+                if not comp_data:
+                    continue
 
                 # --- Result Packaging ---
                 success = CompilerUtils.is_compilation_successful(comp_data)
@@ -218,7 +218,8 @@ class Compiler:
                 group_idx = group.get('group_idx', 0)
                 group_onnx = CompilerUtils.resolve_group_onnx_path(group, base_path)
                 if not group_onnx:
-                    all_success = False; continue
+                    all_success = False
+                    continue
 
                 output_dir = CompilerUtils.setup_group_compilation_dir(slice_dir, be, group_idx)
 

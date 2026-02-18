@@ -298,6 +298,7 @@ class BackendCompilation:
     """Compilation status for a single backend."""
     compiled: bool = False
     tiled: bool = False
+    weights_as_inputs: bool = False
     files: CompilationFiles = field(default_factory=CompilationFiles)
     compilation_timestamp: Optional[str] = None
 
@@ -311,6 +312,7 @@ class BackendCompilation:
         return cls(
             compiled=d.get("compiled", False),
             tiled=d.get("tiled", False),
+            weights_as_inputs=d.get("weights_as_inputs", False),
             files=CompilationFiles.from_dict(files_dict),
             compilation_timestamp=d.get("compilation_timestamp"),
         )

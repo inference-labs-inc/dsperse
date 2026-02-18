@@ -306,7 +306,7 @@ class CompilerUtils:
 
     @staticmethod
     def build_compilation_block(backend: str, version: str, success: bool, file_paths: dict, slice_dir: str,
-                                tiling_info: Optional[dict]) -> dict:
+                                tiling_info: Optional[dict], weights_as_inputs: bool = False) -> dict:
         sdn = os.path.basename(slice_dir)
 
         def _prefix(p):
@@ -321,6 +321,7 @@ class CompilerUtils:
             "compilation_timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "backend": backend,
             "backend_version": version,
+            "weights_as_inputs": weights_as_inputs,
         }
 
         if tiling_info:

@@ -7,6 +7,7 @@ import os
 import tempfile
 import torch
 import logging
+import numpy as np
 import onnx
 from onnx import numpy_helper
 from pathlib import Path
@@ -104,9 +105,19 @@ class JSTprove:
         inputs, wai_keys = self._populate_wai_inputs(circuit, inputs)
         scaled = circuit.scale_inputs_only(inputs)
         inference_inputs = circuit.reshape_inputs_for_inference(scaled)
-        circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
-        for k in wai_keys:
-            circuit_inputs.pop(k, None)
+        if wai_keys:
+            if hasattr(circuit, 'input_shapes') and isinstance(circuit.input_shapes, dict):
+                ordered_keys = list(circuit.input_shapes.keys())
+            else:
+                ordered_keys = list(scaled.keys())
+            all_flattened = []
+            for key in ordered_keys:
+                if key in wai_keys:
+                    continue
+                all_flattened.extend(np.asarray(scaled[key]).flatten().tolist())
+            circuit_inputs = {"input": all_flattened}
+        else:
+            circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
         outputs = circuit.get_outputs(inference_inputs)
         formatted = circuit.format_outputs(outputs)
         return circuit_inputs, formatted

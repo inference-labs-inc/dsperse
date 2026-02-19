@@ -40,7 +40,7 @@ async def _handle_connection(
                 writer.write(resp_bytes)
                 await writer.drain()
         except Exception:
-            pass
+            logger.debug("failed to send IPC response", exc_info=True)
         writer.close()
         await writer.wait_closed()
 
@@ -57,5 +57,9 @@ async def start_server(
 
     server = await asyncio.start_unix_server(on_connect, path=socket_path)
     logger.info(f"IPC server listening on {socket_path}")
-    async with server:
-        await server.serve_forever()
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        if os.path.exists(socket_path):
+            os.unlink(socket_path)

@@ -1,5 +1,4 @@
 import asyncio
-import itertools
 import json
 import logging
 import os
@@ -37,7 +36,7 @@ class ServerContext:
         try:
             return await handler(self, request)
         except Exception as e:
-            logger.exception(f"handler error for {method}")
+            logger.exception("handler error for %s", method)
             return {"error": str(e)}
 
 
@@ -230,6 +229,29 @@ async def handle_apply_tile_result(ctx: ServerContext, req: dict) -> dict:
     return {"status": run.status.value}
 
 
+def _flatten_inputs(original_inputs) -> list | None:
+    if original_inputs is None:
+        return None
+    if isinstance(original_inputs, list):
+        return original_inputs
+    if isinstance(original_inputs, dict):
+        vals = original_inputs.get("input_data") or original_inputs.get("input")
+        if vals is None or not isinstance(vals, list):
+            return None
+        result = []
+        for v in vals:
+            if isinstance(v, list):
+                for inner in v:
+                    if isinstance(inner, list):
+                        result.extend(inner)
+                    else:
+                        result.append(inner)
+            else:
+                result.append(v)
+        return result
+    return None
+
+
 async def handle_verify_incremental_slice_with_witness(ctx: ServerContext, req: dict) -> dict:
     circuit_id = req.get("circuit_id", "")
     slice_num = req.get("slice_num", "")
@@ -247,23 +269,16 @@ async def handle_verify_incremental_slice_with_witness(ctx: ServerContext, req: 
     if not circuit_path:
         return {"error": f"circuit not found for {circuit_id}/{slice_num}"}
 
-    witness_bytes = bytes.fromhex(witness_hex)
-    proof_bytes = bytes.fromhex(proof_hex)
+    try:
+        witness_bytes = bytes.fromhex(witness_hex)
+    except ValueError:
+        return {"error": "invalid hex for witness_hex", "success": False}
+    try:
+        proof_bytes = bytes.fromhex(proof_hex)
+    except ValueError:
+        return {"error": "invalid hex for proof_hex", "success": False}
 
-    flat_inputs = None
-    if original_inputs is not None:
-        if isinstance(original_inputs, dict):
-            vals = original_inputs.get("input_data") or original_inputs.get("input")
-            if vals is not None:
-                if isinstance(vals, list) and vals and isinstance(vals[0], list):
-                    flat_inputs = list(itertools.chain.from_iterable(
-                        itertools.chain.from_iterable(v) if isinstance(v[0], list) else v
-                        for v in vals
-                    ))
-                else:
-                    flat_inputs = vals
-        elif isinstance(original_inputs, list):
-            flat_inputs = original_inputs
+    flat_inputs = _flatten_inputs(original_inputs)
 
     metadata_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
     num_inputs = 0

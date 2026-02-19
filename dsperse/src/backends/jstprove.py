@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import torch
+import torch.nn.functional as F
+import numpy as np
 import logging
 import onnx
 from onnx import numpy_helper
@@ -100,31 +102,78 @@ class JSTprove:
                 logger.warning(f"WAI key '{name}' expected by circuit but not found in quantized model initializers")
         return inputs
 
-    def _process_inputs(self, circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, dict]:
+    @staticmethod
+    def _wandb_path(circuit_path: Path) -> Optional[Path]:
+        p = circuit_path.parent / f"{circuit_path.stem}_wandb.json"
+        return p if p.exists() else None
+
+    @staticmethod
+    def _metadata_path(circuit_path: Path) -> str:
+        return str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+
+    @staticmethod
+    def _load_wandb(path: Path) -> Dict[str, np.ndarray]:
+        with open(path, "r") as f:
+            data = json.load(f)
+        tensors = {}
+        for entry in data["w_and_b"]:
+            name = entry["name"]
+            shape = entry["shape"][name]
+            tensors[name] = np.array(entry["tensor"]).reshape(shape).astype(np.int64)
+        return tensors
+
+    @staticmethod
+    def _extract_conv_params(model: onnx.ModelProto) -> Optional[Dict[str, Any]]:
+        for node in model.graph.node:
+            if node.op_type == "Int64Conv":
+                params = {"strides": [1, 1], "pads": [0, 0, 0, 0]}
+                for attr in node.attribute:
+                    if attr.name in ("strides", "pads"):
+                        if attr.type == 7:
+                            params[attr.name] = list(attr.ints)
+                        elif attr.type == 3:
+                            params[attr.name] = [int(x) for x in attr.s.decode().split(",")]
+                return params
+        return None
+
+    def _process_inputs(
+        self,
+        circuit: GenericModelONNX,
+        inputs: dict,
+        circuit_path: Optional[Path] = None,
+    ) -> Tuple[dict, dict]:
         inputs = self._populate_wai_inputs(circuit, inputs)
         scaled = circuit.scale_inputs_only(inputs)
         circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
-        inference_inputs = circuit.reshape_inputs_for_inference(scaled)
-        raw_outputs = circuit.get_outputs(inference_inputs)
-        flat = raw_outputs.flatten()
         scale = circuit.scale_base ** circuit.scale_exponent
-        int_outputs = flat.long().tolist()
-        rescaled = (flat.double() / scale).tolist()
+
+        wandb_p = self._wandb_path(circuit_path) if circuit_path else None
+        if wandb_p:
+            wandb_tensors = self._load_wandb(wandb_p)
+            conv_params = self._extract_conv_params(circuit.quantized_model)
+            tile_key = next(k for k in circuit.input_shape if k not in wandb_tensors)
+            tile_shape = circuit.input_shape[tile_key]
+            tile_in = torch.tensor(
+                scaled[tile_key], dtype=torch.int64,
+            ).reshape(tile_shape)
+            w_tensor = torch.from_numpy(wandb_tensors["W"])
+            b_tensor = torch.from_numpy(wandb_tensors["B"])
+            stride = tuple(conv_params["strides"]) if conv_params else (1, 1)
+            pad_list = conv_params["pads"] if conv_params else [0, 0, 0, 0]
+            padding = (pad_list[0], pad_list[2])
+            result = F.conv2d(tile_in, w_tensor, bias=b_tensor, stride=stride, padding=padding)
+            flat = (result.numpy().astype(np.int64) // scale).flatten()
+            int_outputs = flat.tolist()
+            rescaled = (flat.astype(np.float64) / scale).tolist()
+        else:
+            inference_inputs = circuit.reshape_inputs_for_inference(scaled)
+            raw_outputs = circuit.get_outputs(inference_inputs)
+            flat = raw_outputs.flatten()
+            int_outputs = flat.long().tolist()
+            rescaled = (flat.double() / scale).tolist()
+
         formatted = {"output": int_outputs, "rescaled_output": rescaled}
         return circuit_inputs, formatted
-
-    @staticmethod
-    def _wai_safe_metadata(circuit_path: Path) -> str:
-        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
-        if not meta.get("weights_as_inputs"):
-            return str(meta_path)
-        meta["weights_as_inputs"] = False
-        safe_path = circuit_path.parent / f"{circuit_path.stem}_metadata_nowai.json"
-        with open(safe_path, "w") as f:
-            json.dump(meta, f)
-        return str(safe_path)
 
     def generate_witness(
         self,
@@ -147,18 +196,19 @@ class JSTprove:
         try:
             circuit = self._get_circuit(circuit_path)
             inputs = read_from_json(str(input_file))
-            circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+            circuit_inputs, formatted = self._process_inputs(circuit, inputs, circuit_path)
 
-            metadata_path = self._wai_safe_metadata(circuit_path)
+            wandb_p = self._wandb_path(circuit_path)
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=metadata_path,
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=[{
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
                     "witness": str(witness_path),
                 }],
+                wandb_path=str(wandb_p) if wandb_p else None,
             )
 
             if result.get("failed", 0) > 0:
@@ -190,13 +240,13 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = self._wai_safe_metadata(circuit_path)
+            wandb_p = self._wandb_path(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
             for job in jobs:
                 inputs = read_from_json(job["input"])
-                circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                circuit_inputs, formatted = self._process_inputs(circuit, inputs, circuit_path)
                 piped_jobs.append({
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
@@ -207,8 +257,9 @@ class JSTprove:
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=metadata_path,
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=piped_jobs,
+                wandb_path=str(wandb_p) if wandb_p else None,
             )
             if result.get("failed", 0) > 0:
                 raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
@@ -239,7 +290,7 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = self._wai_safe_metadata(circuit_path)
+            wandb_p = self._wandb_path(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
@@ -247,7 +298,7 @@ class JSTprove:
                 inputs = job.get("_tensor_inputs") or job.get("input")
                 if isinstance(inputs, str):
                     inputs = read_from_json(inputs)
-                circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                circuit_inputs, formatted = self._process_inputs(circuit, inputs, circuit_path)
                 piped_jobs.append({
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
@@ -267,8 +318,9 @@ class JSTprove:
                 result = _run_witness_chunk_piped(
                     binary_name=circuit.name,
                     circuit_path=str(circuit_path),
-                    metadata_path=metadata_path,
+                    metadata_path=self._metadata_path(circuit_path),
                     chunk_jobs=chunk,
+                    wandb_path=str(wandb_p) if wandb_p else None,
                 )
                 total_failed += result.get("failed", 0)
                 all_errors.extend(result.get("errors") or [])

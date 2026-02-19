@@ -49,17 +49,22 @@ async def start_server(
     socket_path: str,
     handler: Callable[[dict], Awaitable[dict]],
 ):
-    if os.path.exists(socket_path):
+    try:
         os.unlink(socket_path)
+    except FileNotFoundError:
+        pass
 
     async def on_connect(reader, writer):
         await _handle_connection(reader, writer, handler)
 
     server = await asyncio.start_unix_server(on_connect, path=socket_path)
+    os.chmod(socket_path, 0o600)
     logger.info("IPC server listening on %s", socket_path)
     try:
         async with server:
             await server.serve_forever()
     finally:
-        if os.path.exists(socket_path):
+        try:
             os.unlink(socket_path)
+        except FileNotFoundError:
+            pass

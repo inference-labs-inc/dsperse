@@ -245,7 +245,7 @@ def _flatten_inputs(original_inputs) -> list | None:
     if isinstance(original_inputs, list):
         return _flatten_list(original_inputs)
     if isinstance(original_inputs, dict):
-        vals = original_inputs.get("input_data") or original_inputs.get("input")
+        vals = original_inputs.get("input_data") if "input_data" in original_inputs else original_inputs.get("input")
         if vals is None or not isinstance(vals, list):
             return None
         return _flatten_list(vals)
@@ -385,7 +385,7 @@ async def handle_prove_slice(ctx: ServerContext, req: dict) -> dict:
         }
 
 
-async def handle_generate_requests(ctx: ServerContext, req: dict) -> dict:
+async def handle_generate_requests(ctx: ServerContext, _req: dict) -> dict:
     items = ctx.state.generate_all_requests()
     return {"items": items}
 

@@ -84,7 +84,19 @@ class JSTprove:
 
     @staticmethod
     def _metadata_path(circuit_path: Path) -> str:
-        return str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
+        if not meta_path.exists():
+            return str(meta_path)
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        if not meta.get("weights_as_inputs", False):
+            return str(meta_path)
+        runtime_path = circuit_path.parent / f"{circuit_path.stem}_metadata_runtime.json"
+        if not runtime_path.exists():
+            meta["weights_as_inputs"] = False
+            with open(runtime_path, "w") as f:
+                json.dump(meta, f)
+        return str(runtime_path)
 
     @staticmethod
     def _process_inputs(

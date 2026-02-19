@@ -57,8 +57,11 @@ async def start_server(
     async def on_connect(reader, writer):
         await _handle_connection(reader, writer, handler)
 
-    server = await asyncio.start_unix_server(on_connect, path=socket_path)
-    os.chmod(socket_path, 0o600)
+    old_umask = os.umask(0o177)
+    try:
+        server = await asyncio.start_unix_server(on_connect, path=socket_path)
+    finally:
+        os.umask(old_umask)
     logger.info("IPC server listening on %s", socket_path)
     try:
         async with server:

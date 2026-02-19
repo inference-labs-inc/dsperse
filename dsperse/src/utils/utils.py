@@ -29,7 +29,13 @@ class Utils:
             None,
         )
         if current_opset is not None and current_opset != opset_version:
-            model = onnx.version_converter.convert_version(model, opset_version)
+            try:
+                model = onnx.version_converter.convert_version(model, opset_version)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to convert ONNX model from opset {current_opset} to "
+                    f"{opset_version}: {e}"
+                ) from e
         model.ir_version = 9
         if model.opset_import:
             for opset in model.opset_import:

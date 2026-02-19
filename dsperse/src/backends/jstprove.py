@@ -83,25 +83,25 @@ class JSTprove:
         return circuit_path
 
     @staticmethod
-    def _populate_wai_inputs(circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, set]:
+    def _populate_wai_inputs(circuit: GenericModelONNX, inputs: dict) -> dict:
         if not hasattr(circuit, 'quantized_model') or circuit.quantized_model is None:
-            return inputs, set()
+            return inputs
         if not hasattr(circuit, 'input_shape') or not isinstance(circuit.input_shape, dict):
-            return inputs, set()
+            return inputs
         missing = set(circuit.input_shape.keys()) - set(inputs.keys())
         if not missing:
-            return inputs, set()
+            return inputs
         init_map = {init.name: init for init in circuit.quantized_model.graph.initializer}
         inputs = dict(inputs)
-        added = set()
         for name in missing:
             if name in init_map:
                 inputs[name] = numpy_helper.to_array(init_map[name]).tolist()
-                added.add(name)
-        return inputs, added
+            else:
+                logger.warning(f"WAI key '{name}' expected by circuit but not found in quantized model initializers")
+        return inputs
 
     def _process_inputs(self, circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, dict]:
-        inputs, wai_keys = self._populate_wai_inputs(circuit, inputs)
+        inputs = self._populate_wai_inputs(circuit, inputs)
         scaled = circuit.scale_inputs_only(inputs)
         inference_inputs = circuit.reshape_inputs_for_inference(scaled)
         circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
@@ -271,7 +271,7 @@ class JSTprove:
                     chunk_jobs=chunk,
                 )
                 total_failed += result.get("failed", 0)
-                all_errors.extend(result.get("errors", []))
+                all_errors.extend(result.get("errors") or [])
             if total_failed > 0:
                 raise RuntimeError(f"Batch witness failed for {total_failed} jobs: {all_errors}")
 

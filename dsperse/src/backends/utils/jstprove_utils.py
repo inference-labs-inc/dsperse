@@ -49,8 +49,7 @@ class JSTproveUtils:
         for init in model.graph.initializer:
             if init.name in existing_input_names:
                 continue
-            tensor_type = onnx.helper.make_tensor_type_proto(init.data_type, list(init.dims))
-            value_info = onnx.helper.make_value_info(init.name, tensor_type)
+            value_info = onnx.helper.make_tensor_value_info(init.name, init.data_type, list(init.dims))
             model.graph.input.append(value_info)
         return model
 

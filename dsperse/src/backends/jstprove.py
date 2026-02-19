@@ -14,10 +14,8 @@ from typing import Optional, Tuple, Dict, Any, Union, List
 from python.core.circuit_models.generic_onnx import GenericModelONNX
 from python.core.utils.helper_functions import (
     CircuitExecutionConfig,
-    ExpanderMode,
     RunType,
     read_from_json,
-    run_expander_raw,
 )
 from python.core.utils.witness_utils import (
     compare_field_values,
@@ -270,7 +268,6 @@ class JSTprove:
                 circuit_path=str(circuit_path),
                 witness_file=str(witness_path),
                 proof_file=str(proof_path),
-                ecc=False,
             ))
         except Exception as e:
             error_msg = f"Proof generation failed: {e}"
@@ -311,7 +308,6 @@ class JSTprove:
                 output_file=str(veri_output_path),
                 witness_file=str(witness_path),
                 proof_file=str(proof_path),
-                ecc=False,
             ))
             return True
         except Exception as e:
@@ -325,6 +321,7 @@ class JSTprove:
         proof_bytes: bytes,
         num_inputs: int,
         expected_inputs: Optional[List] = None,
+        num_outputs: Optional[int] = None,
     ) -> Tuple[bool, Optional[Dict[str, Any]]]:
         """
         Verify a proof and extract cryptographically-bound inputs/outputs from the witness.
@@ -341,6 +338,8 @@ class JSTprove:
             proof_bytes: Raw proof bytes
             num_inputs: Number of input values in the witness public inputs
             expected_inputs: Optional flat list of expected input values for comparison
+            num_outputs: Number of output values in the witness public inputs.
+                When None, inferred from the witness layout (valid for non-WAI witnesses).
 
         Returns:
             Tuple of (success, extracted_io) where extracted_io contains:
@@ -372,7 +371,13 @@ class JSTprove:
                 logger.error(f"Failed to load witness: {e}")
                 return False, None
 
-            extracted = extract_io_from_witness(witness_data, num_inputs)
+            if num_outputs is None:
+                public_inputs = (
+                    witness_data.get("witnesses", [{}])[0].get("public_inputs", [])
+                )
+                num_outputs = len(public_inputs) - num_inputs - 2
+
+            extracted = extract_io_from_witness(witness_data, num_inputs, num_outputs)
             if extracted is None:
                 logger.error("Invalid witness structure")
                 return False, None
@@ -399,20 +404,25 @@ class JSTprove:
                     logger.error("Input verification failed: witness inputs don't match expected")
                     return False, None
 
+            input_json = tmp_path / "input_veri.json"
+            output_json = tmp_path / "output_veri.json"
+            with open(input_json, "w") as f:
+                json.dump({"input_data": extracted["inputs"]}, f)
+            with open(output_json, "w") as f:
+                json.dump({"output": extracted["outputs"]}, f)
+
             try:
-                result = run_expander_raw(
-                    mode=ExpanderMode.VERIFY,
-                    circuit_file=str(circuit_path),
+                circuit = self._build_circuit("cli")
+                circuit.base_testing(CircuitExecutionConfig(
+                    run_type=RunType.GEN_VERIFY,
+                    circuit_path=str(circuit_path),
+                    input_file=str(input_json),
+                    output_file=str(output_json),
                     witness_file=str(witness_path),
                     proof_file=str(proof_path),
-                )
-                success = result.returncode == 0
+                ))
             except Exception as e:
                 logger.error(f"Proof verification failed: {e}")
-                return False, None
-
-            if not success:
-                logger.error("Proof verification failed")
                 return False, None
 
             extracted_io = {
@@ -472,7 +482,8 @@ class JSTprove:
         model_path: Union[str, Path],
         circuit_path: Union[str, Path],
         _settings_path: Optional[Union[str, Path]] = None,
-        weights_as_inputs: bool = False
+        weights_as_inputs: bool = False,
+        input_bounds: Optional[Tuple[float, float]] = None,
     ) -> Tuple[bool, Optional[str]]:
         model_path = Path(model_path)
         circuit_path = Path(circuit_path)
@@ -491,6 +502,7 @@ class JSTprove:
             onnx.save(model, preprocessed_path)
             circuit = self._build_circuit(preprocessed_path)
             circuit.weights_as_inputs = weights_as_inputs
+            circuit.input_bounds = input_bounds
             circuit.base_testing(CircuitExecutionConfig(
                 run_type=RunType.COMPILE_CIRCUIT,
                 circuit_path=str(circuit_path),

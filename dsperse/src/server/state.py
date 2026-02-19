@@ -31,14 +31,9 @@ class WorkItem:
 @dataclass
 class SliceExecResult:
     slice_id: str
-    inputs_path: str | None = None
-    outputs_path: str | None = None
-    witness_path: str | None = None
     inputs_data: dict | list | None = None
     outputs_data: dict | list | None = None
     tiling: dict | None = None
-    circuit_path: str | None = None
-    proof_system: str = "JSTPROVE"
 
 
 @dataclass

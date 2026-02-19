@@ -1,3 +1,4 @@
+import asyncio
 import itertools
 import json
 import logging
@@ -66,16 +67,11 @@ async def handle_start_incremental_run(ctx: ServerContext, req: dict) -> dict:
             in_file = slice_run_dir / "input.json"
             out_file = slice_run_dir / "output.json"
             if in_file.exists():
-                res.inputs_path = str(in_file)
                 with open(in_file) as fh:
                     res.inputs_data = json.load(fh)
             if out_file.exists():
-                res.outputs_path = str(out_file)
                 with open(out_file) as fh:
                     res.outputs_data = json.load(fh)
-            witness_path = slice_run_dir / "output_witness.bin"
-            if witness_path.exists():
-                res.witness_path = str(witness_path)
             if hasattr(exec_info, "tiles") and exec_info.tiles:
                 res.tiling = {"num_tiles": len(exec_info.tiles)}
             slice_exec_results[slice_id] = res
@@ -86,7 +82,8 @@ async def handle_start_incremental_run(ctx: ServerContext, req: dict) -> dict:
             on_slice_complete=on_slice_complete,
         )
         try:
-            runner.run(
+            await asyncio.to_thread(
+                runner.run,
                 input_json_path=str(input_path),
                 slice_path=str(slices_dir),
             )
@@ -275,7 +272,8 @@ async def handle_verify_incremental_slice_with_witness(ctx: ServerContext, req: 
             meta = json.load(f)
         num_inputs = meta.get("num_inputs", 0)
 
-    success, extracted = ctx.jstprove.verify_with_io_extraction(
+    success, extracted = await asyncio.to_thread(
+        ctx.jstprove.verify_with_io_extraction,
         circuit_path=circuit_path,
         witness_bytes=witness_bytes,
         proof_bytes=proof_bytes,
@@ -304,7 +302,8 @@ async def handle_prove(ctx: ServerContext, req: dict) -> dict:
 
         run_output_dir = Path(tmp_dir) / "run"
         runner = Runner(run_dir=str(run_output_dir))
-        results = runner.run(
+        results = await asyncio.to_thread(
+            runner.run,
             input_json_path=str(input_path),
             slice_path=str(slices_dir),
         )
@@ -315,7 +314,6 @@ async def handle_prove_slice(ctx: ServerContext, req: dict) -> dict:
     circuit_id = req.get("circuit_id", "")
     slice_num = req.get("slice_num", "")
     inputs = req.get("inputs")
-    outputs = req.get("outputs")
     proof_system = req.get("proof_system", "JSTPROVE")
 
     model_dir = ctx.resolve_model_dir(circuit_id)
@@ -340,7 +338,8 @@ async def handle_prove_slice(ctx: ServerContext, req: dict) -> dict:
         with open(input_file, "w") as f:
             json.dump(inputs, f)
 
-        ok, witness_result = ctx.jstprove.generate_witness(
+        ok, witness_result = await asyncio.to_thread(
+            ctx.jstprove.generate_witness,
             input_file=str(input_file),
             model_path=str(circuit_path),
             output_file=str(output_file),
@@ -351,7 +350,8 @@ async def handle_prove_slice(ctx: ServerContext, req: dict) -> dict:
         if not witness_path.exists():
             return {"error": "witness file not created", "success": False}
 
-        ok, proof_result = ctx.jstprove.prove(
+        ok, proof_result = await asyncio.to_thread(
+            ctx.jstprove.prove,
             witness_path=str(witness_path),
             circuit_path=str(circuit_path),
             proof_path=str(proof_path),

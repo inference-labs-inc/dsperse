@@ -15,6 +15,7 @@ async def _handle_connection(
     writer: asyncio.StreamWriter,
     handler: Callable[[dict], Awaitable[dict]],
 ):
+    response = None
     try:
         len_buf = await reader.readexactly(4)
         (payload_len,) = struct.unpack(">I", len_buf)
@@ -25,7 +26,7 @@ async def _handle_connection(
             request = json.loads(raw)
             response = await handler(request)
     except asyncio.IncompleteReadError:
-        return
+        pass
     except json.JSONDecodeError as e:
         response = {"error": f"invalid JSON: {e}"}
     except Exception as e:
@@ -33,10 +34,11 @@ async def _handle_connection(
         response = {"error": str(e)}
     finally:
         try:
-            resp_bytes = json.dumps(response).encode()
-            writer.write(struct.pack(">I", len(resp_bytes)))
-            writer.write(resp_bytes)
-            await writer.drain()
+            if response is not None:
+                resp_bytes = json.dumps(response).encode()
+                writer.write(struct.pack(">I", len(resp_bytes)))
+                writer.write(resp_bytes)
+                await writer.drain()
         except Exception:
             pass
         writer.close()

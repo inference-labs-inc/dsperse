@@ -56,7 +56,7 @@ async def start_server(
         await _handle_connection(reader, writer, handler)
 
     server = await asyncio.start_unix_server(on_connect, path=socket_path)
-    logger.info(f"IPC server listening on {socket_path}")
+    logger.info("IPC server listening on %s", socket_path)
     try:
         async with server:
             await server.serve_forever()

@@ -229,26 +229,26 @@ async def handle_apply_tile_result(ctx: ServerContext, req: dict) -> dict:
     return {"status": run.status.value}
 
 
+def _flatten_list(lst: list) -> list:
+    result = []
+    for item in lst:
+        if isinstance(item, list):
+            result.extend(_flatten_list(item))
+        else:
+            result.append(item)
+    return result
+
+
 def _flatten_inputs(original_inputs) -> list | None:
     if original_inputs is None:
         return None
     if isinstance(original_inputs, list):
-        return original_inputs
+        return _flatten_list(original_inputs)
     if isinstance(original_inputs, dict):
         vals = original_inputs.get("input_data") or original_inputs.get("input")
         if vals is None or not isinstance(vals, list):
             return None
-        result = []
-        for v in vals:
-            if isinstance(v, list):
-                for inner in v:
-                    if isinstance(inner, list):
-                        result.extend(inner)
-                    else:
-                        result.append(inner)
-            else:
-                result.append(v)
-        return result
+        return _flatten_list(vals)
     return None
 
 

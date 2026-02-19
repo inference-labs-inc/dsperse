@@ -3,12 +3,12 @@ JSTprove backend for zero-knowledge proof generation.
 """
 import importlib.metadata
 import json
+import logging
 import os
 import tempfile
-import torch
-import logging
+
 import onnx
-from onnx import numpy_helper
+import torch
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
@@ -83,57 +83,15 @@ class JSTprove:
         return circuit_path
 
     @staticmethod
-    def _populate_wai_inputs(circuit: GenericModelONNX, inputs: dict) -> dict:
-        if not hasattr(circuit, 'quantized_model') or circuit.quantized_model is None:
-            return inputs
-        if not hasattr(circuit, 'input_shape') or not isinstance(circuit.input_shape, dict):
-            return inputs
-        missing = set(circuit.input_shape.keys()) - set(inputs.keys())
-        if not missing:
-            return inputs
-        init_map = {init.name: init for init in circuit.quantized_model.graph.initializer}
-        inputs = dict(inputs)
-        for name in missing:
-            if name in init_map:
-                inputs[name] = numpy_helper.to_array(init_map[name]).tolist()
-            else:
-                logger.warning(f"WAI key '{name}' expected by circuit but not found in quantized model initializers")
-        return inputs
+    def _metadata_path(circuit_path: Path) -> str:
+        return str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
 
     @staticmethod
-    def _runtime_metadata_path(circuit_path: Path) -> str:
-        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
-        if not meta_path.exists():
-            return str(meta_path)
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
-        if not meta.get("weights_as_inputs", False):
-            return str(meta_path)
-        runtime_path = circuit_path.parent / f"{circuit_path.stem}_metadata_nowai.json"
-        if not runtime_path.exists():
-            meta["weights_as_inputs"] = False
-            with open(runtime_path, "w") as f:
-                json.dump(meta, f)
-        return str(runtime_path)
-
     def _process_inputs(
-        self,
         circuit: GenericModelONNX,
         inputs: dict,
     ) -> Tuple[dict, dict]:
-        inputs = self._populate_wai_inputs(circuit, inputs)
-        scaled = circuit.scale_inputs_only(inputs)
-        circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
-        scale = circuit.scale_base ** circuit.scale_exponent
-
-        inference_inputs = circuit.reshape_inputs_for_inference(scaled)
-        raw_outputs = circuit.get_outputs(inference_inputs)
-        flat = raw_outputs.flatten()
-        int_outputs = flat.long().tolist()
-        rescaled = (flat.double() / scale).tolist()
-
-        formatted = {"output": int_outputs, "rescaled_output": rescaled}
-        return circuit_inputs, formatted
+        return circuit.process_for_witness(inputs)
 
     def generate_witness(
         self,
@@ -161,7 +119,7 @@ class JSTprove:
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=self._runtime_metadata_path(circuit_path),
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=[{
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
@@ -214,7 +172,7 @@ class JSTprove:
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=self._runtime_metadata_path(circuit_path),
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=piped_jobs,
             )
             if result.get("failed", 0) > 0:
@@ -273,7 +231,7 @@ class JSTprove:
                 result = _run_witness_chunk_piped(
                     binary_name=circuit.name,
                     circuit_path=str(circuit_path),
-                    metadata_path=self._runtime_metadata_path(circuit_path),
+                    metadata_path=self._metadata_path(circuit_path),
                     chunk_jobs=chunk,
                 )
                 total_failed += result.get("failed", 0)

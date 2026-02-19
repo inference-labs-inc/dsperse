@@ -101,13 +101,20 @@ class JSTprove:
         return inputs
 
     @staticmethod
-    def _wandb_path(circuit_path: Path) -> Optional[Path]:
-        p = circuit_path.parent / f"{circuit_path.stem}_wandb.json"
-        return p if p.exists() else None
-
-    @staticmethod
-    def _metadata_path(circuit_path: Path) -> str:
-        return str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
+    def _runtime_metadata_path(circuit_path: Path) -> str:
+        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
+        if not meta_path.exists():
+            return str(meta_path)
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        if not meta.get("weights_as_inputs", False):
+            return str(meta_path)
+        runtime_path = circuit_path.parent / f"{circuit_path.stem}_metadata_nowai.json"
+        if not runtime_path.exists():
+            meta["weights_as_inputs"] = False
+            with open(runtime_path, "w") as f:
+                json.dump(meta, f)
+        return str(runtime_path)
 
     def _process_inputs(
         self,
@@ -151,17 +158,15 @@ class JSTprove:
             inputs = read_from_json(str(input_file))
             circuit_inputs, formatted = self._process_inputs(circuit, inputs)
 
-            wandb_p = self._wandb_path(circuit_path)
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=self._metadata_path(circuit_path),
+                metadata_path=self._runtime_metadata_path(circuit_path),
                 chunk_jobs=[{
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
                     "witness": str(witness_path),
                 }],
-                wandb_path=str(wandb_p) if wandb_p else None,
             )
 
             if result.get("failed", 0) > 0:
@@ -193,7 +198,6 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            wandb_p = self._wandb_path(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
@@ -210,9 +214,8 @@ class JSTprove:
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=self._metadata_path(circuit_path),
+                metadata_path=self._runtime_metadata_path(circuit_path),
                 chunk_jobs=piped_jobs,
-                wandb_path=str(wandb_p) if wandb_p else None,
             )
             if result.get("failed", 0) > 0:
                 raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
@@ -243,7 +246,6 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            wandb_p = self._wandb_path(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
@@ -271,9 +273,8 @@ class JSTprove:
                 result = _run_witness_chunk_piped(
                     binary_name=circuit.name,
                     circuit_path=str(circuit_path),
-                    metadata_path=self._metadata_path(circuit_path),
+                    metadata_path=self._runtime_metadata_path(circuit_path),
                     chunk_jobs=chunk,
-                    wandb_path=str(wandb_p) if wandb_p else None,
                 )
                 total_failed += result.get("failed", 0)
                 all_errors.extend(result.get("errors") or [])

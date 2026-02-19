@@ -105,8 +105,12 @@ class JSTprove:
         scaled = circuit.scale_inputs_only(inputs)
         inference_inputs = circuit.reshape_inputs_for_inference(scaled)
         circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
-        outputs = circuit.get_outputs(inference_inputs)
-        formatted = circuit.format_outputs(outputs)
+        raw_outputs = circuit.get_outputs(inference_inputs)
+        flat = raw_outputs.flatten()
+        rescaled = flat.tolist()
+        scale = circuit.scale_base ** circuit.scale_exponent
+        scaled_outputs = torch.round(flat * scale).long().tolist()
+        formatted = {"output": scaled_outputs, "rescaled_output": rescaled}
         return circuit_inputs, formatted
 
     @staticmethod

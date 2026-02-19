@@ -103,8 +103,8 @@ class JSTprove:
     def _process_inputs(self, circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, dict]:
         inputs = self._populate_wai_inputs(circuit, inputs)
         scaled = circuit.scale_inputs_only(inputs)
-        inference_inputs = circuit.reshape_inputs_for_inference(scaled)
         circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
+        inference_inputs = circuit.reshape_inputs_for_inference(inputs)
         raw_outputs = circuit.get_outputs(inference_inputs)
         flat = raw_outputs.flatten()
         rescaled = flat.tolist()

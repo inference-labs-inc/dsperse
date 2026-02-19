@@ -482,7 +482,8 @@ class JSTprove:
         model_path: Union[str, Path],
         circuit_path: Union[str, Path],
         _settings_path: Optional[Union[str, Path]] = None,
-        weights_as_inputs: bool = False
+        weights_as_inputs: bool = False,
+        input_bounds: Optional[Tuple[float, float]] = None,
     ) -> Tuple[bool, Optional[str]]:
         model_path = Path(model_path)
         circuit_path = Path(circuit_path)
@@ -501,6 +502,7 @@ class JSTprove:
             onnx.save(model, preprocessed_path)
             circuit = self._build_circuit(preprocessed_path)
             circuit.weights_as_inputs = weights_as_inputs
+            circuit.input_bounds = input_bounds
             circuit.base_testing(CircuitExecutionConfig(
                 run_type=RunType.COMPILE_CIRCUIT,
                 circuit_path=str(circuit_path),

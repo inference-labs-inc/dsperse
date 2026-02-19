@@ -10,6 +10,7 @@ from dsperse.src.cli.prove import setup_parser as setup_prove_parser, run_proof
 from dsperse.src.cli.verify import setup_parser as setup_verify_parser, verify_proof
 from dsperse.src.cli.compile import setup_parser as setup_compile_parser, compile_model
 from dsperse.src.cli.full_run import setup_parser as setup_full_run_parser, full_run
+from dsperse.src.cli.serve import setup_parser as setup_serve_parser, serve
 
 __all__ = [
     'DsperseArgumentParser',
@@ -29,5 +30,7 @@ __all__ = [
     'setup_compile_parser',
     'compile_model',
     'setup_full_run_parser',
-    'full_run'
+    'full_run',
+    'setup_serve_parser',
+    'serve',
 ]

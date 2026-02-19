@@ -7,7 +7,6 @@ import os
 import tempfile
 import torch
 import logging
-import numpy as np
 import onnx
 from onnx import numpy_helper
 from pathlib import Path
@@ -105,27 +104,23 @@ class JSTprove:
         inputs, wai_keys = self._populate_wai_inputs(circuit, inputs)
         scaled = circuit.scale_inputs_only(inputs)
         inference_inputs = circuit.reshape_inputs_for_inference(scaled)
-        if wai_keys:
-            if hasattr(circuit, 'input_shapes') and isinstance(circuit.input_shapes, dict):
-                ordered_keys = list(circuit.input_shapes.keys())
-            else:
-                ordered_keys = list(scaled.keys())
-            all_flattened = []
-            for key in ordered_keys:
-                if key in wai_keys:
-                    continue
-                all_flattened.extend(np.asarray(scaled[key]).flatten().tolist())
-            circuit_inputs = {"input": all_flattened}
-        else:
-            circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
+        circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
         outputs = circuit.get_outputs(inference_inputs)
         formatted = circuit.format_outputs(outputs)
         return circuit_inputs, formatted
 
     @staticmethod
-    def _wandb_path_for(circuit_path: Path) -> Optional[str]:
-        wandb = circuit_path.parent / f"{circuit_path.stem}_wandb.json"
-        return str(wandb) if wandb.exists() else None
+    def _wai_safe_metadata(circuit_path: Path) -> str:
+        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
+        with open(meta_path, "r") as f:
+            meta = json.load(f)
+        if not meta.get("weights_as_inputs"):
+            return str(meta_path)
+        meta["weights_as_inputs"] = False
+        safe_path = circuit_path.parent / f"{circuit_path.stem}_metadata_nowai.json"
+        with open(safe_path, "w") as f:
+            json.dump(meta, f)
+        return str(safe_path)
 
     def generate_witness(
         self,
@@ -150,8 +145,7 @@ class JSTprove:
             inputs = read_from_json(str(input_file))
             circuit_inputs, formatted = self._process_inputs(circuit, inputs)
 
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
-            wandb_path = self._wandb_path_for(circuit_path)
+            metadata_path = self._wai_safe_metadata(circuit_path)
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
@@ -161,7 +155,6 @@ class JSTprove:
                     "_circuit_outputs": formatted,
                     "witness": str(witness_path),
                 }],
-                wandb_path=wandb_path,
             )
 
             if result.get("failed", 0) > 0:
@@ -193,8 +186,7 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
-            wandb_path = self._wandb_path_for(circuit_path)
+            metadata_path = self._wai_safe_metadata(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
@@ -213,7 +205,6 @@ class JSTprove:
                 circuit_path=str(circuit_path),
                 metadata_path=metadata_path,
                 chunk_jobs=piped_jobs,
-                wandb_path=wandb_path,
             )
             if result.get("failed", 0) > 0:
                 raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
@@ -244,8 +235,7 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
-            wandb_path = self._wandb_path_for(circuit_path)
+            metadata_path = self._wai_safe_metadata(circuit_path)
 
             piped_jobs = []
             per_job_formatted = []
@@ -275,7 +265,6 @@ class JSTprove:
                     circuit_path=str(circuit_path),
                     metadata_path=metadata_path,
                     chunk_jobs=chunk,
-                    wandb_path=wandb_path,
                 )
                 total_failed += result.get("failed", 0)
                 all_errors.extend(result.get("errors", []))

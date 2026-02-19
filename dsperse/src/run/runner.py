@@ -533,7 +533,7 @@ class Runner:
 
         jobs = []
         has_tensors = "tile_tensor" in tile_args_list[0]
-        tile_input_name = tiling.input_name or "tile_in"
+        tile_input_name = "tile_in"
         for args in tile_args_list:
             tile_out = Path(args["tile_out"])
             witness_path = tile_out.parent / f"{tile_out.stem}_witness.bin"

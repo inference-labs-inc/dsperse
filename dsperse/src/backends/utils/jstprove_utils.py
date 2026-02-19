@@ -43,6 +43,18 @@ class JSTproveUtils:
         return model
 
     @staticmethod
+    def promote_initializers_to_inputs(model: onnx.ModelProto) -> onnx.ModelProto:
+        """Promote ONNX initializers to graph inputs so the Rust backend can read their shapes for WAI."""
+        existing_input_names = {inp.name for inp in model.graph.input}
+        for init in model.graph.initializer:
+            if init.name in existing_input_names:
+                continue
+            tensor_type = onnx.helper.make_tensor_type_proto(init.data_type, list(init.dims))
+            value_info = onnx.helper.make_value_info(init.name, tensor_type)
+            model.graph.input.append(value_info)
+        return model
+
+    @staticmethod
     def is_compatible(model_path: Union[str, Path]) -> Tuple[bool, set]:
         """Check if an ONNX model contains only JSTprove-supported operations."""
         model_path = Path(model_path)

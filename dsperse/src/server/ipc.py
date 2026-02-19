@@ -1,0 +1,59 @@
+import asyncio
+import json
+import logging
+import os
+import struct
+from typing import Callable, Awaitable
+
+logger = logging.getLogger(__name__)
+
+MAX_PAYLOAD = 64 * 1024 * 1024
+
+
+async def _handle_connection(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    handler: Callable[[dict], Awaitable[dict]],
+):
+    try:
+        len_buf = await reader.readexactly(4)
+        (payload_len,) = struct.unpack(">I", len_buf)
+        if payload_len > MAX_PAYLOAD:
+            response = {"error": f"payload length {payload_len} exceeds {MAX_PAYLOAD}"}
+        else:
+            raw = await reader.readexactly(payload_len)
+            request = json.loads(raw)
+            response = await handler(request)
+    except asyncio.IncompleteReadError:
+        return
+    except json.JSONDecodeError as e:
+        response = {"error": f"invalid JSON: {e}"}
+    except Exception as e:
+        logger.exception("IPC handler error")
+        response = {"error": str(e)}
+    finally:
+        try:
+            resp_bytes = json.dumps(response).encode()
+            writer.write(struct.pack(">I", len(resp_bytes)))
+            writer.write(resp_bytes)
+            await writer.drain()
+        except Exception:
+            pass
+        writer.close()
+        await writer.wait_closed()
+
+
+async def start_server(
+    socket_path: str,
+    handler: Callable[[dict], Awaitable[dict]],
+):
+    if os.path.exists(socket_path):
+        os.unlink(socket_path)
+
+    async def on_connect(reader, writer):
+        await _handle_connection(reader, writer, handler)
+
+    server = await asyncio.start_unix_server(on_connect, path=socket_path)
+    logger.info(f"IPC server listening on {socket_path}")
+    async with server:
+        await server.serve_forever()

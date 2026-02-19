@@ -35,6 +35,8 @@ from dsperse.src.cli import (
     compile_model,
     setup_full_run_parser,
     full_run,
+    setup_serve_parser,
+    serve,
 )
 
 
@@ -84,6 +86,7 @@ def main():
     setup_verify_parser(subparsers)
     setup_compile_parser(subparsers)
     setup_full_run_parser(subparsers)
+    setup_serve_parser(subparsers)
 
     # Parse arguments
     args = parser.parse_args()
@@ -117,6 +120,8 @@ def main():
         compile_model(args)
     elif args.command == "full-run":
         full_run(args)
+    elif args.command == "serve":
+        serve(args)
     else:
         # If no command is provided, show help
         parser.print_help()

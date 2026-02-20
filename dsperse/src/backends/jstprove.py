@@ -135,6 +135,8 @@ class JSTprove:
             if not witness_path.exists():
                 raise FileNotFoundError(f"Witness file not created: {witness_path}")
 
+            with open(input_file, "w") as f:
+                json.dump(circuit_inputs, f)
             with open(output_file, "w") as f:
                 json.dump(formatted, f)
 
@@ -180,7 +182,9 @@ class JSTprove:
                 raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
 
             results = []
-            for job, formatted in zip(jobs, per_job_formatted):
+            for job, ci, formatted in zip(jobs, [p["_circuit_inputs"] for p in piped_jobs], per_job_formatted):
+                with open(job["input"], "w") as f:
+                    json.dump(ci, f)
                 with open(job["output"], "w") as f:
                     json.dump(formatted, f)
                 results.append((True, self.process_witness_output(formatted)))
@@ -213,6 +217,7 @@ class JSTprove:
                 if isinstance(inputs, str):
                     inputs = read_from_json(inputs)
                 circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                job["_circuit_inputs"] = circuit_inputs
                 piped_jobs.append({
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,

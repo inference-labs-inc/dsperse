@@ -1,11 +1,10 @@
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Optional, Union
 
-from dsperse.src.analyzers.schema import Backend, RunSliceMetadata, ExecutionChain, ExecutionMethod, RunMetadata, TilingInfo, TileResult, SliceResult
-from dsperse.src.backends.dispatch import WITNESS_FILENAME, instantiate_backend, resolve_circuit_path
+from dsperse.src.analyzers.schema import Backend, ExecutionChain, ExecutionMethod, TilingInfo, TileResult, SliceResult
+from dsperse.src.backends.dispatch import WITNESS_FILENAME, instantiate_backend
 from dsperse.src.utils.utils import Utils
 from dsperse.src.utils.pipeline_utils import get_witness_backend, get_witness_file, select_backend, initialize_stage_metadata, filter_circuit_slices, finalize_stage_results
 
@@ -64,8 +63,9 @@ class VerifierUtils:
         slice_id: str,
         run_path: Path,
         preferred_backend: str,
-        slice_dir: Path,
-        meta: RunSliceMetadata,
+        circuit_path: Optional[str] = None,
+        settings_path: Optional[str] = None,
+        vk_path: Optional[str] = None,
     ) -> tuple[bool, str | None]:
         tile_name = f"tile_{tile_idx}"
         tile_run_dir = run_path / slice_id / tile_name if (run_path / slice_id / tile_name).exists() else run_path / tile_name
@@ -77,7 +77,6 @@ class VerifierUtils:
 
         try:
             if preferred_backend == Backend.JSTPROVE:
-                circuit_path = Utils.resolve_under_slice(slice_dir, resolve_circuit_path(meta, preferred_backend))
                 input_path = tile_run_dir / "input.json"
                 output_path = tile_run_dir / "output.json"
                 tile_witness_path = tile_run_dir / WITNESS_FILENAME[Backend.JSTPROVE]
@@ -89,8 +88,6 @@ class VerifierUtils:
                 ok = VerifierUtils.verify_with_backend(Backend.JSTPROVE, str(tile_proof_path), str(circuit_path), str(input_path), str(output_path), str(tile_witness_path))
                 return ok, None if ok else "verification_failed"
             else:
-                settings_path = Utils.resolve_under_slice(slice_dir, meta.settings_path)
-                vk_path = Utils.resolve_under_slice(slice_dir, meta.vk_path)
                 ok = VerifierUtils.verify_with_backend(Backend.EZKL, str(tile_proof_path), None, None, None, None, str(settings_path), str(vk_path))
                 return ok, None if ok else "verification_failed"
         except Exception as e:
@@ -102,8 +99,9 @@ class VerifierUtils:
         run_path: Path,
         num_tiles: int,
         preferred_backend: str,
-        slice_dir: Path,
-        meta: RunSliceMetadata,
+        circuit_path: Optional[str] = None,
+        settings_path: Optional[str] = None,
+        vk_path: Optional[str] = None,
         tiles_range: Optional[Union[range, list[int]]] = None,
     ) -> tuple[bool, list[dict]]:
         target_tiles = tiles_range if tiles_range is not None else range(num_tiles)
@@ -112,7 +110,7 @@ class VerifierUtils:
 
         for tile_idx in target_tiles:
             start_time = time.time()
-            ok, res = VerifierUtils.verify_tile(tile_idx, slice_id, run_path, preferred_backend, slice_dir, meta)
+            ok, res = VerifierUtils.verify_tile(tile_idx, slice_id, run_path, preferred_backend, circuit_path=circuit_path, settings_path=settings_path, vk_path=vk_path)
             tile_verifs.append({
                 "tile_idx": tile_idx,
                 "success": ok,
@@ -132,7 +130,7 @@ class VerifierUtils:
 
         if tiling_info:
             tiling = TilingInfo.from_dict(tiling_info)
-            success, tile_verifs = VerifierUtils.verify_tile_batch(slice_id, Path(run_path), tiling.num_tiles, preferred, Path(slice_dir), RunSliceMetadata.from_dict({'tiling': tiling_info}))
+            success, tile_verifs = VerifierUtils.verify_tile_batch(slice_id, Path(run_path), tiling.num_tiles, preferred, circuit_path=circuit_path, settings_path=settings_path, vk_path=vk_path)
             result.success = success
             result.method = ExecutionMethod.JSTPROVE_VERIFY if preferred == Backend.JSTPROVE else ExecutionMethod.EZKL_VERIFY
             result.tiles = [TileResult.from_dict(v) for v in tile_verifs]

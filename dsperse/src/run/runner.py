@@ -2,6 +2,7 @@
 Runner for EzKL Circuit and ONNX Inference
 """
 
+import json
 import logging
 import os
 import shutil
@@ -579,7 +580,7 @@ class Runner:
             )
 
         tile_exec_infos = []
-        for args, (success, output) in zip(tile_args_list, results):
+        for args, job, (success, output) in zip(tile_args_list, jobs, results):
             if not success:
                 raise RuntimeError(
                     f"Batch witness failed for tile {args['tile_idx']}: {output}"
@@ -587,6 +588,12 @@ class Runner:
             tile_executor.process_result(
                 output, tiling, tiling.slice_idx, args["tile_idx"]
             )
+            tile_out = Path(args["tile_out"])
+            input_json_path = tile_out.parent / "input.json"
+            circuit_inputs = job.get("_circuit_inputs")
+            if circuit_inputs is not None:
+                with open(input_json_path, "w") as f:
+                    json.dump(circuit_inputs, f)
             tile_exec_infos.append(
                 TileResult(
                     tile_idx=args["tile_idx"],

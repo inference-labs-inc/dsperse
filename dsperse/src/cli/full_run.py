@@ -42,6 +42,10 @@ def setup_parser(subparsers):
     full_run_parser.add_argument('--layers', '-l', help='Optional: Layers to compile (e.g., "3, 20-22") passed through to compile')
     full_run_parser.add_argument('--weights-as-inputs', '--wai', action='store_true', default=False, dest='weights_as_inputs',
                                  help='Treat model weights as witness inputs instead of compile-time constants (JSTprove only)')
+    full_run_parser.add_argument('--parallel', type=int, default=1, dest='parallel',
+                                 help='Number of parallel processes for compilation, inference, proving, and verification (default: 1)')
+    full_run_parser.add_argument('--batch', action='store_true', default=False,
+                                 help='Use JSTprove batch witness generation for tiled slices')
     return full_run_parser
 
 
@@ -159,7 +163,9 @@ def full_run(args):
 
     # 3) Compile (circuitize) with calibration input
     # User requested: compilation should just be jstprove.
-    compile_args = Namespace(path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None), backend='jstprove', weights_as_inputs=getattr(args, 'weights_as_inputs', False))
+    parallel = getattr(args, 'parallel', 1)
+    batch = getattr(args, 'batch', False)
+    compile_args = Namespace(path=slices_dir, input_file=args.input_file, layers=getattr(args, 'layers', None), backend='jstprove', weights_as_inputs=getattr(args, 'weights_as_inputs', False), parallel=parallel, resume=False)
     print(f"{Fore.CYAN}Step 2/5: Compiling slices (JSTprove circuitization)...{Style.RESET_ALL}")
     compile_model(compile_args)
 
@@ -168,7 +174,7 @@ def full_run(args):
     os.makedirs(run_root_dir, exist_ok=True)
     inference_output_path = os.path.join(run_root_dir, 'inference_results.json')
     # run_inference expects 'path' for slices, and doesn't use output_file directly for run_results.json anymore (it saves to run_results.json in the run dir)
-    run_args = Namespace(path=slices_dir, input_file=args.input_file, output_file=inference_output_path, force_backend=None)
+    run_args = Namespace(path=slices_dir, input_file=args.input_file, output_file=inference_output_path, force_backend=None, threads=parallel, batch=batch, run_dir=None)
     print(f"{Fore.CYAN}Step 3/5: Running inference over slices...{Style.RESET_ALL}")
     run_inference(run_args)
 
@@ -180,13 +186,13 @@ def full_run(args):
 
     # 5) Generate proof
     # run_proof expects run_dir and slices_path
-    prove_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None)
+    prove_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None, parallel=parallel, tiles=None)
     print(f"{Fore.CYAN}Step 4/5: Generating proof...{Style.RESET_ALL}")
     run_proof(prove_args)
 
     # 6) Verify proof
     # verify_proof expects run_dir and slices_path
-    verify_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None)
+    verify_args = Namespace(run_dir=latest_run_dir, slices_path=slices_dir, backend=None, parallel=parallel, tiles=None)
     print(f"{Fore.CYAN}Step 5/5: Verifying proof...{Style.RESET_ALL}")
     verify_proof(verify_args)
 

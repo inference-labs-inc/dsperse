@@ -44,6 +44,16 @@ class RunnerUtils:
         first_slice_meta = run_metadata.get_slice(head_id)
         first_slice_inputs = first_slice_meta.dependencies.filtered_inputs if first_slice_meta else []
         model_input_name = first_slice_inputs[0] if first_slice_inputs else "input"
+        if first_slice_meta and first_slice_meta.input_shape:
+            numel = input_tensor.numel()
+            for shape_candidate in first_slice_meta.input_shape:
+                int_shape = [d if isinstance(d, int) else 1 for d in shape_candidate]
+                candidate_numel = 1
+                for d in int_shape:
+                    candidate_numel *= d
+                if candidate_numel == numel and list(input_tensor.shape) != int_shape:
+                    input_tensor = input_tensor.reshape(int_shape)
+                    break
         return input_tensor, {model_input_name: input_tensor}
 
     @staticmethod

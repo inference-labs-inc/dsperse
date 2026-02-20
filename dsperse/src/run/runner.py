@@ -2,6 +2,7 @@
 Runner for EzKL Circuit and ONNX Inference
 """
 
+import json
 import logging
 import os
 import shutil
@@ -136,6 +137,15 @@ class Runner:
                 )
             return exec_info.success, {"output": output_tensor}, exec_info
 
+        # --- Multi-input Execution (must precede circuit path) ---
+        filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
+        if len(filtered_inputs) > 1:
+            missing = [n for n in filtered_inputs if n not in tensor_cache]
+            if missing:
+                raise ValueError(f"Missing input tensors for {slice_id}: {missing}")
+            extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
+            return self.run_onnx_multi(info, out_file, slices_path, extra_tensors)
+
         # --- Standard Circuit Execution ---
         use_circuit = node.use_circuit and backend != Backend.ONNX
         if use_circuit:
@@ -143,18 +153,10 @@ class Runner:
                 info, in_file, out_file, slices_path, backend=backend
             )
 
-        # --- ONNX Fallback / Multi-input Execution ---
-        filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
-        if len(filtered_inputs) > 1:
-            missing = [n for n in filtered_inputs if n not in tensor_cache]
-            if missing:
-                raise ValueError(f"Missing input tensors for {slice_id}: {missing}")
-            extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
-        else:
-            extra_tensors = {
-                filtered_inputs[0] if filtered_inputs else "input": current_tensor
-            }
-
+        # --- Single-input ONNX Fallback ---
+        extra_tensors = {
+            filtered_inputs[0] if filtered_inputs else "input": current_tensor
+        }
         return self.run_onnx_multi(info, out_file, slices_path, extra_tensors)
 
     def run_circuit_with_fallback(
@@ -533,7 +535,7 @@ class Runner:
 
         jobs = []
         has_tensors = "tile_tensor" in tile_args_list[0]
-        tile_input_name = tiling.input_name or "tile_in"
+        tile_input_name = "tile_in"
         for args in tile_args_list:
             tile_out = Path(args["tile_out"])
             witness_path = tile_out.parent / f"{tile_out.stem}_witness.bin"
@@ -578,7 +580,7 @@ class Runner:
             )
 
         tile_exec_infos = []
-        for args, (success, output) in zip(tile_args_list, results):
+        for args, job, (success, output) in zip(tile_args_list, jobs, results):
             if not success:
                 raise RuntimeError(
                     f"Batch witness failed for tile {args['tile_idx']}: {output}"
@@ -586,6 +588,12 @@ class Runner:
             tile_executor.process_result(
                 output, tiling, tiling.slice_idx, args["tile_idx"]
             )
+            tile_out = Path(args["tile_out"])
+            input_json_path = tile_out.parent / "input.json"
+            circuit_inputs = job.get("_circuit_inputs")
+            if circuit_inputs is not None:
+                with open(input_json_path, "w") as f:
+                    json.dump(circuit_inputs, f)
             tile_exec_infos.append(
                 TileResult(
                     tile_idx=args["tile_idx"],

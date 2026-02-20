@@ -3,11 +3,12 @@ JSTprove backend for zero-knowledge proof generation.
 """
 import importlib.metadata
 import json
+import logging
 import os
 import tempfile
-import torch
-import logging
+
 import onnx
+import torch
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Union, List
 
@@ -81,13 +82,17 @@ class JSTprove:
             raise FileNotFoundError(f"Circuit file not found: {circuit_path}")
         return circuit_path
 
-    def _process_inputs(self, circuit: GenericModelONNX, inputs: dict) -> Tuple[dict, dict]:
-        scaled = circuit.scale_inputs_only(inputs)
-        inference_inputs = circuit.reshape_inputs_for_inference(scaled)
-        circuit_inputs = circuit.reshape_inputs_for_circuit(scaled)
-        outputs = circuit.get_outputs(inference_inputs)
-        formatted = circuit.format_outputs(outputs)
-        return circuit_inputs, formatted
+    @staticmethod
+    def _metadata_path(circuit_path: Path) -> str:
+        meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
+        return str(meta_path) if meta_path.exists() else str(meta_path)
+
+    @staticmethod
+    def _process_inputs(
+        circuit: GenericModelONNX,
+        inputs: dict,
+    ) -> Tuple[dict, dict]:
+        return circuit.process_for_witness(inputs)
 
     def generate_witness(
         self,
@@ -112,11 +117,10 @@ class JSTprove:
             inputs = read_from_json(str(input_file))
             circuit_inputs, formatted = self._process_inputs(circuit, inputs)
 
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
             result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=metadata_path,
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=[{
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
@@ -131,6 +135,8 @@ class JSTprove:
             if not witness_path.exists():
                 raise FileNotFoundError(f"Witness file not created: {witness_path}")
 
+            with open(input_file, "w") as f:
+                json.dump(circuit_inputs, f)
             with open(output_file, "w") as f:
                 json.dump(formatted, f)
 
@@ -153,7 +159,6 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
 
             piped_jobs = []
             per_job_formatted = []
@@ -167,15 +172,19 @@ class JSTprove:
                 })
                 per_job_formatted.append(formatted)
 
-            _run_witness_chunk_piped(
+            result = _run_witness_chunk_piped(
                 binary_name=circuit.name,
                 circuit_path=str(circuit_path),
-                metadata_path=metadata_path,
+                metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=piped_jobs,
             )
+            if result.get("failed", 0) > 0:
+                raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
 
             results = []
-            for job, formatted in zip(jobs, per_job_formatted):
+            for job, ci, formatted in zip(jobs, [p["_circuit_inputs"] for p in piped_jobs], per_job_formatted):
+                with open(job["input"], "w") as f:
+                    json.dump(ci, f)
                 with open(job["output"], "w") as f:
                     json.dump(formatted, f)
                 results.append((True, self.process_witness_output(formatted)))
@@ -200,7 +209,6 @@ class JSTprove:
 
         try:
             circuit = self._get_circuit(circuit_path)
-            metadata_path = str(circuit_path.parent / f"{circuit_path.stem}_metadata.json")
 
             piped_jobs = []
             per_job_formatted = []
@@ -209,6 +217,7 @@ class JSTprove:
                 if isinstance(inputs, str):
                     inputs = read_from_json(inputs)
                 circuit_inputs, formatted = self._process_inputs(circuit, inputs)
+                job["_circuit_inputs"] = circuit_inputs
                 piped_jobs.append({
                     "_circuit_inputs": circuit_inputs,
                     "_circuit_outputs": formatted,
@@ -222,13 +231,19 @@ class JSTprove:
             else:
                 chunks = [piped_jobs[i:i + chunk_size] for i in range(0, len(piped_jobs), chunk_size)]
 
+            total_failed = 0
+            all_errors = []
             for chunk in chunks:
-                _run_witness_chunk_piped(
+                result = _run_witness_chunk_piped(
                     binary_name=circuit.name,
                     circuit_path=str(circuit_path),
-                    metadata_path=metadata_path,
+                    metadata_path=self._metadata_path(circuit_path),
                     chunk_jobs=chunk,
                 )
+                total_failed += result.get("failed", 0)
+                all_errors.extend(result.get("errors") or [])
+            if total_failed > 0:
+                raise RuntimeError(f"Batch witness failed for {total_failed} jobs: {all_errors}")
 
             results = []
             for job, formatted in zip(jobs, per_job_formatted):
@@ -495,6 +510,8 @@ class JSTprove:
 
         model = onnx.load(str(model_path))
         model = JSTproveUtils.add_zero_bias_to_conv(model)
+        if weights_as_inputs:
+            model = JSTproveUtils.promote_initializers_to_inputs(model)
 
         fd, preprocessed_path = tempfile.mkstemp(suffix=".onnx")
         os.close(fd)

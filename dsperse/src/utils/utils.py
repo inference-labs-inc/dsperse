@@ -18,7 +18,24 @@ class Utils:
     """
     @staticmethod
     def save_onnx_model(model: onnx.ModelProto, path: str | Path, opset_version: int = 18):
-        """Save ONNX model with compatible IR version (9) and specified opset."""
+        """Save ONNX model with compatible IR version and specified opset.
+
+        When the target opset differs from the model's current opset, uses
+        onnx.version_converter to properly adapt operator schemas (e.g. Split
+        attribute->input promotion from opset 12->13+).
+        """
+        current_opset = next(
+            (o.version for o in model.opset_import if o.domain in ("", "ai.onnx")),
+            None,
+        )
+        if current_opset is not None and current_opset != opset_version:
+            try:
+                model = onnx.version_converter.convert_version(model, opset_version)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to convert ONNX model from opset {current_opset} to "
+                    f"{opset_version}: {e}"
+                ) from e
         model.ir_version = 9
         if model.opset_import:
             for opset in model.opset_import:

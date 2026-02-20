@@ -172,8 +172,7 @@ class TileExecutor:
 
             if write_to_disk:
                 tile_in = tile_run_dir / "input.json"
-                tile_input_name = tiling.input_name or "tile_in"
-                Utils.write_input(tile_tensor, str(tile_in), tile_input_name)
+                Utils.write_input(tile_tensor, str(tile_in), "tile_in")
                 task['tile_in'] = str(tile_in)
             else:
                 task['tile_tensor'] = tile_tensor

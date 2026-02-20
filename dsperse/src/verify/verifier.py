@@ -57,7 +57,10 @@ class Verifier(PipelineStage):
         slice_dir = Utils.slice_dirs_path(dirs_root, slice_id)
 
         if meta.tiling:
-            success, tile_verifs = VerifierUtils.verify_tile_batch(slice_id, run_path, meta.tiling.num_tiles, preferred, slice_dir, meta, tiles_range=tiles_range)
+            circuit_path = Utils.resolve_under_slice(slice_dir, resolve_circuit_path(meta, preferred))
+            settings_path = Utils.resolve_under_slice(slice_dir, meta.settings_path)
+            vk_path = Utils.resolve_under_slice(slice_dir, meta.vk_path)
+            success, tile_verifs = VerifierUtils.verify_tile_batch(slice_id, run_path, meta.tiling.num_tiles, preferred, circuit_path=circuit_path, settings_path=settings_path, vk_path=vk_path, tiles_range=tiles_range)
             method = ExecutionMethod.JSTPROVE_VERIFY if preferred == Backend.JSTPROVE else ExecutionMethod.EZKL_VERIFY
             verifs = {
                 slice_id: SliceResult(

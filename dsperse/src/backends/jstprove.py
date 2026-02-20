@@ -85,18 +85,12 @@ class JSTprove:
     @staticmethod
     def _metadata_path(circuit_path: Path) -> str:
         meta_path = circuit_path.parent / f"{circuit_path.stem}_metadata.json"
-        if not meta_path.exists():
-            return str(meta_path)
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
-        if not meta.get("weights_as_inputs", False):
-            return str(meta_path)
-        runtime_path = circuit_path.parent / f"{circuit_path.stem}_metadata_runtime.json"
-        if not runtime_path.exists():
-            meta["weights_as_inputs"] = False
-            with open(runtime_path, "w") as f:
-                json.dump(meta, f)
-        return str(runtime_path)
+        return str(meta_path) if meta_path.exists() else str(meta_path)
+
+    @staticmethod
+    def _wandb_path(circuit_path: Path) -> Optional[str]:
+        wandb_path = circuit_path.parent / f"{circuit_path.stem}_wandb.json"
+        return str(wandb_path) if wandb_path.exists() else None
 
     @staticmethod
     def _process_inputs(
@@ -137,6 +131,7 @@ class JSTprove:
                     "_circuit_outputs": formatted,
                     "witness": str(witness_path),
                 }],
+                wandb_path=self._wandb_path(circuit_path),
             )
 
             if result.get("failed", 0) > 0:
@@ -186,6 +181,7 @@ class JSTprove:
                 circuit_path=str(circuit_path),
                 metadata_path=self._metadata_path(circuit_path),
                 chunk_jobs=piped_jobs,
+                wandb_path=self._wandb_path(circuit_path),
             )
             if result.get("failed", 0) > 0:
                 raise RuntimeError(f"Batch witness failed: {result.get('errors', [])}")
@@ -239,12 +235,14 @@ class JSTprove:
 
             total_failed = 0
             all_errors = []
+            wandb = self._wandb_path(circuit_path)
             for chunk in chunks:
                 result = _run_witness_chunk_piped(
                     binary_name=circuit.name,
                     circuit_path=str(circuit_path),
                     metadata_path=self._metadata_path(circuit_path),
                     chunk_jobs=chunk,
+                    wandb_path=wandb,
                 )
                 total_failed += result.get("failed", 0)
                 all_errors.extend(result.get("errors") or [])

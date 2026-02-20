@@ -136,6 +136,15 @@ class Runner:
                 )
             return exec_info.success, {"output": output_tensor}, exec_info
 
+        # --- Multi-input Execution (must precede circuit path) ---
+        filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
+        if len(filtered_inputs) > 1:
+            missing = [n for n in filtered_inputs if n not in tensor_cache]
+            if missing:
+                raise ValueError(f"Missing input tensors for {slice_id}: {missing}")
+            extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
+            return self.run_onnx_multi(info, out_file, slices_path, extra_tensors)
+
         # --- Standard Circuit Execution ---
         use_circuit = node.use_circuit and backend != Backend.ONNX
         if use_circuit:
@@ -143,18 +152,10 @@ class Runner:
                 info, in_file, out_file, slices_path, backend=backend
             )
 
-        # --- ONNX Fallback / Multi-input Execution ---
-        filtered_inputs = [n for n in info.dependencies.filtered_inputs if n]
-        if len(filtered_inputs) > 1:
-            missing = [n for n in filtered_inputs if n not in tensor_cache]
-            if missing:
-                raise ValueError(f"Missing input tensors for {slice_id}: {missing}")
-            extra_tensors = {name: tensor_cache[name] for name in filtered_inputs}
-        else:
-            extra_tensors = {
-                filtered_inputs[0] if filtered_inputs else "input": current_tensor
-            }
-
+        # --- Single-input ONNX Fallback ---
+        extra_tensors = {
+            filtered_inputs[0] if filtered_inputs else "input": current_tensor
+        }
         return self.run_onnx_multi(info, out_file, slices_path, extra_tensors)
 
     def run_circuit_with_fallback(

@@ -5,7 +5,8 @@ Runner for EzKL Circuit and ONNX Inference
 import logging
 import os
 import shutil
-from concurrent.futures import ProcessPoolExecutor, as_completed
+import threading
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -39,6 +40,7 @@ class Runner:
         self,
         run_dir: str = None,
         threads: int = 1,
+        workers: int = 1,
         on_slice_complete: Optional[SliceCompleteCallback] = None,
         batch: bool = False,
         lazy: bool = False,
@@ -48,6 +50,8 @@ class Runner:
         Args:
             run_dir: Directory for run outputs (default: alongside slices). If it contains metadata.json, it's a resume.
             threads: Number of parallel tile execution processes
+            workers: Number of parallel slice workers for outer parallelization (default: 1).
+                     Slices whose inputs are all satisfied run concurrently.
             on_slice_complete: Optional callback called after each slice completes.
                                Signature: (slice_id: str, exec_info: ExecutionInfo, run_dir: Path) -> None
             batch: Use JSTprove batch witness generation for tiled slices (loads circuit once for all tiles)
@@ -56,6 +60,7 @@ class Runner:
         """
         self.run_dir = Path(run_dir) if run_dir else None
         self.threads = max(1, threads)
+        self.workers = max(1, workers)
         self.resume = bool(self.run_dir)
         self.on_slice_complete = on_slice_complete
         self.batch = batch
@@ -67,6 +72,7 @@ class Runner:
         self.tensor_cache: dict | None = None
         self._archive_path: Path | None = None
         self._extracted_slices: set[str] = set()
+        self._lazy_lock = threading.Lock()
 
         try:
             self.ezkl_runner = EZKL()
@@ -783,9 +789,131 @@ class Runner:
         )
         return success, result, exec_info
 
+    def _compute_slice_graph(self) -> tuple[dict[str, list[str]], dict[str, int]]:
+        """Build (successors, pending_counts) from tensor name overlap."""
+        slices = self.run_metadata.slices
+        # tensor_name -> producing slice_id
+        tensor_producer: dict[str, str] = {}
+        for sid, meta in slices.items():
+            for name in meta.dependencies.output:
+                tensor_producer[name] = sid
+
+        successors: dict[str, list[str]] = {s: [] for s in slices}
+        pending: dict[str, int] = {}
+        for sid, meta in slices.items():
+            dep_slices = {
+                tensor_producer[n]
+                for n in meta.dependencies.input
+                if n in tensor_producer and tensor_producer[n] != sid
+            }
+            pending[sid] = len(dep_slices)
+            for dep in dep_slices:
+                successors[dep].append(sid)
+        return successors, pending
+
+    def _execute_slice(
+        self,
+        sid: str,
+        nodes: dict,
+        tensor_cache: dict,
+        input_tensor,
+        run_dir: Path,
+        backend: str | None,
+    ) -> tuple:
+        """Execute a single slice end-to-end: extract, prepare, dispatch, process, save, callback.
+
+        Returns (out_tensor, exec_info). Raises RuntimeError on inference failure.
+        """
+        self._ensure_slice_extracted(sid)
+        info = self.run_metadata.get_slice(sid)
+        node = nodes[sid]
+        in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, sid)
+        skip_write = bool(info.tiling or info.channel_split)
+        current_tensor = RunnerUtils.prepare_slice_input(
+            info, tensor_cache, input_tensor, in_file, skip_write=skip_write
+        )
+        ok, result, exec_info = self.dispatch_slice(
+            sid, info, node, tensor_cache, run_dir,
+            self.slices_path, in_file, out_file, backend, current_tensor,
+        )
+        out_tensor = RunnerUtils.process_inference_result(
+            sid, info, ok, result, exec_info, tensor_cache
+        )
+        if not ok:
+            err = exec_info.error if isinstance(exec_info, ExecutionInfo) else exec_info.get("error", "unknown")
+            raise RuntimeError(f"Inference failed for {sid}: {err}")
+        if out_tensor is not None:
+            RunnerUtils.save_intermediate_output(out_file, out_tensor, exec_info)
+        if self.on_slice_complete:
+            self.on_slice_complete(sid, exec_info, run_dir)
+        return out_tensor, exec_info
+
+    def _run_parallel(self, input_json_path=None, backend=None):
+        """Parallel execution loop using a ready-queue + ThreadPoolExecutor."""
+        nodes = self.run_metadata.execution_chain.nodes
+        run_dir = self.last_run_dir
+        current_slice_id = self.run_metadata.execution_chain.head
+
+        input_tensor, tensor_cache = RunnerUtils.initialize_run_state(
+            input_json_path, self.run_metadata, current_slice_id
+        )
+        self.tensor_cache = tensor_cache
+
+        successors, pending = self._compute_slice_graph()
+        lock = threading.Lock()
+        slice_results: dict = {}
+        final_tensors: dict = {}
+
+        # --- Resume: pre-populate tensor_cache for already-completed slices ---
+        if self.resume:
+            for sid in list(self.run_metadata.slices):
+                resumed, cached_tensor, cached_info = RunnerUtils.try_resume_slice(run_dir, sid)
+                if resumed:
+                    info = self.run_metadata.get_slice(sid)
+                    for oname in info.dependencies.output:
+                        tensor_cache[oname] = cached_tensor
+                    slice_results[sid] = cached_info
+                    for succ in successors.get(sid, []):
+                        pending[succ] -= 1
+
+        ready = [s for s, cnt in pending.items() if cnt == 0 and s not in slice_results]
+
+        with ThreadPoolExecutor(max_workers=self.workers) as executor:
+            futures = {
+                executor.submit(self._execute_slice, s, nodes, tensor_cache, input_tensor, run_dir, backend): s
+                for s in ready
+            }
+
+            while futures:
+                done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED)
+                newly_ready = []
+                for future in done:
+                    sid = futures.pop(future)
+                    out_t, ei = future.result()  # propagates exceptions
+                    slice_results[sid] = ei
+                    if out_t is not None:
+                        final_tensors[sid] = out_t
+                    with lock:
+                        for succ in successors.get(sid, []):
+                            pending[succ] -= 1
+                            if pending[succ] == 0:
+                                newly_ready.append(succ)
+                for s in newly_ready:
+                    futures[executor.submit(self._execute_slice, s, nodes, tensor_cache, input_tensor, run_dir, backend)] = s
+
+        leaf_ids = [s for s in self.run_metadata.slices if not successors.get(s)]
+        final_tensor = final_tensors.get(leaf_ids[-1]) if leaf_ids else None
+
+        self.tensor_cache = tensor_cache
+        return RunnerUtils.finalize_run_results(
+            self.run_metadata, input_tensor, final_tensor, slice_results, run_dir
+        )
+
     def _run(self, input_json_path=None, backend: str = None):
         """Internal execution loop for model inference."""
-        # --- Initialization ---
+        if self.workers > 1:
+            return self._run_parallel(input_json_path=input_json_path, backend=backend)
+
         nodes = self.run_metadata.execution_chain.nodes
         current_slice_id = self.run_metadata.execution_chain.head
         run_dir = self.last_run_dir
@@ -797,15 +925,10 @@ class Runner:
         slice_results, final_tensor = {}, None
         prev_slice_id = None
 
-        # --- Execution Loop ---
         while current_slice_id:
-            self._ensure_slice_extracted(current_slice_id)
-
             info = self.run_metadata.get_slice(current_slice_id)
             node = nodes[current_slice_id]
-            in_file, out_file = RunnerUtils.prepare_slice_io(run_dir, current_slice_id)
 
-            # Resume Logic
             if self.resume:
                 resumed, cached_tensor, cached_info = RunnerUtils.try_resume_slice(
                     run_dir, current_slice_id
@@ -813,53 +936,17 @@ class Runner:
                 if resumed:
                     for oname in info.dependencies.output:
                         tensor_cache[oname] = cached_tensor
-                    final_tensor, slice_results[current_slice_id] = (
-                        cached_tensor,
-                        cached_info,
-                    )
+                    final_tensor, slice_results[current_slice_id] = cached_tensor, cached_info
                     if prev_slice_id:
                         self._cleanup_slice_if_lazy(prev_slice_id)
                     prev_slice_id = current_slice_id
                     current_slice_id = node.next
                     continue
 
-            # Execution Step
-            skip_write = bool(info.tiling or info.channel_split)
-            current_tensor = RunnerUtils.prepare_slice_input(
-                info, tensor_cache, input_tensor, in_file, skip_write=skip_write
-            )
-            ok, result, exec_info = self.dispatch_slice(
-                current_slice_id,
-                info,
-                node,
-                tensor_cache,
-                run_dir,
-                self.slices_path,
-                in_file,
-                out_file,
-                backend,
-                current_tensor,
-            )
-
-            # Result Processing
-            final_tensor = RunnerUtils.process_inference_result(
-                current_slice_id, info, ok, result, exec_info, tensor_cache
+            final_tensor, exec_info = self._execute_slice(
+                current_slice_id, nodes, tensor_cache, input_tensor, run_dir, backend
             )
             slice_results[current_slice_id] = exec_info
-
-            if not ok:
-                err = (
-                    exec_info.error
-                    if isinstance(exec_info, ExecutionInfo)
-                    else exec_info.get("error", "unknown")
-                )
-                raise Exception(f"Inference failed for {current_slice_id}: {err}")
-
-            if final_tensor is not None:
-                RunnerUtils.save_intermediate_output(out_file, final_tensor, exec_info)
-
-            if self.on_slice_complete:
-                self.on_slice_complete(current_slice_id, exec_info, run_dir)
 
             if prev_slice_id:
                 self._cleanup_slice_if_lazy(prev_slice_id)
@@ -869,7 +956,6 @@ class Runner:
         if prev_slice_id:
             self._cleanup_slice_if_lazy(prev_slice_id)
 
-        # --- Finalization ---
         self.tensor_cache = tensor_cache
         return RunnerUtils.finalize_run_results(
             self.run_metadata, input_tensor, final_tensor, slice_results, run_dir
@@ -941,12 +1027,11 @@ class Runner:
         """Ensure a slice is extracted from the archive if using lazy mode."""
         if not self.lazy or self._archive_path is None:
             return
-
-        if slice_id in self._extracted_slices:
-            return
-
-        Converter.extract_single_slice(self._archive_path, slice_id, self.slices_path)
-        self._extracted_slices.add(slice_id)
+        with self._lazy_lock:
+            if slice_id in self._extracted_slices:
+                return
+            Converter.extract_single_slice(self._archive_path, slice_id, self.slices_path)
+            self._extracted_slices.add(slice_id)
 
     def _cleanup_slice_if_lazy(self, slice_id: str) -> None:
         """Clean up an extracted slice if using lazy mode and it's no longer needed."""

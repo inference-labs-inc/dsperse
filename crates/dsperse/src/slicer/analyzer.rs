@@ -216,12 +216,17 @@ pub fn generate_slices_metadata(
 fn write_per_slice_metadata(metadata: &ModelMetadata, output_dir: &Path) -> Result<()> {
     for slice_meta in &metadata.slices {
         let slice_dir = output_dir.join(format!("slice_{}", slice_meta.index));
+        let slice_point = metadata
+            .slice_points
+            .get(slice_meta.index)
+            .copied()
+            .unwrap_or(slice_meta.index);
         let per_slice = ModelMetadata {
             original_model: metadata.original_model.clone(),
             model_type: metadata.model_type.clone(),
             input_shape: metadata.input_shape.clone(),
             output_shapes: metadata.output_shapes.clone(),
-            slice_points: vec![slice_meta.index],
+            slice_points: vec![slice_point],
             slices: vec![slice_meta.clone()],
         };
         per_slice.save(&slice_dir.join("metadata.json"))?;
@@ -293,12 +298,12 @@ fn get_segment_dependencies(
         }
     }
 
-    let mut outputs = Vec::new();
-    for output in output_map.keys() {
-        if !inputs.contains(output) {
-            outputs.push(output.clone());
-        }
-    }
+    let mut outputs: Vec<String> = output_map
+        .keys()
+        .filter(|output| !inputs.contains(output))
+        .cloned()
+        .collect();
+    outputs.sort();
 
     let initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"];
     let filtered = inputs

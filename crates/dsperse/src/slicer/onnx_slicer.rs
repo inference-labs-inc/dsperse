@@ -24,7 +24,12 @@ pub fn slice_model(
 
     let output_dir = output_path
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| onnx_path.parent().unwrap().join("slices"));
+        .unwrap_or_else(|| {
+            onnx_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("slices")
+        });
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| DsperseError::io(e, &output_dir))?;
 
@@ -212,6 +217,9 @@ fn filter_constant_only_slices(points: &[usize], analysis: &AnalysisResult) -> V
 fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     let max_index = analysis.nodes.values().map(|n| n.index).max().unwrap_or(0);
     let end = max_index + 1;
+    if !points.contains(&0) {
+        points.push(0);
+    }
     if !points.contains(&end) {
         points.push(end);
     }
@@ -360,8 +368,8 @@ fn trace_shapes_tract(onnx_path: &Path) -> Result<HashMap<String, Vec<i64>>> {
                             if kernel.len() >= 2 && strides.len() >= 2 {
                                 let pad_h = if pads.len() >= 4 { pads[0] + pads[2] } else { 0 };
                                 let pad_w = if pads.len() >= 4 { pads[1] + pads[3] } else { 0 };
-                                let h = (in_shape[2] + pad_h - kernel[0]) / strides[0] + 1;
-                                let w = (in_shape[3] + pad_w - kernel[1]) / strides[1] + 1;
+                                let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
+                                let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
                                 let out_shape = vec![in_shape[0], in_shape[1], h, w];
                                 for out in &node.output {
                                     if !out.is_empty() && !shapes.contains_key(out) {
@@ -437,11 +445,21 @@ fn apply_traced_shapes(
             .map(|vi| vi.name.clone())
             .collect();
 
+        let init_types: HashMap<&str, i32> = graph
+            .initializer
+            .iter()
+            .map(|i| (i.name.as_str(), i.data_type))
+            .collect();
+
         for (name, shape) in shapes {
             if !existing.contains(name) {
+                let elem_type = init_types
+                    .get(name.as_str())
+                    .copied()
+                    .unwrap_or(TensorProto::FLOAT);
                 graph.value_info.push(onnx_proto::make_tensor_value_info(
                     name,
-                    TensorProto::FLOAT,
+                    elem_type,
                     shape,
                 ));
             }

@@ -273,12 +273,6 @@ fn execute_tiled(
     let tile_infos = tiling.tiles.as_deref().unwrap_or(&[]);
     let single_tile = tiling.tile.as_ref();
 
-    let _circuit_dir = single_tile
-        .or(tile_infos.first())
-        .map(|ti| {
-            slice_dir.join(&ti.path).parent().unwrap_or(&slice_dir).to_path_buf()
-        });
-
     let mut tile_results: Vec<TileResult> = Vec::new();
     let mut tile_outputs: Vec<serde_json::Value> = Vec::new();
 
@@ -295,9 +289,10 @@ fn execute_tiled(
     } else {
         for (tile_idx, tile_data) in tiles.iter().enumerate() {
             let start = std::time::Instant::now();
-            let tile_run_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
-            std::fs::create_dir_all(&tile_run_dir)
-                .map_err(|e| DsperseError::io(e, &tile_run_dir))?;
+            let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+            std::fs::create_dir_all(&tile_dir)
+                .map_err(|e| DsperseError::io(e, &tile_dir))?;
+            let tile_run_dir = &tile_dir;
 
             let tile_info = tile_infos.get(tile_idx).or(single_tile);
             let tile_input_json = ndarray_to_nested_json(&tile_data.clone().into_dyn());
@@ -415,11 +410,10 @@ fn execute_tiles_batch(
     let mut jobs: Vec<PipeWitnessJob> = Vec::new();
     for (tile_idx, tile_data) in tiles.iter().enumerate() {
         let tile_input_json = ndarray_to_nested_json(&tile_data.clone().into_dyn());
-        let witness_path = slice_run_dir
-            .join(format!("tile_{tile_idx}"))
-            .join("witness.bin");
-        std::fs::create_dir_all(witness_path.parent().unwrap())
-            .map_err(|e| DsperseError::io(e, witness_path.parent().unwrap()))?;
+        let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+        std::fs::create_dir_all(&tile_dir)
+            .map_err(|e| DsperseError::io(e, &tile_dir))?;
+        let witness_path = tile_dir.join("witness.bin");
 
         jobs.push(PipeWitnessJob {
             input: serde_json::json!({ "input_data": tile_input_json }),
@@ -634,7 +628,8 @@ fn execute_channel_group(
     } else {
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
         let input_data = read_input_json(input_path)?;
-        run_onnx_inference(&onnx_path, &input_data)
+        let tensor = extract_output_tensor(&input_data);
+        run_onnx_inference(&onnx_path, &tensor)
     }
 }
 
@@ -806,13 +801,38 @@ fn store_outputs(
     Ok(())
 }
 
+fn infer_shape(value: &serde_json::Value) -> Vec<usize> {
+    let mut shape = Vec::new();
+    let mut current = value;
+    loop {
+        match current {
+            serde_json::Value::Array(arr) => {
+                shape.push(arr.len());
+                if let Some(first) = arr.first() {
+                    current = first;
+                } else {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    shape
+}
+
 fn run_onnx_inference(
     onnx_path: &Path,
     input: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let input_flat = flatten_nested_list(input);
+    let input_shape = infer_shape(input);
+    let shape_ref = if input_shape.iter().product::<usize>() == input_flat.len() && !input_shape.is_empty() {
+        &input_shape[..]
+    } else {
+        &[]
+    };
     let (output_data, output_shape) =
-        crate::backend::onnx::run_inference(onnx_path, &input_flat, &[])?;
+        crate::backend::onnx::run_inference(onnx_path, &input_flat, shape_ref)?;
 
     let output_arr = ndarray::ArrayD::from_shape_vec(
         ndarray::IxDyn(&output_shape),

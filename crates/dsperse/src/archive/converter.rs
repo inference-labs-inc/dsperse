@@ -6,6 +6,8 @@ use zip::write::SimpleFileOptions;
 
 use crate::error::{DsperseError, Result};
 
+const EXTRACTED_SENTINEL: &str = ".extracted";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatType {
     Dirs,
@@ -116,7 +118,9 @@ pub fn convert(
             }
             Ok(result)
         }
-        _ => Ok(path.to_path_buf()),
+        (FormatType::Dirs, FormatType::Dirs)
+        | (FormatType::Dslice, FormatType::Dslice)
+        | (FormatType::Dsperse, FormatType::Dsperse) => unreachable!(),
     }
 }
 
@@ -127,14 +131,14 @@ pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
         if is_slice_dir(path) {
             let dslice_out = if let Some(out) = output_path {
                 if out.is_dir() || out.extension().is_none() {
-                    out.join(format!("{}.dslice", path_name(path)))
+                    out.join(format!("{}.dslice", path_name(path)?))
                 } else {
                     out.to_path_buf()
                 }
             } else {
                 path.parent()
                     .unwrap_or(path)
-                    .join(format!("{}.dslice", path_name(path)))
+                    .join(format!("{}.dslice", path_name(path)?))
             };
             ensure_parent(&dslice_out)?;
             zip_directory(path, &dslice_out, &[])?;
@@ -150,7 +154,7 @@ pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
     fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
     for slice_dir in &slice_dirs {
-        let dslice_path = output_dir.join(format!("{}.dslice", path_name(slice_dir)));
+        let dslice_path = output_dir.join(format!("{}.dslice", path_name(slice_dir)?));
         zip_directory(slice_dir, &dslice_path, &[])?;
         tracing::info!("created {}", dslice_path.display());
     }
@@ -175,25 +179,27 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>) -> Result<PathBu
 
     let mut dslice_files = Vec::new();
     for slice_dir in &slice_dirs {
-        let dslice_out = path.join(format!("{}.dslice", path_name(slice_dir)));
+        let dslice_out = path.join(format!("{}.dslice", path_name(slice_dir)?));
         zip_directory(slice_dir, &dslice_out, &[])?;
         dslice_files.push(dslice_out);
     }
 
     let dsperse_out = if let Some(out) = output_path {
         if out.is_dir() || out.extension().is_none() {
-            out.join(format!("{}.dsperse", path_name(path)))
+            out.join(format!("{}.dsperse", path_name(path)?))
         } else {
             out.to_path_buf()
         }
     } else {
         path.parent()
             .unwrap_or(path)
-            .join(format!("{}.dsperse", path_name(path)))
+            .join(format!("{}.dsperse", path_name(path)?))
     };
     ensure_parent(&dsperse_out)?;
 
     zip_directory(path, &dsperse_out, &["slice_"])?;
+
+    verify_archive(&dsperse_out)?;
 
     for f in &dslice_files {
         let _ = fs::remove_file(f);
@@ -310,8 +316,27 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
             .map_err(|e| DsperseError::Archive(e.to_string()))?;
         let name = entry.name().to_string();
         if name == "metadata.json" || name.ends_with("/metadata.json") {
-            let dest = out.join(&name);
-            ensure_parent(&dest)?;
+            let dest = if let Some(parent_component) = Path::new(&name).parent() {
+                if !parent_component.as_os_str().is_empty() {
+                    let safe_parent = Path::new(
+                        parent_component
+                            .file_name()
+                            .unwrap_or(std::ffi::OsStr::new("")),
+                    );
+                    if safe_parent.as_os_str().is_empty() {
+                        out.join("metadata.json")
+                    } else {
+                        let nested_dir = out.join(safe_parent);
+                        fs::create_dir_all(&nested_dir)
+                            .map_err(|e| DsperseError::io(e, &nested_dir))?;
+                        nested_dir.join("metadata.json")
+                    }
+                } else {
+                    out.join("metadata.json")
+                }
+            } else {
+                out.join("metadata.json")
+            };
             let mut out_file =
                 fs::File::create(&dest).map_err(|e| DsperseError::io(e, &dest))?;
             io::copy(&mut entry, &mut out_file)
@@ -350,8 +375,13 @@ pub fn extract_single_slice(
     fs::create_dir_all(&out).map_err(|e| DsperseError::io(e, &out))?;
 
     let slice_dir = out.join(slice_id);
-    if slice_dir.exists() && slice_dir.join("payload").exists() {
+    let sentinel = slice_dir.join(EXTRACTED_SENTINEL);
+    if sentinel.exists() && slice_dir.join("payload").exists() {
         return Ok(slice_dir);
+    }
+
+    if slice_dir.exists() {
+        let _ = fs::remove_dir_all(&slice_dir);
     }
 
     if archive_path.is_file()
@@ -389,9 +419,10 @@ pub fn extract_single_slice(
         let cursor = io::Cursor::new(data);
         let mut inner =
             zip::ZipArchive::new(cursor).map_err(|e| DsperseError::Archive(e.to_string()))?;
-        inner
-            .extract(&slice_dir)
-            .map_err(|e| DsperseError::Archive(e.to_string()))?;
+        if let Err(e) = inner.extract(&slice_dir) {
+            let _ = fs::remove_dir_all(&slice_dir);
+            return Err(DsperseError::Archive(e.to_string()));
+        }
     } else if archive_path.is_dir() {
         let dslice_file = archive_path.join(&dslice_name);
         let dslice_file = if dslice_file.exists() {
@@ -408,13 +439,18 @@ pub fn extract_single_slice(
             }
         };
         fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
-        unzip_file(&dslice_file, &slice_dir)?;
+        if let Err(e) = unzip_file(&dslice_file, &slice_dir) {
+            let _ = fs::remove_dir_all(&slice_dir);
+            return Err(e);
+        }
     } else {
         return Err(DsperseError::Archive(format!(
             "cannot extract slice from {}",
             archive_path.display()
         )));
     }
+
+    write_sentinel(&sentinel)?;
 
     Ok(slice_dir)
 }
@@ -424,6 +460,29 @@ pub fn cleanup_extracted_slice(slices_dir: &Path, slice_id: &str) {
     if slice_dir.exists() && slice_dir.is_dir() {
         let _ = fs::remove_dir_all(&slice_dir);
     }
+}
+
+fn write_sentinel(path: &Path) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, b"").map_err(|e| DsperseError::io(e, &tmp))?;
+    fs::rename(&tmp, path).map_err(|e| DsperseError::io(e, path))?;
+    Ok(())
+}
+
+fn verify_archive(path: &Path) -> Result<()> {
+    let file = fs::File::open(path).map_err(|e| DsperseError::io(e, path))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| DsperseError::Archive(format!("archive verification: {e}")))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| DsperseError::Archive(format!("archive entry {i}: {e}")))?;
+        let mut buf = Vec::new();
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| DsperseError::Archive(format!("read entry {}: {e}", entry.name())))?;
+    }
+    Ok(())
 }
 
 fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) -> Result<()> {
@@ -444,10 +503,14 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
             continue;
         }
 
+        let rel_str = rel.to_str().ok_or_else(|| {
+            DsperseError::Archive(format!("non-UTF-8 path: {}", rel.display()))
+        })?;
+
         let first_component = rel
             .components()
             .next()
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .and_then(|c| c.as_os_str().to_str())
             .unwrap_or_default();
         if entry_path.is_dir()
             && exclude_dir_prefixes
@@ -464,9 +527,12 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
             continue;
         }
 
-        let rel_str = rel.to_string_lossy();
-        if entry_path.is_file() {
-            zip.start_file(rel_str.as_ref(), options)
+        if entry_path.is_dir() {
+            let dir_name = format!("{rel_str}/");
+            zip.add_directory(&dir_name, options)
+                .map_err(|e| DsperseError::Archive(e.to_string()))?;
+        } else if entry_path.is_file() {
+            zip.start_file(rel_str, options)
                 .map_err(|e| DsperseError::Archive(e.to_string()))?;
             let mut f =
                 fs::File::open(entry_path).map_err(|e| DsperseError::io(e, entry_path))?;
@@ -565,11 +631,11 @@ fn find_dslice_files(path: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn path_name(path: &Path) -> String {
+fn path_name(path: &Path) -> Result<String> {
     path.file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string()
+        .map(|s| s.to_string())
+        .ok_or_else(|| DsperseError::Archive(format!("missing file name for path: {}", path.display())))
 }
 
 fn path_stem(path: &Path) -> String {
@@ -693,9 +759,14 @@ mod tests {
             extract_single_slice(&dsperse_file, "slice_1", Some(&extract_dir)).unwrap();
         assert!(slice_dir.join("metadata.json").exists());
         assert!(slice_dir.join("payload").join("model.onnx").exists());
+        assert!(slice_dir.join(EXTRACTED_SENTINEL).exists());
 
         let onnx_data = fs::read_to_string(slice_dir.join("payload").join("model.onnx")).unwrap();
         assert_eq!(onnx_data, "onnx data for slice 1");
+
+        let slice_dir2 =
+            extract_single_slice(&dsperse_file, "slice_1", Some(&extract_dir)).unwrap();
+        assert_eq!(slice_dir, slice_dir2);
     }
 
     #[test]

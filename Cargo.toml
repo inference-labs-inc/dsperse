@@ -12,7 +12,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rayon = "1"
 ndarray = { version = "0.16", features = ["serde"] }
 tract-onnx = "0.21"
-zip = "2"
+zip = "2.3"
 walkdir = "2"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"

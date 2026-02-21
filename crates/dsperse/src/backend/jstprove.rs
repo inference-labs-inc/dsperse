@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{DsperseError, Result};
 
+#[derive(Debug)]
 pub struct JstproveBackend {
     binary: PathBuf,
     compress: bool,
@@ -225,18 +226,27 @@ fn run_piped(mut cmd: Command, stdin_payload: &[u8]) -> Result<BatchResult> {
 
     let payload = stdin_payload.to_vec();
     let stdin_handle = child.stdin.take();
-    let writer = std::thread::spawn(move || {
+    let writer = std::thread::spawn(move || -> std::io::Result<()> {
         if let Some(mut stdin) = stdin_handle {
             use std::io::Write;
-            let _ = stdin.write_all(&payload);
+            stdin.write_all(&payload)?;
         }
+        Ok(())
     });
 
     let output = child
         .wait_with_output()
         .map_err(|e| DsperseError::Backend(format!("wait jstprove: {e}")))?;
 
-    let _ = writer.join();
+    match writer.join() {
+        Ok(Err(e)) => {
+            return Err(DsperseError::Backend(format!("stdin write: {e}")));
+        }
+        Err(_) => {
+            return Err(DsperseError::Backend("stdin writer thread panicked".into()));
+        }
+        Ok(Ok(())) => {}
+    }
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

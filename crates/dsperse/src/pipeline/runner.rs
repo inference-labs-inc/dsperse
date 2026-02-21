@@ -156,11 +156,21 @@ pub fn run_inference(
 
     let output_path = run_dir.join("output.json");
     if let Some(last_slice) = model_meta.slices.last() {
-        if let Some(output_name) = last_slice.dependencies.output.first() {
-            if let Some(output_arr) = tensor_cache.get(output_name) {
-                let output_json = arrayd_to_json(output_arr);
-                write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
+        let slice_id = format!("slice_{}", last_slice.index);
+        let output_arr = if let Some(meta) = run_meta.slices.get(&slice_id) {
+            if let Some(ref cs) = meta.channel_split {
+                tensor_cache.get(&cs.output_name)
+            } else if let Some(ref tiling) = meta.tiling {
+                tensor_cache.get(&tiling.output_name)
+            } else {
+                last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
             }
+        } else {
+            last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
+        };
+        if let Some(output_arr) = output_arr {
+            let output_json = arrayd_to_json(output_arr);
+            write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
         }
     }
 

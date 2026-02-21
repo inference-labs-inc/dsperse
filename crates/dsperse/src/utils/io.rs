@@ -37,6 +37,8 @@ fn flatten_recursive(value: &serde_json::Value, out: &mut Vec<f64>) {
         serde_json::Value::Number(n) => {
             if let Some(f) = n.as_f64() {
                 out.push(f);
+            } else {
+                tracing::warn!(number = %n, "dropping non-f64 representable number");
             }
         }
         serde_json::Value::Array(arr) => {
@@ -76,6 +78,12 @@ pub fn json_to_arrayd(value: &serde_json::Value) -> Result<ArrayD<f64>> {
     }
     let product: usize = shape.iter().product();
     if product != flat.len() || shape.is_empty() {
+        tracing::warn!(
+            flat_len = flat.len(),
+            ?shape,
+            product,
+            "shape mismatch, falling back to 1D"
+        );
         return ArrayD::from_shape_vec(IxDyn(&[flat.len()]), flat)
             .map_err(|e| DsperseError::Pipeline(format!("arrayd reshape fallback: {e}")));
     }
@@ -145,6 +153,15 @@ pub fn gather_inputs_from_cache(
     }
     if collected.len() == 1 {
         return Ok(collected.into_iter().next().unwrap());
+    }
+    let ref_shape = &collected[0].shape()[1..];
+    for (i, arr) in collected.iter().enumerate().skip(1) {
+        if arr.shape()[1..] != *ref_shape {
+            return Err(DsperseError::Pipeline(format!(
+                "shape mismatch at input {}: expected trailing dims {:?}, got {:?}",
+                i, ref_shape, &arr.shape()[1..]
+            )));
+        }
     }
     ndarray::concatenate(
         ndarray::Axis(0),

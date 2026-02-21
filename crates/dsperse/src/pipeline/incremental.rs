@@ -148,6 +148,11 @@ impl IncrementalRun {
             self.tensor_cache
                 .insert(tiling.output_name.clone(), result.output);
         } else {
+            if meta.dependencies.output.is_empty() {
+                return Err(DsperseError::Pipeline(format!(
+                    "slice {slice_id} has no output dependency names"
+                )));
+            }
             for name in &meta.dependencies.output {
                 self.tensor_cache
                     .insert(name.clone(), result.output.clone());
@@ -177,8 +182,17 @@ impl IncrementalRun {
 
     pub fn final_output(&self) -> Option<&ArrayD<f64>> {
         let last_slice = self.model_meta.slices.last()?;
-        let output_name = last_slice.dependencies.output.first()?;
-        self.tensor_cache.get(output_name)
+        let slice_id = format!("slice_{}", last_slice.index);
+        let meta = self.run_meta.slices.get(&slice_id)?;
+
+        if let Some(ref cs) = meta.channel_split {
+            self.tensor_cache.get(&cs.output_name)
+        } else if let Some(ref tiling) = meta.tiling {
+            self.tensor_cache.get(&tiling.output_name)
+        } else {
+            let output_name = meta.dependencies.output.first()?;
+            self.tensor_cache.get(output_name)
+        }
     }
 
     pub fn into_run_metadata(self) -> RunMetadata {

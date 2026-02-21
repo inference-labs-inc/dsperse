@@ -554,9 +554,13 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
             ))
         })?;
         let entry_path = entry.path();
-        let rel = entry_path
-            .strip_prefix(source)
-            .unwrap_or(entry_path);
+        let rel = entry_path.strip_prefix(source).map_err(|_| {
+            DsperseError::Archive(format!(
+                "path {} is not under source {}",
+                entry_path.display(),
+                source.display()
+            ))
+        })?;
 
         if rel.as_os_str().is_empty() {
             continue;

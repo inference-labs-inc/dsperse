@@ -35,10 +35,7 @@ pub fn slice_model(
 
     let slice_points = determine_slice_points(&analysis, tile_size);
     tracing::info!(points = ?slice_points, "determined slice points");
-
-    if slice_points.is_empty() {
-        return Err(DsperseError::Slicer("no slice points determined".into()));
-    }
+    debug_assert!(!slice_points.is_empty(), "complete_slice_points guarantees at least [0, end]");
 
     let model_with_shapes = apply_traced_shapes(model, &traced_shapes);
 
@@ -351,7 +348,7 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
                             let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
                             let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
                             let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-                            if kernel.len() >= 2 && strides.len() >= 2 {
+                            if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
                                 let pad_h = if pads.len() >= 4 { pads[0] + pads[2] } else { 0 };
                                 let pad_w = if pads.len() >= 4 { pads[1] + pads[3] } else { 0 };
                                 let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
@@ -373,7 +370,7 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
             if !shapes.contains_key(&vi.name) {
                 let dims = onnx_proto::vi_shape(vi);
                 if !dims.is_empty() {
-                    let concrete: Vec<i64> = dims.iter().map(|&d| if d == 0 { 1 } else { d }).collect();
+                    let concrete: Vec<i64> = dims.iter().map(|&d| if d <= 0 { 1 } else { d }).collect();
                     shapes.insert(vi.name.clone(), concrete);
                 }
             }

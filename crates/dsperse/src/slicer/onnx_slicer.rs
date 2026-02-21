@@ -451,11 +451,44 @@ fn apply_traced_shapes(
             .map(|i| (i.name.as_str(), i.data_type))
             .collect();
 
+        let mut node_output_types: HashMap<String, i32> = HashMap::new();
+        for node in &graph.node {
+            match node.op_type.as_str() {
+                "Cast" => {
+                    if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
+                        for out in &node.output {
+                            if !out.is_empty() {
+                                node_output_types.insert(out.clone(), to as i32);
+                            }
+                        }
+                    }
+                }
+                "MaxPool" => {
+                    if node.output.len() > 1 {
+                        if let Some(idx_out) = node.output.get(1) {
+                            if !idx_out.is_empty() {
+                                node_output_types.insert(idx_out.clone(), TensorProto::INT64);
+                            }
+                        }
+                    }
+                }
+                "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
+                    for out in &node.output {
+                        if !out.is_empty() {
+                            node_output_types.insert(out.clone(), TensorProto::INT64);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         for (name, shape) in shapes {
             if !existing.contains(name) {
                 let elem_type = init_types
                     .get(name.as_str())
                     .copied()
+                    .or_else(|| node_output_types.get(name).copied())
                     .unwrap_or(TensorProto::FLOAT);
                 graph.value_info.push(onnx_proto::make_tensor_value_info(
                     name,
@@ -667,7 +700,10 @@ fn get_segment_details(
                 let shape = traced_shapes
                     .get(inp_name)
                     .cloned()
-                    .unwrap_or_else(|| vec![1, 0]);
+                    .unwrap_or_else(|| {
+                        tracing::warn!(tensor = %inp_name, "using fallback shape [1] for segment input");
+                        vec![1]
+                    });
                 inputs.push(onnx_proto::make_tensor_value_info(
                     inp_name,
                     TensorProto::FLOAT,
@@ -690,7 +726,10 @@ fn get_segment_details(
                 let shape = traced_shapes
                     .get(out_name)
                     .cloned()
-                    .unwrap_or_else(|| vec![1, 0]);
+                    .unwrap_or_else(|| {
+                        tracing::warn!(tensor = %out_name, "using fallback shape [1] for segment output");
+                        vec![1]
+                    });
                 outputs.push(onnx_proto::make_tensor_value_info(
                     out_name,
                     TensorProto::FLOAT,

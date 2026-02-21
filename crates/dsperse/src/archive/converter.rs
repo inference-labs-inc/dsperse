@@ -102,7 +102,15 @@ pub fn convert(
             let temp = tempfile::tempdir()
                 .map_err(|e| DsperseError::io(e, path))?;
             let expanded = dslice_to_dirs(path, Some(temp.path()))?;
-            dirs_to_dsperse(&expanded, output_path)
+            let result = dirs_to_dsperse(&expanded, output_path)?;
+            if cleanup {
+                if path.is_file() {
+                    let _ = fs::remove_file(path);
+                } else if path.is_dir() {
+                    let _ = fs::remove_dir_all(path);
+                }
+            }
+            Ok(result)
         }
         (FormatType::Dsperse, FormatType::Dirs) => {
             let result = dsperse_to_dirs(path, output_path, true)?;
@@ -218,9 +226,10 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>) -> Result<PathBu
 
 pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>) -> Result<PathBuf> {
     if path.is_file() {
-        let output_dir = output_path
-            .map(PathBuf::from)
-            .unwrap_or_else(|| path.parent().unwrap_or(path).join(path_stem(path)));
+        let output_dir = match output_path {
+            Some(out) => PathBuf::from(out),
+            None => path.parent().unwrap_or(path).join(path_stem(path)?),
+        };
         fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
         unzip_file(path, &output_dir)?;
         return Ok(output_dir);
@@ -237,7 +246,7 @@ pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
         let output_dir = output_path.map(PathBuf::from).unwrap_or(path.to_path_buf());
 
         for dslice_file in &dslice_files {
-            let slice_dir = output_dir.join(path_stem(dslice_file));
+            let slice_dir = output_dir.join(path_stem(dslice_file)?);
             fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
             unzip_file(dslice_file, &slice_dir)?;
 
@@ -266,9 +275,10 @@ pub fn dsperse_to_dirs(
         )));
     }
 
-    let output_dir = output_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| path.parent().unwrap_or(path).join(path_stem(path)));
+    let output_dir = match output_path {
+        Some(out) => PathBuf::from(out),
+        None => path.parent().unwrap_or(path).join(path_stem(path)?),
+    };
     fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
     unzip_file(path, &output_dir)?;
@@ -276,7 +286,7 @@ pub fn dsperse_to_dirs(
     if expand_slices {
         let dslice_files = find_dslice_files(&output_dir);
         for dslice_file in &dslice_files {
-            let slice_dir = output_dir.join(path_stem(dslice_file));
+            let slice_dir = output_dir.join(path_stem(dslice_file)?);
             fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
             unzip_file(dslice_file, &slice_dir)?;
             let _ = fs::remove_file(dslice_file);
@@ -294,14 +304,13 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
         )));
     }
 
-    let out = output_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            archive_path
-                .parent()
-                .unwrap_or(archive_path)
-                .join(path_stem(archive_path))
-        });
+    let out = match output_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => archive_path
+            .parent()
+            .unwrap_or(archive_path)
+            .join(path_stem(archive_path)?),
+    };
     fs::create_dir_all(&out).map_err(|e| DsperseError::io(e, &out))?;
 
     let file =
@@ -316,32 +325,13 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
             .map_err(|e| DsperseError::Archive(e.to_string()))?;
         let name = entry.name().to_string();
         if name == "metadata.json" || name.ends_with("/metadata.json") {
-            let dest = if let Some(parent_component) = Path::new(&name).parent() {
-                if !parent_component.as_os_str().is_empty() {
-                    let safe_parent = Path::new(
-                        parent_component
-                            .file_name()
-                            .unwrap_or(std::ffi::OsStr::new("")),
-                    );
-                    if safe_parent.as_os_str().is_empty() {
-                        out.join("metadata.json")
-                    } else {
-                        let nested_dir = out.join(safe_parent);
-                        fs::create_dir_all(&nested_dir)
-                            .map_err(|e| DsperseError::io(e, &nested_dir))?;
-                        nested_dir.join("metadata.json")
-                    }
-                } else {
-                    out.join("metadata.json")
-                }
-            } else {
-                out.join("metadata.json")
-            };
+            let dest = out.join("metadata.json");
             let mut out_file =
                 fs::File::create(&dest).map_err(|e| DsperseError::io(e, &dest))?;
             io::copy(&mut entry, &mut out_file)
                 .map_err(|e| DsperseError::io(e, &dest))?;
             found = true;
+            break;
         }
     }
 
@@ -362,16 +352,14 @@ pub fn extract_single_slice(
 ) -> Result<PathBuf> {
     let dslice_name = format!("{slice_id}.dslice");
 
-    let out = output_dir.map(PathBuf::from).unwrap_or_else(|| {
-        if archive_path.is_file() {
-            archive_path
-                .parent()
-                .unwrap_or(archive_path)
-                .join(path_stem(archive_path))
-        } else {
-            archive_path.to_path_buf()
-        }
-    });
+    let out = match output_dir {
+        Some(dir) => PathBuf::from(dir),
+        None if archive_path.is_file() => archive_path
+            .parent()
+            .unwrap_or(archive_path)
+            .join(path_stem(archive_path)?),
+        None => archive_path.to_path_buf(),
+    };
     fs::create_dir_all(&out).map_err(|e| DsperseError::io(e, &out))?;
 
     let slice_dir = out.join(slice_id);
@@ -490,10 +478,13 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    for entry in walkdir::WalkDir::new(source)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in walkdir::WalkDir::new(source).into_iter().filter_map(|e| match e {
+        Ok(entry) => Some(entry),
+        Err(err) => {
+            tracing::warn!(path = ?err.path(), error = %err, "skipping unreadable entry during archive");
+            None
+        }
+    }) {
         let entry_path = entry.path();
         let rel = entry_path
             .strip_prefix(source)
@@ -638,11 +629,11 @@ fn path_name(path: &Path) -> Result<String> {
         .ok_or_else(|| DsperseError::Archive(format!("missing file name for path: {}", path.display())))
 }
 
-fn path_stem(path: &Path) -> String {
+fn path_stem(path: &Path) -> Result<String> {
     path.file_stem()
         .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string()
+        .map(|s| s.to_string())
+        .ok_or_else(|| DsperseError::Archive(format!("missing file stem for path: {}", path.display())))
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {

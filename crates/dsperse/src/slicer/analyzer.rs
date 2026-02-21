@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,7 @@ pub struct AnalysisResult {
     pub output_shapes: Vec<Vec<i64>>,
     pub opset_version: Option<i64>,
     pub nodes: HashMap<String, NodeAnalysis>,
+    pub initializer_names: HashSet<String>,
 }
 
 pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
@@ -91,6 +92,12 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
         }
     }
 
+    let initializer_names: HashSet<String> = graph
+        .initializer
+        .iter()
+        .map(|i| i.name.clone())
+        .collect();
+
     AnalysisResult {
         original_model: onnx_path.map(|p| p.to_string_lossy().to_string()),
         model_type: "ONNX".to_string(),
@@ -100,6 +107,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
         output_shapes,
         opset_version,
         nodes,
+        initializer_names,
     }
 }
 
@@ -216,17 +224,22 @@ pub fn generate_slices_metadata(
 fn write_per_slice_metadata(metadata: &ModelMetadata, output_dir: &Path) -> Result<()> {
     for slice_meta in &metadata.slices {
         let slice_dir = output_dir.join(format!("slice_{}", slice_meta.index));
-        let slice_point = metadata
+        let start = metadata
             .slice_points
             .get(slice_meta.index)
             .copied()
             .unwrap_or(slice_meta.index);
+        let end = metadata
+            .slice_points
+            .get(slice_meta.index + 1)
+            .copied()
+            .unwrap_or(start);
         let per_slice = ModelMetadata {
             original_model: metadata.original_model.clone(),
             model_type: metadata.model_type.clone(),
             input_shape: metadata.input_shape.clone(),
             output_shapes: metadata.output_shapes.clone(),
-            slice_points: vec![slice_point],
+            slice_points: vec![start, end],
             slices: vec![slice_meta.clone()],
         };
         per_slice.save(&slice_dir.join("metadata.json"))?;
@@ -305,13 +318,9 @@ fn get_segment_dependencies(
         .collect();
     outputs.sort();
 
-    let initializer_patterns = ["weight", "bias", "running_mean", "running_var", "num_batches_tracked"];
     let filtered = inputs
         .iter()
-        .filter(|name| {
-            let lower = name.to_lowercase();
-            !initializer_patterns.iter().any(|p| lower.contains(p))
-        })
+        .filter(|name| !analysis.initializer_names.contains(name.as_str()))
         .cloned()
         .collect::<Vec<_>>();
 

@@ -15,6 +15,7 @@ use crate::utils::io::{flatten_nested_list, read_input_json, write_input_json};
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
 pub struct RunConfig {
+    // TODO: wire into tile execution loop via rayon thread pool
     pub parallel: usize,
     pub batch: bool,
 }
@@ -173,7 +174,7 @@ fn execute_single(
         .unwrap_or(0);
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let input_tensor = gather_inputs(tensor_cache, &meta.dependencies.input)?;
+    let input_tensor = gather_inputs(tensor_cache, &meta.dependencies.filtered_inputs)?;
 
     let input_path = slice_run_dir.join("input.json");
     write_input_json(
@@ -554,8 +555,23 @@ fn execute_channel_split(
         )?;
 
         let group_flat = flatten_nested_list(&group_output);
+        let out_spatial = if cs.c_out > 0 { group_flat.len() / (n * cs.c_out) } else { 0 };
+        let out_h_sqrt = (out_spatial as f64).sqrt() as usize;
+        let (out_h, out_w) = if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
+            (out_h_sqrt, out_h_sqrt)
+        } else if h > 0 && out_spatial % h == 0 {
+            (h, out_spatial / h)
+        } else {
+            (out_spatial, 1)
+        };
+        if n * cs.c_out * out_h * out_w != group_flat.len() {
+            return Err(DsperseError::Pipeline(format!(
+                "group output reshape mismatch: expected {} elements (n={}, c_out={}, h={}, w={}), got {}",
+                n * cs.c_out * out_h * out_w, n, cs.c_out, out_h, out_w, group_flat.len()
+            )));
+        }
         let group_4d = Array4::from_shape_vec(
-            (n, cs.c_out, h, w),
+            (n, cs.c_out, out_h, out_w),
             group_flat,
         )
         .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?;
@@ -628,7 +644,7 @@ fn execute_channel_group(
     } else {
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
         let input_data = read_input_json(input_path)?;
-        let tensor = extract_output_tensor(&input_data);
+        let tensor = extract_input_tensor(&input_data);
         run_onnx_inference(&onnx_path, &tensor)
     }
 }
@@ -696,22 +712,26 @@ fn reconstruct_from_tiles(
         let tile_flat = if tile_flat.len() >= tile_elements {
             &tile_flat[..tile_elements]
         } else {
-            &tile_flat
+            return Err(DsperseError::Pipeline(format!(
+                "boundary tile ({},{}) has {} elements, expected {} (c_out={}, out_h={}, out_w={})",
+                ty, tx, tile_flat.len(), tile_elements, c_out, out_h, out_w
+            )));
         };
 
-        if let Ok(tile_arr) = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
-        {
-            let y_start = ty * out_h;
-            let x_start = tx * out_w;
-            output
-                .slice_mut(s![
-                    ..,
-                    ..,
-                    y_start..y_start + out_h,
-                    x_start..x_start + out_w
-                ])
-                .assign(&tile_arr);
-        }
+        let tile_arr = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
+            .map_err(|e| DsperseError::Pipeline(format!(
+                "tile ({},{}) reshape failed: {e}", ty, tx
+            )))?;
+        let y_start = ty * out_h;
+        let x_start = tx * out_w;
+        output
+            .slice_mut(s![
+                ..,
+                ..,
+                y_start..y_start + out_h,
+                x_start..x_start + out_w
+            ])
+            .assign(&tile_arr);
     }
 
     Ok(ndarray_to_nested_json(&output.into_dyn()))
@@ -775,18 +795,42 @@ fn extract_output_tensor(data: &serde_json::Value) -> serde_json::Value {
         .unwrap_or_else(|| data.clone())
 }
 
+fn extract_input_tensor(data: &serde_json::Value) -> serde_json::Value {
+    data.get("input_data")
+        .or_else(|| data.get("input"))
+        .cloned()
+        .unwrap_or_else(|| data.clone())
+}
+
 fn gather_inputs(
     tensor_cache: &HashMap<String, serde_json::Value>,
     inputs: &[String],
 ) -> Result<serde_json::Value> {
+    let mut collected = Vec::new();
+    let mut missing = Vec::new();
     for name in inputs {
         if let Some(val) = tensor_cache.get(name) {
-            return Ok(val.clone());
+            collected.push(val.clone());
+        } else {
+            missing.push(name.clone());
         }
     }
-    Err(DsperseError::Pipeline(format!(
-        "no cached tensor found for inputs: {inputs:?}"
-    )))
+    if collected.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "no cached tensor found for inputs: {inputs:?}"
+        )));
+    }
+    if !missing.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "missing tensors in cache: {missing:?} (found {} of {})",
+            collected.len(),
+            inputs.len()
+        )));
+    }
+    if collected.len() == 1 {
+        return Ok(collected.into_iter().next().unwrap());
+    }
+    Ok(serde_json::Value::Array(collected))
 }
 
 fn store_outputs(

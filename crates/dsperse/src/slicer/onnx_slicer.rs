@@ -649,7 +649,7 @@ fn get_segment_details(
                 let shape = traced_shapes
                     .get(inp_name)
                     .cloned()
-                    .unwrap_or_else(|| vec![1, -1]);
+                    .unwrap_or_else(|| vec![1, 0]);
                 inputs.push(onnx_proto::make_tensor_value_info(
                     inp_name,
                     TensorProto::FLOAT,
@@ -672,7 +672,7 @@ fn get_segment_details(
                 let shape = traced_shapes
                     .get(out_name)
                     .cloned()
-                    .unwrap_or_else(|| vec![1, -1]);
+                    .unwrap_or_else(|| vec![1, 0]);
                 outputs.push(onnx_proto::make_tensor_value_info(
                     out_name,
                     TensorProto::FLOAT,

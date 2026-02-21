@@ -97,8 +97,10 @@ pub fn convert(
         (FormatType::Dirs, FormatType::Dsperse) => dirs_to_dsperse(path, output_path),
         (FormatType::Dslice, FormatType::Dirs) => dslice_to_dirs(path, output_path),
         (FormatType::Dslice, FormatType::Dsperse) => {
-            let temp = dslice_to_dirs(path, None)?;
-            dirs_to_dsperse(&temp, output_path)
+            let temp = tempfile::tempdir()
+                .map_err(|e| DsperseError::io(e, path))?;
+            let expanded = dslice_to_dirs(path, Some(temp.path()))?;
+            dirs_to_dsperse(&expanded, output_path)
         }
         (FormatType::Dsperse, FormatType::Dirs) => {
             let result = dsperse_to_dirs(path, output_path, true)?;

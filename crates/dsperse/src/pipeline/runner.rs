@@ -477,8 +477,8 @@ fn execute_tiles_batch(
         } else {
             tile_results.push(TileResult {
                 tile_idx,
-                success: true,
-                error: None,
+                success: false,
+                error: Some(format!("output file missing: {}", output_path.display())),
                 method: Some("jstprove_batch".into()),
                 time_sec: 0.0,
                 proof_path: None,
@@ -633,7 +633,8 @@ fn execute_channel_group(
         Ok(extract_output_tensor(&output_data))
     } else {
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
-        run_onnx_inference(&onnx_path, &serde_json::Value::Null)
+        let input_data = read_input_json(input_path)?;
+        run_onnx_inference(&onnx_path, &input_data)
     }
 }
 
@@ -725,8 +726,14 @@ fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>
     let n = 1usize;
     let total = flat.len();
     let spatial = if c > 0 { total / (n * c) } else { 0 };
-    let h = (spatial as f64).sqrt() as usize;
-    let w = if h > 0 { spatial / h } else { 0 };
+    let h_sqrt = (spatial as f64).sqrt() as usize;
+    let (h, w) = if h_sqrt > 0 && h_sqrt * h_sqrt == spatial {
+        (h_sqrt, h_sqrt)
+    } else if tile_size > 0 && spatial > 0 {
+        (tile_size, spatial / tile_size)
+    } else {
+        (0, 0)
+    };
 
     if n * c * h * w != total {
         let h = tile_size;

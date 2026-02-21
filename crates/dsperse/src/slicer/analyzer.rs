@@ -275,15 +275,20 @@ fn get_segment_dependencies(
     let mut inputs = Vec::new();
     let mut output_map: HashMap<String, bool> = HashMap::new();
 
-    for node in analysis.nodes.values() {
-        if node.index >= start_idx && node.index < end_idx {
-            for out in &node.dependencies.output {
-                output_map.insert(out.clone(), true);
-            }
-            for inp in &node.dependencies.input {
-                if !output_map.contains_key(inp) && !inputs.contains(inp) {
-                    inputs.push(inp.clone());
-                }
+    let mut sorted_nodes: Vec<&NodeAnalysis> = analysis
+        .nodes
+        .values()
+        .filter(|n| n.index >= start_idx && n.index < end_idx)
+        .collect();
+    sorted_nodes.sort_by_key(|n| n.index);
+
+    for node in &sorted_nodes {
+        for out in &node.dependencies.output {
+            output_map.insert(out.clone(), true);
+        }
+        for inp in &node.dependencies.input {
+            if !output_map.contains_key(inp) && !inputs.contains(inp) {
+                inputs.push(inp.clone());
             }
         }
     }

@@ -459,6 +459,39 @@ pub fn cleanup_extracted_slice(slices_dir: &Path, slice_id: &str) {
     }
 }
 
+pub fn read_dslice_slice_metadata(
+    dslice_path: &Path,
+) -> Result<crate::schema::metadata::SliceMetadata> {
+    let file = fs::File::open(dslice_path).map_err(|e| DsperseError::io(e, dslice_path))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| DsperseError::Archive(e.to_string()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| DsperseError::Archive(e.to_string()))?;
+        if entry.name() == "metadata.json" {
+            let mut buf = String::new();
+            entry
+                .read_to_string(&mut buf)
+                .map_err(|e| DsperseError::io(e, dslice_path))?;
+            let model_meta: crate::schema::metadata::ModelMetadata =
+                serde_json::from_str(&buf)?;
+            return model_meta.slices.into_iter().next().ok_or_else(|| {
+                DsperseError::Metadata(format!(
+                    "no slices in metadata inside {}",
+                    dslice_path.display()
+                ))
+            });
+        }
+    }
+
+    Err(DsperseError::Metadata(format!(
+        "no metadata.json found in {}",
+        dslice_path.display()
+    )))
+}
+
 fn validate_slice_id(slice_id: &str) -> Result<()> {
     if slice_id.contains('/') || slice_id.contains('\\') || slice_id.contains("..") || slice_id.is_empty() {
         return Err(DsperseError::Archive(format!(
@@ -619,7 +652,7 @@ fn find_slice_dirs(path: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-fn find_dslice_files(path: &Path) -> Vec<PathBuf> {
+pub fn find_dslice_files(path: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(path)
         .ok()
         .map(|entries| {

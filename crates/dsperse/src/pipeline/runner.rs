@@ -32,6 +32,32 @@ impl Default for RunConfig {
     }
 }
 
+pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
+    let meta_path = find_metadata_path(slices_dir)
+        .ok_or_else(|| DsperseError::Metadata("no metadata.json in slices".into()))?;
+    let mut model_meta = ModelMetadata::load(&meta_path)?;
+
+    if model_meta.slices.is_empty() {
+        let dslice_files = crate::archive::converter::find_dslice_files(slices_dir);
+        if dslice_files.is_empty() {
+            return Err(DsperseError::Metadata(format!(
+                "metadata.json has no slices and no .dslice files found in {}",
+                slices_dir.display()
+            )));
+        }
+        let mut slices = Vec::with_capacity(dslice_files.len());
+        for dslice_path in &dslice_files {
+            slices.push(crate::archive::converter::read_dslice_slice_metadata(
+                dslice_path,
+            )?);
+        }
+        slices.sort_by_key(|s| s.index);
+        model_meta.slices = slices;
+    }
+
+    Ok(model_meta)
+}
+
 pub fn run_inference(
     slices_dir: &Path,
     input_path: &Path,
@@ -39,9 +65,7 @@ pub fn run_inference(
     backend: &JstproveBackend,
     config: &RunConfig,
 ) -> Result<RunMetadata> {
-    let meta_path = find_metadata_path(slices_dir)
-        .ok_or_else(|| DsperseError::Metadata("no metadata.json in slices".into()))?;
-    let model_meta = ModelMetadata::load(&meta_path)?;
+    let model_meta = load_model_metadata(slices_dir)?;
 
     std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
 

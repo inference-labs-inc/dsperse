@@ -10,9 +10,8 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
 use crate::utils::io::gather_inputs_from_cache;
-use crate::utils::paths::find_metadata_path;
 
-use super::runner::{build_execution_chain, build_run_metadata};
+use super::runner::{build_execution_chain, build_run_metadata, load_model_metadata};
 
 pub struct SliceWork {
     pub slice_id: String,
@@ -45,9 +44,7 @@ pub struct IncrementalRun {
 
 impl IncrementalRun {
     pub fn new(slices_dir: &Path, input: ArrayD<f64>) -> Result<Self> {
-        let meta_path = find_metadata_path(slices_dir)
-            .ok_or_else(|| DsperseError::Metadata("no metadata.json in slices".into()))?;
-        let model_meta = ModelMetadata::load(&meta_path)?;
+        let model_meta = load_model_metadata(slices_dir)?;
 
         let chain = build_execution_chain(&model_meta, slices_dir);
         let run_meta = build_run_metadata(&model_meta, slices_dir, Path::new(""), &chain);

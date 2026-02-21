@@ -1,0 +1,23 @@
+[package]
+name = "dsperse"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rayon.workspace = true
+ndarray.workspace = true
+tract-onnx.workspace = true
+zip.workspace = true
+walkdir.workspace = true
+uuid.workspace = true
+tempfile.workspace = true
+prost.workspace = true
+
+[build-dependencies]
+prost-build = "0.13"

@@ -22,8 +22,8 @@ class WorkItem:
     is_tile: bool
     tile_idx: int | None
     proof_system: str
-    inputs: dict | list | None
-    outputs: dict | list | None
+    inputs_path: str | None
+    outputs_path: str | None
     run_source: str
     completed: bool = False
 
@@ -31,8 +31,8 @@ class WorkItem:
 @dataclass
 class SliceExecResult:
     slice_id: str
-    inputs_data: dict | list | None = None
-    outputs_data: dict | list | None = None
+    inputs_path: str | None = None
+    outputs_path: str | None = None
     tiling: dict | None = None
 
 
@@ -96,7 +96,7 @@ class RunState:
             return True
         return all(w.completed for w in run.work_items)
 
-    def generate_all_requests(self) -> list[dict]:
+    def generate_all_requests(self, limit: int = 0) -> list[dict]:
         items = []
         for run in self._runs.values():
             if run.status in (RunStatus.FAILED, RunStatus.COMPLETE):
@@ -112,8 +112,17 @@ class RunState:
                     "is_tile": w.is_tile,
                     "tile_idx": w.tile_idx,
                     "proof_system": w.proof_system,
-                    "inputs": w.inputs,
-                    "outputs": w.outputs,
+                    "inputs_path": w.inputs_path,
+                    "outputs_path": w.outputs_path,
                     "run_source": w.run_source,
                 })
+                if limit and len(items) >= limit:
+                    return items
         return items
+
+    def get_work_item_by_task_id(self, task_id: str) -> WorkItem | None:
+        for run in self._runs.values():
+            for w in run.work_items:
+                if w.task_id == task_id:
+                    return w
+        return None

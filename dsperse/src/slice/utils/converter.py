@@ -421,39 +421,76 @@ class Converter:
 
     @staticmethod
     def extract_metadata_only(
-        archive_path: str | Path, output_dir: str | Path = None
+        source_path: str | Path, output_dir: str | Path = None
     ) -> Path:
-        """Extract only the top-level metadata.json from a .dsperse archive.
+        """Extract only metadata.json files from a .dsperse archive or .dslice directory.
+
+        For .dsperse archives: extracts the top-level and per-slice metadata.json files.
+        For .dslice directories: extracts metadata.json from each .dslice archive into
+        a temporary directory, enabling lazy on-demand extraction of full slices.
 
         Args:
-            archive_path: Path to the .dsperse file
-            output_dir: Optional output directory. If not provided, extracts alongside the archive.
+            source_path: Path to a .dsperse file or directory containing .dslice files
+            output_dir: Optional output directory. If not provided, created alongside the source.
 
         Returns:
-            Path to the directory containing metadata.json (and .dslice files still inside archive)
+            Path to the directory containing extracted metadata
         """
-        archive_path = Path(archive_path)
-        if not archive_path.is_file() or archive_path.suffix != ".dsperse":
-            raise ValueError(f"Expected .dsperse file, got {archive_path}")
+        source_path = Path(source_path)
 
-        if output_dir:
-            out = Path(output_dir)
-        else:
-            out = archive_path.parent / archive_path.stem
-        out.mkdir(parents=True, exist_ok=True)
+        if source_path.is_file() and source_path.suffix == ".dsperse":
+            if output_dir:
+                out = Path(output_dir)
+            else:
+                out = source_path.parent / source_path.stem
+            out.mkdir(parents=True, exist_ok=True)
 
-        found_metadata = False
-        with zipfile.ZipFile(archive_path, "r") as zipf:
-            for name in zipf.namelist():
-                if name == "metadata.json" or name.endswith("/metadata.json"):
-                    zipf.extract(name, out)
-                    logger.info(f"Extracted {name} from {archive_path.name}")
-                    found_metadata = True
+            found_metadata = False
+            with zipfile.ZipFile(source_path, "r") as zipf:
+                for name in zipf.namelist():
+                    if name == "metadata.json" or name.endswith("/metadata.json"):
+                        zipf.extract(name, out)
+                        logger.info(f"Extracted {name} from {source_path.name}")
+                        found_metadata = True
 
-        if not found_metadata:
-            raise FileNotFoundError(f"No metadata.json found in {archive_path}")
+            if not found_metadata:
+                raise FileNotFoundError(f"No metadata.json found in {source_path}")
 
-        return out
+            return out
+
+        elif source_path.is_dir():
+            if output_dir:
+                out = Path(output_dir)
+            else:
+                out = source_path.parent / f"{source_path.name}_metadata"
+            out.mkdir(parents=True, exist_ok=True)
+
+            top_meta = source_path / "metadata.json"
+            if top_meta.exists():
+                shutil.copy2(top_meta, out / "metadata.json")
+
+            found_any = False
+            for dslice_file in sorted(source_path.glob("*.dslice")):
+                slice_id = dslice_file.stem
+                slice_dir = out / slice_id
+                if slice_dir.exists():
+                    continue
+                with zipfile.ZipFile(dslice_file, "r") as zipf:
+                    for name in zipf.namelist():
+                        if name == "metadata.json":
+                            slice_dir.mkdir(parents=True, exist_ok=True)
+                            zipf.extract(name, slice_dir)
+                            found_any = True
+                            break
+
+            if not found_any:
+                raise FileNotFoundError(
+                    f"No metadata.json found in .dslice files at {source_path}"
+                )
+
+            return out
+
+        raise ValueError(f"Expected .dsperse file or directory, got {source_path}")
 
     @staticmethod
     def extract_single_slice(
@@ -520,6 +557,36 @@ class Converter:
             raise ValueError(f"Cannot extract slice from {archive_path}")
 
         return slice_dir
+
+    @staticmethod
+    def extract_dslice_metadata(
+        slices_dir: str | Path, output_dir: str | Path = None
+    ) -> Path:
+        """Extract only metadata.json from each .dslice archive in a directory.
+
+        Creates minimal slice_X/ directories containing only metadata.json,
+        enabling RunnerAnalyzer to build the execution chain without extracting
+        full payloads. Used for lazy mode with .dslice format.
+
+        Returns:
+            Path to the output directory containing per-slice metadata dirs.
+        """
+        slices_dir = Path(slices_dir)
+        out = Path(output_dir) if output_dir else slices_dir
+        out.mkdir(parents=True, exist_ok=True)
+        for dslice_file in sorted(slices_dir.glob("*.dslice")):
+            slice_id = dslice_file.stem
+            slice_dir = out / slice_id
+            if slice_dir.exists() and (slice_dir / "metadata.json").exists():
+                continue
+            slice_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(dslice_file, "r") as zipf:
+                for name in zipf.namelist():
+                    if name == "metadata.json":
+                        zipf.extract(name, slice_dir)
+                        break
+            logger.debug(f"Extracted metadata from {dslice_file.name}")
+        return out
 
     @staticmethod
     def cleanup_extracted_slice(slices_dir: str | Path, slice_id: str) -> None:

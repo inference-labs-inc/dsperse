@@ -1,0 +1,19 @@
+[workspace]
+members = ["crates/dsperse"]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rayon = "1"
+ndarray = { version = "0.16", features = ["serde"] }
+tract-onnx = "0.21"
+zip = "2"
+walkdir = "2"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+prost = "0.13"

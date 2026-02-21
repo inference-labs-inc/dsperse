@@ -95,14 +95,14 @@ pub fn convert(
     );
 
     match (current, output_type) {
-        (FormatType::Dirs, FormatType::Dslice) => dirs_to_dslice(path, output_path),
-        (FormatType::Dirs, FormatType::Dsperse) => dirs_to_dsperse(path, output_path),
-        (FormatType::Dslice, FormatType::Dirs) => dslice_to_dirs(path, output_path),
+        (FormatType::Dirs, FormatType::Dslice) => dirs_to_dslice(path, output_path, cleanup),
+        (FormatType::Dirs, FormatType::Dsperse) => dirs_to_dsperse(path, output_path, cleanup),
+        (FormatType::Dslice, FormatType::Dirs) => dslice_to_dirs(path, output_path, cleanup),
         (FormatType::Dslice, FormatType::Dsperse) => {
             let temp = tempfile::tempdir()
                 .map_err(|e| DsperseError::io(e, path))?;
-            let expanded = dslice_to_dirs(path, Some(temp.path()))?;
-            let result = dirs_to_dsperse(&expanded, output_path)?;
+            let expanded = dslice_to_dirs(path, Some(temp.path()), false)?;
+            let result = dirs_to_dsperse(&expanded, output_path, true)?;
             if cleanup {
                 if path.is_file() {
                     let _ = fs::remove_file(path);
@@ -132,7 +132,7 @@ pub fn convert(
     }
 }
 
-pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>) -> Result<PathBuf> {
+pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>, cleanup: bool) -> Result<PathBuf> {
     let slice_dirs = find_slice_dirs(path);
 
     if slice_dirs.is_empty() {
@@ -167,7 +167,7 @@ pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
         tracing::info!("created {}", dslice_path.display());
     }
 
-    if output_path.is_none() || output_path == Some(path) {
+    if cleanup {
         for slice_dir in &slice_dirs {
             let _ = fs::remove_dir_all(slice_dir);
         }
@@ -176,7 +176,7 @@ pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
     Ok(output_dir)
 }
 
-pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>) -> Result<PathBuf> {
+pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>, cleanup: bool) -> Result<PathBuf> {
     let slice_dirs = find_slice_dirs(path);
     if slice_dirs.is_empty() {
         return Err(DsperseError::Archive(format!(
@@ -212,19 +212,21 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>) -> Result<PathBu
     for f in &dslice_files {
         let _ = fs::remove_file(f);
     }
-    for d in &slice_dirs {
-        let _ = fs::remove_dir_all(d);
+    if cleanup {
+        for d in &slice_dirs {
+            let _ = fs::remove_dir_all(d);
+        }
+        let metadata_file = path.join("metadata.json");
+        if metadata_file.exists() {
+            let _ = fs::remove_file(&metadata_file);
+        }
+        let _ = fs::remove_dir(path);
     }
-    let metadata_file = path.join("metadata.json");
-    if metadata_file.exists() {
-        let _ = fs::remove_file(&metadata_file);
-    }
-    let _ = fs::remove_dir(path);
 
     Ok(dsperse_out)
 }
 
-pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>) -> Result<PathBuf> {
+pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>, cleanup: bool) -> Result<PathBuf> {
     if path.is_file() {
         let output_dir = match output_path {
             Some(out) => PathBuf::from(out),
@@ -232,6 +234,9 @@ pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
         };
         fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
         unzip_file(path, &output_dir)?;
+        if cleanup {
+            let _ = fs::remove_file(path);
+        }
         return Ok(output_dir);
     }
 
@@ -250,7 +255,7 @@ pub fn dslice_to_dirs(path: &Path, output_path: Option<&Path>) -> Result<PathBuf
             fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
             unzip_file(dslice_file, &slice_dir)?;
 
-            if output_path.is_none() || output_path == Some(path) {
+            if cleanup {
                 let _ = fs::remove_file(dslice_file);
             }
         }
@@ -350,6 +355,7 @@ pub fn extract_single_slice(
     slice_id: &str,
     output_dir: Option<&Path>,
 ) -> Result<PathBuf> {
+    validate_slice_id(slice_id)?;
     let dslice_name = format!("{slice_id}.dslice");
 
     let out = match output_dir {
@@ -444,10 +450,22 @@ pub fn extract_single_slice(
 }
 
 pub fn cleanup_extracted_slice(slices_dir: &Path, slice_id: &str) {
+    if validate_slice_id(slice_id).is_err() {
+        return;
+    }
     let slice_dir = slices_dir.join(slice_id);
     if slice_dir.exists() && slice_dir.is_dir() {
         let _ = fs::remove_dir_all(&slice_dir);
     }
+}
+
+fn validate_slice_id(slice_id: &str) -> Result<()> {
+    if slice_id.contains('/') || slice_id.contains('\\') || slice_id.contains("..") || slice_id.is_empty() {
+        return Err(DsperseError::Archive(format!(
+            "invalid slice_id contains path separators or traversal: {slice_id:?}"
+        )));
+    }
+    Ok(())
 }
 
 fn write_sentinel(path: &Path) -> Result<()> {
@@ -672,13 +690,13 @@ mod tests {
         assert_eq!(detect_type(&slices_dir).unwrap(), FormatType::Dirs);
 
         let dslice_out = tmp.path().join("dslice_output");
-        let result = dirs_to_dslice(&slices_dir, Some(&dslice_out)).unwrap();
+        let result = dirs_to_dslice(&slices_dir, Some(&dslice_out), false).unwrap();
         assert!(result.join("slice_0.dslice").exists());
         assert!(result.join("slice_1.dslice").exists());
         assert_eq!(detect_type(&result).unwrap(), FormatType::Dslice);
 
         let dirs_out = tmp.path().join("dirs_output");
-        let result2 = dslice_to_dirs(&result, Some(&dirs_out)).unwrap();
+        let result2 = dslice_to_dirs(&result, Some(&dirs_out), false).unwrap();
         assert!(result2.join("slice_0").join("metadata.json").exists());
         assert!(result2.join("slice_1").join("payload").join("model.onnx").exists());
     }
@@ -706,7 +724,7 @@ mod tests {
         .unwrap();
 
         let dsperse_file = tmp.path().join("test.dsperse");
-        let result = dirs_to_dsperse(&slices_dir, Some(&dsperse_file)).unwrap();
+        let result = dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
         assert!(result.exists());
         assert_eq!(detect_type(&result).unwrap(), FormatType::Dsperse);
 
@@ -743,7 +761,7 @@ mod tests {
         fs::write(slices_dir.join("metadata.json"), "{}").unwrap();
 
         let dsperse_file = tmp.path().join("test.dsperse");
-        dirs_to_dsperse(&slices_dir, Some(&dsperse_file)).unwrap();
+        dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
 
         let extract_dir = tmp.path().join("extracted");
         let slice_dir =
@@ -777,7 +795,7 @@ mod tests {
         .unwrap();
 
         let dsperse_file = tmp.path().join("test.dsperse");
-        dirs_to_dsperse(&slices_dir, Some(&dsperse_file)).unwrap();
+        dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
 
         let out_dir = tmp.path().join("meta_only");
         let result = extract_metadata_only(&dsperse_file, Some(&out_dir)).unwrap();

@@ -101,13 +101,19 @@ pub fn run_inference(
             Ok(info) => info,
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
-                ExecutionInfo {
-                    method: ExecutionMethod::OnnxOnly.to_string(),
-                    success: false,
-                    error: Some(e.to_string()),
-                    witness_file: None,
-                    tile_exec_infos: Vec::new(),
-                }
+                results.push(ExecutionResultEntry {
+                    slice_id: slice_id.clone(),
+                    witness_execution: Some(ExecutionInfo {
+                        method: ExecutionMethod::OnnxOnly.to_string(),
+                        success: false,
+                        error: Some(e.to_string()),
+                        witness_file: None,
+                        tile_exec_infos: Vec::new(),
+                    }),
+                    proof_execution: None,
+                    verification_execution: None,
+                });
+                break;
             }
         };
 
@@ -265,8 +271,17 @@ fn execute_tiled(
         })?
         .clone();
 
-    let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-    let input_4d = reshape_to_4d(&input_flat, tiling.c_in, tiling.tile_size)?;
+    let input_4d = if input_arr.ndim() == 4 {
+        let s = input_arr.shape();
+        Array4::from_shape_vec(
+            (s[0], s[1], s[2], s[3]),
+            input_arr.iter().copied().collect(),
+        )
+        .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
+    } else {
+        let input_flat: Vec<f64> = input_arr.iter().copied().collect();
+        reshape_to_4d(&input_flat, tiling.c_in, tiling.tile_size)?
+    };
 
     let tiles = split_into_tiles(&input_4d, tiling);
 
@@ -516,22 +531,33 @@ fn execute_channel_split(
         })?
         .clone();
 
-    let input_flat: Vec<f64> = input_arr.iter().copied().collect();
     let n = 1usize;
-    let total_elements = input_flat.len();
-    let spatial = if cs.c_in > 0 && total_elements > 0 {
-        total_elements / (n * cs.c_in)
+    let (input_4d, h) = if input_arr.ndim() == 4 {
+        let s = input_arr.shape();
+        let h = s[2];
+        let arr = Array4::from_shape_vec(
+            (s[0], s[1], s[2], s[3]),
+            input_arr.iter().copied().collect(),
+        )
+        .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
+        (arr, h)
     } else {
-        cs.h * cs.w
+        let input_flat: Vec<f64> = input_arr.iter().copied().collect();
+        let total_elements = input_flat.len();
+        let spatial = if cs.c_in > 0 && total_elements > 0 {
+            total_elements / (n * cs.c_in)
+        } else {
+            cs.h * cs.w
+        };
+        let h = cs.h.max(1);
+        let w = if spatial > 0 && h > 0 { spatial / h } else { cs.w.max(1) };
+        let arr = Array4::from_shape_vec(
+            (n, cs.c_in, h, w),
+            input_flat,
+        )
+        .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
+        (arr, h)
     };
-    let h = cs.h.max(1);
-    let w = if spatial > 0 && h > 0 { spatial / h } else { cs.w.max(1) };
-
-    let input_4d = Array4::from_shape_vec(
-        (n, cs.c_in, h, w),
-        input_flat,
-    )
-    .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
 
     let mut accumulated: Option<Array4<f64>> = None;
 
@@ -556,27 +582,38 @@ fn execute_channel_split(
             backend,
         )?;
 
-        let group_flat: Vec<f64> = group_output.iter().copied().collect();
-        let out_spatial = if cs.c_out > 0 { group_flat.len() / (n * cs.c_out) } else { 0 };
-        let out_h_sqrt = (out_spatial as f64).sqrt() as usize;
-        let (out_h, out_w) = if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
-            (out_h_sqrt, out_h_sqrt)
-        } else if h > 0 && out_spatial % h == 0 {
-            (h, out_spatial / h)
+        let group_4d = if group_output.ndim() == 4 {
+            let s = group_output.shape();
+            Array4::from_shape_vec(
+                (s[0], s[1], s[2], s[3]),
+                group_output.iter().copied().collect(),
+            )
+            .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?
         } else {
-            (out_spatial, 1)
+            let group_flat: Vec<f64> = group_output.iter().copied().collect();
+            let out_spatial = if cs.c_out > 0 { group_flat.len() / (n * cs.c_out) } else { 0 };
+            let (out_h, out_w) = if h > 0 && out_spatial % h == 0 {
+                (h, out_spatial / h)
+            } else {
+                let out_h_sqrt = (out_spatial as f64).sqrt() as usize;
+                if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
+                    (out_h_sqrt, out_h_sqrt)
+                } else {
+                    (out_spatial, 1)
+                }
+            };
+            if n * cs.c_out * out_h * out_w != group_flat.len() {
+                return Err(DsperseError::Pipeline(format!(
+                    "group output reshape mismatch: expected {} elements (n={}, c_out={}, h={}, w={}), got {}",
+                    n * cs.c_out * out_h * out_w, n, cs.c_out, out_h, out_w, group_flat.len()
+                )));
+            }
+            Array4::from_shape_vec(
+                (n, cs.c_out, out_h, out_w),
+                group_flat,
+            )
+            .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?
         };
-        if n * cs.c_out * out_h * out_w != group_flat.len() {
-            return Err(DsperseError::Pipeline(format!(
-                "group output reshape mismatch: expected {} elements (n={}, c_out={}, h={}, w={}), got {}",
-                n * cs.c_out * out_h * out_w, n, cs.c_out, out_h, out_w, group_flat.len()
-            )));
-        }
-        let group_4d = Array4::from_shape_vec(
-            (n, cs.c_out, out_h, out_w),
-            group_flat,
-        )
-        .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?;
 
         accumulated = Some(match accumulated {
             Some(acc) => acc + &group_4d,
@@ -711,7 +748,9 @@ fn reconstruct_from_tiles(
 
         let tile_flat: Vec<f64> = tile_arr.iter().copied().collect();
         if tile_flat.is_empty() {
-            continue;
+            return Err(DsperseError::Pipeline(format!(
+                "tile ({},{}) marked successful but produced no data", ty, tx
+            )));
         }
 
         let tile_elements = c_out * out_h * out_w;

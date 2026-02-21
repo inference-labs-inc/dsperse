@@ -18,7 +18,7 @@ pub fn slice_model(
     let model = onnx_proto::load_model(onnx_path)?;
 
     tracing::info!("tracing shapes via tract");
-    let traced_shapes = trace_shapes_tract(onnx_path)?;
+    let traced_shapes = trace_shapes_tract(onnx_path, &model)?;
 
     let analysis = analyzer::analyze(&model, Some(onnx_path));
 
@@ -227,7 +227,7 @@ fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     points.dedup();
 }
 
-fn trace_shapes_tract(onnx_path: &Path) -> Result<HashMap<String, Vec<i64>>> {
+fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<HashMap<String, Vec<i64>>> {
     use tract_onnx::prelude::*;
 
     let mut model = tract_onnx::onnx()
@@ -276,7 +276,6 @@ fn trace_shapes_tract(onnx_path: &Path) -> Result<HashMap<String, Vec<i64>>> {
         }
     }
 
-    let proto_model = onnx_proto::load_model(onnx_path)?;
     if let Some(graph) = &proto_model.graph {
         let onnx_node_outputs: Vec<(String, Vec<String>)> = graph
             .node
@@ -508,7 +507,8 @@ fn slice_graph(
     output_dir: &Path,
     traced_shapes: &HashMap<String, Vec<i64>>,
 ) -> Result<(HashMap<usize, String>, TensorGraph)> {
-    let graph = model.graph.as_ref().unwrap();
+    let graph = model.graph.as_ref()
+        .ok_or_else(|| DsperseError::Slicer("model.graph is None in slice_graph".into()))?;
     let tensor_graph = TensorGraph::new(graph);
 
     let init_map: HashMap<&str, &TensorProto> = graph
@@ -518,6 +518,44 @@ fn slice_graph(
         .collect();
 
     let vi_map = onnx_proto::build_value_info_map(graph);
+
+    let init_types: HashMap<&str, i32> = graph
+        .initializer
+        .iter()
+        .map(|i| (i.name.as_str(), i.data_type))
+        .collect();
+
+    let mut node_output_types: HashMap<String, i32> = HashMap::new();
+    for node in &graph.node {
+        match node.op_type.as_str() {
+            "Cast" => {
+                if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
+                    for out in &node.output {
+                        if !out.is_empty() {
+                            node_output_types.insert(out.clone(), to as i32);
+                        }
+                    }
+                }
+            }
+            "MaxPool" => {
+                if node.output.len() > 1 {
+                    if let Some(idx_out) = node.output.get(1) {
+                        if !idx_out.is_empty() {
+                            node_output_types.insert(idx_out.clone(), TensorProto::INT64);
+                        }
+                    }
+                }
+            }
+            "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
+                for out in &node.output {
+                    if !out.is_empty() {
+                        node_output_types.insert(out.clone(), TensorProto::INT64);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     let segment_ranges = build_segment_ranges(slice_points);
 
@@ -559,6 +597,8 @@ fn slice_graph(
             &seg_inputs_set,
             &future,
             traced_shapes,
+            &init_types,
+            &node_output_types,
         );
 
         let seg_graph = onnx_proto::make_graph(
@@ -659,6 +699,8 @@ fn get_segment_details(
     seg_inputs_set: &HashSet<String>,
     future_inputs: &HashSet<String>,
     traced_shapes: &HashMap<String, Vec<i64>>,
+    init_types: &HashMap<&str, i32>,
+    node_output_types: &HashMap<String, i32>,
 ) -> (Vec<ValueInfoProto>, Vec<ValueInfoProto>, Vec<TensorProto>) {
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
@@ -704,9 +746,14 @@ fn get_segment_details(
                         tracing::warn!(tensor = %inp_name, "using fallback shape [1] for segment input");
                         vec![1]
                     });
+                let elem_type = init_types
+                    .get(inp_name.as_str())
+                    .copied()
+                    .or_else(|| node_output_types.get(inp_name).copied())
+                    .unwrap_or(TensorProto::FLOAT);
                 inputs.push(onnx_proto::make_tensor_value_info(
                     inp_name,
-                    TensorProto::FLOAT,
+                    elem_type,
                     &shape,
                 ));
             }
@@ -730,9 +777,14 @@ fn get_segment_details(
                         tracing::warn!(tensor = %out_name, "using fallback shape [1] for segment output");
                         vec![1]
                     });
+                let elem_type = init_types
+                    .get(out_name.as_str())
+                    .copied()
+                    .or_else(|| node_output_types.get(out_name).copied())
+                    .unwrap_or(TensorProto::FLOAT);
                 outputs.push(onnx_proto::make_tensor_value_info(
                     out_name,
-                    TensorProto::FLOAT,
+                    elem_type,
                     &shape,
                 ));
             }

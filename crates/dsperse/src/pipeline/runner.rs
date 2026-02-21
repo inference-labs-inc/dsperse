@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ndarray::{s, Array4, ArrayD, Axis, IxDyn};
+use ndarray::{s, Array4, ArrayD, IxDyn};
 
 use crate::backend::{JstproveBackend, PipeWitnessJob};
 use crate::error::{DsperseError, Result};
@@ -11,7 +11,10 @@ use crate::schema::execution::{
 };
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
-use crate::utils::io::{flatten_nested_list, read_input_json, write_input_json};
+use crate::utils::io::{
+    arrayd_to_json, extract_output_tensor, flatten_nested_list, json_to_arrayd, read_input_json,
+    write_input_json,
+};
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
 pub struct RunConfig {
@@ -47,12 +50,13 @@ pub fn run_inference(
     let chain = build_execution_chain(&model_meta, slices_dir);
     let run_meta = build_run_metadata(&model_meta, slices_dir, run_dir, &chain);
 
-    let mut tensor_cache: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
 
     if let Some(input_val) = input_data.get("input_data").or_else(|| input_data.get("input")) {
         if let Some(first_input) = model_meta.slices.first() {
             if let Some(name) = first_input.dependencies.input.first() {
-                tensor_cache.insert(name.clone(), input_val.clone());
+                let arr = json_to_arrayd(input_val)?;
+                tensor_cache.insert(name.clone(), arr);
             }
         }
     }
@@ -120,9 +124,9 @@ pub fn run_inference(
     let output_path = run_dir.join("output.json");
     if let Some(last_slice) = model_meta.slices.last() {
         if let Some(output_name) = last_slice.dependencies.output.first() {
-            if let Some(output_val) = tensor_cache.get(output_name) {
-                let output_json = serde_json::json!({ "output_data": output_val });
-                write_input_json(&output_path, &output_json)?;
+            if let Some(output_arr) = tensor_cache.get(output_name) {
+                let output_json = arrayd_to_json(output_arr);
+                write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
             }
         }
     }
@@ -144,7 +148,7 @@ fn execute_slice(
     slice_id: &str,
     node: &ExecutionNode,
     meta: &RunSliceMetadata,
-    tensor_cache: &mut HashMap<String, serde_json::Value>,
+    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     config: &RunConfig,
 ) -> Result<ExecutionInfo> {
@@ -165,7 +169,7 @@ fn execute_single(
     slice_id: &str,
     node: &ExecutionNode,
     meta: &RunSliceMetadata,
-    tensor_cache: &mut HashMap<String, serde_json::Value>,
+    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
 ) -> Result<ExecutionInfo> {
     let slice_idx: usize = slice_id
@@ -176,13 +180,14 @@ fn execute_single(
 
     let input_tensor = gather_inputs(tensor_cache, &meta.dependencies.filtered_inputs)?;
 
-    let input_path = slice_run_dir.join("input.json");
-    write_input_json(
-        &input_path,
-        &serde_json::json!({ "input_data": input_tensor }),
-    )?;
-
     if node.use_circuit {
+        let input_json = arrayd_to_json(&input_tensor);
+        let input_path = slice_run_dir.join("input.json");
+        write_input_json(
+            &input_path,
+            &serde_json::json!({ "input_data": input_json }),
+        )?;
+
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
@@ -210,7 +215,8 @@ fn execute_single(
         )?;
 
         let output_data = read_input_json(&output_path)?;
-        store_outputs(tensor_cache, &meta.dependencies.output, &output_data)?;
+        let output_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
+        store_outputs(tensor_cache, &meta.dependencies.output, output_tensor)?;
 
         Ok(ExecutionInfo {
             method: ExecutionMethod::JstproveGenWitness.to_string(),
@@ -221,8 +227,8 @@ fn execute_single(
         })
     } else {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output_data = run_onnx_inference(&onnx_path, &input_tensor)?;
-        store_outputs(tensor_cache, &meta.dependencies.output, &output_data)?;
+        let output = run_onnx_inference(&onnx_path, &input_tensor)?;
+        store_outputs(tensor_cache, &meta.dependencies.output, output)?;
 
         Ok(ExecutionInfo {
             method: ExecutionMethod::OnnxOnly.to_string(),
@@ -239,7 +245,7 @@ fn execute_tiled(
     slice_run_dir: &Path,
     slice_id: &str,
     tiling: &TilingInfo,
-    tensor_cache: &mut HashMap<String, serde_json::Value>,
+    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     config: &RunConfig,
 ) -> Result<ExecutionInfo> {
@@ -249,7 +255,7 @@ fn execute_tiled(
         .unwrap_or(0);
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let input_val = tensor_cache
+    let input_arr = tensor_cache
         .get(&tiling.input_name)
         .ok_or_else(|| {
             DsperseError::Pipeline(format!(
@@ -259,7 +265,7 @@ fn execute_tiled(
         })?
         .clone();
 
-    let input_flat = flatten_nested_list(&input_val);
+    let input_flat: Vec<f64> = input_arr.iter().copied().collect();
     let input_4d = reshape_to_4d(&input_flat, tiling.c_in, tiling.tile_size)?;
 
     let tiles = split_into_tiles(&input_4d, tiling);
@@ -275,7 +281,7 @@ fn execute_tiled(
     let single_tile = tiling.tile.as_ref();
 
     let mut tile_results: Vec<TileResult> = Vec::new();
-    let mut tile_outputs: Vec<serde_json::Value> = Vec::new();
+    let mut tile_outputs: Vec<ArrayD<f64>> = Vec::new();
 
     if config.batch {
         let batch_result = execute_tiles_batch(
@@ -296,7 +302,7 @@ fn execute_tiled(
             let tile_run_dir = &tile_dir;
 
             let tile_info = tile_infos.get(tile_idx).or(single_tile);
-            let tile_input_json = ndarray_to_nested_json(&tile_data.clone().into_dyn());
+            let tile_input_json = arrayd_to_json(&tile_data.clone().into_dyn());
 
             let input_path = tile_run_dir.join("input.json");
             write_input_json(
@@ -328,7 +334,8 @@ fn execute_tiled(
                 ) {
                     Ok(()) => {
                         let output_data = read_input_json(&output_path)?;
-                        tile_outputs.push(extract_output_tensor(&output_data));
+                        let tile_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
+                        tile_outputs.push(tile_tensor);
                         TileResult {
                             tile_idx,
                             success: true,
@@ -393,7 +400,7 @@ fn execute_tiles_batch(
     tiles: &[Array4<f64>],
     tiling: &TilingInfo,
     backend: &JstproveBackend,
-) -> Result<(Vec<TileResult>, Vec<serde_json::Value>)> {
+) -> Result<(Vec<TileResult>, Vec<ArrayD<f64>>)> {
     let tile_info = tiling.tile.as_ref().or_else(|| {
         tiling.tiles.as_ref().and_then(|t| t.first())
     });
@@ -410,7 +417,7 @@ fn execute_tiles_batch(
 
     let mut jobs: Vec<PipeWitnessJob> = Vec::new();
     for (tile_idx, tile_data) in tiles.iter().enumerate() {
-        let tile_input_json = ndarray_to_nested_json(&tile_data.clone().into_dyn());
+        let tile_input_json = arrayd_to_json(&tile_data.clone().into_dyn());
         let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
         std::fs::create_dir_all(&tile_dir)
             .map_err(|e| DsperseError::io(e, &tile_dir))?;
@@ -460,7 +467,8 @@ fn execute_tiles_batch(
             });
         } else if output_path.exists() {
             let output_data = read_input_json(&output_path)?;
-            tile_outputs.push(extract_output_tensor(&output_data));
+            let tile_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
+            tile_outputs.push(tile_tensor);
             tile_results.push(TileResult {
                 tile_idx,
                 success: true,
@@ -489,7 +497,7 @@ fn execute_channel_split(
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
-    tensor_cache: &mut HashMap<String, serde_json::Value>,
+    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
 ) -> Result<ExecutionInfo> {
     let slice_idx: usize = slice_id
@@ -498,7 +506,7 @@ fn execute_channel_split(
         .unwrap_or(0);
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let input_val = tensor_cache
+    let input_arr = tensor_cache
         .get(&cs.input_name)
         .ok_or_else(|| {
             DsperseError::Pipeline(format!(
@@ -508,7 +516,7 @@ fn execute_channel_split(
         })?
         .clone();
 
-    let input_flat = flatten_nested_list(&input_val);
+    let input_flat: Vec<f64> = input_arr.iter().copied().collect();
     let n = 1usize;
     let total_elements = input_flat.len();
     let spatial = if cs.c_in > 0 && total_elements > 0 {
@@ -534,27 +542,21 @@ fn execute_channel_split(
     );
 
     for group in &cs.groups {
-        let group_input = input_4d.slice(s![.., group.c_start..group.c_end, .., ..]);
-        let group_input_json = ndarray_to_nested_json(&group_input.to_owned().into_dyn());
+        let group_input = input_4d.slice(s![.., group.c_start..group.c_end, .., ..]).to_owned();
+        let group_input_dyn = group_input.into_dyn();
 
         let group_dir = slice_run_dir.join(format!("group_{}", group.group_idx));
         std::fs::create_dir_all(&group_dir).map_err(|e| DsperseError::io(e, &group_dir))?;
-
-        let input_path = group_dir.join("input.json");
-        write_input_json(
-            &input_path,
-            &serde_json::json!({ "input_data": group_input_json }),
-        )?;
 
         let group_output = execute_channel_group(
             &slice_dir,
             &group_dir,
             group,
-            &input_path,
+            &group_input_dyn,
             backend,
         )?;
 
-        let group_flat = flatten_nested_list(&group_output);
+        let group_flat: Vec<f64> = group_output.iter().copied().collect();
         let out_spatial = if cs.c_out > 0 { group_flat.len() / (n * cs.c_out) } else { 0 };
         let out_h_sqrt = (out_spatial as f64).sqrt() as usize;
         let (out_h, out_w) = if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
@@ -598,8 +600,7 @@ fn execute_channel_split(
     }
 
     if let Some(acc) = accumulated {
-        let output_json = ndarray_to_nested_json(&acc.into_dyn());
-        tensor_cache.insert(cs.output_name.clone(), output_json);
+        tensor_cache.insert(cs.output_name.clone(), acc.into_dyn());
     }
 
     Ok(ExecutionInfo {
@@ -615,9 +616,9 @@ fn execute_channel_group(
     slice_dir: &Path,
     group_dir: &Path,
     group: &ChannelGroupInfo,
-    input_path: &Path,
+    group_input: &ArrayD<f64>,
     backend: &JstproveBackend,
-) -> Result<serde_json::Value> {
+) -> Result<ArrayD<f64>> {
     if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
         let circuit_path = resolve_relative_path(slice_dir, circuit_path_str);
         let metadata_path = group
@@ -627,12 +628,19 @@ fn execute_channel_group(
             .map(|p| resolve_relative_path(slice_dir, p))
             .unwrap_or_else(|| circuit_path.clone());
 
+        let input_json = arrayd_to_json(group_input);
+        let input_path = group_dir.join("input.json");
+        write_input_json(
+            &input_path,
+            &serde_json::json!({ "input_data": input_json }),
+        )?;
+
         let output_path = group_dir.join("output.json");
         let witness_path = group_dir.join("witness.bin");
 
         backend.witness(
             &circuit_path,
-            input_path,
+            &input_path,
             &output_path,
             &witness_path,
             &metadata_path,
@@ -640,12 +648,10 @@ fn execute_channel_group(
         )?;
 
         let output_data = read_input_json(&output_path)?;
-        Ok(extract_output_tensor(&output_data))
+        json_to_arrayd(&extract_output_tensor(&output_data))
     } else {
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
-        let input_data = read_input_json(input_path)?;
-        let tensor = extract_input_tensor(&input_data);
-        run_onnx_inference(&onnx_path, &tensor)
+        run_onnx_inference(&onnx_path, group_input)
     }
 }
 
@@ -684,9 +690,9 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Vec<Array4<f64>
 }
 
 fn reconstruct_from_tiles(
-    tile_outputs: &[serde_json::Value],
+    tile_outputs: &[ArrayD<f64>],
     tiling: &TilingInfo,
-) -> Result<serde_json::Value> {
+) -> Result<ArrayD<f64>> {
     if tile_outputs.is_empty() {
         return Err(DsperseError::Pipeline("no tile outputs to reconstruct".into()));
     }
@@ -699,11 +705,11 @@ fn reconstruct_from_tiles(
 
     let mut output = Array4::<f64>::zeros((1, c_out, total_h, total_w));
 
-    for (idx, tile_val) in tile_outputs.iter().enumerate() {
+    for (idx, tile_arr) in tile_outputs.iter().enumerate() {
         let ty = idx / tiling.tiles_x;
         let tx = idx % tiling.tiles_x;
 
-        let tile_flat = flatten_nested_list(tile_val);
+        let tile_flat: Vec<f64> = tile_arr.iter().copied().collect();
         if tile_flat.is_empty() {
             continue;
         }
@@ -718,7 +724,7 @@ fn reconstruct_from_tiles(
             )));
         };
 
-        let tile_arr = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
+        let tile_4d = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
             .map_err(|e| DsperseError::Pipeline(format!(
                 "tile ({},{}) reshape failed: {e}", ty, tx
             )))?;
@@ -731,10 +737,10 @@ fn reconstruct_from_tiles(
                 y_start..y_start + out_h,
                 x_start..x_start + out_w
             ])
-            .assign(&tile_arr);
+            .assign(&tile_4d);
     }
 
-    Ok(ndarray_to_nested_json(&output.into_dyn()))
+    Ok(output.into_dyn())
 }
 
 fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>> {
@@ -766,46 +772,10 @@ fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>
     }
 }
 
-fn ndarray_to_nested_json(arr: &ArrayD<f64>) -> serde_json::Value {
-    match arr.ndim() {
-        0 => serde_json::json!(arr[IxDyn(&[])]),
-        1 => {
-            let vals: Vec<serde_json::Value> = arr
-                .iter()
-                .map(|&v| serde_json::json!(v))
-                .collect();
-            serde_json::Value::Array(vals)
-        }
-        _ => {
-            let vals: Vec<serde_json::Value> = (0..arr.shape()[0])
-                .map(|i| {
-                    let sub = arr.index_axis(Axis(0), i).to_owned();
-                    ndarray_to_nested_json(&sub)
-                })
-                .collect();
-            serde_json::Value::Array(vals)
-        }
-    }
-}
-
-fn extract_output_tensor(data: &serde_json::Value) -> serde_json::Value {
-    data.get("output_data")
-        .or_else(|| data.get("output"))
-        .cloned()
-        .unwrap_or_else(|| data.clone())
-}
-
-fn extract_input_tensor(data: &serde_json::Value) -> serde_json::Value {
-    data.get("input_data")
-        .or_else(|| data.get("input"))
-        .cloned()
-        .unwrap_or_else(|| data.clone())
-}
-
 fn gather_inputs(
-    tensor_cache: &HashMap<String, serde_json::Value>,
+    tensor_cache: &HashMap<String, ArrayD<f64>>,
     inputs: &[String],
-) -> Result<serde_json::Value> {
+) -> Result<ArrayD<f64>> {
     let mut collected = Vec::new();
     let mut missing = Vec::new();
     for name in inputs {
@@ -830,65 +800,38 @@ fn gather_inputs(
     if collected.len() == 1 {
         return Ok(collected.into_iter().next().unwrap());
     }
-    Ok(serde_json::Value::Array(collected))
+    ndarray::concatenate(
+        ndarray::Axis(0),
+        &collected.iter().map(|a| a.view()).collect::<Vec<_>>(),
+    )
+    .map_err(|e| DsperseError::Pipeline(format!("concat inputs: {e}")))
 }
 
 fn store_outputs(
-    tensor_cache: &mut HashMap<String, serde_json::Value>,
+    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     output_names: &[String],
-    output_data: &serde_json::Value,
+    output: ArrayD<f64>,
 ) -> Result<()> {
-    let data = extract_output_tensor(output_data);
     for name in output_names {
-        tensor_cache.insert(name.clone(), data.clone());
+        tensor_cache.insert(name.clone(), output.clone());
     }
     Ok(())
 }
 
-fn infer_shape(value: &serde_json::Value) -> Vec<usize> {
-    let mut shape = Vec::new();
-    let mut current = value;
-    loop {
-        match current {
-            serde_json::Value::Array(arr) => {
-                shape.push(arr.len());
-                if let Some(first) = arr.first() {
-                    current = first;
-                } else {
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    shape
-}
-
 fn run_onnx_inference(
     onnx_path: &Path,
-    input: &serde_json::Value,
-) -> Result<serde_json::Value> {
-    let input_flat = flatten_nested_list(input);
-    let input_shape = infer_shape(input);
-    let shape_ref = if input_shape.iter().product::<usize>() == input_flat.len() && !input_shape.is_empty() {
-        &input_shape[..]
-    } else {
-        &[]
-    };
+    input: &ArrayD<f64>,
+) -> Result<ArrayD<f64>> {
+    let input_flat: Vec<f64> = input.iter().copied().collect();
+    let input_shape = input.shape();
     let (output_data, output_shape) =
-        crate::backend::onnx::run_inference(onnx_path, &input_flat, shape_ref)?;
+        crate::backend::onnx::run_inference(onnx_path, &input_flat, input_shape)?;
 
-    let output_arr = ndarray::ArrayD::from_shape_vec(
-        ndarray::IxDyn(&output_shape),
-        output_data,
-    )
-    .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))?;
-
-    let output_json = ndarray_to_nested_json(&output_arr);
-    Ok(serde_json::json!({ "output_data": output_json }))
+    ArrayD::from_shape_vec(IxDyn(&output_shape), output_data)
+        .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
 }
 
-fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Path) -> ExecutionChain {
+pub(crate) fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Path) -> ExecutionChain {
     let mut nodes = HashMap::new();
     let mut head = None;
 
@@ -966,7 +909,7 @@ fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Path) -> Execu
     }
 }
 
-fn build_run_metadata(
+pub(crate) fn build_run_metadata(
     model_meta: &ModelMetadata,
     slices_dir: &Path,
     _run_dir: &Path,

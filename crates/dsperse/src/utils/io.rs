@@ -113,8 +113,7 @@ pub fn extract_output_tensor(data: &serde_json::Value) -> serde_json::Value {
 }
 
 pub fn extract_input_tensor(data: &serde_json::Value) -> serde_json::Value {
-    data.get("input_data")
-        .or_else(|| data.get("input"))
+    extract_input_data(data)
         .cloned()
         .unwrap_or_else(|| data.clone())
 }

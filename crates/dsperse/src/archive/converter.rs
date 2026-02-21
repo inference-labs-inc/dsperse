@@ -150,6 +150,9 @@ pub fn dirs_to_dslice(path: &Path, output_path: Option<&Path>, cleanup: bool) ->
             };
             ensure_parent(&dslice_out)?;
             zip_directory(path, &dslice_out, &[])?;
+            if cleanup {
+                let _ = fs::remove_dir_all(path);
+            }
             return Ok(dslice_out);
         }
         return Err(DsperseError::Archive(format!(
@@ -186,9 +189,18 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>, cleanup: bool) -
     }
 
     let mut dslice_files = Vec::new();
+    let cleanup_dslice_files = |files: &[PathBuf]| {
+        for f in files {
+            let _ = fs::remove_file(f);
+        }
+    };
     for slice_dir in &slice_dirs {
         let dslice_out = path.join(format!("{}.dslice", path_name(slice_dir)?));
-        zip_directory(slice_dir, &dslice_out, &[])?;
+        if let Err(e) = zip_directory(slice_dir, &dslice_out, &[]) {
+            let _ = fs::remove_file(&dslice_out);
+            cleanup_dslice_files(&dslice_files);
+            return Err(e);
+        }
         dslice_files.push(dslice_out);
     }
 
@@ -205,13 +217,19 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>, cleanup: bool) -
     };
     ensure_parent(&dsperse_out)?;
 
-    zip_directory(path, &dsperse_out, &["slice_"])?;
-
-    verify_archive(&dsperse_out)?;
-
-    for f in &dslice_files {
-        let _ = fs::remove_file(f);
+    if let Err(e) = zip_directory(path, &dsperse_out, &["slice_"]) {
+        cleanup_dslice_files(&dslice_files);
+        let _ = fs::remove_file(&dsperse_out);
+        return Err(e);
     }
+
+    if let Err(e) = verify_archive(&dsperse_out) {
+        cleanup_dslice_files(&dslice_files);
+        let _ = fs::remove_file(&dsperse_out);
+        return Err(e);
+    }
+
+    cleanup_dslice_files(&dslice_files);
     if cleanup {
         for d in &slice_dirs {
             let _ = fs::remove_dir_all(d);
@@ -516,9 +534,7 @@ fn verify_archive(path: &Path) -> Result<()> {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| DsperseError::Archive(format!("archive entry {i}: {e}")))?;
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
+        io::copy(&mut entry, &mut io::sink())
             .map_err(|e| DsperseError::Archive(format!("read entry {}: {e}", entry.name())))?;
     }
     Ok(())
@@ -529,13 +545,14 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
     let mut zip = zip::ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-    for entry in walkdir::WalkDir::new(source).into_iter().filter_map(|e| match e {
-        Ok(entry) => Some(entry),
-        Err(err) => {
-            tracing::warn!(path = ?err.path(), error = %err, "skipping unreadable entry during archive");
-            None
-        }
-    }) {
+    for entry_result in walkdir::WalkDir::new(source) {
+        let entry = entry_result.map_err(|e| {
+            DsperseError::Archive(format!(
+                "unreadable entry in {}: {}",
+                e.path().map(|p| p.display().to_string()).unwrap_or_default(),
+                e
+            ))
+        })?;
         let entry_path = entry.path();
         let rel = entry_path
             .strip_prefix(source)

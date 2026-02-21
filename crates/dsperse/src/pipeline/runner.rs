@@ -12,8 +12,8 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
-    arrayd_to_json, extract_output_tensor, flatten_nested_list, gather_inputs_from_cache,
-    json_to_arrayd, read_input_json, write_input_json,
+    arrayd_to_json, extract_input_data, extract_output_tensor, flatten_nested_list,
+    gather_inputs_from_cache, json_to_arrayd, read_input_json, write_input_json,
 };
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
@@ -76,14 +76,17 @@ pub fn run_inference(
 
     let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
 
-    if let Some(input_val) = input_data.get("input_data").or_else(|| input_data.get("input")) {
-        if let Some(first_input) = model_meta.slices.first() {
-            if let Some(name) = first_input.dependencies.input.first() {
-                let arr = json_to_arrayd(input_val)?;
-                tensor_cache.insert(name.clone(), arr);
-            }
-        }
-    }
+    let input_val = extract_input_data(&input_data).ok_or_else(|| {
+        DsperseError::Pipeline("input JSON has no recognized input key (input_data, input, data, inputs)".into())
+    })?;
+    let first_slice = model_meta.slices.first().ok_or_else(|| {
+        DsperseError::Pipeline("model has no slices".into())
+    })?;
+    let input_name = first_slice.dependencies.input.first().ok_or_else(|| {
+        DsperseError::Pipeline("first slice has no input dependency".into())
+    })?;
+    let arr = json_to_arrayd(input_val)?;
+    tensor_cache.insert(input_name.clone(), arr);
 
     let input_copy = run_dir.join("input.json");
     write_input_json(&input_copy, &input_data)?;
@@ -205,7 +208,7 @@ fn execute_single(
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let input_tensor = gather_inputs(tensor_cache, &meta.dependencies.filtered_inputs)?;
+    let input_tensor = gather_inputs_from_cache(tensor_cache, &meta.dependencies.filtered_inputs)?;
 
     if node.use_circuit {
         let input_json = arrayd_to_json(&input_tensor);
@@ -402,9 +405,20 @@ fn execute_tiled(
         }
     }
 
+    if tile_results.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "tiling produced zero tiles for '{}'", tiling.output_name
+        )));
+    }
+
     let all_success = tile_results.iter().all(|r| r.success);
 
-    if all_success && !tile_outputs.is_empty() {
+    if all_success {
+        if tile_outputs.is_empty() {
+            return Err(DsperseError::Pipeline(format!(
+                "all tiles reported success but no outputs collected for '{}'", tiling.output_name
+            )));
+        }
         let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
         tensor_cache.insert(tiling.output_name.clone(), reconstructed);
     }
@@ -614,7 +628,10 @@ fn execute_channel_split(
                 if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
                     (out_h_sqrt, out_h_sqrt)
                 } else {
-                    (out_spatial, 1)
+                    return Err(DsperseError::Pipeline(format!(
+                        "cannot determine spatial layout for channel_split output: {} elements, c_out={}",
+                        group_flat.len(), cs.c_out
+                    )));
                 }
             };
             if n * cs.c_out * out_h * out_w != group_flat.len() {
@@ -656,16 +673,10 @@ fn execute_channel_split(
             tensor_cache.insert(cs.output_name.clone(), acc.into_dyn());
         }
         None => {
-            return Ok(ExecutionInfo {
-                method: "channel_split".to_string(),
-                success: false,
-                error: Some(format!(
-                    "channel_split produced no output for '{}'",
-                    cs.output_name
-                )),
-                witness_file: None,
-                tile_exec_infos: Vec::new(),
-            });
+            return Err(DsperseError::Pipeline(format!(
+                "channel_split produced no output for '{}'",
+                cs.output_name
+            )));
         }
     }
 
@@ -845,13 +856,6 @@ fn parse_slice_idx(slice_id: &str) -> Result<usize> {
         .ok_or_else(|| {
             DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}"))
         })
-}
-
-fn gather_inputs(
-    tensor_cache: &HashMap<String, ArrayD<f64>>,
-    inputs: &[String],
-) -> Result<ArrayD<f64>> {
-    gather_inputs_from_cache(tensor_cache, inputs)
 }
 
 fn store_outputs(

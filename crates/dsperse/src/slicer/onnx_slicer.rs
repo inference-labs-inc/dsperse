@@ -76,19 +76,10 @@ pub fn slice_model(
 
 fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>) -> Vec<usize> {
     let mut points: HashSet<usize> = HashSet::new();
-    let max_idx = analysis
-        .nodes
-        .values()
-        .map(|n| n.index)
-        .max()
-        .unwrap_or(0);
 
     for node in analysis.nodes.values() {
         if !node.parameter_details.is_empty() {
             points.insert(node.index);
-            if node.node_type == "Conv" && node.index + 1 <= max_idx {
-                points.insert(node.index + 1);
-            }
         }
     }
 
@@ -163,16 +154,10 @@ fn optimize_for_tiling(points: &[usize], analysis: &AnalysisResult) -> Vec<usize
         n.node_type == "Conv" || elementwise_ops.contains(n.node_type.as_str())
     };
 
-    let mut skip_next = false;
     for i in 0..sorted_nodes.len().saturating_sub(1) {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
         let curr = sorted_nodes[i];
         let next = sorted_nodes[i + 1];
         if !is_tileable(curr) && next.node_type == "Relu" {
-            skip_next = true;
             continue;
         }
         if is_tileable(curr) != is_tileable(next) {
@@ -245,10 +230,12 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
                 .iter()
                 .map(|d| d.to_i64().unwrap_or(1) as usize)
                 .collect();
-            let _ = model.set_input_fact(
+            model.set_input_fact(
                 i,
                 InferenceFact::dt_shape(tf.datum_type, &concrete),
-            );
+            ).map_err(|e| DsperseError::Slicer(format!(
+                "set_input_fact({i}, shape={concrete:?}): {e}"
+            )))?;
         }
     }
 
@@ -450,37 +437,7 @@ fn apply_traced_shapes(
             .map(|i| (i.name.as_str(), i.data_type))
             .collect();
 
-        let mut node_output_types: HashMap<String, i32> = HashMap::new();
-        for node in &graph.node {
-            match node.op_type.as_str() {
-                "Cast" => {
-                    if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
-                        for out in &node.output {
-                            if !out.is_empty() {
-                                node_output_types.insert(out.clone(), to as i32);
-                            }
-                        }
-                    }
-                }
-                "MaxPool" => {
-                    if node.output.len() > 1 {
-                        if let Some(idx_out) = node.output.get(1) {
-                            if !idx_out.is_empty() {
-                                node_output_types.insert(idx_out.clone(), TensorProto::INT64);
-                            }
-                        }
-                    }
-                }
-                "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
-                    for out in &node.output {
-                        if !out.is_empty() {
-                            node_output_types.insert(out.clone(), TensorProto::INT64);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        let node_output_types = build_node_output_types(graph);
 
         for (name, shape) in shapes {
             if !existing.contains(name) {
@@ -525,37 +482,7 @@ fn slice_graph(
         .map(|i| (i.name.as_str(), i.data_type))
         .collect();
 
-    let mut node_output_types: HashMap<String, i32> = HashMap::new();
-    for node in &graph.node {
-        match node.op_type.as_str() {
-            "Cast" => {
-                if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
-                    for out in &node.output {
-                        if !out.is_empty() {
-                            node_output_types.insert(out.clone(), to as i32);
-                        }
-                    }
-                }
-            }
-            "MaxPool" => {
-                if node.output.len() > 1 {
-                    if let Some(idx_out) = node.output.get(1) {
-                        if !idx_out.is_empty() {
-                            node_output_types.insert(idx_out.clone(), TensorProto::INT64);
-                        }
-                    }
-                }
-            }
-            "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
-                for out in &node.output {
-                    if !out.is_empty() {
-                        node_output_types.insert(out.clone(), TensorProto::INT64);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    let node_output_types = build_node_output_types(graph);
 
     let segment_ranges = build_segment_ranges(slice_points);
 
@@ -563,9 +490,25 @@ fn slice_graph(
 
     let opset_version = model
         .opset_import
-        .first()
+        .iter()
+        .find(|o| o.domain.is_empty() || o.domain == "ai.onnx")
         .map(|o| o.version)
         .unwrap_or(13);
+
+    let constant_producers: HashMap<String, &TensorProto> = graph
+        .node
+        .iter()
+        .filter(|n| n.op_type == "Constant")
+        .flat_map(|n| {
+            n.output.iter().filter_map(|out| {
+                n.attribute
+                    .iter()
+                    .find(|a| a.name == "value")
+                    .and_then(|a| a.t.as_ref())
+                    .map(|t| (out.clone(), t))
+            })
+        })
+        .collect();
 
     let mut slices_paths = HashMap::new();
     let mut failures = Vec::new();
@@ -599,6 +542,7 @@ fn slice_graph(
             traced_shapes,
             &init_types,
             &node_output_types,
+            &constant_producers,
         );
 
         let seg_graph = onnx_proto::make_graph(
@@ -690,9 +634,9 @@ fn compute_future_dependencies(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn get_segment_details(
+fn get_segment_details<'a>(
     nodes: &[NodeProto],
-    graph: &GraphProto,
+    graph: &'a GraphProto,
     init_map: &HashMap<&str, &TensorProto>,
     vi_map: &HashMap<String, &ValueInfoProto>,
     seg_outputs: &HashSet<String>,
@@ -701,25 +645,11 @@ fn get_segment_details(
     traced_shapes: &HashMap<String, Vec<i64>>,
     init_types: &HashMap<&str, i32>,
     node_output_types: &HashMap<String, i32>,
+    constant_producers: &HashMap<String, &'a TensorProto>,
 ) -> (Vec<ValueInfoProto>, Vec<ValueInfoProto>, Vec<TensorProto>) {
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
     let mut initializers = Vec::new();
-
-    let constant_producers: HashMap<String, &TensorProto> = graph
-        .node
-        .iter()
-        .filter(|n| n.op_type == "Constant")
-        .flat_map(|n| {
-            n.output.iter().filter_map(|out| {
-                n.attribute
-                    .iter()
-                    .find(|a| a.name == "value")
-                    .and_then(|a| a.t.as_ref())
-                    .map(|t| (out.clone(), t))
-            })
-        })
-        .collect();
 
     let model_output_names: HashSet<String> =
         graph.output.iter().map(|o| o.name.clone()).collect();
@@ -792,4 +722,39 @@ fn get_segment_details(
     }
 
     (inputs, outputs, initializers)
+}
+
+fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
+    let mut types: HashMap<String, i32> = HashMap::new();
+    for node in &graph.node {
+        match node.op_type.as_str() {
+            "Cast" => {
+                if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
+                    for out in &node.output {
+                        if !out.is_empty() {
+                            types.insert(out.clone(), to as i32);
+                        }
+                    }
+                }
+            }
+            "MaxPool" => {
+                if node.output.len() > 1 {
+                    if let Some(idx_out) = node.output.get(1) {
+                        if !idx_out.is_empty() {
+                            types.insert(idx_out.clone(), TensorProto::INT64);
+                        }
+                    }
+                }
+            }
+            "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
+                for out in &node.output {
+                    if !out.is_empty() {
+                        types.insert(out.clone(), TensorProto::INT64);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    types
 }

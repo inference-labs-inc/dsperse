@@ -121,6 +121,20 @@ impl IncrementalRun {
     pub fn apply_result(&mut self, result: SliceExecutionResult) -> Result<()> {
         let slice_id = &result.slice_id;
 
+        match self.current_slice.as_deref() {
+            Some(expected) if expected != slice_id => {
+                return Err(DsperseError::Pipeline(format!(
+                    "out-of-order result: expected {expected}, got {slice_id}"
+                )));
+            }
+            None => {
+                return Err(DsperseError::Pipeline(format!(
+                    "pipeline already complete, unexpected result for {slice_id}"
+                )));
+            }
+            _ => {}
+        }
+
         let meta = self
             .run_meta
             .slices

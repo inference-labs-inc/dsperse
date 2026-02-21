@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use ndarray::{ArrayD, Axis, IxDyn};
@@ -116,4 +117,39 @@ pub fn extract_input_tensor(data: &serde_json::Value) -> serde_json::Value {
         .or_else(|| data.get("input"))
         .cloned()
         .unwrap_or_else(|| data.clone())
+}
+
+pub fn gather_inputs_from_cache(
+    cache: &HashMap<String, ArrayD<f64>>,
+    inputs: &[String],
+) -> Result<ArrayD<f64>> {
+    let mut collected = Vec::new();
+    let mut missing = Vec::new();
+    for name in inputs {
+        if let Some(val) = cache.get(name) {
+            collected.push(val.clone());
+        } else {
+            missing.push(name.clone());
+        }
+    }
+    if collected.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "no cached tensor found for inputs: {inputs:?}"
+        )));
+    }
+    if !missing.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "missing tensors in cache: {missing:?} (found {} of {})",
+            collected.len(),
+            inputs.len()
+        )));
+    }
+    if collected.len() == 1 {
+        return Ok(collected.into_iter().next().unwrap());
+    }
+    ndarray::concatenate(
+        ndarray::Axis(0),
+        &collected.iter().map(|a| a.view()).collect::<Vec<_>>(),
+    )
+    .map_err(|e| DsperseError::Pipeline(format!("concat inputs: {e}")))
 }

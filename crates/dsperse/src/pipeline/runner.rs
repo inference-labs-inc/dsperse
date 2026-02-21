@@ -12,8 +12,8 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
-    arrayd_to_json, extract_output_tensor, flatten_nested_list, json_to_arrayd, read_input_json,
-    write_input_json,
+    arrayd_to_json, extract_output_tensor, flatten_nested_list, gather_inputs_from_cache,
+    json_to_arrayd, read_input_json, write_input_json,
 };
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
@@ -178,10 +178,7 @@ fn execute_single(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
 ) -> Result<ExecutionInfo> {
-    let slice_idx: usize = slice_id
-        .strip_prefix("slice_")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
     let input_tensor = gather_inputs(tensor_cache, &meta.dependencies.filtered_inputs)?;
@@ -255,10 +252,7 @@ fn execute_tiled(
     backend: &JstproveBackend,
     config: &RunConfig,
 ) -> Result<ExecutionInfo> {
-    let slice_idx: usize = slice_id
-        .strip_prefix("slice_")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
     let input_arr = tensor_cache
@@ -515,10 +509,7 @@ fn execute_channel_split(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
 ) -> Result<ExecutionInfo> {
-    let slice_idx: usize = slice_id
-        .strip_prefix("slice_")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
     let input_arr = tensor_cache
@@ -636,8 +627,22 @@ fn execute_channel_split(
         }
     }
 
-    if let Some(acc) = accumulated {
-        tensor_cache.insert(cs.output_name.clone(), acc.into_dyn());
+    match accumulated {
+        Some(acc) => {
+            tensor_cache.insert(cs.output_name.clone(), acc.into_dyn());
+        }
+        None => {
+            return Ok(ExecutionInfo {
+                method: "channel_split".to_string(),
+                success: false,
+                error: Some(format!(
+                    "channel_split produced no output for '{}'",
+                    cs.output_name
+                )),
+                witness_file: None,
+                tile_exec_infos: Vec::new(),
+            });
+        }
     }
 
     Ok(ExecutionInfo {
@@ -787,7 +792,7 @@ fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>
     let total = flat.len();
     let spatial = if c > 0 { total / (n * c) } else { 0 };
     let h_sqrt = (spatial as f64).sqrt() as usize;
-    let (h, w) = if h_sqrt > 0 && h_sqrt * h_sqrt == spatial {
+    let (mut h, mut w) = if h_sqrt > 0 && h_sqrt * h_sqrt == spatial {
         (h_sqrt, h_sqrt)
     } else if tile_size > 0 && spatial > 0 {
         (tile_size, spatial / tile_size)
@@ -796,54 +801,33 @@ fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>
     };
 
     if n * c * h * w != total {
-        let h = tile_size;
-        let w = if c > 0 && h > 0 { total / (n * c * h) } else { 0 };
+        h = tile_size;
+        w = if c > 0 && h > 0 { total / (n * c * h) } else { 0 };
         if n * c * h * w != total {
             return Err(DsperseError::Pipeline(format!(
                 "cannot reshape {total} elements to 4D (c={c})"
             )));
         }
-        Array4::from_shape_vec((n, c, h, w), flat.to_vec())
-            .map_err(|e| DsperseError::Pipeline(format!("reshape: {e}")))
-    } else {
-        Array4::from_shape_vec((n, c, h, w), flat.to_vec())
-            .map_err(|e| DsperseError::Pipeline(format!("reshape: {e}")))
     }
+
+    Array4::from_shape_vec((n, c, h, w), flat.to_vec())
+        .map_err(|e| DsperseError::Pipeline(format!("reshape: {e}")))
+}
+
+fn parse_slice_idx(slice_id: &str) -> Result<usize> {
+    slice_id
+        .strip_prefix("slice_")
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}"))
+        })
 }
 
 fn gather_inputs(
     tensor_cache: &HashMap<String, ArrayD<f64>>,
     inputs: &[String],
 ) -> Result<ArrayD<f64>> {
-    let mut collected = Vec::new();
-    let mut missing = Vec::new();
-    for name in inputs {
-        if let Some(val) = tensor_cache.get(name) {
-            collected.push(val.clone());
-        } else {
-            missing.push(name.clone());
-        }
-    }
-    if collected.is_empty() {
-        return Err(DsperseError::Pipeline(format!(
-            "no cached tensor found for inputs: {inputs:?}"
-        )));
-    }
-    if !missing.is_empty() {
-        return Err(DsperseError::Pipeline(format!(
-            "missing tensors in cache: {missing:?} (found {} of {})",
-            collected.len(),
-            inputs.len()
-        )));
-    }
-    if collected.len() == 1 {
-        return Ok(collected.into_iter().next().unwrap());
-    }
-    ndarray::concatenate(
-        ndarray::Axis(0),
-        &collected.iter().map(|a| a.view()).collect::<Vec<_>>(),
-    )
-    .map_err(|e| DsperseError::Pipeline(format!("concat inputs: {e}")))
+    gather_inputs_from_cache(tensor_cache, inputs)
 }
 
 fn store_outputs(

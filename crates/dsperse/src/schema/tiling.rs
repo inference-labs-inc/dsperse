@@ -87,6 +87,10 @@ pub struct ChannelSplitInfo {
     #[serde(default)]
     pub w: usize,
     #[serde(default)]
+    pub out_h: usize,
+    #[serde(default)]
+    pub out_w: usize,
+    #[serde(default)]
     pub groups: Vec<ChannelGroupInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bias_path: Option<String>,

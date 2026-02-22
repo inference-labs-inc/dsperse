@@ -82,11 +82,25 @@ pub fn run_inference(
     let first_slice = model_meta.slices.first().ok_or_else(|| {
         DsperseError::Pipeline("model has no slices".into())
     })?;
-    let input_name = first_slice.dependencies.input.first().ok_or_else(|| {
-        DsperseError::Pipeline("first slice has no input dependency".into())
-    })?;
-    let arr = json_to_arrayd(input_val)?;
-    tensor_cache.insert(input_name.clone(), arr);
+    let declared_inputs = &first_slice.dependencies.input;
+    if declared_inputs.is_empty() {
+        return Err(DsperseError::Pipeline("first slice has no input dependency".into()));
+    }
+    if input_val.is_object() {
+        for name in declared_inputs {
+            let v = input_val.get(name).ok_or_else(|| {
+                DsperseError::Pipeline(format!("input JSON object missing key {name:?}"))
+            })?;
+            tensor_cache.insert(name.clone(), json_to_arrayd(v)?);
+        }
+    } else if declared_inputs.len() == 1 {
+        tensor_cache.insert(declared_inputs[0].clone(), json_to_arrayd(input_val)?);
+    } else {
+        return Err(DsperseError::Pipeline(format!(
+            "model declares {} inputs but input JSON is not an object",
+            declared_inputs.len()
+        )));
+    }
 
     let input_copy = run_dir.join("input.json");
     write_input_json(&input_copy, &input_data)?;
@@ -310,7 +324,15 @@ fn execute_tiled(
         .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
     } else {
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-        reshape_to_4d(&input_flat, tiling.c_in, tiling.tile_size)?
+        let halo_h = tiling.halo[0].max(0) as usize;
+        let halo_w = tiling.halo[1].max(0) as usize;
+        let stride_h = tiling.stride[0].max(1) as usize;
+        let stride_w = tiling.stride[1].max(1) as usize;
+        let tile_h = tiling.tile_size + 2 * halo_h;
+        let tile_w = tiling.tile_size + 2 * halo_w;
+        let h = (tiling.tiles_y.max(1) - 1) * stride_h + tile_h;
+        let w = (tiling.tiles_x.max(1) - 1) * stride_w + tile_w;
+        reshape_to_4d(&input_flat, tiling.c_in, h, w)?
     };
 
     let tiles = split_into_tiles(&input_4d, tiling)?;
@@ -524,19 +546,22 @@ fn execute_channel_split(
             .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?
         } else {
             let group_flat: Vec<f64> = group_output.iter().copied().collect();
-            let out_spatial = if cs.c_out > 0 { group_flat.len() / (n * cs.c_out) } else { 0 };
-            let (out_h, out_w) = if h > 0 && out_spatial % h == 0 {
-                (h, out_spatial / h)
-            } else {
-                let out_h_sqrt = (out_spatial as f64).sqrt() as usize;
-                if out_h_sqrt > 0 && out_h_sqrt * out_h_sqrt == out_spatial {
-                    (out_h_sqrt, out_h_sqrt)
+            let (out_h, out_w) = if cs.out_h > 0 && cs.out_w > 0 {
+                (cs.out_h, cs.out_w)
+            } else if cs.c_out > 0 {
+                let out_spatial = group_flat.len() / (n * cs.c_out);
+                if h > 0 && out_spatial > 0 && out_spatial % h == 0 {
+                    (h, out_spatial / h)
                 } else {
                     return Err(DsperseError::Pipeline(format!(
-                        "cannot determine spatial layout for channel_split output: {} elements, c_out={}",
+                        "cannot determine spatial layout for channel_split output: {} elements, c_out={}, set out_h/out_w in metadata",
                         group_flat.len(), cs.c_out
                     )));
                 }
+            } else {
+                return Err(DsperseError::Pipeline(
+                    "channel split c_out is 0".into()
+                ));
             };
             if n * cs.c_out * out_h * out_w != group_flat.len() {
                 return Err(DsperseError::Pipeline(format!(
@@ -721,29 +746,14 @@ fn reconstruct_from_tiles(
     Ok(output.into_dyn())
 }
 
-fn reshape_to_4d(flat: &[f64], c: usize, tile_size: usize) -> Result<Array4<f64>> {
+fn reshape_to_4d(flat: &[f64], c: usize, h: usize, w: usize) -> Result<Array4<f64>> {
     let n = 1usize;
     let total = flat.len();
-    let spatial = if c > 0 { total / (n * c) } else { 0 };
-    let h_sqrt = (spatial as f64).sqrt() as usize;
-    let (mut h, mut w) = if h_sqrt > 0 && h_sqrt * h_sqrt == spatial {
-        (h_sqrt, h_sqrt)
-    } else if tile_size > 0 && spatial > 0 {
-        (tile_size, spatial / tile_size)
-    } else {
-        (0, 0)
-    };
-
     if n * c * h * w != total {
-        h = tile_size;
-        w = if c > 0 && h > 0 { total / (n * c * h) } else { 0 };
-        if n * c * h * w != total {
-            return Err(DsperseError::Pipeline(format!(
-                "cannot reshape {total} elements to 4D (c={c})"
-            )));
-        }
+        return Err(DsperseError::Pipeline(format!(
+            "cannot reshape {total} elements to 4D (n={n}, c={c}, h={h}, w={w})"
+        )));
     }
-
     Array4::from_shape_vec((n, c, h, w), flat.to_vec())
         .map_err(|e| DsperseError::Pipeline(format!("reshape: {e}")))
 }

@@ -676,6 +676,8 @@ pub fn apply_channel_splitting(
         output_name: output_name.to_string(),
         h: h as usize,
         w: w as usize,
+        out_h: 0,
+        out_w: 0,
         groups,
         bias_path,
     }))

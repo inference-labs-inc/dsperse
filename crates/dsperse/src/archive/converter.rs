@@ -8,7 +8,7 @@ use crate::error::{DsperseError, Result};
 
 const EXTRACTED_SENTINEL: &str = ".extracted";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FormatType {
     Dirs,
     Dslice,
@@ -74,6 +74,7 @@ pub fn convert(
     output_type: FormatType,
     output_path: Option<&Path>,
     cleanup: bool,
+    expand_slices: bool,
 ) -> Result<PathBuf> {
     if !path.exists() {
         return Err(DsperseError::Archive(format!(
@@ -113,7 +114,7 @@ pub fn convert(
             Ok(result)
         }
         (FormatType::Dsperse, FormatType::Dirs) => {
-            let result = dsperse_to_dirs(path, output_path, true)?;
+            let result = dsperse_to_dirs(path, output_path, expand_slices)?;
             if cleanup {
                 let _ = fs::remove_file(path);
             }

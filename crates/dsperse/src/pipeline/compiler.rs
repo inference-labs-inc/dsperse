@@ -19,7 +19,7 @@ pub fn compile_slices(
     let slices: Vec<_> = metadata
         .slices
         .iter()
-        .filter(|s| layers.is_none() || layers.unwrap().contains(&s.index))
+        .filter(|s| layers.map_or(true, |l| l.contains(&s.index)))
         .collect();
 
     tracing::info!(total = slices.len(), "compiling slices");
@@ -68,6 +68,9 @@ fn compile_single_slice(
         )));
     }
 
+    // Validate the ONNX model exists before compilation. The compile step itself
+    // reads metadata.json/architecture.json/wandb.json (derived from ONNX during slicing),
+    // not the ONNX file directly — but a missing model indicates a broken slice directory.
     let onnx_path = resolve_relative_path(&slice_dir, &slice.path);
     if !onnx_path.exists() {
         return Err(DsperseError::Pipeline(format!(

@@ -4,7 +4,7 @@ use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, Circ
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
 use jstprove_circuits::onnx::{compile_bn254, prove_bn254, verify_bn254, witness_bn254};
 use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
-use jstprove_circuits::runner::schema::WitnessRequest;
+use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
 
 use crate::error::{DsperseError, Result};
 
@@ -13,9 +13,15 @@ pub struct JstproveBackend {
     compress: bool,
 }
 
+impl Default for JstproveBackend {
+    fn default() -> Self {
+        Self { compress: true }
+    }
+}
+
 impl JstproveBackend {
     pub fn new() -> Self {
-        Self { compress: true }
+        Self::default()
     }
 
     pub fn with_compress(mut self, compress: bool) -> Self {
@@ -65,16 +71,7 @@ impl JstproveBackend {
         input_json: &[u8],
         output_json: &[u8],
     ) -> Result<Vec<u8>> {
-        let circuit_path_str = circuit_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
-        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
-        let msgpack_str = msgpack_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
-
-        let bundle = read_circuit_msgpack(msgpack_str)
-            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
+        let bundle = load_bundle(circuit_path)?;
 
         if let Some(ref params) = bundle.metadata {
             OnnxContext::set_params(params.clone());
@@ -94,16 +91,7 @@ impl JstproveBackend {
     }
 
     pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
-        let circuit_path_str = circuit_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
-        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
-        let msgpack_str = msgpack_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
-
-        let bundle = read_circuit_msgpack(msgpack_str)
-            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
+        let bundle = load_bundle(circuit_path)?;
 
         prove_bn254(&bundle.circuit, witness_bytes, self.compress)
             .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
@@ -115,18 +103,19 @@ impl JstproveBackend {
         witness_bytes: &[u8],
         proof_bytes: &[u8],
     ) -> Result<bool> {
-        let circuit_path_str = circuit_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
-        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
-        let msgpack_str = msgpack_path
-            .to_str()
-            .ok_or_else(|| DsperseError::Backend(format!("non-UTF8 msgpack path")))?;
-
-        let bundle = read_circuit_msgpack(msgpack_str)
-            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
+        let bundle = load_bundle(circuit_path)?;
 
         verify_bn254(&bundle.circuit, witness_bytes, proof_bytes)
             .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
     }
+}
+
+fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {
+    let msgpack_path = circuit_path.with_extension("msgpack");
+    let msgpack_str = msgpack_path
+        .to_str()
+        .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
+
+    read_circuit_msgpack(msgpack_str)
+        .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))
 }

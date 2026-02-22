@@ -13,8 +13,8 @@ pub struct SliceArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
-    #[arg(long, default_value = "dirs")]
-    pub format: String,
+    #[arg(long, value_enum, default_value = "dirs")]
+    pub format: FormatType,
     #[arg(long)]
     pub tile_size: Option<usize>,
 }
@@ -23,8 +23,6 @@ pub struct SliceArgs {
 pub struct CompileArgs {
     #[arg(long)]
     pub model_dir: PathBuf,
-    #[arg(long)]
-    pub input_file: Option<PathBuf>,
     #[arg(long)]
     pub layers: Option<String>,
     #[arg(long, default_value_t = 1)]
@@ -41,8 +39,6 @@ pub struct RunArgs {
     pub input_file: PathBuf,
     #[arg(long)]
     pub run_dir: Option<PathBuf>,
-    #[arg(long)]
-    pub backend: Option<String>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
     #[arg(long)]
@@ -55,8 +51,6 @@ pub struct ProveArgs {
     pub run_dir: PathBuf,
     #[arg(long)]
     pub model_dir: PathBuf,
-    #[arg(long)]
-    pub backend: Option<String>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
     #[arg(long)]
@@ -69,8 +63,6 @@ pub struct VerifyArgs {
     pub run_dir: PathBuf,
     #[arg(long)]
     pub model_dir: PathBuf,
-    #[arg(long)]
-    pub backend: Option<String>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
 }
@@ -97,8 +89,8 @@ pub struct FullRunArgs {
 pub struct ConvertArgs {
     #[arg(long)]
     pub input: PathBuf,
-    #[arg(long)]
-    pub to: String,
+    #[arg(long, value_enum)]
+    pub to: FormatType,
     #[arg(long)]
     pub output: Option<PathBuf>,
     #[arg(long)]
@@ -121,14 +113,21 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
         args.tile_size,
     )?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
+
+    if args.format != FormatType::Dirs {
+        let default_dir = args.model_dir.join("slices");
+        let slices_dir = args.output_dir.as_deref().unwrap_or(&default_dir);
+        converter::convert(slices_dir, args.format, None, false, true)?;
+    }
+
     Ok(())
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = JstproveBackend::new();
+    let backend = JstproveBackend::default();
     let slices_dir = args.model_dir.join("slices");
 
-    let layers: Option<Vec<usize>> = args.layers.as_ref().map(|s| parse_layer_spec(s));
+    let layers = args.layers.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
 
     pipeline::compile_slices(
         &slices_dir,
@@ -140,12 +139,11 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
 }
 
 pub fn cmd_run(args: RunArgs) -> Result<()> {
-    let backend = JstproveBackend::new();
+    let backend = JstproveBackend::default();
     let slices_dir = args.model_dir.join("slices");
 
     let run_dir = args.run_dir.unwrap_or_else(|| {
-        let ts = chrono_timestamp();
-        args.model_dir.join("run").join(format!("run_{ts}"))
+        args.model_dir.join("run").join(format!("run_{}", run_id()))
     });
 
     let config = RunConfig {
@@ -158,10 +156,10 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 }
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
-    let backend = JstproveBackend::new();
+    let backend = JstproveBackend::default();
     let slices_dir = args.model_dir.join("slices");
 
-    let tiles: Option<Vec<usize>> = args.tiles.as_ref().map(|s| parse_layer_spec(s));
+    let tiles = args.tiles.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
 
     pipeline::prove_run(
         &args.run_dir,
@@ -174,7 +172,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 }
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
-    let backend = JstproveBackend::new();
+    let backend = JstproveBackend::default();
     let slices_dir = args.model_dir.join("slices");
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel)?;
@@ -182,7 +180,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = JstproveBackend::new();
+    let backend = JstproveBackend::default();
 
     let slices_dir = args
         .slices_dir
@@ -192,7 +190,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         .input_file
         .unwrap_or_else(|| args.model_dir.join("input.json"));
 
-    let layers: Option<Vec<usize>> = args.layers.as_ref().map(|s| parse_layer_spec(s));
+    let layers = args.layers.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
 
     tracing::info!("compiling slices");
     pipeline::compile_slices(
@@ -203,8 +201,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         layers.as_deref(),
     )?;
 
-    let ts = chrono_timestamp();
-    let run_dir = args.model_dir.join("run").join(format!("run_{ts}"));
+    let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));
 
     let config = RunConfig {
         parallel: args.parallel,
@@ -225,35 +222,39 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
 }
 
 pub fn cmd_convert(args: ConvertArgs) -> Result<()> {
-    let target = match args.to.as_str() {
-        "dirs" => FormatType::Dirs,
-        "dslice" => FormatType::Dslice,
-        "dsperse" => FormatType::Dsperse,
-        other => return Err(DsperseError::Other(format!("unknown format: {other}"))),
-    };
-
-    converter::convert(&args.input, target, args.output.as_deref(), args.cleanup)?;
+    converter::convert(&args.input, args.to, args.output.as_deref(), args.cleanup, args.expand_slices)?;
     Ok(())
 }
 
-fn parse_layer_spec(spec: &str) -> Vec<usize> {
+fn parse_layer_spec(spec: &str) -> Result<Vec<usize>> {
     let mut layers = Vec::new();
     for part in spec.split(',') {
         let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
         if let Some((start, end)) = part.split_once('-') {
-            if let (Ok(s), Ok(e)) = (start.trim().parse::<usize>(), end.trim().parse::<usize>()) {
-                layers.extend(s..=e);
-            }
-        } else if let Ok(n) = part.parse::<usize>() {
+            let s: usize = start.trim().parse().map_err(|_| {
+                DsperseError::Other(format!("invalid layer spec range start: {start:?}"))
+            })?;
+            let e: usize = end.trim().parse().map_err(|_| {
+                DsperseError::Other(format!("invalid layer spec range end: {end:?}"))
+            })?;
+            layers.extend(s..=e);
+        } else {
+            let n: usize = part.parse().map_err(|_| {
+                DsperseError::Other(format!("invalid layer spec token: {part:?}"))
+            })?;
             layers.push(n);
         }
     }
-    layers
+    Ok(layers)
 }
 
-fn chrono_timestamp() -> String {
+fn run_id() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("{}", now.as_secs())
+    let uuid = uuid::Uuid::new_v4();
+    format!("{}_{}", now.as_secs(), uuid)
 }

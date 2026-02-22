@@ -155,24 +155,28 @@ pub fn run_inference(
     }
 
     let output_path = run_dir.join("output.json");
-    if let Some(last_slice) = model_meta.slices.last() {
-        let slice_id = format!("slice_{}", last_slice.index);
-        let output_arr = if let Some(meta) = run_meta.slices.get(&slice_id) {
-            if let Some(ref cs) = meta.channel_split {
-                tensor_cache.get(&cs.output_name)
-            } else if let Some(ref tiling) = meta.tiling {
-                tensor_cache.get(&tiling.output_name)
-            } else {
-                last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
-            }
+    let last_slice = model_meta.slices.last().ok_or_else(|| {
+        DsperseError::Pipeline("model has no slices".into())
+    })?;
+    let last_slice_id = format!("slice_{}", last_slice.index);
+    let output_arr = if let Some(meta) = run_meta.slices.get(&last_slice_id) {
+        if let Some(ref cs) = meta.channel_split {
+            tensor_cache.get(&cs.output_name)
+        } else if let Some(ref tiling) = meta.tiling {
+            tensor_cache.get(&tiling.output_name)
         } else {
             last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
-        };
-        if let Some(output_arr) = output_arr {
-            let output_json = arrayd_to_json(output_arr);
-            write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
         }
-    }
+    } else {
+        last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
+    };
+    let output_arr = output_arr.ok_or_else(|| {
+        DsperseError::Pipeline(format!(
+            "no output tensor found for last slice {last_slice_id}"
+        ))
+    })?;
+    let output_json = arrayd_to_json(output_arr);
+    write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
 
     let mut final_meta = run_meta;
     final_meta.execution_chain.execution_results = results;
@@ -309,7 +313,7 @@ fn execute_tiled(
         reshape_to_4d(&input_flat, tiling.c_in, tiling.tile_size)?
     };
 
-    let tiles = split_into_tiles(&input_4d, tiling);
+    let tiles = split_into_tiles(&input_4d, tiling)?;
 
     tracing::info!(
         slice = %slice_id,
@@ -336,10 +340,7 @@ fn execute_tiled(
         let result = if let Some(ti) = tile_info {
             let tile_circuit = resolve_relative_path(&slice_dir, &ti.path);
 
-            let tile_output = run_onnx_inference(
-                &resolve_relative_path(&slice_dir, &ti.path),
-                &tile_dyn,
-            );
+            let tile_output = run_onnx_inference(&tile_circuit, &tile_dyn);
 
             match tile_output {
                 Ok(ref output_tensor) => {
@@ -617,10 +618,16 @@ fn execute_channel_group(
     }
 }
 
-fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Vec<Array4<f64>> {
+fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {
+    if tiling.halo[0] < 0 || tiling.halo[1] < 0 {
+        return Err(DsperseError::Pipeline(format!(
+            "negative halo values not supported: halo=[{}, {}]",
+            tiling.halo[0], tiling.halo[1]
+        )));
+    }
     let (_n, c, h, w) = input.dim();
-    let halo_h = tiling.halo[0].unsigned_abs() as usize;
-    let halo_w = tiling.halo[1].unsigned_abs() as usize;
+    let halo_h = tiling.halo[0] as usize;
+    let halo_w = tiling.halo[1] as usize;
     let stride_h = tiling.stride[0].max(1) as usize;
     let stride_w = tiling.stride[1].max(1) as usize;
     let tile_h = tiling.tile_size + 2 * halo_h;
@@ -648,7 +655,7 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Vec<Array4<f64>
         }
     }
 
-    tiles
+    Ok(tiles)
 }
 
 fn reconstruct_from_tiles(

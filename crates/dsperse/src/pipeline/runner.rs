@@ -3,7 +3,7 @@ use std::path::Path;
 
 use ndarray::{s, Array4, ArrayD, IxDyn};
 
-use crate::backend::{JstproveBackend, PipeWitnessJob};
+use crate::backend::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
@@ -12,8 +12,8 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
-    arrayd_to_json, extract_input_data, extract_output_tensor, flatten_nested_list,
-    gather_inputs_from_cache, json_to_arrayd, read_input_json, write_input_json,
+    arrayd_to_json, extract_input_data, gather_inputs_from_cache, json_to_arrayd, read_input_json,
+    write_input_json,
 };
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
@@ -221,11 +221,14 @@ fn execute_single(
     let input_tensor = gather_inputs_from_cache(tensor_cache, &meta.dependencies.filtered_inputs)?;
 
     if node.use_circuit {
-        let input_json = arrayd_to_json(&input_tensor);
-        let input_path = slice_run_dir.join("input.json");
-        write_input_json(
-            &input_path,
-            &serde_json::json!({ "input_data": input_json }),
+        let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
+        let output_tensor = run_onnx_inference(&onnx_path, &input_tensor)?;
+
+        let input_json_bytes = serde_json::to_vec(
+            &serde_json::json!({ "input_data": arrayd_to_json(&input_tensor) }),
+        )?;
+        let output_json_bytes = serde_json::to_vec(
+            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
         )?;
 
         let circuit_path = meta
@@ -235,27 +238,19 @@ fn execute_single(
             .map(|p| resolve_relative_path(&slice_dir, p))
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
-        let metadata_path = meta
-            .jstprove_settings_path
-            .as_deref()
-            .or(meta.settings_path.as_deref())
-            .map(|p| resolve_relative_path(&slice_dir, p))
-            .unwrap_or_else(|| circuit_path.clone());
+        let witness_bytes = backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?;
 
-        let output_path = slice_run_dir.join("output.json");
         let witness_path = slice_run_dir.join("witness.bin");
+        std::fs::write(&witness_path, &witness_bytes)
+            .map_err(|e| DsperseError::io(e, &witness_path))?;
 
-        backend.witness(
-            &circuit_path,
-            &input_path,
-            &output_path,
-            &witness_path,
-            &metadata_path,
-            None,
-        )?;
+        let input_path = slice_run_dir.join("input.json");
+        std::fs::write(&input_path, &input_json_bytes)
+            .map_err(|e| DsperseError::io(e, &input_path))?;
+        let output_path = slice_run_dir.join("output.json");
+        std::fs::write(&output_path, &output_json_bytes)
+            .map_err(|e| DsperseError::io(e, &output_path))?;
 
-        let output_data = read_input_json(&output_path)?;
-        let output_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
         store_outputs(tensor_cache, &meta.dependencies.output, output_tensor)?;
 
         Ok(ExecutionInfo {
@@ -287,7 +282,7 @@ fn execute_tiled(
     tiling: &TilingInfo,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    config: &RunConfig,
+    _config: &RunConfig,
 ) -> Result<ExecutionInfo> {
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
@@ -329,90 +324,79 @@ fn execute_tiled(
     let mut tile_results: Vec<TileResult> = Vec::new();
     let mut tile_outputs: Vec<ArrayD<f64>> = Vec::new();
 
-    if config.batch {
-        let batch_result = execute_tiles_batch(
-            &slice_dir,
-            slice_run_dir,
-            &tiles,
-            tiling,
-            backend,
-        )?;
-        tile_results = batch_result.0;
-        tile_outputs = batch_result.1;
-    } else {
-        for (tile_idx, tile_data) in tiles.iter().enumerate() {
-            let start = std::time::Instant::now();
-            let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
-            std::fs::create_dir_all(&tile_dir)
-                .map_err(|e| DsperseError::io(e, &tile_dir))?;
-            let tile_run_dir = &tile_dir;
+    for (tile_idx, tile_data) in tiles.iter().enumerate() {
+        let start = std::time::Instant::now();
+        let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+        std::fs::create_dir_all(&tile_dir)
+            .map_err(|e| DsperseError::io(e, &tile_dir))?;
 
-            let tile_info = tile_infos.get(tile_idx).or(single_tile);
-            let tile_input_json = arrayd_to_json(&tile_data.clone().into_dyn());
+        let tile_info = tile_infos.get(tile_idx).or(single_tile);
+        let tile_dyn = tile_data.clone().into_dyn();
 
-            let input_path = tile_run_dir.join("input.json");
-            write_input_json(
-                &input_path,
-                &serde_json::json!({ "input_data": tile_input_json }),
-            )?;
+        let result = if let Some(ti) = tile_info {
+            let tile_circuit = resolve_relative_path(&slice_dir, &ti.path);
 
-            let result = if let Some(ti) = tile_info {
-                let tile_circuit =
-                    resolve_relative_path(&slice_dir, &ti.path);
-                let tile_circuit_parent = tile_circuit.parent().unwrap_or(&slice_dir);
-                let metadata_file = tile_circuit_parent.join("metadata.json");
-                let metadata_path = if metadata_file.exists() {
-                    metadata_file
-                } else {
-                    tile_circuit.clone()
-                };
+            let tile_output = run_onnx_inference(
+                &resolve_relative_path(&slice_dir, &ti.path),
+                &tile_dyn,
+            );
 
-                let output_path = tile_run_dir.join("output.json");
-                let witness_path = tile_run_dir.join("witness.bin");
+            match tile_output {
+                Ok(ref output_tensor) => {
+                    let input_json_bytes = serde_json::to_vec(
+                        &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
+                    )?;
+                    let output_json_bytes = serde_json::to_vec(
+                        &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
+                    )?;
 
-                match backend.witness(
-                    &tile_circuit,
-                    &input_path,
-                    &output_path,
-                    &witness_path,
-                    &metadata_path,
-                    None,
-                ) {
-                    Ok(()) => {
-                        let output_data = read_input_json(&output_path)?;
-                        let tile_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
-                        tile_outputs.push(tile_tensor);
-                        TileResult {
+                    match backend.witness(&tile_circuit, &input_json_bytes, &output_json_bytes) {
+                        Ok(witness_bytes) => {
+                            let witness_path = tile_dir.join("witness.bin");
+                            std::fs::write(&witness_path, &witness_bytes)
+                                .map_err(|e| DsperseError::io(e, &witness_path))?;
+
+                            tile_outputs.push(output_tensor.clone());
+                            TileResult {
+                                tile_idx,
+                                success: true,
+                                error: None,
+                                method: Some("jstprove".into()),
+                                time_sec: start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            }
+                        }
+                        Err(e) => TileResult {
                             tile_idx,
-                            success: true,
-                            error: None,
+                            success: false,
+                            error: Some(e.to_string()),
                             method: Some("jstprove".into()),
                             time_sec: start.elapsed().as_secs_f64(),
                             proof_path: None,
-                        }
+                        },
                     }
-                    Err(e) => TileResult {
-                        tile_idx,
-                        success: false,
-                        error: Some(e.to_string()),
-                        method: Some("jstprove".into()),
-                        time_sec: start.elapsed().as_secs_f64(),
-                        proof_path: None,
-                    },
                 }
-            } else {
-                TileResult {
+                Err(e) => TileResult {
                     tile_idx,
                     success: false,
-                    error: Some("no tile circuit info".into()),
-                    method: None,
-                    time_sec: 0.0,
+                    error: Some(format!("onnx inference: {e}")),
+                    method: Some("onnx".into()),
+                    time_sec: start.elapsed().as_secs_f64(),
                     proof_path: None,
-                }
-            };
+                },
+            }
+        } else {
+            TileResult {
+                tile_idx,
+                success: false,
+                error: Some("no tile circuit info".into()),
+                method: None,
+                time_sec: 0.0,
+                proof_path: None,
+            }
+        };
 
-            tile_results.push(result);
-        }
+        tile_results.push(result);
     }
 
     if tile_results.is_empty() {
@@ -449,104 +433,6 @@ fn execute_tiled(
         witness_file: None,
         tile_exec_infos: tile_results,
     })
-}
-
-fn execute_tiles_batch(
-    slice_dir: &Path,
-    slice_run_dir: &Path,
-    tiles: &[Array4<f64>],
-    tiling: &TilingInfo,
-    backend: &JstproveBackend,
-) -> Result<(Vec<TileResult>, Vec<ArrayD<f64>>)> {
-    let tile_info = tiling.tile.as_ref().or_else(|| {
-        tiling.tiles.as_ref().and_then(|t| t.first())
-    });
-    let ti = tile_info.ok_or_else(|| DsperseError::Pipeline("no tile info for batch".into()))?;
-
-    let tile_circuit = resolve_relative_path(slice_dir, &ti.path);
-    let tile_circuit_parent = tile_circuit.parent().unwrap_or(slice_dir);
-    let metadata_file = tile_circuit_parent.join("metadata.json");
-    let metadata_path = if metadata_file.exists() {
-        metadata_file
-    } else {
-        tile_circuit.clone()
-    };
-
-    let mut jobs: Vec<PipeWitnessJob> = Vec::new();
-    for (tile_idx, tile_data) in tiles.iter().enumerate() {
-        let tile_input_json = arrayd_to_json(&tile_data.clone().into_dyn());
-        let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
-        std::fs::create_dir_all(&tile_dir)
-            .map_err(|e| DsperseError::io(e, &tile_dir))?;
-        let witness_path = tile_dir.join("witness.bin");
-
-        jobs.push(PipeWitnessJob {
-            input: serde_json::json!({ "input_data": tile_input_json }),
-            output: serde_json::json!({ "output_data": [] }),
-            witness: witness_path.to_string_lossy().into_owned(),
-        });
-    }
-
-    let batch_result = backend.witness_piped(
-        &tile_circuit,
-        &metadata_path,
-        &jobs,
-        None,
-    )?;
-
-    let mut tile_results = Vec::new();
-    let mut tile_outputs = Vec::new();
-
-    for (tile_idx, _) in tiles.iter().enumerate() {
-        let output_path = slice_run_dir
-            .join(format!("tile_{tile_idx}"))
-            .join("output.json");
-
-        let failed = batch_result
-            .errors
-            .iter()
-            .any(|(idx, _)| *idx == tile_idx);
-
-        if failed {
-            let err_msg = batch_result
-                .errors
-                .iter()
-                .find(|(idx, _)| *idx == tile_idx)
-                .map(|(_, msg)| msg.clone())
-                .unwrap_or_default();
-            tile_results.push(TileResult {
-                tile_idx,
-                success: false,
-                error: Some(err_msg),
-                method: Some("jstprove_batch".into()),
-                time_sec: 0.0,
-                proof_path: None,
-            });
-        } else if output_path.exists() {
-            let output_data = read_input_json(&output_path)?;
-            let tile_tensor = json_to_arrayd(&extract_output_tensor(&output_data))?;
-            tile_outputs.push(tile_tensor);
-            tile_results.push(TileResult {
-                tile_idx,
-                success: true,
-                error: None,
-                method: Some("jstprove_batch".into()),
-                time_sec: 0.0,
-                proof_path: None,
-            });
-        } else {
-            tile_results.push(TileResult {
-                tile_idx,
-                success: false,
-                error: Some(format!("output file missing: {}", output_path.display())),
-                method: Some("jstprove_batch".into()),
-                time_sec: 0.0,
-                proof_path: None,
-            });
-        }
-    }
-
-    Ok((tile_results, tile_outputs))
 }
 
 fn execute_channel_split(
@@ -667,7 +553,7 @@ fn execute_channel_split(
         let bias_file = resolve_relative_path(&slice_dir, bias_path_str);
         if bias_file.exists() {
             let bias_data = read_input_json(&bias_file)?;
-            let bias_flat = flatten_nested_list(&bias_data);
+            let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
             if let Some(ref mut acc) = accumulated {
                 for ((_, c, _, _), val) in acc.indexed_iter_mut() {
                     if c < bias_flat.len() {
@@ -708,34 +594,23 @@ fn execute_channel_group(
 ) -> Result<ArrayD<f64>> {
     if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
         let circuit_path = resolve_relative_path(slice_dir, circuit_path_str);
-        let metadata_path = group
-            .jstprove_settings_path
-            .as_deref()
-            .or(group.settings_path.as_deref())
-            .map(|p| resolve_relative_path(slice_dir, p))
-            .unwrap_or_else(|| circuit_path.clone());
+        let onnx_path = resolve_relative_path(slice_dir, &group.path);
+        let output_tensor = run_onnx_inference(&onnx_path, group_input)?;
 
-        let input_json = arrayd_to_json(group_input);
-        let input_path = group_dir.join("input.json");
-        write_input_json(
-            &input_path,
-            &serde_json::json!({ "input_data": input_json }),
+        let input_json_bytes = serde_json::to_vec(
+            &serde_json::json!({ "input_data": arrayd_to_json(group_input) }),
+        )?;
+        let output_json_bytes = serde_json::to_vec(
+            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
         )?;
 
-        let output_path = group_dir.join("output.json");
+        let witness_bytes = backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?;
+
         let witness_path = group_dir.join("witness.bin");
+        std::fs::write(&witness_path, &witness_bytes)
+            .map_err(|e| DsperseError::io(e, &witness_path))?;
 
-        backend.witness(
-            &circuit_path,
-            &input_path,
-            &output_path,
-            &witness_path,
-            &metadata_path,
-            None,
-        )?;
-
-        let output_data = read_input_json(&output_path)?;
-        json_to_arrayd(&extract_output_tensor(&output_data))
+        Ok(output_tensor)
     } else {
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
         run_onnx_inference(&onnx_path, group_input)
@@ -743,7 +618,7 @@ fn execute_channel_group(
 }
 
 fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Vec<Array4<f64>> {
-    let (n, c, h, w) = input.dim();
+    let (_n, c, h, w) = input.dim();
     let halo_h = tiling.halo[0].unsigned_abs() as usize;
     let halo_w = tiling.halo[1].unsigned_abs() as usize;
     let stride_h = tiling.stride[0].max(1) as usize;
@@ -753,7 +628,7 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Vec<Array4<f64>
 
     let padded_h = h + 2 * halo_h;
     let padded_w = w + 2 * halo_w;
-    let mut padded = Array4::<f64>::zeros((n, c, padded_h, padded_w));
+    let mut padded = Array4::<f64>::zeros((1, c, padded_h, padded_w));
     padded
         .slice_mut(s![.., .., halo_h..halo_h + h, halo_w..halo_w + w])
         .assign(input);

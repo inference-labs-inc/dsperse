@@ -113,24 +113,10 @@ fn verify_single_slice(
         .map(|p| resolve_relative_path(slice_dir, p))
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
-    let settings_path = meta
-        .jstprove_settings_path
-        .as_deref()
-        .or(meta.settings_path.as_deref())
-        .map(|p| resolve_relative_path(slice_dir, p))
-        .unwrap_or_else(|| circuit_path.clone());
-
-    let input_path = slice_run_dir.join("input.json");
-    let output_path = slice_run_dir.join("output.json");
     let witness_path = slice_run_dir.join("witness.bin");
     let proof_path = slice_run_dir.join("proof.bin");
 
-    for (label, path) in [
-        ("input", &input_path),
-        ("output", &output_path),
-        ("witness", &witness_path),
-        ("proof", &proof_path),
-    ] {
+    for (label, path) in [("witness", &witness_path), ("proof", &proof_path)] {
         if !path.exists() {
             return Ok(SliceResult {
                 slice_id: slice_id.into(),
@@ -144,14 +130,24 @@ fn verify_single_slice(
         }
     }
 
-    backend.verify(
-        &circuit_path,
-        &input_path,
-        &output_path,
-        &witness_path,
-        &proof_path,
-        &settings_path,
-    )?;
+    let witness_bytes =
+        std::fs::read(&witness_path).map_err(|e| DsperseError::io(e, &witness_path))?;
+    let proof_bytes =
+        std::fs::read(&proof_path).map_err(|e| DsperseError::io(e, &proof_path))?;
+
+    let valid = backend.verify(&circuit_path, &witness_bytes, &proof_bytes)?;
+
+    if !valid {
+        return Ok(SliceResult {
+            slice_id: slice_id.into(),
+            success: false,
+            method: Some(ExecutionMethod::JstproveVerify.to_string()),
+            error: Some("proof verification failed".into()),
+            proof_path: Some(proof_path.to_string_lossy().into_owned()),
+            time_sec: start.elapsed().as_secs_f64(),
+            tiles: Vec::new(),
+        });
+    }
 
     Ok(SliceResult {
         slice_id: slice_id.into(),

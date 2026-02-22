@@ -1,52 +1,26 @@
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
+use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
+use jstprove_circuits::onnx::{compile_bn254, prove_bn254, verify_bn254, witness_bn254};
+use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
+use jstprove_circuits::runner::schema::WitnessRequest;
 
 use crate::error::{DsperseError, Result};
 
 #[derive(Debug)]
 pub struct JstproveBackend {
-    binary: PathBuf,
     compress: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchResult {
-    pub succeeded: usize,
-    pub failed: usize,
-    pub errors: Vec<(usize, String)>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PipeWitnessJob {
-    pub input: serde_json::Value,
-    pub output: serde_json::Value,
-    pub witness: String,
-}
-
-#[derive(Serialize)]
-struct BatchManifest<T> {
-    jobs: Vec<T>,
-}
-
 impl JstproveBackend {
-    pub fn new(binary: impl Into<PathBuf>) -> Self {
-        Self {
-            binary: binary.into(),
-            compress: true,
-        }
+    pub fn new() -> Self {
+        Self { compress: true }
     }
 
     pub fn with_compress(mut self, compress: bool) -> Self {
         self.compress = compress;
         self
-    }
-
-    pub fn from_env() -> Result<Self> {
-        let path = std::env::var("JSTPROVE_BINARY")
-            .map_err(|_| DsperseError::Backend("JSTPROVE_BINARY not set".into()))?;
-        Ok(Self::new(path))
     }
 
     pub fn compile(
@@ -56,219 +30,103 @@ impl JstproveBackend {
         architecture_path: &Path,
         wandb_path: Option<&Path>,
     ) -> Result<()> {
-        let mut cmd = self.base_command();
-        cmd.arg("run_compile_circuit")
-            .arg("-c")
-            .arg(circuit_path)
-            .arg("-m")
-            .arg(metadata_path)
-            .arg("-a")
-            .arg(architecture_path);
+        let meta_json = std::fs::read_to_string(metadata_path)
+            .map_err(|e| DsperseError::io(e, metadata_path))?;
+        let params: CircuitParams =
+            serde_json::from_str(&meta_json).map_err(|e| DsperseError::Backend(format!("metadata json: {e}")))?;
+
+        let arch_json = std::fs::read_to_string(architecture_path)
+            .map_err(|e| DsperseError::io(e, architecture_path))?;
+        let arch: Architecture =
+            serde_json::from_str(&arch_json).map_err(|e| DsperseError::Backend(format!("architecture json: {e}")))?;
+
+        OnnxContext::set_params(params.clone());
+        OnnxContext::set_architecture(arch);
 
         if let Some(wandb) = wandb_path {
-            cmd.arg("-b").arg(wandb);
-        }
-        if !self.compress {
-            cmd.arg("--no-compress");
+            let wandb_json =
+                std::fs::read_to_string(wandb).map_err(|e| DsperseError::io(e, wandb))?;
+            let wandb_data: WANDB = serde_json::from_str(&wandb_json)
+                .map_err(|e| DsperseError::Backend(format!("wandb json: {e}")))?;
+            OnnxContext::set_wandb(wandb_data);
         }
 
-        run_checked(cmd)
+        let circuit_path_str = circuit_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
+
+        compile_bn254(circuit_path_str, self.compress, Some(params))
+            .map_err(|e| DsperseError::Backend(format!("compile: {e}")))
     }
 
     pub fn witness(
         &self,
         circuit_path: &Path,
-        input_path: &Path,
-        output_path: &Path,
-        witness_path: &Path,
-        metadata_path: &Path,
-        wandb_path: Option<&Path>,
-    ) -> Result<()> {
-        let mut cmd = self.base_command();
-        cmd.arg("run_gen_witness")
-            .arg("-c")
-            .arg(circuit_path)
-            .arg("-i")
-            .arg(input_path)
-            .arg("-o")
-            .arg(output_path)
-            .arg("-w")
-            .arg(witness_path)
-            .arg("-m")
-            .arg(metadata_path);
+        input_json: &[u8],
+        output_json: &[u8],
+    ) -> Result<Vec<u8>> {
+        let circuit_path_str = circuit_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
+        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
+        let msgpack_str = msgpack_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
 
-        if let Some(wandb) = wandb_path {
-            cmd.arg("-b").arg(wandb);
-        }
-        if !self.compress {
-            cmd.arg("--no-compress");
+        let bundle = read_circuit_msgpack(msgpack_str)
+            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
+
+        if let Some(ref params) = bundle.metadata {
+            OnnxContext::set_params(params.clone());
         }
 
-        run_checked(cmd)
+        let req = WitnessRequest {
+            circuit: bundle.circuit,
+            witness_solver: bundle.witness_solver,
+            inputs: input_json.to_vec(),
+            outputs: output_json.to_vec(),
+        };
+
+        let result = witness_bn254(&req, self.compress)
+            .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
+
+        Ok(result.witness)
     }
 
-    pub fn witness_piped(
-        &self,
-        circuit_path: &Path,
-        metadata_path: &Path,
-        jobs: &[PipeWitnessJob],
-        wandb_path: Option<&Path>,
-    ) -> Result<BatchResult> {
-        let mut cmd = self.base_command();
-        cmd.arg("run_pipe_witness")
-            .arg("-c")
-            .arg(circuit_path)
-            .arg("-m")
-            .arg(metadata_path);
+    pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
+        let circuit_path_str = circuit_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
+        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
+        let msgpack_str = msgpack_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
 
-        if let Some(wandb) = wandb_path {
-            cmd.arg("-b").arg(wandb);
-        }
-        if !self.compress {
-            cmd.arg("--no-compress");
-        }
+        let bundle = read_circuit_msgpack(msgpack_str)
+            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
 
-        let manifest = BatchManifest { jobs: jobs.to_vec() };
-        let payload = serde_json::to_vec(&manifest)
-            .map_err(|e| DsperseError::Backend(format!("serialize witness jobs: {e}")))?;
-
-        run_piped(cmd, &payload)
-    }
-
-    pub fn prove(
-        &self,
-        circuit_path: &Path,
-        witness_path: &Path,
-        proof_path: &Path,
-        metadata_path: &Path,
-    ) -> Result<()> {
-        let mut cmd = self.base_command();
-        cmd.arg("run_prove_witness")
-            .arg("-c")
-            .arg(circuit_path)
-            .arg("-w")
-            .arg(witness_path)
-            .arg("-p")
-            .arg(proof_path)
-            .arg("-m")
-            .arg(metadata_path);
-
-        if !self.compress {
-            cmd.arg("--no-compress");
-        }
-
-        run_checked(cmd)
+        prove_bn254(&bundle.circuit, witness_bytes, self.compress)
+            .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
     }
 
     pub fn verify(
         &self,
         circuit_path: &Path,
-        input_path: &Path,
-        output_path: &Path,
-        witness_path: &Path,
-        proof_path: &Path,
-        metadata_path: &Path,
-    ) -> Result<()> {
-        let mut cmd = self.base_command();
-        cmd.arg("run_gen_verify")
-            .arg("-c")
-            .arg(circuit_path)
-            .arg("-i")
-            .arg(input_path)
-            .arg("-o")
-            .arg(output_path)
-            .arg("-w")
-            .arg(witness_path)
-            .arg("-p")
-            .arg(proof_path)
-            .arg("-m")
-            .arg(metadata_path);
+        witness_bytes: &[u8],
+        proof_bytes: &[u8],
+    ) -> Result<bool> {
+        let circuit_path_str = circuit_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
+        let msgpack_path = Path::new(circuit_path_str).with_extension("msgpack");
+        let msgpack_str = msgpack_path
+            .to_str()
+            .ok_or_else(|| DsperseError::Backend(format!("non-UTF8 msgpack path")))?;
 
-        run_checked(cmd)
+        let bundle = read_circuit_msgpack(msgpack_str)
+            .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
+
+        verify_bn254(&bundle.circuit, witness_bytes, proof_bytes)
+            .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
     }
-
-    fn base_command(&self) -> Command {
-        let mut cmd = Command::new(&self.binary);
-        cmd.env("RUST_BACKTRACE", "1");
-        cmd
-    }
-}
-
-fn run_checked(mut cmd: Command) -> Result<()> {
-    tracing::debug!(cmd = ?cmd, "jstprove");
-
-    let output = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| DsperseError::Backend(format!("spawn jstprove: {e}")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
-        return Err(DsperseError::Backend(format!(
-            "jstprove exited {code}: {stderr}"
-        )));
-    }
-
-    Ok(())
-}
-
-fn run_piped(mut cmd: Command, stdin_payload: &[u8]) -> Result<BatchResult> {
-    tracing::debug!(cmd = ?cmd, payload_len = stdin_payload.len(), "jstprove piped");
-
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| DsperseError::Backend(format!("spawn jstprove: {e}")))?;
-
-    let payload = stdin_payload.to_vec();
-    let stdin_handle = child.stdin.take();
-    let writer = std::thread::spawn(move || -> std::io::Result<()> {
-        if let Some(mut stdin) = stdin_handle {
-            use std::io::Write;
-            stdin.write_all(&payload)?;
-        }
-        Ok(())
-    });
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| DsperseError::Backend(format!("wait jstprove: {e}")))?;
-
-    match writer.join() {
-        Ok(Err(e)) => {
-            return Err(DsperseError::Backend(format!("stdin write: {e}")));
-        }
-        Err(_) => {
-            return Err(DsperseError::Backend("stdin writer thread panicked".into()));
-        }
-        Ok(Ok(())) => {}
-    }
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let code = output.status.code().unwrap_or(-1);
-        return Err(DsperseError::Backend(format!(
-            "jstprove exited {code}: {stderr}"
-        )));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_last_json_object(&stdout)
-}
-
-fn parse_last_json_object(output: &str) -> Result<BatchResult> {
-    for line in output.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('{') {
-            return serde_json::from_str(trimmed)
-                .map_err(|e| DsperseError::Backend(format!("parse batch result: {e}")));
-        }
-    }
-    Err(DsperseError::Backend(
-        "no JSON found in jstprove output".into(),
-    ))
 }

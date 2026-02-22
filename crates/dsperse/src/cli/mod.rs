@@ -125,7 +125,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = JstproveBackend::from_env()?;
+    let backend = JstproveBackend::new();
     let slices_dir = args.model_dir.join("slices");
 
     let layers: Option<Vec<usize>> = args.layers.as_ref().map(|s| parse_layer_spec(s));
@@ -140,7 +140,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
 }
 
 pub fn cmd_run(args: RunArgs) -> Result<()> {
-    let backend = JstproveBackend::from_env()?;
+    let backend = JstproveBackend::new();
     let slices_dir = args.model_dir.join("slices");
 
     let run_dir = args.run_dir.unwrap_or_else(|| {
@@ -158,7 +158,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 }
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
-    let backend = JstproveBackend::from_env()?;
+    let backend = JstproveBackend::new();
     let slices_dir = args.model_dir.join("slices");
 
     let tiles: Option<Vec<usize>> = args.tiles.as_ref().map(|s| parse_layer_spec(s));
@@ -174,7 +174,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 }
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
-    let backend = JstproveBackend::from_env()?;
+    let backend = JstproveBackend::new();
     let slices_dir = args.model_dir.join("slices");
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel)?;
@@ -182,7 +182,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = JstproveBackend::from_env()?;
+    let backend = JstproveBackend::new();
 
     let slices_dir = args
         .slices_dir

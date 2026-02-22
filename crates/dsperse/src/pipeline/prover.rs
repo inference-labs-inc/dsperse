@@ -121,15 +121,7 @@ fn prove_single_slice(
         .map(|p| resolve_relative_path(slice_dir, p))
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
-    let settings_path = meta
-        .jstprove_settings_path
-        .as_deref()
-        .or(meta.settings_path.as_deref())
-        .map(|p| resolve_relative_path(slice_dir, p))
-        .unwrap_or_else(|| circuit_path.clone());
-
     let witness_path = slice_run_dir.join("witness.bin");
-    let proof_path = slice_run_dir.join("proof.bin");
 
     if !witness_path.exists() {
         return Ok(SliceResult {
@@ -143,7 +135,13 @@ fn prove_single_slice(
         });
     }
 
-    backend.prove(&circuit_path, &witness_path, &proof_path, &settings_path)?;
+    let witness_bytes =
+        std::fs::read(&witness_path).map_err(|e| DsperseError::io(e, &witness_path))?;
+
+    let proof_bytes = backend.prove(&circuit_path, &witness_bytes)?;
+
+    let proof_path = slice_run_dir.join("proof.bin");
+    std::fs::write(&proof_path, &proof_bytes).map_err(|e| DsperseError::io(e, &proof_path))?;
 
     Ok(SliceResult {
         slice_id: slice_id.into(),

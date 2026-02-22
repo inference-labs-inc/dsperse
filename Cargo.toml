@@ -20,3 +20,4 @@ walkdir = "2"
 uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 prost = "0.13"
+jstprove_circuits = { git = "ssh://git@github.com/inference-labs-inc/JSTprove.git", branch = "implement/library-in-memory-api" }

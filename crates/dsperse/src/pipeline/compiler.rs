@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use rayon::prelude::*;
-
 use crate::backend::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
@@ -10,7 +8,7 @@ use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_p
 pub fn compile_slices(
     slices_dir: &Path,
     backend: &JstproveBackend,
-    parallel: usize,
+    _parallel: usize,
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
 ) -> Result<()> {
@@ -26,28 +24,19 @@ pub fn compile_slices(
 
     tracing::info!(total = slices.len(), "compiling slices");
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(parallel)
-        .build()
-        .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
+    let mut errors: Vec<(usize, DsperseError)> = Vec::new();
 
-    let errors: Vec<_> = pool.install(|| {
-        slices
-            .par_iter()
-            .filter_map(|slice| {
-                match compile_single_slice(slices_dir, slice, backend, weights_as_inputs) {
-                    Ok(()) => {
-                        tracing::info!(slice = slice.index, "compiled");
-                        None
-                    }
-                    Err(e) => {
-                        tracing::error!(slice = slice.index, error = %e, "compilation failed");
-                        Some((slice.index, e))
-                    }
-                }
-            })
-            .collect()
-    });
+    for slice in &slices {
+        match compile_single_slice(slices_dir, slice, backend, weights_as_inputs) {
+            Ok(()) => {
+                tracing::info!(slice = slice.index, "compiled");
+            }
+            Err(e) => {
+                tracing::error!(slice = slice.index, error = %e, "compilation failed");
+                errors.push((slice.index, e));
+            }
+        }
+    }
 
     if errors.is_empty() {
         tracing::info!("all slices compiled");

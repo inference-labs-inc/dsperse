@@ -6,6 +6,8 @@ pub struct TileInfo {
     pub path: String,
     #[serde(default = "default_conv_out")]
     pub conv_out: [i64; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jstprove_circuit_path: Option<String>,
 }
 
 fn default_conv_out() -> [i64; 2] {

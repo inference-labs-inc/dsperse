@@ -168,12 +168,19 @@ pub fn run_inference(
         current = node.next.clone();
     }
 
-    let output_path = run_dir.join("output.json");
+    let mut final_meta = run_meta;
+    final_meta.execution_chain.execution_results = results;
+    final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
+
+    let meta_out = run_dir.join("metadata.json");
+    let meta_json = serde_json::to_string_pretty(&final_meta)?;
+    std::fs::write(&meta_out, meta_json).map_err(|e| DsperseError::io(e, &meta_out))?;
+
     let last_slice = model_meta.slices.last().ok_or_else(|| {
         DsperseError::Pipeline("model has no slices".into())
     })?;
     let last_slice_id = format!("slice_{}", last_slice.index);
-    let output_arr = if let Some(meta) = run_meta.slices.get(&last_slice_id) {
+    let output_arr = if let Some(meta) = final_meta.slices.get(&last_slice_id) {
         if let Some(ref cs) = meta.channel_split {
             tensor_cache.get(&cs.output_name)
         } else if let Some(ref tiling) = meta.tiling {
@@ -189,16 +196,9 @@ pub fn run_inference(
             "no output tensor found for last slice {last_slice_id}"
         ))
     })?;
+    let output_path = run_dir.join("output.json");
     let output_json = arrayd_to_json(output_arr);
     write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
-
-    let mut final_meta = run_meta;
-    final_meta.execution_chain.execution_results = results;
-    final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
-
-    let meta_out = run_dir.join("metadata.json");
-    let meta_json = serde_json::to_string_pretty(&final_meta)?;
-    std::fs::write(&meta_out, meta_json).map_err(|e| DsperseError::io(e, &meta_out))?;
 
     Ok(final_meta)
 }
@@ -324,14 +324,10 @@ fn execute_tiled(
         .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
     } else {
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-        let halo_h = tiling.halo[0].max(0) as usize;
-        let halo_w = tiling.halo[1].max(0) as usize;
         let stride_h = tiling.stride[0].max(1) as usize;
         let stride_w = tiling.stride[1].max(1) as usize;
-        let tile_h = tiling.tile_size + 2 * halo_h;
-        let tile_w = tiling.tile_size + 2 * halo_w;
-        let h = (tiling.tiles_y.max(1) - 1) * stride_h + tile_h;
-        let w = (tiling.tiles_x.max(1) - 1) * stride_w + tile_w;
+        let h = (tiling.tiles_y.max(1) - 1) * stride_h + tiling.tile_size;
+        let w = (tiling.tiles_x.max(1) - 1) * stride_w + tiling.tile_size;
         reshape_to_4d(&input_flat, tiling.c_in, h, w)?
     };
 
@@ -360,12 +356,32 @@ fn execute_tiled(
         let tile_dyn = tile_data.clone().into_dyn();
 
         let result = if let Some(ti) = tile_info {
-            let tile_circuit = resolve_relative_path(&slice_dir, &ti.path);
+            let tile_onnx = resolve_relative_path(&slice_dir, &ti.path);
 
-            let tile_output = run_onnx_inference(&tile_circuit, &tile_dyn);
+            let tile_output = run_onnx_inference(&tile_onnx, &tile_dyn);
 
             match tile_output {
                 Ok(ref output_tensor) => {
+                    let circuit_path = ti
+                        .jstprove_circuit_path
+                        .as_deref()
+                        .map(|p| resolve_relative_path(&slice_dir, p));
+                    let circuit_path = match circuit_path {
+                        Some(p) => p,
+                        None => {
+                            tile_outputs.push(output_tensor.clone());
+                            tile_results.push(TileResult {
+                                tile_idx,
+                                success: true,
+                                error: None,
+                                method: Some("onnx".into()),
+                                time_sec: start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            });
+                            continue;
+                        }
+                    };
+
                     let input_json_bytes = serde_json::to_vec(
                         &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
                     )?;
@@ -373,7 +389,7 @@ fn execute_tiled(
                         &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
                     )?;
 
-                    match backend.witness(&tile_circuit, &input_json_bytes, &output_json_bytes) {
+                    match backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes) {
                         Ok(witness_bytes) => {
                             let witness_path = tile_dir.join("witness.bin");
                             std::fs::write(&witness_path, &witness_bytes)
@@ -430,29 +446,31 @@ fn execute_tiled(
 
     let all_success = tile_results.iter().all(|r| r.success);
 
-    if all_success {
-        if tile_outputs.is_empty() {
-            return Err(DsperseError::Pipeline(format!(
-                "all tiles reported success but no outputs collected for '{}'", tiling.output_name
-            )));
-        }
-        let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
-        tensor_cache.insert(tiling.output_name.clone(), reconstructed);
+    if !all_success {
+        let failed: Vec<_> = tile_results
+            .iter()
+            .filter(|r| !r.success)
+            .map(|r| format!("tile {}: {}", r.tile_idx, r.error.as_deref().unwrap_or("?")))
+            .collect();
+        return Err(DsperseError::Pipeline(format!(
+            "tiled execution failed for '{}': {}",
+            tiling.output_name,
+            failed.join("; ")
+        )));
     }
+
+    if tile_outputs.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "all tiles reported success but no outputs collected for '{}'", tiling.output_name
+        )));
+    }
+    let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
+    tensor_cache.insert(tiling.output_name.clone(), reconstructed);
 
     Ok(ExecutionInfo {
         method: ExecutionMethod::Tiled.to_string(),
-        success: all_success,
-        error: if all_success {
-            None
-        } else {
-            let failed: Vec<_> = tile_results
-                .iter()
-                .filter(|r| !r.success)
-                .map(|r| format!("tile {}: {}", r.tile_idx, r.error.as_deref().unwrap_or("?")))
-                .collect();
-            Some(failed.join("; "))
-        },
+        success: true,
+        error: None,
         witness_file: None,
         tile_exec_infos: tile_results,
     })
@@ -587,11 +605,15 @@ fn execute_channel_split(
         if bias_file.exists() {
             let bias_data = read_input_json(&bias_file)?;
             let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
+            if bias_flat.len() != cs.c_out {
+                return Err(DsperseError::Pipeline(format!(
+                    "bias length {} does not match c_out {}",
+                    bias_flat.len(), cs.c_out
+                )));
+            }
             if let Some(ref mut acc) = accumulated {
                 for ((_, c, _, _), val) in acc.indexed_iter_mut() {
-                    if c < bias_flat.len() {
-                        *val += bias_flat[c];
-                    }
+                    *val += bias_flat[c];
                 }
             }
         }

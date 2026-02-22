@@ -187,6 +187,9 @@ fn calculate_channel_split_config(
     w: i64,
     tile_size: i64,
 ) -> Option<(i64, i64)> {
+    if h == 0 || w == 0 {
+        return None;
+    }
     let max_ch = tile_size / (h * w);
     if max_ch >= 1 && max_ch < c_in {
         let mut num_groups = (c_in + max_ch - 1) / max_ch;
@@ -304,7 +307,10 @@ pub fn create_tile_slice(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<TileSliceResult>> {
-    let graph = model.graph.as_ref().unwrap();
+    let graph = match model.graph.as_ref() {
+        Some(g) => g,
+        None => return Ok(None),
+    };
     let cp = match get_conv_params(graph) {
         Some(c) => c,
         None => return Ok(None),
@@ -488,7 +494,10 @@ pub fn create_channel_group_slice(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelGroupInfo>> {
-    let graph = model.graph.as_ref().unwrap();
+    let graph = match model.graph.as_ref() {
+        Some(g) => g,
+        None => return Ok(None),
+    };
     let cp = match get_conv_params(graph) {
         Some(c) => c,
         None => return Ok(None),
@@ -581,6 +590,10 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightIn
     let c_in = weights.dims[1] as usize;
     let kh = weights.dims[2] as usize;
     let kw = weights.dims[3] as usize;
+    assert!(
+        c_end <= c_in,
+        "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"
+    );
     let c_group = c_end - c_start;
 
     let mut sliced = Vec::with_capacity(c_out * c_group * kh * kw);
@@ -606,7 +619,10 @@ pub fn save_conv_bias(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<String>> {
-    let graph = model.graph.as_ref().unwrap();
+    let graph = match model.graph.as_ref() {
+        Some(g) => g,
+        None => return Ok(None),
+    };
     let cp = match get_conv_params(graph) {
         Some(c) => c,
         None => return Ok(None),
@@ -644,6 +660,19 @@ pub fn apply_channel_splitting(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
+    let graph = match model.graph.as_ref() {
+        Some(g) => g,
+        None => return Ok(None),
+    };
+    let cp = match get_conv_params(graph) {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
+    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
+    let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
+    let out_w = (w + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
+
     let mut groups = Vec::new();
     for g in 0..num_groups {
         let c_start = g * channels_per_group;
@@ -676,8 +705,8 @@ pub fn apply_channel_splitting(
         output_name: output_name.to_string(),
         h: h as usize,
         w: w as usize,
-        out_h: 0,
-        out_w: 0,
+        out_h: out_h as usize,
+        out_w: out_w as usize,
         groups,
         bias_path,
     }))
@@ -700,7 +729,7 @@ pub fn apply_tiling(
             None => continue,
         };
 
-        let output_dir = path.parent().unwrap();
+        let output_dir = path.parent().unwrap_or(Path::new("."));
         match detection {
             TilingDetection::ChannelSplit {
                 input_name,
@@ -783,6 +812,7 @@ pub fn apply_tiling(
                         tile: Some(TileInfo {
                             path: tile_result.path,
                             conv_out: tile_result.conv_out,
+                            jstprove_circuit_path: None,
                         }),
                         tiles: None,
                     };

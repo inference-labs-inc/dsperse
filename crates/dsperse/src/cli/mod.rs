@@ -247,6 +247,11 @@ fn parse_layer_spec(spec: &str) -> Result<Vec<usize>> {
             let e: usize = end.trim().parse().map_err(|_| {
                 DsperseError::Other(format!("invalid layer spec range end: {end:?}"))
             })?;
+            if s > e {
+                return Err(DsperseError::Other(format!(
+                    "invalid layer spec range: start {s} > end {e}"
+                )));
+            }
             layers.extend(s..=e);
         } else {
             let n: usize = part.parse().map_err(|_| {

@@ -493,7 +493,14 @@ fn execute_channel_split(
         "channel split execution"
     );
 
+    let n_channels = input_4d.shape()[1];
     for group in &cs.groups {
+        if group.c_end > n_channels || group.c_start > group.c_end {
+            return Err(DsperseError::Pipeline(format!(
+                "channel group {} bounds [{}, {}) exceed channel dimension {}",
+                group.group_idx, group.c_start, group.c_end, n_channels
+            )));
+        }
         let group_input = input_4d.slice(s![.., group.c_start..group.c_end, .., ..]).to_owned();
         let group_input_dyn = group_input.into_dyn();
 

@@ -512,12 +512,16 @@ pub fn read_dslice_slice_metadata(
 }
 
 fn validate_slice_id(slice_id: &str) -> Result<()> {
-    if slice_id.contains('/') || slice_id.contains('\\') || slice_id.contains("..") || slice_id.is_empty() {
-        return Err(DsperseError::Archive(format!(
-            "invalid slice_id contains path separators or traversal: {slice_id:?}"
-        )));
+    let path = std::path::Path::new(slice_id);
+    let mut components = path.components();
+    let first = components.next();
+    let second = components.next();
+    match (first, second) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(()),
+        _ => Err(DsperseError::Archive(format!(
+            "invalid slice_id (must be a single normal path component): {slice_id:?}"
+        ))),
     }
-    Ok(())
 }
 
 fn write_sentinel(path: &Path) -> Result<()> {

@@ -190,6 +190,13 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         .input_file
         .unwrap_or_else(|| args.model_dir.join("input.json"));
 
+    if !input_file.is_file() {
+        return Err(DsperseError::Other(format!(
+            "input file not found: {}",
+            input_file.display()
+        )));
+    }
+
     let layers = args.layers.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
 
     tracing::info!("compiling slices");

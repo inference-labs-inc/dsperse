@@ -273,6 +273,9 @@ fn parse_layer_spec(spec: &str) -> Result<Vec<usize>> {
             layers.push(n);
         }
     }
+    if layers.is_empty() {
+        return Err(DsperseError::Other("empty layer spec".into()));
+    }
     Ok(layers)
 }
 

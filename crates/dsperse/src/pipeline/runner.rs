@@ -143,7 +143,7 @@ pub fn run_inference(
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
                 let method = if slice_meta.channel_split.is_some() {
-                    "channel_split".to_string()
+                    ExecutionMethod::ChannelSplit.to_string()
                 } else if slice_meta.tiling.is_some() {
                     ExecutionMethod::Tiled.to_string()
                 } else if node.use_circuit {
@@ -663,7 +663,7 @@ fn execute_channel_split(
     }
 
     Ok(ExecutionInfo {
-        method: "channel_split".to_string(),
+        method: ExecutionMethod::ChannelSplit.to_string(),
         success: true,
         error: None,
         witness_file: None,

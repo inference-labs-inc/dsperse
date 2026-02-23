@@ -222,6 +222,9 @@ pub fn detect_tiling_needs(
     }
     let (wi, _) = find_weights_and_bias(graph, &graph.node[cp.node_idx]);
     let weights = wi?;
+    if weights.dims.is_empty() {
+        return None;
+    }
     let c_out = weights.dims[0];
     let tile_size = tile_size? as i64;
     let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation);
@@ -274,6 +277,7 @@ pub fn detect_tiling_needs(
     None
 }
 
+#[derive(Debug, Clone)]
 pub enum TilingDetection {
     Spatial {
         input_name: String,
@@ -502,6 +506,9 @@ pub fn create_channel_group_slice(
         Some(c) => c,
         None => return Ok(None),
     };
+    if c_start >= c_end {
+        return Ok(None);
+    }
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
         return Ok(None);
     }
@@ -511,6 +518,9 @@ pub fn create_channel_group_slice(
         Some(w) => w,
         None => return Ok(None),
     };
+    if weights.dims.len() < 4 {
+        return Ok(None);
+    }
 
     let dims = match get_model_dimensions(graph) {
         Some(d) => d,
@@ -593,6 +603,11 @@ pub fn create_channel_group_slice(
 }
 
 fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightInfo {
+    assert!(
+        weights.dims.len() >= 4,
+        "slice_weights: expected >= 4 dims, got {}",
+        weights.dims.len()
+    );
     let c_out = weights.dims[0] as usize;
     let c_in = weights.dims[1] as usize;
     let kh = weights.dims[2] as usize;
@@ -699,7 +714,13 @@ pub fn apply_channel_splitting(
 
         match group_info {
             Some(gi) => groups.push(gi),
-            None => return Ok(None),
+            None => {
+                let groups_dir = output_dir.join("channel_groups");
+                if groups_dir.exists() {
+                    let _ = std::fs::remove_dir_all(&groups_dir);
+                }
+                return Ok(None);
+            }
         }
     }
 
@@ -739,7 +760,7 @@ pub fn apply_tiling(
             None => continue,
         };
 
-        let output_dir = path.parent().unwrap_or(Path::new("."));
+        let output_dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
         match detection {
             TilingDetection::ChannelSplit {
                 input_name,

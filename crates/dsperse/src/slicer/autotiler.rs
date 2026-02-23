@@ -13,11 +13,7 @@ const ELEMENTWISE_OPS: &[&str] = &[
     "Tanh", "Clip", "Neg", "Abs", "Sqrt", "Exp", "Log", "Pow", "Sin", "Cos",
 ];
 
-pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &[
-    "Add", "Clip", "BatchNormalization", "Div", "Sub",
-    "Mul", "Constant", "Flatten", "Gemm",
-    "MaxPool", "Max", "Min", "Relu", "Reshape", "Conv",
-];
+pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
 
 fn model_opset(model: &ModelProto) -> i64 {
     model

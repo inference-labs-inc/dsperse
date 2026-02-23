@@ -1,14 +1,18 @@
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::backend::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
+use crate::slicer::autotiler::JSTPROVE_SUPPORTED_OPS;
+use crate::slicer::onnx_proto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
 pub fn compile_slices(
     slices_dir: &Path,
     backend: &JstproveBackend,
-    _parallel: usize,
+    parallel: usize,
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
 ) -> Result<()> {
@@ -24,19 +28,32 @@ pub fn compile_slices(
 
     tracing::info!(total = slices.len(), "compiling slices");
 
-    let mut errors: Vec<(usize, DsperseError)> = Vec::new();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(parallel)
+        .build()
+        .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-    for slice in &slices {
-        match compile_single_slice(slices_dir, slice, backend, weights_as_inputs) {
-            Ok(()) => {
-                tracing::info!(slice = slice.index, "compiled");
-            }
-            Err(e) => {
-                tracing::error!(slice = slice.index, error = %e, "compilation failed");
-                errors.push((slice.index, e));
-            }
-        }
-    }
+    let errors: Vec<_> = pool.install(|| {
+        slices
+            .par_iter()
+            .filter_map(|slice| {
+                match compile_single_slice(slices_dir, slice, backend, weights_as_inputs) {
+                    Ok(true) => {
+                        tracing::info!(slice = slice.index, "compiled");
+                        None
+                    }
+                    Ok(false) => {
+                        tracing::info!(slice = slice.index, "skipped (unsupported ops)");
+                        None
+                    }
+                    Err(e) => {
+                        tracing::error!(slice = slice.index, error = %e, "compilation failed");
+                        Some((slice.index, e))
+                    }
+                }
+            })
+            .collect()
+    });
 
     if errors.is_empty() {
         tracing::info!("all slices compiled");
@@ -54,12 +71,20 @@ pub fn compile_slices(
     }
 }
 
+fn is_jstprove_compatible(onnx_path: &Path) -> Result<bool> {
+    let model = onnx_proto::load_model(onnx_path)?;
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        DsperseError::Slicer(format!("no graph in {}", onnx_path.display()))
+    })?;
+    Ok(graph.node.iter().all(|n| JSTPROVE_SUPPORTED_OPS.contains(&n.op_type.as_str())))
+}
+
 fn compile_single_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
     backend: &JstproveBackend,
     weights_as_inputs: bool,
-) -> Result<()> {
+) -> Result<bool> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
         return Err(DsperseError::Pipeline(format!(
@@ -68,9 +93,6 @@ fn compile_single_slice(
         )));
     }
 
-    // Validate the ONNX model exists before compilation. The compile step itself
-    // reads metadata.json/architecture.json/wandb.json (derived from ONNX during slicing),
-    // not the ONNX file directly — but a missing model indicates a broken slice directory.
     let onnx_path = resolve_relative_path(&slice_dir, &slice.path);
     if !onnx_path.exists() {
         return Err(DsperseError::Pipeline(format!(
@@ -78,6 +100,10 @@ fn compile_single_slice(
             slice.index,
             onnx_path.display()
         )));
+    }
+
+    if !is_jstprove_compatible(&onnx_path)? {
+        return Ok(false);
     }
 
     let jst_dir = slice_dir.join("jstprove");
@@ -101,5 +127,5 @@ fn compile_single_slice(
         wandb_path.as_deref(),
     )?;
 
-    Ok(())
+    Ok(true)
 }

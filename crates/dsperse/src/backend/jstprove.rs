@@ -82,6 +82,7 @@ impl JstproveBackend {
             witness_solver: bundle.witness_solver,
             inputs: input_json.to_vec(),
             outputs: output_json.to_vec(),
+            metadata: bundle.metadata.clone(),
         };
 
         let result = witness_bn254(&req, self.compress)

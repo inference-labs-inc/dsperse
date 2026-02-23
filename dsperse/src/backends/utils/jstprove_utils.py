@@ -10,12 +10,7 @@ from typing import Optional, Dict, Any, Union, Tuple
 
 logger = logging.getLogger(__name__)
 
-JSTPROVE_SUPPORTED_OPS = {
-    "Add", "Clip", "BatchNormalization", "Div", "Sub",
-    "Mul", "Constant", "Flatten", "Gemm",
-    "MaxPool", "Max", "Min", "Relu", "Reshape",
-    "Conv",
-}
+JSTPROVE_SUPPORTED_OPS = {"Conv"}
 
 class JSTproveUtils:
     """Utility class for JSTprove backend operations."""

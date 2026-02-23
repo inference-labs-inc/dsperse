@@ -1922,7 +1922,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=deb1016#deb10167b1fb0f9f3e1656a78dc587bc8d385e01"
+source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=14d81ea#14d81ea4e13354471e1a03dece700ecda314d87f"
 dependencies = [
  "ark-std",
  "chrono",
@@ -1933,9 +1933,10 @@ dependencies = [
  "halo2curves",
  "lazy_static",
  "ndarray",
+ "num-bigint",
+ "num-traits",
  "once_cell",
  "openssl",
- "peakmem-alloc",
  "rand",
  "rmp-serde",
  "serde",
@@ -2504,12 +2505,6 @@ dependencies = [
  "digest",
  "hmac",
 ]
-
-[[package]]
-name = "peakmem-alloc"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5eb7428a977a472465aced57d8d2335d6167c0ce9c05c283fd6faed3d8d948f6"
 
 [[package]]
 name = "percent-encoding"

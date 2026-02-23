@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -27,8 +28,8 @@ pub struct CompileArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long)]
     pub layers: Option<String>,
-    #[arg(long, default_value_t = 1)]
-    pub parallel: usize,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
     #[arg(long)]
     pub weights_as_inputs: bool,
 }
@@ -43,8 +44,8 @@ pub struct RunArgs {
     pub run_dir: Option<PathBuf>,
     #[arg(long)]
     pub slices_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
-    pub parallel: usize,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
 }
@@ -57,8 +58,8 @@ pub struct ProveArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub slices_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
-    pub parallel: usize,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
     #[arg(long)]
     pub tiles: Option<String>,
 }
@@ -71,8 +72,8 @@ pub struct VerifyArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub slices_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
-    pub parallel: usize,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
 }
 
 #[derive(Args)]
@@ -87,8 +88,8 @@ pub struct FullRunArgs {
     pub layers: Option<String>,
     #[arg(long)]
     pub weights_as_inputs: bool,
-    #[arg(long, default_value_t = 1)]
-    pub parallel: usize,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
 }
@@ -140,7 +141,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
-        args.parallel,
+        args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
     )
@@ -162,7 +163,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
     });
 
     let config = RunConfig {
-        parallel: args.parallel,
+        parallel: args.parallel.get(),
         batch: args.batch,
     };
 
@@ -180,7 +181,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
         &args.run_dir,
         &slices_dir,
         &backend,
-        args.parallel,
+        args.parallel.get(),
         tiles.as_deref(),
     )?;
     Ok(())
@@ -190,7 +191,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let backend = JstproveBackend::default();
     let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
-    pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel)?;
+    pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
 }
 
@@ -218,7 +219,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
-        args.parallel,
+        args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
     )?;
@@ -226,7 +227,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));
 
     let config = RunConfig {
-        parallel: args.parallel,
+        parallel: args.parallel.get(),
         batch: args.batch,
     };
 
@@ -234,10 +235,10 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::run_inference(&slices_dir, &input_file, &run_dir, &backend, &config)?;
 
     tracing::info!("proving");
-    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel, None)?;
+    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel.get(), None)?;
 
     tracing::info!("verifying");
-    pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel)?;
+    pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;
 
     tracing::info!(run_dir = %run_dir.display(), "full run complete");
     Ok(())

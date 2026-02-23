@@ -431,7 +431,7 @@ fn integrate_extra_ops(
         .collect();
 
     if non_conv.is_empty() {
-        debug_assert!(!nodes.is_empty(), "integrate_extra_ops requires at least one node");
+        assert!(!nodes.is_empty(), "integrate_extra_ops requires at least one node");
         nodes.last_mut().unwrap().output[0] = "tile_out".to_string();
         return;
     }
@@ -709,6 +709,9 @@ pub fn apply_channel_splitting(
     let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
     let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
     let out_w = (w + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
+    if out_h <= 0 || out_w <= 0 {
+        return Ok(None);
+    }
 
     let groups_dir = output_dir.join("channel_groups");
     let cleanup = || {

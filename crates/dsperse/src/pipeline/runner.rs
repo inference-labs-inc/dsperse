@@ -519,6 +519,11 @@ fn execute_channel_split(
     let (input_4d, n, h) = if input_arr.ndim() == 4 {
         let s = input_arr.shape();
         let n = s[0];
+        if n != 1 {
+            return Err(DsperseError::Pipeline(format!(
+                "channel split: batch size {n} not supported, expected 1"
+            )));
+        }
         let h = s[2];
         let arr = Array4::from_shape_vec(
             (n, s[1], s[2], s[3]),

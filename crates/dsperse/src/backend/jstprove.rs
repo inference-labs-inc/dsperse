@@ -37,7 +37,7 @@ impl JstproveBackend {
         self
     }
 
-    fn get_bundle(&self, circuit_path: &Path) -> Result<CompiledCircuit> {
+    fn get_bundle(&self, circuit_path: &Path) -> Result<Arc<CompiledCircuit>> {
         let msgpack_path = circuit_path.with_extension("msgpack");
         let canonical = msgpack_path
             .canonicalize()
@@ -45,7 +45,7 @@ impl JstproveBackend {
 
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(bundle) = cache.get(&canonical) {
-            return Ok(Arc::unwrap_or_clone(bundle.clone()));
+            return Ok(Arc::clone(bundle));
         }
 
         let msgpack_str = canonical
@@ -56,7 +56,7 @@ impl JstproveBackend {
 
         let bundle = Arc::new(bundle);
         cache.put(canonical, Arc::clone(&bundle));
-        Ok(Arc::unwrap_or_clone(bundle))
+        Ok(bundle)
     }
 
     pub fn compile(
@@ -101,7 +101,7 @@ impl JstproveBackend {
         input_json: &[u8],
         output_json: &[u8],
     ) -> Result<Vec<u8>> {
-        let bundle = self.get_bundle(circuit_path)?;
+        let bundle = Arc::unwrap_or_clone(self.get_bundle(circuit_path)?);
 
         if let Some(ref params) = bundle.metadata {
             OnnxContext::set_params(params.clone());

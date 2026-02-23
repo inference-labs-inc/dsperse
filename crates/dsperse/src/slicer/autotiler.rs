@@ -126,7 +126,7 @@ fn get_model_dimensions(graph: &GraphProto) -> Option<(String, String, i64, i64,
     let inp = graph.input.first()?;
     let out = graph.output.first()?;
     let dims = onnx_proto::vi_shape(inp);
-    if dims.len() != 4 || dims[2] != dims[3] {
+    if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 || dims[2] != dims[3] {
         return None;
     }
     Some((inp.name.clone(), out.name.clone(), dims[1], dims[2], dims[3]))
@@ -586,16 +586,21 @@ pub fn create_channel_group_slice(
         sliced_weights.data,
     );
 
+    let mut conv_attrs = vec![
+        onnx_proto::make_attribute_ints("kernel_shape", &cp.kernel),
+        onnx_proto::make_attribute_ints("strides", &cp.stride),
+        onnx_proto::make_attribute_ints("pads", &cp.pads),
+        onnx_proto::make_attribute_ints("dilations", &cp.dilation),
+    ];
+    if cp.group != 1 {
+        conv_attrs.push(onnx_proto::make_attribute_int("group", cp.group));
+    }
+
     let node = onnx_proto::make_node(
         "Conv",
         vec![input_name, "W".to_string()],
         vec![output_name],
-        vec![
-            onnx_proto::make_attribute_ints("kernel_shape", &cp.kernel),
-            onnx_proto::make_attribute_ints("strides", &cp.stride),
-            onnx_proto::make_attribute_ints("pads", &cp.pads),
-            onnx_proto::make_attribute_ints("dilations", &cp.dilation),
-        ],
+        conv_attrs,
     );
 
     let graph_proto = onnx_proto::make_graph(
@@ -919,6 +924,7 @@ pub fn apply_tiling(
     Ok(results)
 }
 
+#[derive(Debug)]
 pub struct TileSliceResult {
     pub path: String,
     pub conv_out: [i64; 2],

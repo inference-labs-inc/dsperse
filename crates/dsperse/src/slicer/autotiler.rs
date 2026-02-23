@@ -19,6 +19,16 @@ pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &[
     "MaxPool", "Max", "Min", "Relu", "Reshape", "Conv",
 ];
 
+fn model_opset(model: &ModelProto) -> i64 {
+    model
+        .opset_import
+        .iter()
+        .filter(|o| o.domain.is_empty())
+        .map(|o| o.version)
+        .max()
+        .unwrap_or(13)
+}
+
 fn is_elementwise(op: &str) -> bool {
     ELEMENTWISE_OPS.contains(&op)
 }
@@ -398,7 +408,7 @@ pub fn create_tile_slice(
         vec![y],
         initializers,
     );
-    let tile_model = onnx_proto::make_model(graph, 13);
+    let tile_model = onnx_proto::make_model(graph, model_opset(model));
 
     let tiles_dir = output_dir.join("tiles");
     std::fs::create_dir_all(&tiles_dir)
@@ -537,6 +547,9 @@ pub fn create_channel_group_slice(
     let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
     let h_out = (h_in + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
     let w_out = (w_in + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
+    if h_out <= 0 || w_out <= 0 {
+        return Ok(None);
+    }
     let c_out = weights.dims[0];
 
     let input_name = format!("group_{group_idx}_in");
@@ -581,7 +594,7 @@ pub fn create_channel_group_slice(
         vec![y],
         vec![w_tensor],
     );
-    let group_model = onnx_proto::make_model(graph_proto, 13);
+    let group_model = onnx_proto::make_model(graph_proto, model_opset(model));
 
     let groups_dir = output_dir.join("channel_groups");
     std::fs::create_dir_all(&groups_dir)

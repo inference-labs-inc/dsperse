@@ -55,6 +55,8 @@ pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
         model_meta.slices = slices;
     }
 
+    model_meta.slices.sort_by_key(|s| s.index);
+
     Ok(model_meta)
 }
 

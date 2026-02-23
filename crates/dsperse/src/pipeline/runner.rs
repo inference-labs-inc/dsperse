@@ -142,10 +142,19 @@ pub fn run_inference(
             Ok(info) => info,
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
+                let method = if slice_meta.channel_split.is_some() {
+                    "channel_split".to_string()
+                } else if slice_meta.tiling.is_some() {
+                    ExecutionMethod::Tiled.to_string()
+                } else if node.use_circuit {
+                    ExecutionMethod::JstproveGenWitness.to_string()
+                } else {
+                    ExecutionMethod::OnnxOnly.to_string()
+                };
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
                     witness_execution: Some(ExecutionInfo {
-                        method: ExecutionMethod::OnnxOnly.to_string(),
+                        method,
                         success: false,
                         error: Some(e.to_string()),
                         witness_file: None,
@@ -192,9 +201,19 @@ pub fn run_inference(
         last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
     };
     let output_arr = output_arr.ok_or_else(|| {
-        DsperseError::Pipeline(format!(
-            "no output tensor found for last slice {last_slice_id}"
-        ))
+        let exec_error = final_meta
+            .execution_chain
+            .get_result_for_slice(&last_slice_id)
+            .and_then(|r| r.witness_execution.as_ref())
+            .and_then(|e| e.error.as_deref());
+        match exec_error {
+            Some(err) => DsperseError::Pipeline(format!(
+                "last slice {last_slice_id} failed: {err}"
+            )),
+            None => DsperseError::Pipeline(format!(
+                "no output tensor found for last slice {last_slice_id}"
+            )),
+        }
     })?;
     let output_path = run_dir.join("output.json");
     let output_json = arrayd_to_json(output_arr);
@@ -595,26 +614,38 @@ fn execute_channel_split(
         };
 
         accumulated = Some(match accumulated {
-            Some(acc) => acc + &group_4d,
+            Some(acc) => {
+                if acc.shape() != group_4d.shape() {
+                    return Err(DsperseError::Pipeline(format!(
+                        "channel group {} shape {:?} does not match accumulator shape {:?}",
+                        group.group_idx, group_4d.shape(), acc.shape()
+                    )));
+                }
+                acc + &group_4d
+            }
             None => group_4d,
         });
     }
 
     if let Some(ref bias_path_str) = cs.bias_path {
         let bias_file = resolve_relative_path(&slice_dir, bias_path_str);
-        if bias_file.exists() {
-            let bias_data = read_input_json(&bias_file)?;
-            let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
-            if bias_flat.len() != cs.c_out {
-                return Err(DsperseError::Pipeline(format!(
-                    "bias length {} does not match c_out {}",
-                    bias_flat.len(), cs.c_out
-                )));
-            }
-            if let Some(ref mut acc) = accumulated {
-                for ((_, c, _, _), val) in acc.indexed_iter_mut() {
-                    *val += bias_flat[c];
-                }
+        if !bias_file.exists() {
+            return Err(DsperseError::Pipeline(format!(
+                "configured bias file not found: {} (bias_path={bias_path_str})",
+                bias_file.display()
+            )));
+        }
+        let bias_data = read_input_json(&bias_file)?;
+        let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
+        if bias_flat.len() != cs.c_out {
+            return Err(DsperseError::Pipeline(format!(
+                "bias length {} does not match c_out {}",
+                bias_flat.len(), cs.c_out
+            )));
+        }
+        if let Some(ref mut acc) = accumulated {
+            for ((_, c, _, _), val) in acc.indexed_iter_mut() {
+                *val += bias_flat[c];
             }
         }
     }

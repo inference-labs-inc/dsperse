@@ -502,6 +502,9 @@ pub fn create_channel_group_slice(
         Some(c) => c,
         None => return Ok(None),
     };
+    if cp.stride[0] == 0 || cp.stride[1] == 0 {
+        return Ok(None);
+    }
     let conv_node = &graph.node[cp.node_idx];
     let (wi, _) = find_weights_and_bias(graph, conv_node);
     let weights = match wi {
@@ -582,6 +585,10 @@ pub fn create_channel_group_slice(
         vk_path: None,
         pk_path: None,
         jstprove_settings_path: None,
+        ezkl_circuit_path: None,
+        ezkl_settings_path: None,
+        ezkl_pk_path: None,
+        ezkl_vk_path: None,
     }))
 }
 
@@ -668,6 +675,9 @@ pub fn apply_channel_splitting(
         Some(c) => c,
         None => return Ok(None),
     };
+    if cp.stride[0] == 0 || cp.stride[1] == 0 {
+        return Ok(None);
+    }
     let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
     let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
     let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;

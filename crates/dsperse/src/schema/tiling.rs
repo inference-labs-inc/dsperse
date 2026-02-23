@@ -4,14 +4,10 @@ use serde::{Deserialize, Serialize};
 pub struct TileInfo {
     #[serde(default)]
     pub path: String,
-    #[serde(default = "default_conv_out")]
+    #[serde(default = "default_pair_zero")]
     pub conv_out: [i64; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jstprove_circuit_path: Option<String>,
-}
-
-fn default_conv_out() -> [i64; 2] {
-    [0, 0]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +62,14 @@ pub struct ChannelGroupInfo {
     pub pk_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jstprove_settings_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ezkl_circuit_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ezkl_settings_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ezkl_pk_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ezkl_vk_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

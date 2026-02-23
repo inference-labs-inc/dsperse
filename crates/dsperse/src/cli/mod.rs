@@ -39,6 +39,8 @@ pub struct RunArgs {
     pub input_file: PathBuf,
     #[arg(long)]
     pub run_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
     #[arg(long)]
@@ -51,6 +53,8 @@ pub struct ProveArgs {
     pub run_dir: PathBuf,
     #[arg(long)]
     pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
     #[arg(long)]
@@ -63,6 +67,8 @@ pub struct VerifyArgs {
     pub run_dir: PathBuf,
     #[arg(long)]
     pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
 }
@@ -139,8 +145,15 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
 }
 
 pub fn cmd_run(args: RunArgs) -> Result<()> {
+    if !args.input_file.is_file() {
+        return Err(DsperseError::Other(format!(
+            "input file not found: {}",
+            args.input_file.display()
+        )));
+    }
+
     let backend = JstproveBackend::default();
-    let slices_dir = args.model_dir.join("slices");
+    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
     let run_dir = args.run_dir.unwrap_or_else(|| {
         args.model_dir.join("run").join(format!("run_{}", run_id()))
@@ -157,7 +170,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.model_dir.join("slices");
+    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
     let tiles = args.tiles.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
 
@@ -173,7 +186,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.model_dir.join("slices");
+    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel)?;
     Ok(())

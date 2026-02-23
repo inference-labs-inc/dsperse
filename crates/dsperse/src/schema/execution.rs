@@ -55,12 +55,7 @@ pub struct ExecutionInfo {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness_file: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        alias = "tiles",
-        rename = "tile_exec_infos"
-    )]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "tiles")]
     pub tile_exec_infos: Vec<TileResult>,
 }
 
@@ -95,7 +90,7 @@ pub struct ExecutionNode {
     pub circuit_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onnx_path: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_backend")]
     pub backend: String,
 }
 
@@ -185,6 +180,10 @@ impl RunMetadata {
                     .map(|meta| (slice_id.as_str(), meta))
             })
     }
+}
+
+fn default_backend() -> String {
+    Backend::Onnx.to_string()
 }
 
 fn is_zero(v: &f64) -> bool {

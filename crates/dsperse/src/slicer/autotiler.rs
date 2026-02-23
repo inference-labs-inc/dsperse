@@ -328,6 +328,9 @@ pub fn create_tile_slice(
         Some(w) => w,
         None => return Ok(None),
     };
+    if weights.dims.len() < 4 {
+        return Ok(None);
+    }
 
     let halo = compute_halo_size(cp.kernel, cp.dilation);
     let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
@@ -428,6 +431,7 @@ fn integrate_extra_ops(
         .collect();
 
     if non_conv.is_empty() {
+        debug_assert!(!nodes.is_empty(), "integrate_extra_ops requires at least one node");
         nodes.last_mut().unwrap().output[0] = "tile_out".to_string();
         return;
     }
@@ -698,33 +702,49 @@ pub fn apply_channel_splitting(
     let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
     let out_w = (w + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
 
+    let groups_dir = output_dir.join("channel_groups");
+    let cleanup = || {
+        if groups_dir.exists() {
+            let _ = std::fs::remove_dir_all(&groups_dir);
+        }
+    };
+
     let mut groups = Vec::new();
     for g in 0..num_groups {
         let c_start = g * channels_per_group;
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
-        let group_info = create_channel_group_slice(
+        let group_info = match create_channel_group_slice(
             model,
             g as usize,
             c_start,
             c_end,
             slice_idx,
             output_dir,
-        )?;
+        ) {
+            Ok(info) => info,
+            Err(e) => {
+                cleanup();
+                return Err(e);
+            }
+        };
 
         match group_info {
             Some(gi) => groups.push(gi),
             None => {
-                let groups_dir = output_dir.join("channel_groups");
-                if groups_dir.exists() {
-                    let _ = std::fs::remove_dir_all(&groups_dir);
-                }
+                cleanup();
                 return Ok(None);
             }
         }
     }
 
-    let bias_path = save_conv_bias(model, slice_idx, output_dir)?;
+    let bias_path = match save_conv_bias(model, slice_idx, output_dir) {
+        Ok(p) => p,
+        Err(e) => {
+            cleanup();
+            return Err(e);
+        }
+    };
 
     Ok(Some(ChannelSplitInfo {
         slice_idx,

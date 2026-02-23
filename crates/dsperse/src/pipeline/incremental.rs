@@ -47,7 +47,7 @@ impl IncrementalRun {
         let model_meta = load_model_metadata(slices_dir)?;
 
         let chain = build_execution_chain(&model_meta, slices_dir);
-        let run_meta = build_run_metadata(&model_meta, slices_dir, Path::new(""), &chain);
+        let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
 
         let mut tensor_cache = HashMap::new();
         let input_name = model_meta

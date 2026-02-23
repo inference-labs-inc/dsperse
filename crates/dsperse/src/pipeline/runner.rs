@@ -72,7 +72,7 @@ pub fn run_inference(
     let input_data = read_input_json(input_path)?;
 
     let chain = build_execution_chain(&model_meta, slices_dir);
-    let run_meta = build_run_metadata(&model_meta, slices_dir, run_dir, &chain);
+    let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
 
     let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
 
@@ -529,8 +529,14 @@ fn execute_channel_split(
     } else {
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
         let total_elements = input_flat.len();
+        let nc = n * cs.c_in;
+        if nc > 0 && total_elements % nc != 0 {
+            return Err(DsperseError::Pipeline(format!(
+                "channel split reshape: total_elements {total_elements} not divisible by n*c_in ({nc})"
+            )));
+        }
         let spatial = if cs.c_in > 0 && total_elements > 0 {
-            total_elements / (n * cs.c_in)
+            total_elements / nc
         } else {
             cs.h * cs.w
         };
@@ -710,7 +716,12 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Arra
             tiling.halo[0], tiling.halo[1]
         )));
     }
-    let (_n, c, h, w) = input.dim();
+    let (n, c, h, w) = input.dim();
+    if n != 1 {
+        return Err(DsperseError::Pipeline(format!(
+            "split_into_tiles: batch size {n} not supported, expected 1"
+        )));
+    }
     let halo_h = tiling.halo[0] as usize;
     let halo_w = tiling.halo[1] as usize;
     let stride_h = tiling.stride[0].max(1) as usize;
@@ -720,7 +731,7 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Arra
 
     let padded_h = h + 2 * halo_h;
     let padded_w = w + 2 * halo_w;
-    let mut padded = Array4::<f64>::zeros((1, c, padded_h, padded_w));
+    let mut padded = Array4::<f64>::zeros((n, c, padded_h, padded_w));
     padded
         .slice_mut(s![.., .., halo_h..halo_h + h, halo_w..halo_w + w])
         .assign(input);
@@ -771,6 +782,14 @@ fn reconstruct_from_tiles(
         }
 
         let tile_elements = c_out * out_h * out_w;
+        if tile_flat.len() != tile_elements {
+            tracing::warn!(
+                ty, tx, c_out, out_h, out_w,
+                expected = tile_elements,
+                actual = tile_flat.len(),
+                "tile element count mismatch, truncating"
+            );
+        }
         let tile_flat = if tile_flat.len() >= tile_elements {
             &tile_flat[..tile_elements]
         } else {
@@ -925,7 +944,6 @@ pub(crate) fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Pat
 pub(crate) fn build_run_metadata(
     model_meta: &ModelMetadata,
     slices_dir: &Path,
-    _run_dir: &Path,
     chain: &ExecutionChain,
 ) -> RunMetadata {
     let mut slices = HashMap::new();

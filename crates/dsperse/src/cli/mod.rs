@@ -24,6 +24,8 @@ pub struct CompileArgs {
     #[arg(long)]
     pub model_dir: PathBuf,
     #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
+    #[arg(long)]
     pub layers: Option<String>,
     #[arg(long, default_value_t = 1)]
     pub parallel: usize,
@@ -131,9 +133,9 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.model_dir.join("slices");
+    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let layers = args.layers.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
+    let layers = args.layers.as_ref().map(|s| parse_index_spec(s)).transpose()?;
 
     pipeline::compile_slices(
         &slices_dir,
@@ -172,7 +174,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     let backend = JstproveBackend::default();
     let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let tiles = args.tiles.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
+    let tiles = args.tiles.as_ref().map(|s| parse_index_spec(s)).transpose()?;
 
     pipeline::prove_run(
         &args.run_dir,
@@ -210,7 +212,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         )));
     }
 
-    let layers = args.layers.as_ref().map(|s| parse_layer_spec(s)).transpose()?;
+    let layers = args.layers.as_ref().map(|s| parse_index_spec(s)).transpose()?;
 
     tracing::info!("compiling slices");
     pipeline::compile_slices(
@@ -246,7 +248,7 @@ pub fn cmd_convert(args: ConvertArgs) -> Result<()> {
     Ok(())
 }
 
-fn parse_layer_spec(spec: &str) -> Result<Vec<usize>> {
+fn parse_index_spec(spec: &str) -> Result<Vec<usize>> {
     let mut layers = Vec::new();
     for part in spec.split(',') {
         let part = part.trim();
@@ -284,5 +286,5 @@ fn run_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let uuid = uuid::Uuid::new_v4();
-    format!("{}_{}", now.as_secs(), uuid)
+    format!("{}_{}", now.as_secs(), uuid.as_simple())
 }

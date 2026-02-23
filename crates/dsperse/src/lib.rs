@@ -1,6 +1,7 @@
 pub mod archive;
 pub mod backend;
 pub mod cli;
+pub mod converter;
 pub mod error;
 pub mod pipeline;
 pub mod schema;

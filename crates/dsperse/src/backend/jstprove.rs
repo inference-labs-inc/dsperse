@@ -32,30 +32,13 @@ impl JstproveBackend {
     pub fn compile(
         &self,
         circuit_path: &Path,
-        metadata_path: &Path,
-        architecture_path: &Path,
-        wandb_path: Option<&Path>,
+        params: CircuitParams,
+        architecture: Architecture,
+        wandb: WANDB,
     ) -> Result<()> {
-        let meta_json = std::fs::read_to_string(metadata_path)
-            .map_err(|e| DsperseError::io(e, metadata_path))?;
-        let params: CircuitParams =
-            serde_json::from_str(&meta_json).map_err(|e| DsperseError::Backend(format!("metadata json: {e}")))?;
-
-        let arch_json = std::fs::read_to_string(architecture_path)
-            .map_err(|e| DsperseError::io(e, architecture_path))?;
-        let arch: Architecture =
-            serde_json::from_str(&arch_json).map_err(|e| DsperseError::Backend(format!("architecture json: {e}")))?;
-
         OnnxContext::set_params(params.clone());
-        OnnxContext::set_architecture(arch);
-
-        if let Some(wandb) = wandb_path {
-            let wandb_json =
-                std::fs::read_to_string(wandb).map_err(|e| DsperseError::io(e, wandb))?;
-            let wandb_data: WANDB = serde_json::from_str(&wandb_json)
-                .map_err(|e| DsperseError::Backend(format!("wandb json: {e}")))?;
-            OnnxContext::set_wandb(wandb_data);
-        }
+        OnnxContext::set_architecture(architecture);
+        OnnxContext::set_wandb(wandb);
 
         let circuit_path_str = circuit_path
             .to_str()

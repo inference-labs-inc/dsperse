@@ -3,6 +3,7 @@ use std::path::Path;
 use rayon::prelude::*;
 
 use crate::backend::JstproveBackend;
+use crate::converter;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
 use crate::slicer::autotiler::JSTPROVE_SUPPORTED_OPS;
@@ -110,22 +111,11 @@ fn compile_single_slice(
     std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
 
     let circuit_path = jst_dir.join("circuit.bin");
-    let metadata_path = jst_dir.join("metadata.json");
-    let architecture_path = jst_dir.join("architecture.json");
 
-    let wandb_path = if weights_as_inputs {
-        let p = jst_dir.join("wandb.json");
-        Some(p)
-    } else {
-        None
-    };
+    let (params, architecture, wandb) =
+        converter::prepare_jstprove_artifacts(&onnx_path, weights_as_inputs)?;
 
-    backend.compile(
-        &circuit_path,
-        &metadata_path,
-        &architecture_path,
-        wandb_path.as_deref(),
-    )?;
+    backend.compile(&circuit_path, params, architecture, wandb)?;
 
     Ok(true)
 }

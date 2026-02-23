@@ -93,6 +93,9 @@ fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
         return None;
     }
     let conv_params = get_conv_params(graph)?;
+    if conv_params.node_idx != 0 {
+        return None;
+    }
     let ops: HashSet<&str> = graph.node.iter().map(|n| n.op_type.as_str()).collect();
     let non_conv: HashSet<&&str> = ops.iter().filter(|&&o| o != "Conv").collect();
     if !non_conv.iter().all(|&&o| is_elementwise(o)) {
@@ -387,16 +390,21 @@ pub fn create_tile_slice(
         conv_inputs.push("B".to_string());
     }
 
+    let mut conv_attrs = vec![
+        onnx_proto::make_attribute_ints("kernel_shape", &cp.kernel),
+        onnx_proto::make_attribute_ints("strides", &cp.stride),
+        onnx_proto::make_attribute_ints("pads", &[0, 0, 0, 0]),
+        onnx_proto::make_attribute_ints("dilations", &cp.dilation),
+    ];
+    if cp.group != 1 {
+        conv_attrs.push(onnx_proto::make_attribute_int("group", cp.group));
+    }
+
     let mut nodes = vec![onnx_proto::make_node(
         "Conv",
         conv_inputs,
         vec!["conv_out".to_string()],
-        vec![
-            onnx_proto::make_attribute_ints("kernel_shape", &cp.kernel),
-            onnx_proto::make_attribute_ints("strides", &cp.stride),
-            onnx_proto::make_attribute_ints("pads", &[0, 0, 0, 0]),
-            onnx_proto::make_attribute_ints("dilations", &cp.dilation),
-        ],
+        conv_attrs,
     )];
 
     integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes);

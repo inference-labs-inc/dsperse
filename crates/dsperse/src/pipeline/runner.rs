@@ -364,6 +364,13 @@ fn execute_tiled(
     let tile_infos = tiling.tiles.as_deref().unwrap_or(&[]);
     let single_tile = tiling.tile.as_ref();
 
+    if tile_infos.is_empty() && single_tile.is_none() {
+        return Err(DsperseError::Pipeline(format!(
+            "tiling for '{}' has neither tile list nor single tile template",
+            tiling.output_name
+        )));
+    }
+
     let mut tile_results: Vec<TileResult> = Vec::new();
     let mut tile_outputs: Vec<ArrayD<f64>> = Vec::new();
 
@@ -549,6 +556,11 @@ fn execute_channel_split(
             cs.h * cs.w
         };
         let h = cs.h.max(1);
+        if spatial > 0 && h > 0 && spatial % h != 0 {
+            return Err(DsperseError::Pipeline(format!(
+                "channel split reshape: spatial {spatial} not divisible by h={h}"
+            )));
+        }
         let w = if spatial > 0 && h > 0 { spatial / h } else { cs.w.max(1) };
         let arr = Array4::from_shape_vec(
             (n, cs.c_in, h, w),
@@ -791,21 +803,11 @@ fn reconstruct_from_tiles(
 
         let tile_elements = c_out * out_h * out_w;
         if tile_flat.len() != tile_elements {
-            tracing::warn!(
-                ty, tx, c_out, out_h, out_w,
-                expected = tile_elements,
-                actual = tile_flat.len(),
-                "tile element count mismatch, truncating"
-            );
-        }
-        let tile_flat = if tile_flat.len() >= tile_elements {
-            &tile_flat[..tile_elements]
-        } else {
             return Err(DsperseError::Pipeline(format!(
-                "boundary tile ({},{}) has {} elements, expected {} (c_out={}, out_h={}, out_w={})",
+                "tile ({},{}) has {} elements, expected {} (c_out={}, out_h={}, out_w={})",
                 ty, tx, tile_flat.len(), tile_elements, c_out, out_h, out_w
             )));
-        };
+        }
 
         let tile_4d = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
             .map_err(|e| DsperseError::Pipeline(format!(
@@ -852,6 +854,11 @@ fn store_outputs(
     output_names: &[String],
     output: ArrayD<f64>,
 ) -> Result<()> {
+    if output_names.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "store_outputs called with empty output_names".into(),
+        ));
+    }
     for name in output_names {
         tensor_cache.insert(name.clone(), output.clone());
     }

@@ -257,26 +257,26 @@ fn parse_index_spec(spec: &str) -> Result<Vec<usize>> {
         }
         if let Some((start, end)) = part.split_once('-') {
             let s: usize = start.trim().parse().map_err(|_| {
-                DsperseError::Other(format!("invalid layer spec range start: {start:?}"))
+                DsperseError::Other(format!("invalid index spec range start: {start:?}"))
             })?;
             let e: usize = end.trim().parse().map_err(|_| {
-                DsperseError::Other(format!("invalid layer spec range end: {end:?}"))
+                DsperseError::Other(format!("invalid index spec range end: {end:?}"))
             })?;
             if s > e {
                 return Err(DsperseError::Other(format!(
-                    "invalid layer spec range: start {s} > end {e}"
+                    "invalid index spec range: start {s} > end {e}"
                 )));
             }
             layers.extend(s..=e);
         } else {
             let n: usize = part.parse().map_err(|_| {
-                DsperseError::Other(format!("invalid layer spec token: {part:?}"))
+                DsperseError::Other(format!("invalid index spec token: {part:?}"))
             })?;
             layers.push(n);
         }
     }
     if layers.is_empty() {
-        return Err(DsperseError::Other("empty layer spec".into()));
+        return Err(DsperseError::Other("empty index spec".into()));
     }
     Ok(layers)
 }

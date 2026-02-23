@@ -516,17 +516,18 @@ fn execute_channel_split(
         })?
         .clone();
 
-    let n = 1usize;
-    let (input_4d, h) = if input_arr.ndim() == 4 {
+    let (input_4d, n, h) = if input_arr.ndim() == 4 {
         let s = input_arr.shape();
+        let n = s[0];
         let h = s[2];
         let arr = Array4::from_shape_vec(
-            (s[0], s[1], s[2], s[3]),
+            (n, s[1], s[2], s[3]),
             input_arr.iter().copied().collect(),
         )
         .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
-        (arr, h)
+        (arr, n, h)
     } else {
+        let n = 1usize;
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
         let total_elements = input_flat.len();
         let nc = n * cs.c_in;
@@ -547,7 +548,7 @@ fn execute_channel_split(
             input_flat,
         )
         .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
-        (arr, h)
+        (arr, n, h)
     };
 
     let mut accumulated: Option<Array4<f64>> = None;

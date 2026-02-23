@@ -49,16 +49,18 @@ impl IncrementalRun {
         let chain = build_execution_chain(&model_meta, slices_dir);
         let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
 
-        let mut tensor_cache = HashMap::new();
-        let input_name = model_meta
+        let first_slice = model_meta
             .slices
             .first()
-            .and_then(|s| s.dependencies.input.first().cloned())
-            .ok_or_else(|| {
-                DsperseError::Pipeline(
-                    "model has no slices or first slice has no input dependency".into(),
-                )
-            })?;
+            .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
+        if first_slice.dependencies.input.len() != 1 {
+            return Err(DsperseError::Pipeline(format!(
+                "multi-input models not supported: first slice declares {} inputs",
+                first_slice.dependencies.input.len()
+            )));
+        }
+        let input_name = first_slice.dependencies.input[0].clone();
+        let mut tensor_cache = HashMap::new();
         tensor_cache.insert(input_name, input);
 
         let current_slice = chain.head.clone();

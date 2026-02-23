@@ -510,7 +510,7 @@ pub fn create_channel_group_slice(
         Some(c) => c,
         None => return Ok(None),
     };
-    if c_start >= c_end {
+    if c_start < 0 || c_end < 0 || c_start >= c_end {
         return Ok(None);
     }
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
@@ -616,6 +616,14 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightIn
     let c_in = weights.dims[1] as usize;
     let kh = weights.dims[2] as usize;
     let kw = weights.dims[3] as usize;
+    let expected_len = c_out * c_in * kh * kw;
+    assert!(
+        weights.data.len() == expected_len,
+        "slice_weights: data length {} != expected {} (dims={:?})",
+        weights.data.len(),
+        expected_len,
+        weights.dims
+    );
     assert!(
         c_end <= c_in,
         "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"

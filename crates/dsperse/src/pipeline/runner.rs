@@ -203,14 +203,20 @@ pub fn run_inference(
         last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
     };
     let output_arr = output_arr.ok_or_else(|| {
-        let exec_error = final_meta
+        let first_error = final_meta
             .execution_chain
-            .get_result_for_slice(&last_slice_id)
-            .and_then(|r| r.witness_execution.as_ref())
-            .and_then(|e| e.error.as_deref());
-        match exec_error {
+            .execution_results
+            .iter()
+            .filter_map(|r| {
+                r.witness_execution
+                    .as_ref()
+                    .and_then(|w| w.error.as_deref())
+                    .map(|err| format!("{}: {err}", r.slice_id))
+            })
+            .next();
+        match first_error {
             Some(err) => DsperseError::Pipeline(format!(
-                "last slice {last_slice_id} failed: {err}"
+                "pipeline failed at {err}"
             )),
             None => DsperseError::Pipeline(format!(
                 "no output tensor found for last slice {last_slice_id}"
@@ -487,11 +493,11 @@ fn execute_tiled(
         )));
     }
 
-    if tile_outputs.is_empty() {
-        return Err(DsperseError::Pipeline(format!(
-            "all tiles reported success but no outputs collected for '{}'", tiling.output_name
-        )));
-    }
+    debug_assert!(
+        !tile_outputs.is_empty(),
+        "all tiles reported success but no outputs for '{}'",
+        tiling.output_name
+    );
     let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
     tensor_cache.insert(tiling.output_name.clone(), reconstructed);
 

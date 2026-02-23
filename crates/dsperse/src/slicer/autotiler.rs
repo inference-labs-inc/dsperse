@@ -352,6 +352,9 @@ pub fn create_tile_slice(
     let tile_w = tile_size + 2 * halo[1];
     let out_h = (tile_h - eff_kh) / cp.stride[0] + 1;
     let out_w = (tile_w - eff_kw) / cp.stride[1] + 1;
+    if out_h <= 0 || out_w <= 0 {
+        return Ok(None);
+    }
 
     let c_in = graph
         .input
@@ -804,6 +807,7 @@ pub fn apply_tiling(
     for (&idx, onnx_path) in slices_paths {
         let path = Path::new(onnx_path);
         if !path.exists() {
+            tracing::warn!(slice = idx, path = %onnx_path, "ONNX file not found, skipping tiling");
             continue;
         }
         let model = onnx_proto::load_model(path)?;

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
@@ -906,14 +907,28 @@ class Runner:
             raise Exception("A valid path must be provided for slices")
         self.slices_path = Path(slice_path)
 
+        if self.lazy and self.slices_path.is_dir():
+            has_dslice = any(
+                f.suffix == ".dslice" for f in self.slices_path.iterdir() if f.is_file()
+            )
+            if has_dslice:
+                for d in self.slices_path.iterdir():
+                    if d.is_dir() and d.name.startswith("slice_"):
+                        shutil.rmtree(d, ignore_errors=True)
+
         detected_format = Converter.detect_type(self.slices_path)
         self._archive_path = self.slices_path if detected_format != "dirs" else None
         self._extracted_slices.clear()
 
         if detected_format != "dirs":
             if self.lazy:
-                slices_path = Converter.extract_metadata_only(str(self.slices_path))
-                self.slices_path = Path(slices_path)
+                if detected_format == "dsperse":
+                    slices_path = Converter.extract_metadata_only(str(self.slices_path))
+                    self.slices_path = Path(slices_path)
+                else:
+                    lazy_dir = Path(tempfile.mkdtemp(prefix="dsperse_lazy_"))
+                    Converter.extract_dslice_metadata(self.slices_path, lazy_dir)
+                    self.slices_path = lazy_dir
                 logger.info(
                     "Lazy mode: extracted metadata only, slices will be extracted on-demand"
                 )

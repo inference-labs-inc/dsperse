@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from dsperse.src.server.state import RunState, RunStatus, WorkItem, SliceExecRes
 logger = logging.getLogger(__name__)
 
 DEFAULT_CIRCUIT_CACHE = os.path.expanduser("~/.bittensor/subnet-2/circuit_cache")
+RUN_DATA_DIR = Path(tempfile.gettempdir()) / "dsperse_run_data"
 
 
 class ServerContext:
@@ -53,99 +55,100 @@ async def handle_start_incremental_run(ctx: ServerContext, req: dict) -> dict:
     run = ctx.state.create_run(circuit_id, inputs, run_source, max_tiles)
     run.status = RunStatus.RUNNING
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
+    data_dir = RUN_DATA_DIR / run.run_uid
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    asyncio.ensure_future(_process_run(ctx, run, inputs, slices_dir, data_dir))
+    print(f"[start_incremental_run] run_uid={run.run_uid}, data_dir={data_dir}", flush=True)
+
+    return {"run_uid": run.run_uid, "status": run.status.value}
+
+
+async def _process_run(ctx: ServerContext, run, inputs, slices_dir: Path, data_dir: Path):
+    tmp_dir = tempfile.mkdtemp(prefix="dsperse_run_")
+    try:
         input_path = Path(tmp_dir) / "input.json"
         with open(input_path, "w") as f:
             json.dump(inputs, f)
 
-        slice_exec_results: dict[str, SliceExecResult] = {}
-
         def on_slice_complete(slice_id, exec_info, run_dir):
             res = SliceExecResult(slice_id=slice_id)
             slice_run_dir = Path(run_dir) / slice_id
+            slice_data_dir = data_dir / slice_id
+            slice_data_dir.mkdir(parents=True, exist_ok=True)
+
             in_file = slice_run_dir / "input.json"
             out_file = slice_run_dir / "output.json"
             if in_file.exists():
-                with open(in_file) as fh:
-                    res.inputs_data = json.load(fh)
+                dest = slice_data_dir / "input.json"
+                shutil.copy2(str(in_file), str(dest))
+                res.inputs_path = str(dest)
             if out_file.exists():
-                with open(out_file) as fh:
-                    res.outputs_data = json.load(fh)
+                dest = slice_data_dir / "output.json"
+                shutil.copy2(str(out_file), str(dest))
+                res.outputs_path = str(dest)
             if hasattr(exec_info, "tiles") and exec_info.tiles:
                 res.tiling = {"num_tiles": len(exec_info.tiles)}
-            slice_exec_results[slice_id] = res
+            run.slice_results[slice_id] = res
+            _build_work_item_for_slice(run, slice_id, res)
+            print(f"[slice_complete] {slice_id}, inputs={res.inputs_path}, outputs={res.outputs_path}", flush=True)
 
         run_output_dir = Path(tmp_dir) / "run"
         runner = Runner(
             run_dir=str(run_output_dir),
             on_slice_complete=on_slice_complete,
+            lazy=True,
         )
-        try:
-            await asyncio.to_thread(
-                runner.run,
-                input_json_path=str(input_path),
-                slice_path=str(slices_dir),
-            )
-        except Exception as e:
-            run.status = RunStatus.FAILED
-            run.error = str(e)
-            return {"error": str(e), "run_uid": run.run_uid}
-
-        run.slice_results = slice_exec_results
-        _build_work_items(ctx, run)
-        run.status = RunStatus.RUNNING
-
-    return {"run_uid": run.run_uid, "status": run.status.value}
+        await asyncio.to_thread(
+            runner.run,
+            input_json_path=str(input_path),
+            slice_path=str(slices_dir),
+        )
+        run.status = RunStatus.COMPLETE
+        print(f"[run_complete] {run.run_uid}, work_items={len(run.work_items)}", flush=True)
+    except Exception as e:
+        print(f"[run_failed] {run.run_uid}: {e}", flush=True)
+        run.status = RunStatus.FAILED
+        run.error = str(e)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def _build_work_items(ctx: ServerContext, run):
-    slices_dir = ctx.resolve_slices_dir(run.circuit_id)
-    metadata_path = slices_dir / "metadata.json"
-    slice_meta = {}
-    if metadata_path.exists():
-        with open(metadata_path) as f:
-            raw = json.load(f)
-        for sid, info in raw.get("slices", {}).items():
-            slice_meta[sid] = info
-
-    for slice_id, exec_res in run.slice_results.items():
-        meta = slice_meta.get(slice_id, {})
-        tiling = meta.get("tiling")
-        backend = meta.get("backend", "jstprove")
-        proof_system = "JSTPROVE" if "jstprove" in backend.lower() else "EZKL"
-
-        if tiling and tiling.get("num_tiles", 1) > 1:
-            num_tiles = tiling["num_tiles"]
-            if run.max_tiles:
-                num_tiles = min(num_tiles, run.max_tiles)
-            for tile_idx in range(num_tiles):
-                task_id = f"{run.run_uid}_{slice_id}_tile_{tile_idx}"
-                run.work_items.append(WorkItem(
-                    circuit_id=run.circuit_id,
-                    run_uid=run.run_uid,
-                    slice_num=slice_id,
-                    task_id=task_id,
-                    is_tile=True,
-                    tile_idx=tile_idx,
-                    proof_system=proof_system,
-                    inputs=exec_res.inputs_data,
-                    outputs=exec_res.outputs_data,
-                    run_source=run.run_source,
-                ))
-        else:
-            task_id = f"{run.run_uid}_{slice_id}"
+def _build_work_item_for_slice(run, slice_id: str, exec_res: SliceExecResult):
+    proof_system = "JSTPROVE"
+    tiling = exec_res.tiling
+    if tiling and tiling.get("num_tiles", 1) > 1:
+        num_tiles = tiling["num_tiles"]
+        if run.max_tiles:
+            num_tiles = min(num_tiles, run.max_tiles)
+        for tile_idx in range(num_tiles):
+            task_id = f"{run.run_uid}_{slice_id}_tile_{tile_idx}"
             run.work_items.append(WorkItem(
                 circuit_id=run.circuit_id,
                 run_uid=run.run_uid,
                 slice_num=slice_id,
                 task_id=task_id,
-                is_tile=False,
-                tile_idx=None,
+                is_tile=True,
+                tile_idx=tile_idx,
                 proof_system=proof_system,
-                inputs=exec_res.inputs_data,
-                outputs=exec_res.outputs_data,
+                inputs_path=exec_res.inputs_path,
+                outputs_path=exec_res.outputs_path,
                 run_source=run.run_source,
             ))
+    else:
+        task_id = f"{run.run_uid}_{slice_id}"
+        run.work_items.append(WorkItem(
+            circuit_id=run.circuit_id,
+            run_uid=run.run_uid,
+            slice_num=slice_id,
+            task_id=task_id,
+            is_tile=False,
+            tile_idx=None,
+            proof_system=proof_system,
+            inputs_path=exec_res.inputs_path,
+            outputs_path=exec_res.outputs_path,
+            run_source=run.run_source,
+        ))
 
 
 async def handle_get_run_status(ctx: ServerContext, req: dict) -> dict:
@@ -163,6 +166,7 @@ async def handle_get_run_status(ctx: ServerContext, req: dict) -> dict:
 
 async def handle_get_next_work(ctx: ServerContext, req: dict) -> dict:
     run_uid = req.get("run_uid", "")
+    limit = req.get("limit", 50)
     run = ctx.state.get_run(run_uid)
     if not run:
         return {"error": f"unknown run_uid: {run_uid}", "items": []}
@@ -175,11 +179,13 @@ async def handle_get_next_work(ctx: ServerContext, req: dict) -> dict:
             "is_tile": w.is_tile,
             "tile_idx": w.tile_idx,
             "proof_system": w.proof_system,
-            "inputs": w.inputs,
-            "outputs": w.outputs,
+            "inputs_path": w.inputs_path,
+            "outputs_path": w.outputs_path,
             "run_source": w.run_source,
         }
         items.append(item)
+        if limit and len(items) >= limit:
+            break
     return {"items": items}
 
 
@@ -385,9 +391,30 @@ async def handle_prove_slice(ctx: ServerContext, req: dict) -> dict:
         }
 
 
-async def handle_generate_requests(ctx: ServerContext, _req: dict) -> dict:
-    items = ctx.state.generate_all_requests()
+async def handle_generate_requests(ctx: ServerContext, req: dict) -> dict:
+    limit = req.get("limit", 50)
+    items = ctx.state.generate_all_requests(limit=limit)
     return {"items": items}
+
+
+async def handle_get_work_data(ctx: ServerContext, req: dict) -> dict:
+    task_id = req.get("task_id", "")
+    item = ctx.state.get_work_item_by_task_id(task_id)
+    if not item:
+        return {"error": f"unknown task_id: {task_id}"}
+    inputs = None
+    outputs = None
+    if item.inputs_path and Path(item.inputs_path).exists():
+        with open(item.inputs_path) as f:
+            inputs = json.load(f)
+    if item.outputs_path and Path(item.outputs_path).exists():
+        with open(item.outputs_path) as f:
+            outputs = json.load(f)
+    return {
+        "task_id": item.task_id,
+        "inputs": inputs,
+        "outputs": outputs,
+    }
 
 
 HANDLERS = {
@@ -400,4 +427,5 @@ HANDLERS = {
     "prove": handle_prove,
     "prove_slice": handle_prove_slice,
     "generate_requests": handle_generate_requests,
+    "get_work_data": handle_get_work_data,
 }

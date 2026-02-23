@@ -21,3 +21,4 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 prost = "0.13"
 jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "deb1016" }
+lru = "0.16"

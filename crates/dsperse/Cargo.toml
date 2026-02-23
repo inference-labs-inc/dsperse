@@ -19,6 +19,7 @@ uuid.workspace = true
 tempfile.workspace = true
 prost.workspace = true
 jstprove_circuits.workspace = true
+lru.workspace = true
 
 [build-dependencies]
 prost-build = "0.13"

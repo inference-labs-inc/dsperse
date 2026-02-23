@@ -15,7 +15,7 @@ use crate::error::{DsperseError, Result};
 #[derive(Debug, Clone)]
 pub struct JstproveBackend {
     compress: bool,
-    cache: Arc<Mutex<LruCache<PathBuf, CompiledCircuit>>>,
+    cache: Arc<Mutex<LruCache<PathBuf, Arc<CompiledCircuit>>>>,
 }
 
 impl Default for JstproveBackend {
@@ -45,9 +45,8 @@ impl JstproveBackend {
 
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(bundle) = cache.get(&canonical) {
-            return Ok(bundle.clone());
+            return Ok(Arc::unwrap_or_clone(bundle.clone()));
         }
-        drop(cache);
 
         let msgpack_str = canonical
             .to_str()
@@ -55,9 +54,9 @@ impl JstproveBackend {
         let bundle = read_circuit_msgpack(msgpack_str)
             .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))?;
 
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        cache.put(canonical, bundle.clone());
-        Ok(bundle)
+        let bundle = Arc::new(bundle);
+        cache.put(canonical, Arc::clone(&bundle));
+        Ok(Arc::unwrap_or_clone(bundle))
     }
 
     pub fn compile(

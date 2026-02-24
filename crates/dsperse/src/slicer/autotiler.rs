@@ -783,6 +783,9 @@ pub fn apply_channel_splitting(
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
     let &ChannelSplitParams { c_in, c_out, num_groups, channels_per_group, h, w, slice_idx } = cfg;
+    if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
+        return Ok(None);
+    }
     let graph = match model.graph.as_ref() {
         Some(g) => g,
         None => return Ok(None),

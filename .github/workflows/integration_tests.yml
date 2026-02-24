@@ -35,4 +35,4 @@ jobs:
         run: cargo check --locked --manifest-path crates/dsperse/Cargo.toml --features python
 
       - name: Clippy
-        run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml -- -D warnings
+        run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml --all-targets --features python -- -D warnings

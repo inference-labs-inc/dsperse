@@ -9,27 +9,30 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64
+          - os: ubuntu-latest
+            target: aarch64
+          - os: macos-14
+            target: x86_64
+          - os: macos-14
+            target: aarch64
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
         with:
-          python-version: '3.12'
+          submodules: true
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: false
-
-      - name: Set version
+      - name: Set version from tag
         id: version
         run: |
           if [[ "${{ github.ref_name }}" =~ ^v(.+)$ ]]; then
@@ -41,34 +44,89 @@ jobs:
       - name: Update pyproject.toml with tag version
         run: |
           set -euo pipefail
-          echo "Updating pyproject.toml version to: ${{ steps.version.outputs.version }}"
-          python -c "
+          python3 -c "
           import re
-
           version = '${{ steps.version.outputs.version }}'
-
           with open('pyproject.toml', 'r') as f:
               content = f.read()
-
-          # Update version in pyproject.toml
-          updated_content = re.sub(
+          updated = re.sub(
               r'^version\s*=\s*[\"\'](.*?)[\"\']',
               f'version = \"{version}\"',
               content,
               flags=re.MULTILINE
           )
-
           with open('pyproject.toml', 'w') as f:
-              f.write(updated_content)
+              f.write(updated)
           "
 
-      - name: Build distributions
-        run: uv build
-        env:
-          CI: true
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
 
-      - name: Verify package metadata
-        run: uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          path: dist
 
-      - name: Publish to PyPI
-        run: uv publish --trusted-publishing always
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Set version from tag
+        id: version
+        run: |
+          if [[ "${{ github.ref_name }}" =~ ^v(.+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update pyproject.toml with tag version
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import re
+          version = '${{ steps.version.outputs.version }}'
+          with open('pyproject.toml', 'r') as f:
+              content = f.read()
+          updated = re.sub(
+              r'^version\s*=\s*[\"\'](.*?)[\"\']',
+              f'version = \"{version}\"',
+              content,
+              flags=re.MULTILINE
+          )
+          with open('pyproject.toml', 'w') as f:
+              f.write(updated)
+          "
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  publish:
+    needs: [build, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --non-interactive --skip-existing dist/*

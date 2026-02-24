@@ -6,6 +6,65 @@ use tract_onnx::prelude::*;
 
 use crate::error::{DsperseError, Result};
 
+pub struct WarmModel {
+    plan: TypedRunnableModel<TypedModel>,
+    input_shape: Vec<usize>,
+}
+
+impl WarmModel {
+    pub fn load(onnx_path: &Path, input_shape: &[usize]) -> Result<Self> {
+        let model = tract_onnx::onnx()
+            .model_for_path(onnx_path)
+            .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
+
+        let concrete_shape: Vec<usize> = if input_shape.is_empty() {
+            let input_fact = model
+                .input_fact(0)
+                .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
+            input_fact
+                .shape
+                .as_concrete_finite()
+                .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
+                .ok_or_else(|| {
+                    DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
+                })?
+                .to_vec()
+        } else {
+            input_shape.to_vec()
+        };
+
+        let plan = model
+            .with_input_fact(
+                0,
+                InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
+            )
+            .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
+            .into_optimized()
+            .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+            .into_runnable()
+            .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
+
+        Ok(Self {
+            plan,
+            input_shape: concrete_shape,
+        })
+    }
+
+    pub fn run(&self, input_data: &[f64]) -> Result<(Vec<f64>, Vec<usize>)> {
+        let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
+        let input_tensor =
+            tract_ndarray::ArrayD::from_shape_vec(IxDyn(&self.input_shape), input_f32)
+                .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
+
+        let result = self
+            .plan
+            .run(tvec!(input_tensor.into_tvalue()))
+            .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
+
+        extract_first_output(&result)
+    }
+}
+
 pub fn run_inference(
     onnx_path: &Path,
     input_data: &[f64],

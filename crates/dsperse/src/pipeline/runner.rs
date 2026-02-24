@@ -434,6 +434,29 @@ fn execute_tiled(
         )));
     }
 
+    let first_tile_info = tile_infos.first().or(single_tile);
+    let warm_model = if let Some(ti) = first_tile_info {
+        let tile_onnx = resolve_relative_path(slices_dir, &ti.path);
+        let sample_shape = tiles.first().map(|t| {
+            let d = t.clone().into_dyn();
+            d.shape().to_vec()
+        });
+        match sample_shape {
+            Some(shape) => {
+                let model = crate::backend::onnx::WarmModel::load(&tile_onnx, &shape)?;
+                tracing::info!(
+                    slice = %slice_id,
+                    onnx = %tile_onnx.display(),
+                    "loaded warm ONNX model for tiled execution"
+                );
+                Some(model)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
     let mut tile_results: Vec<TileResult> = Vec::new();
     let mut tile_outputs: Vec<ArrayD<f64>> = Vec::new();
 
@@ -448,7 +471,15 @@ fn execute_tiled(
         let result = if let Some(ti) = tile_info {
             let tile_onnx = resolve_relative_path(slices_dir, &ti.path);
 
-            let tile_output = run_onnx_inference(&tile_onnx, &tile_dyn);
+            let tile_output = if let Some(ref wm) = warm_model {
+                let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                wm.run(&input_flat).map(|(data, shape)| {
+                    ArrayD::from_shape_vec(IxDyn(&shape), data)
+                        .expect("warm model output reshape")
+                })
+            } else {
+                run_onnx_inference(&tile_onnx, &tile_dyn)
+            };
 
             match tile_output {
                 Ok(ref output_tensor) => {

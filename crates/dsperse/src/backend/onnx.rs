@@ -98,7 +98,7 @@ pub fn run_inference_multi(
     }
 
     let model = model
-        .into_optimized()
+        .into_typed()
         .map_err(|e| {
             let unmatched: Vec<_> = input_order
                 .iter()
@@ -106,8 +106,10 @@ pub fn run_inference_multi(
                 .filter(|(_, v)| v.is_none())
                 .map(|(i, _)| model_input_names[i].1.as_str())
                 .collect();
-            DsperseError::Onnx(format!("optimize (unmatched inputs: {unmatched:?}): {e}"))
+            DsperseError::Onnx(format!("type analysis (unmatched: {unmatched:?}): {e}"))
         })?
+        .into_optimized()
+        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
         .into_runnable()
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 

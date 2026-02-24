@@ -23,6 +23,16 @@ fn is_elementwise(op: &str) -> bool {
     ELEMENTWISE_OPS.contains(&op)
 }
 
+pub struct ChannelSplitParams {
+    pub c_in: i64,
+    pub c_out: i64,
+    pub num_groups: i64,
+    pub channels_per_group: i64,
+    pub h: i64,
+    pub w: i64,
+    pub slice_idx: usize,
+}
+
 struct ConvParams {
     node_idx: usize,
     kernel: [i64; 2],
@@ -751,20 +761,20 @@ pub fn save_conv_bias(
     )))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn apply_channel_splitting(
     model: &ModelProto,
-    c_in: i64,
-    c_out: i64,
-    num_groups: i64,
-    channels_per_group: i64,
+    cfg: &ChannelSplitParams,
     input_name: &str,
     output_name: &str,
-    h: i64,
-    w: i64,
-    slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
+    let c_in = cfg.c_in;
+    let c_out = cfg.c_out;
+    let num_groups = cfg.num_groups;
+    let channels_per_group = cfg.channels_per_group;
+    let h = cfg.h;
+    let w = cfg.w;
+    let slice_idx = cfg.slice_idx;
     let graph = match model.graph.as_ref() {
         Some(g) => g,
         None => return Ok(None),
@@ -881,17 +891,14 @@ pub fn apply_tiling(
                     num_groups,
                     "channel splitting Conv slice"
                 );
+                let cs_params = ChannelSplitParams {
+                    c_in, c_out, num_groups, channels_per_group, h, w, slice_idx: idx,
+                };
                 if let Some(info) = apply_channel_splitting(
                     &model,
-                    c_in,
-                    c_out,
-                    num_groups,
-                    channels_per_group,
+                    &cs_params,
                     &input_name,
                     &output_name,
-                    h,
-                    w,
-                    idx,
                     output_dir,
                 )? {
                     results.insert(

@@ -386,7 +386,7 @@ pub fn create_tile_slice(
     let c_in = graph
         .input
         .first()
-        .map(|i| onnx_proto::vi_shape(i))
+        .map(onnx_proto::vi_shape)
         .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
         .unwrap_or(weights.dims.get(1).copied().unwrap_or(1));
 
@@ -740,6 +740,7 @@ pub fn save_conv_bias(
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_channel_splitting(
     model: &ModelProto,
     c_in: i64,

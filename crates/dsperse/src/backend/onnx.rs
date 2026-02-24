@@ -6,6 +6,8 @@ use tract_onnx::prelude::*;
 
 use crate::error::{DsperseError, Result};
 
+pub type NamedOutputs = HashMap<String, (Vec<f64>, Vec<usize>)>;
+
 pub struct WarmModel {
     plan: TypedRunnableModel<TypedModel>,
     input_shape: Vec<usize>,
@@ -116,7 +118,7 @@ pub fn run_inference_named(
     onnx_path: &Path,
     input_data: &[f64],
     input_shape: &[usize],
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let model = tract_onnx::onnx()
         .model_for_path(onnx_path)
         .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
@@ -175,7 +177,7 @@ pub fn run_inference_multi(
 pub fn run_inference_multi_named(
     onnx_path: &Path,
     inputs: &[(&str, Vec<f64>, Vec<usize>)],
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let mut model = tract_onnx::onnx()
         .model_for_path(onnx_path)
         .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
@@ -259,7 +261,7 @@ fn collect_output_names(model: &InferenceModel) -> Vec<String> {
 fn zip_named_outputs(
     names: &[String],
     result: &[TValue],
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let mut map = HashMap::new();
     for (i, tv) in result.iter().enumerate() {
         let arr = tv

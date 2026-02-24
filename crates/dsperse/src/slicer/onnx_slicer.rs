@@ -104,7 +104,7 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     for node in analysis.nodes.values() {
         if node.node_type == "Conv" {
             updated.insert(node.index);
-            if node.index + 1 <= max_idx {
+            if node.index < max_idx {
                 updated.insert(node.index + 1);
             }
         }
@@ -283,10 +283,8 @@ fn trace_shapes_tract(
             if matched_shape.is_none() {
                 let prefix = format!("{onnx_name}.");
                 for (tract_name, shape) in &tract_names_to_shapes {
-                    if tract_name.starts_with(&prefix) {
-                        if matched_shape.map_or(true, |s| shape.len() > s.len()) {
-                            matched_shape = Some(shape);
-                        }
+                    if tract_name.starts_with(&prefix) && matched_shape.is_none_or(|s| shape.len() > s.len()) {
+                        matched_shape = Some(shape);
                     }
                 }
             }

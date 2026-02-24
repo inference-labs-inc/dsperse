@@ -27,21 +27,12 @@ impl std::fmt::Display for Backend {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TensorShape {
     #[serde(default)]
     pub input: Vec<Vec<i64>>,
     #[serde(default)]
     pub output: Vec<Vec<i64>>,
-}
-
-impl Default for TensorShape {
-    fn default() -> Self {
-        Self {
-            input: Vec::new(),
-            output: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -91,7 +82,7 @@ pub struct Compilation {
     pub jstprove: BackendCompilation,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SliceShapeWrapper {
     #[serde(default)]
     pub tensor_shape: TensorShape,
@@ -121,14 +112,6 @@ pub struct SliceMetadata {
     pub slice_metadata: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slice_metadata_relative_path: Option<String>,
-}
-
-impl Default for SliceShapeWrapper {
-    fn default() -> Self {
-        Self {
-            tensor_shape: TensorShape::default(),
-        }
-    }
 }
 
 impl SliceMetadata {

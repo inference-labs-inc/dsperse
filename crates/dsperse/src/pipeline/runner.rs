@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
 use crate::backend::jstprove::JstproveBackend;
+use crate::backend::onnx::NamedOutputs;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
@@ -244,6 +245,7 @@ pub fn run_inference(
     Ok(final_meta)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_slice(
     slices_dir: &Path,
     slice_run_dir: &Path,
@@ -380,6 +382,7 @@ fn execute_single(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_tiled(
     slices_dir: &Path,
     slice_run_dir: &Path,
@@ -1114,7 +1117,7 @@ fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f6
 fn run_onnx_inference_named(
     onnx_path: &Path,
     input: &ArrayD<f64>,
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let input_flat: Vec<f64> = input.iter().copied().collect();
     let input_shape = input.shape();
     crate::backend::onnx::run_inference_named(onnx_path, &input_flat, input_shape)
@@ -1124,7 +1127,7 @@ fn run_onnx_inference_multi_named(
     onnx_path: &Path,
     tensor_cache: &HashMap<String, ArrayD<f64>>,
     input_names: &[String],
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = input_names
         .iter()
         .map(|name| {

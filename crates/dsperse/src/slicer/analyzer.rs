@@ -119,7 +119,7 @@ fn get_model_input_shapes(
         .input
         .iter()
         .filter(|inp| !initializer_map.contains_key(inp.name.as_str()))
-        .map(|inp| onnx_proto::vi_shape(inp))
+        .map(onnx_proto::vi_shape)
         .collect()
 }
 
@@ -127,7 +127,7 @@ fn get_model_output_shapes(graph: &GraphProto) -> Vec<Vec<i64>> {
     graph
         .output
         .iter()
-        .map(|out| onnx_proto::vi_shape(out))
+        .map(onnx_proto::vi_shape)
         .collect()
 }
 
@@ -266,13 +266,13 @@ fn get_segment_shape(slice_path: Option<&str>) -> TensorShape {
     let inputs: Vec<Vec<i64>> = graph
         .input
         .iter()
-        .map(|inp| onnx_proto::vi_shape(inp))
+        .map(onnx_proto::vi_shape)
         .collect();
 
     let outputs: Vec<Vec<i64>> = graph
         .output
         .iter()
-        .map(|out| onnx_proto::vi_shape(out))
+        .map(onnx_proto::vi_shape)
         .collect();
 
     TensorShape {

@@ -1,3 +1,4 @@
+#[allow(clippy::doc_overindented_list_items)]
 pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
@@ -49,7 +50,6 @@ pub fn make_tensor_value_info(name: &str, elem_type: i32, shape: &[i64]) -> Valu
                     }),
                 },
             )),
-            ..Default::default()
         }),
         doc_string: String::new(),
         metadata_props: vec![],
@@ -177,7 +177,7 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     if !tensor.float_data.is_empty() {
         return tensor.float_data.clone();
     }
-    if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::FLOAT as i32 {
+    if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::FLOAT {
         return tensor
             .raw_data
             .chunks_exact(4)

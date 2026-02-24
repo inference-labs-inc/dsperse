@@ -38,10 +38,10 @@ fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_
 }
 
 #[pyfunction]
-#[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false))]
-fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &str, parallel: usize, batch: bool) -> PyResult<String> {
+#[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false, weights_onnx=None))]
+fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &str, parallel: usize, batch: bool, weights_onnx: Option<&str>) -> PyResult<String> {
     let backend = JstproveBackend::default();
-    let config = RunConfig { parallel, batch };
+    let config = RunConfig { parallel, batch, weights_onnx: weights_onnx.map(PathBuf::from) };
     let sd = PathBuf::from(slices_dir);
     let inf = PathBuf::from(input_file);
     let rd = PathBuf::from(run_dir);

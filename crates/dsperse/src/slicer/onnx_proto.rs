@@ -221,3 +221,44 @@ impl TensorProto {
     pub const FLOAT16: i32 = 10;
     pub const BOOL: i32 = 9;
 }
+
+pub fn replace_initializers(
+    model: &mut ModelProto,
+    donor_init_map: &HashMap<String, &TensorProto>,
+) -> Result<usize> {
+    let graph = model
+        .graph
+        .as_mut()
+        .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
+    let mut replaced = 0;
+    for init in &mut graph.initializer {
+        if let Some(donor) = donor_init_map.get(&init.name) {
+            if init.dims != donor.dims {
+                return Err(DsperseError::Pipeline(format!(
+                    "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",
+                    init.name, init.dims, donor.dims
+                )));
+            }
+            init.float_data = donor.float_data.clone();
+            init.raw_data = donor.raw_data.clone();
+            init.double_data = donor.double_data.clone();
+            init.int32_data = donor.int32_data.clone();
+            init.int64_data = donor.int64_data.clone();
+            init.data_type = donor.data_type;
+            replaced += 1;
+        }
+    }
+    Ok(replaced)
+}
+
+pub fn build_patched_onnx(
+    slice_onnx: &Path,
+    donor_init_map: &HashMap<String, &TensorProto>,
+) -> Result<tempfile::NamedTempFile> {
+    let mut model = load_model(slice_onnx)?;
+    replace_initializers(&mut model, donor_init_map)?;
+    let tmp = tempfile::NamedTempFile::new()
+        .map_err(|e| DsperseError::Pipeline(format!("create temp file: {e}")))?;
+    save_model(&model, tmp.path())?;
+    Ok(tmp)
+}

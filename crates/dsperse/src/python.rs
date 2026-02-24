@@ -95,32 +95,15 @@ fn convert(py: Python<'_>, input: &str, to: &str, output: Option<&str>, expand_s
 }
 
 #[pyfunction]
-fn cli_main(py: Python<'_>) -> PyResult<()> {
+#[pyo3(signature = (argv=None))]
+fn cli_main(py: Python<'_>, argv: Option<Vec<String>>) -> PyResult<()> {
     use clap::Parser;
     use tracing_subscriber::EnvFilter;
 
-    #[derive(Parser)]
-    #[command(name = "dsperse", about = "Distributed zkML Toolkit")]
-    struct Cli {
-        #[command(subcommand)]
-        command: Commands,
-        #[arg(long, default_value = "warn", global = true)]
-        log_level: String,
-    }
-
-    #[derive(clap::Subcommand)]
-    enum Commands {
-        Slice(crate::cli::SliceArgs),
-        Compile(crate::cli::CompileArgs),
-        Run(crate::cli::RunArgs),
-        Prove(crate::cli::ProveArgs),
-        Verify(crate::cli::VerifyArgs),
-        #[command(name = "full-run")]
-        FullRun(crate::cli::FullRunArgs),
-        Convert(crate::cli::ConvertArgs),
-    }
-
-    let cli = Cli::try_parse().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let cli = match argv {
+        Some(args) => crate::cli::Cli::try_parse_from(args),
+        None => crate::cli::Cli::try_parse(),
+    }.map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -128,17 +111,7 @@ fn cli_main(py: Python<'_>) -> PyResult<()> {
         )
         .try_init();
 
-    let result = py.allow_threads(|| {
-        match cli.command {
-            Commands::Slice(args) => crate::cli::cmd_slice(args),
-            Commands::Compile(args) => crate::cli::cmd_compile(args),
-            Commands::Run(args) => crate::cli::cmd_run(args),
-            Commands::Prove(args) => crate::cli::cmd_prove(args),
-            Commands::Verify(args) => crate::cli::cmd_verify(args),
-            Commands::FullRun(args) => crate::cli::cmd_full_run(args),
-            Commands::Convert(args) => crate::cli::cmd_convert(args),
-        }
-    });
+    let result = py.allow_threads(|| crate::cli::dispatch(cli.command));
 
     result.map_err(to_py_err)
 }

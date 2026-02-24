@@ -412,9 +412,6 @@ fn execute_single<'a>(
     let effective_onnx: &Path = patched_onnx.as_ref().map_or(onnx_path.as_path(), |t| t.path());
 
     if node.use_circuit {
-        let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
-        let output_tensor = run_onnx_inference(effective_onnx, &input_tensor)?;
-
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
@@ -429,6 +426,9 @@ fn execute_single<'a>(
                 "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
             )));
         }
+
+        let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
+        let output_tensor = run_onnx_inference(effective_onnx, &input_tensor)?;
 
         let witness_bytes = if is_wai {
             generate_wai_witness(
@@ -1062,7 +1062,6 @@ fn execute_channel_group<'a>(
 
     if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
         let circuit_path = resolve_relative_path(slice_dir, circuit_path_str);
-        let output_tensor = run_onnx_inference(effective_onnx, group_input)?;
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -1072,6 +1071,8 @@ fn execute_channel_group<'a>(
                 "consumer weights require circuits compiled with --weights-as-inputs".into(),
             ));
         }
+
+        let output_tensor = run_onnx_inference(effective_onnx, group_input)?;
 
         let witness_bytes = if is_wai {
             generate_wai_witness(
@@ -1406,23 +1407,15 @@ fn extract_initializers_from_map(
     init_map: &HashMap<String, &TensorProto>,
     params: &CircuitParams,
 ) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
-    let num_non_init = params
-        .inputs
-        .iter()
-        .take_while(|io| !init_map.contains_key(&io.name))
-        .count();
-
     let mut initializers = Vec::new();
-    for io in &params.inputs[num_non_init..] {
-        let tensor = init_map.get(&io.name).ok_or_else(|| {
-            DsperseError::Pipeline(format!("initializer '{}' not found in ONNX model", io.name))
-        })?;
-        let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
-        let f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
-        let shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
-        initializers.push((f64_vals, shape));
+    for io in &params.inputs {
+        if let Some(tensor) = init_map.get(&io.name) {
+            let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
+            let f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
+            let shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+            initializers.push((f64_vals, shape));
+        }
     }
-
     Ok(initializers)
 }
 

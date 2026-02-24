@@ -94,7 +94,7 @@ fn compile_single_slice(
         )));
     }
 
-    let onnx_path = resolve_relative_path(&slice_dir, &slice.path);
+    let onnx_path = resolve_compile_onnx(slices_dir, slice)?;
     if !onnx_path.exists() {
         return Err(DsperseError::Pipeline(format!(
             "ONNX model not found for slice {}: {}",
@@ -118,4 +118,26 @@ fn compile_single_slice(
     backend.compile(&circuit_path, params, architecture, wandb)?;
 
     Ok(true)
+}
+
+fn resolve_compile_onnx(
+    slices_dir: &Path,
+    slice: &crate::schema::metadata::SliceMetadata,
+) -> Result<std::path::PathBuf> {
+    if let Some(ref tiling) = slice.tiling {
+        if let Some(ref tile) = tiling.tile {
+            let tile_path = slices_dir.join(&tile.path);
+            if tile_path.exists() {
+                tracing::info!(
+                    slice = slice.index,
+                    path = %tile_path.display(),
+                    "using tile ONNX"
+                );
+                return Ok(tile_path);
+            }
+        }
+    }
+
+    let slice_dir = slice_dir_path(slices_dir, slice.index);
+    Ok(resolve_relative_path(&slice_dir, &slice.path))
 }

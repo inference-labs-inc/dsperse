@@ -424,6 +424,12 @@ fn execute_single<'a>(
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
+        if donor_init_map.is_some() && !is_wai {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
+            )));
+        }
+
         let witness_bytes = if is_wai {
             generate_wai_witness(
                 backend,
@@ -573,6 +579,10 @@ fn execute_tiled(
                 let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
                 tracing::info!(slice = %slice_id, "loaded circuit bundle + initializers");
                 Some(wc)
+            } else if donor_init_map.is_some() {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
+                )));
             } else {
                 Some(wc)
             }
@@ -1056,6 +1066,12 @@ fn execute_channel_group<'a>(
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
+
+        if donor_init_map.is_some() && !is_wai {
+            return Err(DsperseError::Pipeline(
+                "consumer weights require circuits compiled with --weights-as-inputs".into(),
+            ));
+        }
 
         let witness_bytes = if is_wai {
             generate_wai_witness(

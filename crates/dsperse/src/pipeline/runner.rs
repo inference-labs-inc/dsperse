@@ -979,6 +979,11 @@ fn run_onnx_inference_multi(
             let arr = tensor_cache.get(name).ok_or_else(|| {
                 DsperseError::Pipeline(format!("missing tensor '{name}' in cache"))
             })?;
+            tracing::debug!(
+                name = name.as_str(),
+                shape = ?arr.shape(),
+                "multi-input tensor from cache"
+            );
             Ok((
                 name.as_str(),
                 arr.iter().copied().collect(),

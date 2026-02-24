@@ -254,6 +254,7 @@ pub fn prepare_jstprove_artifacts(
         freivalds_reps: 1,
         n_bits_config,
         weights_as_inputs,
+        backend: Default::default(),
     };
 
     Ok((

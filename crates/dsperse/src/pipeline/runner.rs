@@ -299,11 +299,16 @@ fn execute_single(
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let input_tensor = gather_inputs_from_cache(tensor_cache, &meta.dependencies.filtered_inputs)?;
+    let inputs = &meta.dependencies.filtered_inputs;
+    let input_tensor = gather_inputs_from_cache(tensor_cache, inputs)?;
 
     if node.use_circuit {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output_tensor = run_onnx_inference(&onnx_path, &input_tensor)?;
+        let output_tensor = if inputs.len() > 1 {
+            run_onnx_inference_multi(&onnx_path, tensor_cache, inputs)?
+        } else {
+            run_onnx_inference(&onnx_path, &input_tensor)?
+        };
 
         let circuit_path = meta
             .jstprove_circuit_path
@@ -348,7 +353,11 @@ fn execute_single(
         })
     } else {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output = run_onnx_inference(&onnx_path, &input_tensor)?;
+        let output = if inputs.len() > 1 {
+            run_onnx_inference_multi(&onnx_path, tensor_cache, inputs)?
+        } else {
+            run_onnx_inference(&onnx_path, &input_tensor)?
+        };
         store_outputs(tensor_cache, &meta.dependencies.output, output)?;
 
         Ok(ExecutionInfo {
@@ -944,6 +953,30 @@ fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f6
     let (output_data, output_shape) =
         crate::backend::onnx::run_inference(onnx_path, &input_flat, input_shape)?;
 
+    ArrayD::from_shape_vec(IxDyn(&output_shape), output_data)
+        .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
+}
+
+fn run_onnx_inference_multi(
+    onnx_path: &Path,
+    tensor_cache: &HashMap<String, ArrayD<f64>>,
+    input_names: &[String],
+) -> Result<ArrayD<f64>> {
+    let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = input_names
+        .iter()
+        .map(|name| {
+            let arr = tensor_cache.get(name).ok_or_else(|| {
+                DsperseError::Pipeline(format!("missing tensor '{name}' in cache"))
+            })?;
+            Ok((
+                name.as_str(),
+                arr.iter().copied().collect(),
+                arr.shape().to_vec(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let (output_data, output_shape) =
+        crate::backend::onnx::run_inference_multi(onnx_path, &inputs)?;
     ArrayD::from_shape_vec(IxDyn(&output_shape), output_data)
         .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
 }

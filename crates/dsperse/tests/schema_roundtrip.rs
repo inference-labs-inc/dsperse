@@ -128,8 +128,7 @@ fn run_metadata_roundtrip() {
                     "filtered_inputs": ["input"]
                 },
                 "backend": "jstprove",
-                "circuit_path": "slice_0/payload/jstprove/circuit.txt",
-                "jstprove_circuit_path": "slice_0/payload/jstprove/circuit.txt"
+                "circuit_path": "slice_0/payload/jstprove/circuit.txt"
             }
         },
         "execution_chain": {
@@ -256,4 +255,52 @@ fn backend_serde() {
 
     let b: Backend = serde_json::from_str(r#""JSTPROVE""#).unwrap();
     assert_eq!(b, Backend::Jstprove);
+}
+
+#[test]
+fn tensor_shape_i64_deserialization() {
+    let json = r#"{
+        "input": [[1, 3, 224, 224]],
+        "output": [[1, 1000]]
+    }"#;
+
+    let shape: TensorShape = serde_json::from_str(json).unwrap();
+    assert_eq!(shape.input, vec![vec![1i64, 3, 224, 224]]);
+    assert_eq!(shape.output, vec![vec![1i64, 1000]]);
+
+    let roundtrip = serde_json::to_string(&shape).unwrap();
+    let shape2: TensorShape = serde_json::from_str(&roundtrip).unwrap();
+    assert_eq!(shape2.input, shape.input);
+    assert_eq!(shape2.output, shape.output);
+}
+
+#[test]
+fn tensor_shape_rejects_non_integer() {
+    let json = r#"{"input": [[1, "hello", 3]], "output": []}"#;
+    let result: std::result::Result<TensorShape, _> = serde_json::from_str(json);
+    assert!(result.is_err());
+}
+
+#[test]
+fn run_slice_metadata_i64_shapes() {
+    let json = r#"{
+        "path": "slice_0/payload/slice_0.onnx",
+        "input_shape": [[1, 3, 32, 32]],
+        "output_shape": [[1, 16, 16, 16]],
+        "dependencies": {
+            "input": ["input"],
+            "output": ["conv1_out"],
+            "filtered_inputs": ["input"]
+        },
+        "backend": "onnx"
+    }"#;
+
+    let meta: RunSliceMetadata = serde_json::from_str(json).unwrap();
+    assert_eq!(meta.input_shape, vec![vec![1i64, 3, 32, 32]]);
+    assert_eq!(meta.output_shape, vec![vec![1i64, 16, 16, 16]]);
+
+    let roundtrip = serde_json::to_string_pretty(&meta).unwrap();
+    let meta2: RunSliceMetadata = serde_json::from_str(&roundtrip).unwrap();
+    assert_eq!(meta2.input_shape, meta.input_shape);
+    assert_eq!(meta2.output_shape, meta.output_shape);
 }

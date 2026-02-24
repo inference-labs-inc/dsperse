@@ -81,12 +81,27 @@ pub fn run_inference_multi(
                 )
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
             input_order[*i] = Some(provided_idx);
+        } else {
+            tracing::warn!(
+                model_input_index = i,
+                model_input_name = name.as_str(),
+                provided_names = ?inputs.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
+                "no match for model input in provided tensors"
+            );
         }
     }
 
     let model = model
         .into_optimized()
-        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+        .map_err(|e| {
+            let unmatched: Vec<_> = input_order
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.is_none())
+                .map(|(i, _)| model_input_names[i].1.as_str())
+                .collect();
+            DsperseError::Onnx(format!("optimize (unmatched inputs: {unmatched:?}): {e}"))
+        })?
         .into_runnable()
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 

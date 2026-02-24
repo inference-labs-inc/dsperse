@@ -1,40 +1,21 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "dsperse"
-version = "1.0.1"
+version = "0.0.0"
 description = "Distributed zkML Toolkit"
 readme = "README.md"
-requires-python = "==3.13.*"
+requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "Inference Labs", email = "info@inferencelabs.com" }]
-dependencies = [
-  "torch==2.6.0",
-  "onnx==1.18.0",
-  "ezkl==22.2.1",
-  "numpy~=2.2.3",
-  "onnxruntime>=1.21.0,<2.0.0",
-  "colorama~=0.4.6",
-  "jstprove==2.7.0",
-]
-
-[project.optional-dependencies]
-dev = [
-  "pytest>=8.4.1",
-]
 
 [project.scripts]
-dsperse = "dsperse.main:main"
+dsperse = "dsperse.cli:main"
 
-[tool.pytest.ini_options]
-markers = ["slow: full pipeline tests (skip with -m 'not slow')"]
-addopts = "--durations=0"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["dsperse*"]
-
-[tool.setuptools.package-data]
-"dsperse.models" = ["doom/*.json", "doom/*.onnx", "net/*.json", "net/*.onnx"]
+[tool.maturin]
+features = ["python"]
+module-name = "dsperse._native"
+python-source = "python"
+manifest-path = "crates/dsperse/Cargo.toml"

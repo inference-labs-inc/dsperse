@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use ndarray::{Array4, ArrayD, IxDyn, s};
+use rayon::prelude::*;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
@@ -20,7 +22,6 @@ use crate::utils::io::{
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
 pub struct RunConfig {
-    // TODO: wire into tile execution loop via rayon thread pool
     pub parallel: usize,
     pub batch: bool,
 }
@@ -470,74 +471,183 @@ fn execute_tiled(
         _ => None,
     };
 
-    let mut tile_results: Vec<TileResult> = Vec::new();
-    let mut tile_outputs: Vec<ArrayD<f64>> = Vec::new();
+    let warm_model = warm_model.map(Arc::new);
+    let warm_circuit = warm_circuit.map(Arc::new);
+    let circuit_path = circuit_path.map(Arc::from);
 
-    for (tile_idx, tile_data) in tiles.iter().enumerate() {
-        let start = std::time::Instant::now();
-        let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
-        std::fs::create_dir_all(&tile_dir).map_err(|e| DsperseError::io(e, &tile_dir))?;
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(_config.parallel)
+        .build()
+        .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-        let tile_info = tile_infos.get(tile_idx).or(single_tile);
-        let tile_dyn = tile_data.clone().into_dyn();
+    let collected: Vec<(TileResult, Option<ArrayD<f64>>)> = pool.install(|| {
+        tiles
+            .par_iter()
+            .enumerate()
+            .map(|(tile_idx, tile_data)| {
+                let start = std::time::Instant::now();
+                let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+                if let Err(e) = std::fs::create_dir_all(&tile_dir) {
+                    return (
+                        TileResult {
+                            tile_idx,
+                            success: false,
+                            error: Some(format!("mkdir: {e}")),
+                            method: None,
+                            time_sec: 0.0,
+                            proof_path: None,
+                        },
+                        None,
+                    );
+                }
 
-        let result = if tile_info.is_some() {
-            let tile_output = if let Some(ref wm) = warm_model {
-                let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                wm.run(&input_flat).map(|(data, shape)| {
-                    ArrayD::from_shape_vec(IxDyn(&shape), data)
-                        .expect("warm model output reshape")
-                })
-            } else {
-                let onnx = tile_onnx.as_ref().unwrap();
-                run_onnx_inference(onnx, &tile_dyn)
-            };
+                let tile_info = tile_infos.get(tile_idx).or(single_tile);
+                let tile_dyn = tile_data.clone().into_dyn();
 
-            match tile_output {
-                Ok(ref output_tensor) => {
-                    if circuit_path.is_none() {
-                        tile_outputs.push(output_tensor.clone());
-                        tile_results.push(TileResult {
+                if tile_info.is_none() {
+                    return (
+                        TileResult {
+                            tile_idx,
+                            success: false,
+                            error: Some("no tile circuit info".into()),
+                            method: None,
+                            time_sec: 0.0,
+                            proof_path: None,
+                        },
+                        None,
+                    );
+                }
+
+                let tile_output = if let Some(ref wm) = warm_model {
+                    let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                    wm.run(&input_flat).map(|(data, shape)| {
+                        ArrayD::from_shape_vec(IxDyn(&shape), data)
+                            .expect("warm model output reshape")
+                    })
+                } else {
+                    let onnx = tile_onnx.as_ref().unwrap();
+                    run_onnx_inference(onnx, &tile_dyn)
+                };
+
+                let output_tensor = match tile_output {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return (
+                            TileResult {
+                                tile_idx,
+                                success: false,
+                                error: Some(format!("onnx inference: {e}")),
+                                method: Some("onnx".into()),
+                                time_sec: start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            },
+                            None,
+                        );
+                    }
+                };
+
+                if circuit_path.is_none() {
+                    return (
+                        TileResult {
                             tile_idx,
                             success: true,
                             error: None,
                             method: Some("onnx".into()),
                             time_sec: start.elapsed().as_secs_f64(),
                             proof_path: None,
-                        });
-                        continue;
-                    }
+                        },
+                        Some(output_tensor),
+                    );
+                }
 
-                    let witness_result = if let Some(ref wc) = warm_circuit {
-                        if wc.params.weights_as_inputs {
-                            let flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                            wc.witness_f64(&flat)
-                        } else {
-                            let input_json_bytes = serde_json::to_vec(
-                                &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
-                            )?;
-                            let output_json_bytes = serde_json::to_vec(
-                                &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
-                            )?;
-                            backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
-                        }
+                let witness_result = if let Some(ref wc) = warm_circuit {
+                    if wc.params.weights_as_inputs {
+                        let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                        wc.witness_f64(&flat)
                     } else {
-                        let input_json_bytes = serde_json::to_vec(
+                        let Ok(input_json_bytes) = serde_json::to_vec(
                             &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
-                        )?;
-                        let output_json_bytes = serde_json::to_vec(
-                            &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
-                        )?;
+                        ) else {
+                            return (
+                                TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some("json serialize input".into()),
+                                    method: Some("jstprove".into()),
+                                    time_sec: start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                },
+                                None,
+                            );
+                        };
+                        let Ok(output_json_bytes) = serde_json::to_vec(
+                            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+                        ) else {
+                            return (
+                                TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some("json serialize output".into()),
+                                    method: Some("jstprove".into()),
+                                    time_sec: start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                },
+                                None,
+                            );
+                        };
                         backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
+                    }
+                } else {
+                    let Ok(input_json_bytes) = serde_json::to_vec(
+                        &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
+                    ) else {
+                        return (
+                            TileResult {
+                                tile_idx,
+                                success: false,
+                                error: Some("json serialize input".into()),
+                                method: Some("jstprove".into()),
+                                time_sec: start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            },
+                            None,
+                        );
                     };
+                    let Ok(output_json_bytes) = serde_json::to_vec(
+                        &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+                    ) else {
+                        return (
+                            TileResult {
+                                tile_idx,
+                                success: false,
+                                error: Some("json serialize output".into()),
+                                method: Some("jstprove".into()),
+                                time_sec: start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            },
+                            None,
+                        );
+                    };
+                    backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
+                };
 
-                    match witness_result {
-                        Ok(witness_bytes) => {
-                            let witness_path = tile_dir.join("witness.bin");
-                            std::fs::write(&witness_path, &witness_bytes)
-                                .map_err(|e| DsperseError::io(e, &witness_path))?;
-
-                            tile_outputs.push(output_tensor.clone());
+                match witness_result {
+                    Ok(witness_bytes) => {
+                        let witness_path = tile_dir.join("witness.bin");
+                        if let Err(e) = std::fs::write(&witness_path, &witness_bytes) {
+                            return (
+                                TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some(format!("write witness: {e}")),
+                                    method: Some("jstprove".into()),
+                                    time_sec: start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                },
+                                None,
+                            );
+                        }
+                        (
                             TileResult {
                                 tile_idx,
                                 success: true,
@@ -545,9 +655,12 @@ fn execute_tiled(
                                 method: Some("jstprove".into()),
                                 time_sec: start.elapsed().as_secs_f64(),
                                 proof_path: None,
-                            }
-                        }
-                        Err(e) => TileResult {
+                            },
+                            Some(output_tensor),
+                        )
+                    }
+                    Err(e) => (
+                        TileResult {
                             tile_idx,
                             success: false,
                             error: Some(e.to_string()),
@@ -555,28 +668,19 @@ fn execute_tiled(
                             time_sec: start.elapsed().as_secs_f64(),
                             proof_path: None,
                         },
-                    }
+                        None,
+                    ),
                 }
-                Err(e) => TileResult {
-                    tile_idx,
-                    success: false,
-                    error: Some(format!("onnx inference: {e}")),
-                    method: Some("onnx".into()),
-                    time_sec: start.elapsed().as_secs_f64(),
-                    proof_path: None,
-                },
-            }
-        } else {
-            TileResult {
-                tile_idx,
-                success: false,
-                error: Some("no tile circuit info".into()),
-                method: None,
-                time_sec: 0.0,
-                proof_path: None,
-            }
-        };
+            })
+            .collect()
+    });
 
+    let mut tile_results: Vec<TileResult> = Vec::with_capacity(collected.len());
+    let mut tile_outputs: Vec<ArrayD<f64>> = Vec::with_capacity(collected.len());
+    for (result, output) in collected {
+        if let Some(o) = output {
+            tile_outputs.push(o);
+        }
         tile_results.push(result);
     }
 

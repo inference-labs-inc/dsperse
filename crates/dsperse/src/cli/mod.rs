@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Args;
 
 use crate::archive::converter::{self, FormatType};
-use crate::backend::JstproveBackend;
+use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
 

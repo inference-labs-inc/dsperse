@@ -5,7 +5,7 @@ use ndarray::{Array4, ArrayD, IxDyn, s};
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
-use crate::backend::JstproveBackend;
+use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
@@ -435,26 +435,39 @@ fn execute_tiled(
     }
 
     let first_tile_info = tile_infos.first().or(single_tile);
-    let warm_model = if let Some(ti) = first_tile_info {
-        let tile_onnx = resolve_relative_path(slices_dir, &ti.path);
-        let sample_shape = tiles.first().map(|t| {
-            let d = t.clone().into_dyn();
-            d.shape().to_vec()
-        });
-        match sample_shape {
-            Some(shape) => {
-                let model = crate::backend::onnx::WarmModel::load(&tile_onnx, &shape)?;
-                tracing::info!(
-                    slice = %slice_id,
-                    onnx = %tile_onnx.display(),
-                    "loaded warm ONNX model for tiled execution"
-                );
-                Some(model)
-            }
-            None => None,
+    let tile_onnx = first_tile_info.map(|ti| resolve_relative_path(slices_dir, &ti.path));
+
+    let warm_model = match (&tile_onnx, tiles.first()) {
+        (Some(onnx_path), Some(sample)) => {
+            let shape = sample.clone().into_dyn().shape().to_vec();
+            let model = crate::backend::onnx::WarmModel::load(onnx_path, &shape)?;
+            tracing::info!(slice = %slice_id, "loaded ONNX model");
+            Some(model)
         }
-    } else {
-        None
+        _ => None,
+    };
+
+    let circuit_path = first_tile_info
+        .and_then(|ti| {
+            ti.jstprove_circuit_path
+                .as_deref()
+                .map(|p| resolve_relative_path(slices_dir, p))
+        })
+        .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
+
+    let warm_circuit = match (&circuit_path, &tile_onnx) {
+        (Some(cp), Some(onnx_path)) => {
+            let wc = crate::backend::jstprove::WarmCircuit::load(cp, vec![], backend.compress())?;
+            if wc.params.weights_as_inputs {
+                let initializers = extract_onnx_initializers(onnx_path, &wc.params)?;
+                let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
+                tracing::info!(slice = %slice_id, "loaded circuit bundle + initializers");
+                Some(wc)
+            } else {
+                Some(wc)
+            }
+        }
+        _ => None,
     };
 
     let mut tile_results: Vec<TileResult> = Vec::new();
@@ -468,9 +481,7 @@ fn execute_tiled(
         let tile_info = tile_infos.get(tile_idx).or(single_tile);
         let tile_dyn = tile_data.clone().into_dyn();
 
-        let result = if let Some(ti) = tile_info {
-            let tile_onnx = resolve_relative_path(slices_dir, &ti.path);
-
+        let result = if tile_info.is_some() {
             let tile_output = if let Some(ref wm) = warm_model {
                 let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
                 wm.run(&input_flat).map(|(data, shape)| {
@@ -478,43 +489,38 @@ fn execute_tiled(
                         .expect("warm model output reshape")
                 })
             } else {
-                run_onnx_inference(&tile_onnx, &tile_dyn)
+                let onnx = tile_onnx.as_ref().unwrap();
+                run_onnx_inference(onnx, &tile_dyn)
             };
 
             match tile_output {
                 Ok(ref output_tensor) => {
-                    let circuit_path = ti
-                        .jstprove_circuit_path
-                        .as_deref()
-                        .map(|p| resolve_relative_path(slices_dir, p))
-                        .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
-                    let circuit_path = match circuit_path {
-                        Some(p) => p,
-                        None => {
-                            tile_outputs.push(output_tensor.clone());
-                            tile_results.push(TileResult {
-                                tile_idx,
-                                success: true,
-                                error: None,
-                                method: Some("onnx".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            });
-                            continue;
+                    if circuit_path.is_none() {
+                        tile_outputs.push(output_tensor.clone());
+                        tile_results.push(TileResult {
+                            tile_idx,
+                            success: true,
+                            error: None,
+                            method: Some("onnx".into()),
+                            time_sec: start.elapsed().as_secs_f64(),
+                            proof_path: None,
+                        });
+                        continue;
+                    }
+
+                    let witness_result = if let Some(ref wc) = warm_circuit {
+                        if wc.params.weights_as_inputs {
+                            let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                            wc.witness_f64(&flat)
+                        } else {
+                            let input_json_bytes = serde_json::to_vec(
+                                &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
+                            )?;
+                            let output_json_bytes = serde_json::to_vec(
+                                &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
+                            )?;
+                            backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
                         }
-                    };
-
-                    let params = backend.load_params(&circuit_path)?;
-                    let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
-
-                    let witness_result = if is_wai {
-                        generate_wai_witness(
-                            backend,
-                            &circuit_path,
-                            &tile_onnx,
-                            params.as_ref().unwrap(),
-                            &tile_dyn,
-                        )
                     } else {
                         let input_json_bytes = serde_json::to_vec(
                             &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
@@ -522,7 +528,7 @@ fn execute_tiled(
                         let output_json_bytes = serde_json::to_vec(
                             &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
                         )?;
-                        backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)
+                        backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
                     };
 
                     match witness_result {

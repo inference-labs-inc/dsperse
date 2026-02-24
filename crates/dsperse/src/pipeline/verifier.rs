@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::backend::JstproveBackend;
+use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{ExecutionMethod, RunMetadata, SliceResult};
 use crate::utils::paths::resolve_relative_path;

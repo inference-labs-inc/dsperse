@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::backend::JstproveBackend;
+use crate::backend::jstprove::JstproveBackend;
 use crate::converter;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;

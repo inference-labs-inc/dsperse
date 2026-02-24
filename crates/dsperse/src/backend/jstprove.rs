@@ -31,6 +31,10 @@ impl JstproveBackend {
         self
     }
 
+    pub fn compress(&self) -> bool {
+        self.compress
+    }
+
     pub fn compile(
         &self,
         circuit_path: &Path,
@@ -133,4 +137,45 @@ fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {
 
     read_circuit_msgpack(msgpack_str)
         .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))
+}
+
+pub struct WarmCircuit {
+    bundle: CompiledCircuit,
+    pub params: CircuitParams,
+    initializers: Vec<(Vec<f64>, Vec<usize>)>,
+    compress: bool,
+}
+
+impl WarmCircuit {
+    pub fn load(
+        circuit_path: &Path,
+        initializers: Vec<(Vec<f64>, Vec<usize>)>,
+        compress: bool,
+    ) -> Result<Self> {
+        let bundle = load_bundle(circuit_path)?;
+        let params = bundle
+            .metadata
+            .clone()
+            .ok_or_else(|| DsperseError::Backend("circuit bundle missing metadata".into()))?;
+        Ok(Self {
+            bundle,
+            params,
+            initializers,
+            compress,
+        })
+    }
+
+    pub fn witness_f64(&self, activations: &[f64]) -> Result<Vec<u8>> {
+        let result = witness_bn254_from_f64(
+            &self.bundle.circuit,
+            &self.bundle.witness_solver,
+            &self.params,
+            activations,
+            &self.initializers,
+            self.compress,
+        )
+        .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
+
+        Ok(result.witness)
+    }
 }

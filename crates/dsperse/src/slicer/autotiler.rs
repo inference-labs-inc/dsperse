@@ -471,13 +471,17 @@ fn integrate_extra_ops(
     let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
 
     if non_conv.is_empty() {
-        if let Some(last) = nodes.last_mut() {
-            last.output[0] = "tile_out".to_string();
-        } else {
-            return Err(crate::error::DsperseError::Slicer(
+        let last = nodes.last_mut().ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
                 "integrate_extra_ops: no nodes to set output on".into(),
-            ));
-        }
+            )
+        })?;
+        let out = last.output.get_mut(0).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "integrate_extra_ops: last node has no outputs".into(),
+            )
+        })?;
+        *out = "tile_out".to_string();
         return Ok(());
     }
 

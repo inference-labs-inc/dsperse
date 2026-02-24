@@ -77,17 +77,19 @@ fn verify_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) 
 
 #[pyfunction]
 #[pyo3(signature = (input, to, output=None, expand_slices=false, cleanup=false))]
-fn convert(input: &str, to: &str, output: Option<&str>, expand_slices: bool, cleanup: bool) -> PyResult<String> {
+fn convert(py: Python<'_>, input: &str, to: &str, output: Option<&str>, expand_slices: bool, cleanup: bool) -> PyResult<String> {
     let format: FormatType = to.parse().map_err(to_py_err)?;
     let input_path = PathBuf::from(input);
     let output_path = output.map(PathBuf::from);
-    let result = converter::convert(
-        &input_path,
-        format,
-        output_path.as_deref(),
-        cleanup,
-        expand_slices,
-    )
+    let result = py.allow_threads(|| {
+        converter::convert(
+            &input_path,
+            format,
+            output_path.as_deref(),
+            cleanup,
+            expand_slices,
+        )
+    })
     .map_err(to_py_err)?;
     Ok(result.to_string_lossy().to_string())
 }

@@ -392,10 +392,8 @@ fn execute_tiled(
         .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
     } else {
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-        let stride_h = tiling.stride[0].max(1) as usize;
-        let stride_w = tiling.stride[1].max(1) as usize;
-        let h = (tiling.tiles_y.max(1) - 1) * stride_h + tiling.tile_size;
-        let w = (tiling.tiles_x.max(1) - 1) * stride_w + tiling.tile_size;
+        let h = tiling.tiles_y * tiling.tile_size;
+        let w = tiling.tiles_x * tiling.tile_size;
         reshape_to_4d(&input_flat, tiling.c_in, h, w)?
     };
 
@@ -817,8 +815,6 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Arra
     }
     let halo_h = tiling.halo[0] as usize;
     let halo_w = tiling.halo[1] as usize;
-    let stride_h = tiling.stride[0].max(1) as usize;
-    let stride_w = tiling.stride[1].max(1) as usize;
     let tile_h = tiling.tile_size + 2 * halo_h;
     let tile_w = tiling.tile_size + 2 * halo_w;
 
@@ -832,8 +828,8 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Arra
     let mut tiles = Vec::new();
     for ty in 0..tiling.tiles_y {
         for tx in 0..tiling.tiles_x {
-            let y_start = ty * stride_h;
-            let x_start = tx * stride_w;
+            let y_start = ty * tiling.tile_size;
+            let x_start = tx * tiling.tile_size;
             let y_end = (y_start + tile_h).min(padded_h);
             let x_end = (x_start + tile_w).min(padded_w);
 

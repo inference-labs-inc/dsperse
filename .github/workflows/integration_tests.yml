@@ -12,6 +12,7 @@ jobs:
   test:
     name: Rust Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,14 +26,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: cargo build --locked --manifest-path crates/dsperse/Cargo.toml
-
       - name: Test
         run: cargo test --locked --manifest-path crates/dsperse/Cargo.toml
 
-      - name: Check (with python feature)
-        run: cargo check --locked --manifest-path crates/dsperse/Cargo.toml --features python
+      - name: Test (with python feature)
+        run: cargo test --locked --manifest-path crates/dsperse/Cargo.toml --features python
 
       - name: Clippy
         run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml --all-targets --features python -- -D warnings

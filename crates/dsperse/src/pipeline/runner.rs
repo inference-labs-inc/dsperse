@@ -314,7 +314,7 @@ fn execute_single(
             .jstprove_circuit_path
             .as_deref()
             .or(meta.circuit_path.as_deref())
-            .map(|p| resolve_relative_path(&slice_dir, p))
+            .map(std::path::PathBuf::from)
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
         let params = backend.load_params(&circuit_path)?;
@@ -1004,11 +1004,7 @@ pub(crate) fn build_execution_chain(
 
         let circuit_path = if has_circuit {
             slice.compilation.jstprove.files.compiled.as_ref().map(|p| {
-                slice_dir
-                    .join("jstprove")
-                    .join(p)
-                    .to_string_lossy()
-                    .into_owned()
+                slices_dir.join(p).to_string_lossy().into_owned()
             })
         } else {
             None

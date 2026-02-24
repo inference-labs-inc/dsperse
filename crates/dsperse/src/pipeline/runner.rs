@@ -265,11 +265,17 @@ fn execute_slice(
     }
 
     if let Some(ref tiling) = meta.tiling {
+        let slice_circuit = meta
+            .jstprove_circuit_path
+            .as_deref()
+            .or(meta.circuit_path.as_deref())
+            .map(std::path::PathBuf::from);
         return execute_tiled(
             slices_dir,
             slice_run_dir,
             slice_id,
             tiling,
+            slice_circuit.as_deref(),
             tensor_cache,
             backend,
             config,
@@ -380,6 +386,7 @@ fn execute_tiled(
     slice_run_dir: &Path,
     slice_id: &str,
     tiling: &TilingInfo,
+    slice_circuit_path: Option<&Path>,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     _config: &RunConfig,
@@ -448,7 +455,8 @@ fn execute_tiled(
                     let circuit_path = ti
                         .jstprove_circuit_path
                         .as_deref()
-                        .map(|p| resolve_relative_path(slices_dir, p));
+                        .map(|p| resolve_relative_path(slices_dir, p))
+                        .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
                     let circuit_path = match circuit_path {
                         Some(p) => p,
                         None => {

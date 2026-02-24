@@ -83,10 +83,13 @@ fn validate_weights_onnx(
             )));
         }
         let slice_model = crate::slicer::onnx_proto::load_model(&onnx_path)?;
-        let slice_graph = match slice_model.graph.as_ref() {
-            Some(g) => g,
-            None => continue,
-        };
+        let slice_graph = slice_model.graph.as_ref().ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "slice_{} ONNX at {} has no graph",
+                slice.index,
+                onnx_path.display()
+            ))
+        })?;
         for init in &slice_graph.initializer {
             if let Some(donor_init) = donor_init_map.get(&init.name) {
                 if init.data_type != donor_init.data_type {
@@ -1389,8 +1392,9 @@ fn extract_initializers_from_map(
 ) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
     let num_non_init = params
         .inputs
-        .len()
-        .saturating_sub(init_map.len().min(params.inputs.len()));
+        .iter()
+        .take_while(|io| !init_map.contains_key(&io.name))
+        .count();
 
     let mut initializers = Vec::new();
     for io in &params.inputs[num_non_init..] {

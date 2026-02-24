@@ -250,7 +250,6 @@ pub fn replace_initializers(
             init.double_data = donor.double_data.clone();
             init.int32_data = donor.int32_data.clone();
             init.int64_data = donor.int64_data.clone();
-            init.data_type = donor.data_type;
             replaced += 1;
         }
     }
@@ -263,7 +262,7 @@ pub fn build_patched_onnx(
 ) -> Result<tempfile::NamedTempFile> {
     let mut model = load_model(slice_onnx)?;
     replace_initializers(&mut model, donor_init_map)?;
-    let tmp = tempfile::NamedTempFile::new()
+    let tmp = tempfile::NamedTempFile::with_suffix(".onnx")
         .map_err(|e| DsperseError::Pipeline(format!("create temp file: {e}")))?;
     save_model(&model, tmp.path())?;
     Ok(tmp)

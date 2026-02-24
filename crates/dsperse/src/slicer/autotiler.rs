@@ -23,6 +23,7 @@ fn is_elementwise(op: &str) -> bool {
     ELEMENTWISE_OPS.contains(&op)
 }
 
+#[derive(Debug, Clone)]
 pub struct ChannelSplitParams {
     pub c_in: i64,
     pub c_out: i64,
@@ -768,13 +769,7 @@ pub fn apply_channel_splitting(
     output_name: &str,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
-    let c_in = cfg.c_in;
-    let c_out = cfg.c_out;
-    let num_groups = cfg.num_groups;
-    let channels_per_group = cfg.channels_per_group;
-    let h = cfg.h;
-    let w = cfg.w;
-    let slice_idx = cfg.slice_idx;
+    let &ChannelSplitParams { c_in, c_out, num_groups, channels_per_group, h, w, slice_idx } = cfg;
     let graph = match model.graph.as_ref() {
         Some(g) => g,
         None => return Ok(None),

@@ -306,14 +306,18 @@ fn execute_single(
         .filter(|s| !s.is_empty())
         .cloned()
         .collect();
-    let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs)?;
+    let multi_input = inputs.len() > 1;
 
     if node.use_circuit {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output_tensor = if inputs.len() > 1 {
-            run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?
+        let (input_tensor, output_tensor) = if multi_input {
+            let out = run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?;
+            let inp = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
+            (inp, out)
         } else {
-            run_onnx_inference(&onnx_path, &input_tensor)?
+            let inp = gather_inputs_from_cache(tensor_cache, &inputs)?;
+            let out = run_onnx_inference(&onnx_path, &inp)?;
+            (inp, out)
         };
 
         let circuit_path = meta
@@ -359,9 +363,10 @@ fn execute_single(
         })
     } else {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output = if inputs.len() > 1 {
+        let output = if multi_input {
             run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?
         } else {
+            let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs)?;
             run_onnx_inference(&onnx_path, &input_tensor)?
         };
         store_outputs(tensor_cache, &meta.dependencies.output, output)?;

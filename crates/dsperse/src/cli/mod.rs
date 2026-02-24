@@ -48,7 +48,7 @@ pub struct RunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
-    #[arg(long)]
+    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
     pub weights: Option<PathBuf>,
 }
 
@@ -92,7 +92,7 @@ pub struct FullRunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
-    #[arg(long)]
+    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
     pub weights: Option<PathBuf>,
 }
 

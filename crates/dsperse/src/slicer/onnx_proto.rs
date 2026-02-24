@@ -233,6 +233,12 @@ pub fn replace_initializers(
     let mut replaced = 0;
     for init in &mut graph.initializer {
         if let Some(donor) = donor_init_map.get(&init.name) {
+            if init.data_type != donor.data_type {
+                return Err(DsperseError::Pipeline(format!(
+                    "dtype mismatch for initializer '{}': slice has dtype {}, consumer has dtype {}",
+                    init.name, init.data_type, donor.data_type
+                )));
+            }
             if init.dims != donor.dims {
                 return Err(DsperseError::Pipeline(format!(
                     "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",

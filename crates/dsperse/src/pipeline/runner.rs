@@ -20,6 +20,7 @@ use crate::utils::io::{
     arrayd_to_json, extract_input_data, gather_inputs_from_cache, json_to_arrayd, read_input_json,
     write_input_json,
 };
+use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 
 pub struct RunConfig {
@@ -67,22 +68,19 @@ pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
 }
 
 fn validate_weights_onnx(
-    weights_onnx: &Path,
+    donor_init_map: &HashMap<String, &TensorProto>,
     model_meta: &ModelMetadata,
     slices_dir: &Path,
 ) -> Result<()> {
-    let donor_model = crate::slicer::onnx_proto::load_model(weights_onnx)?;
-    let donor_graph = donor_model
-        .graph
-        .as_ref()
-        .ok_or_else(|| DsperseError::Pipeline("consumer weights ONNX missing graph".into()))?;
-    let donor_init_map = crate::slicer::onnx_proto::build_initializer_map(donor_graph);
-
     for slice in &model_meta.slices {
         let slice_dir = slice_dir_path(slices_dir, slice.index);
         let onnx_path = resolve_relative_path(&slice_dir, &slice.path);
         if !onnx_path.exists() {
-            continue;
+            return Err(DsperseError::Pipeline(format!(
+                "slice_{} ONNX not found at {}",
+                slice.index,
+                onnx_path.display()
+            )));
         }
         let slice_model = crate::slicer::onnx_proto::load_model(&onnx_path)?;
         let slice_graph = match slice_model.graph.as_ref() {
@@ -91,6 +89,12 @@ fn validate_weights_onnx(
         };
         for init in &slice_graph.initializer {
             if let Some(donor_init) = donor_init_map.get(&init.name) {
+                if init.data_type != donor_init.data_type {
+                    return Err(DsperseError::Pipeline(format!(
+                        "dtype mismatch for initializer '{}' in slice_{}: slice has dtype {}, consumer has dtype {}",
+                        init.name, slice.index, init.data_type, donor_init.data_type
+                    )));
+                }
                 if init.dims != donor_init.dims {
                     return Err(DsperseError::Pipeline(format!(
                         "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",
@@ -117,15 +121,32 @@ pub fn run_inference(
 ) -> Result<RunMetadata> {
     let model_meta = load_model_metadata(slices_dir)?;
 
-    if let Some(ref weights_path) = config.weights_onnx {
+    let donor_model = if let Some(ref weights_path) = config.weights_onnx {
         if !weights_path.is_file() {
             return Err(DsperseError::Other(format!(
                 "consumer weights ONNX not found: {}",
                 weights_path.display()
             )));
         }
-        validate_weights_onnx(weights_path, &model_meta, slices_dir)?;
-        tracing::info!(weights = %weights_path.display(), "validated consumer weights ONNX");
+        Some(crate::slicer::onnx_proto::load_model(weights_path)?)
+    } else {
+        None
+    };
+    let donor_init_map = match donor_model.as_ref() {
+        Some(model) => {
+            let graph = model.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
+            })?;
+            Some(crate::slicer::onnx_proto::build_initializer_map(graph))
+        }
+        None => None,
+    };
+    if let Some(ref map) = donor_init_map {
+        validate_weights_onnx(map, &model_meta, slices_dir)?;
+        tracing::info!(
+            weights = %config.weights_onnx.as_ref().unwrap().display(),
+            "validated consumer weights ONNX"
+        );
     }
 
     std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
@@ -198,7 +219,7 @@ pub fn run_inference(
             &mut tensor_cache,
             backend,
             config,
-            config.weights_onnx.as_deref(),
+            donor_init_map.as_ref(),
         );
 
         let exec_info = match exec_result {
@@ -302,7 +323,7 @@ pub fn run_inference(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_slice(
+fn execute_slice<'a>(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
@@ -311,7 +332,7 @@ fn execute_slice(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     config: &RunConfig,
-    weights_onnx: Option<&Path>,
+    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
 ) -> Result<ExecutionInfo> {
     if let Some(ref cs) = meta.channel_split {
         return execute_channel_split(
@@ -321,7 +342,7 @@ fn execute_slice(
             cs,
             tensor_cache,
             backend,
-            weights_onnx,
+            donor_init_map,
         );
     }
 
@@ -339,7 +360,7 @@ fn execute_slice(
             tensor_cache,
             backend,
             config,
-            weights_onnx,
+            donor_init_map,
         );
     }
 
@@ -351,12 +372,12 @@ fn execute_slice(
         meta,
         tensor_cache,
         backend,
-        weights_onnx,
+        donor_init_map,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_single(
+fn execute_single<'a>(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
@@ -364,7 +385,7 @@ fn execute_single(
     meta: &RunSliceMetadata,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    weights_onnx: Option<&Path>,
+    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
 ) -> Result<ExecutionInfo> {
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
@@ -380,13 +401,8 @@ fn execute_single(
 
     let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
 
-    let patched_onnx = if weights_onnx.is_some() {
-        let donor_model = crate::slicer::onnx_proto::load_model(weights_onnx.unwrap())?;
-        let donor_graph = donor_model.graph.as_ref().ok_or_else(|| {
-            DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-        })?;
-        let donor_init_map = crate::slicer::onnx_proto::build_initializer_map(donor_graph);
-        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, &donor_init_map)?)
+    let patched_onnx = if let Some(map) = donor_init_map {
+        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
     } else {
         None
     };
@@ -406,11 +422,11 @@ fn execute_single(
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
         let witness_bytes = if is_wai {
-            let init_source = weights_onnx.unwrap_or(&onnx_path);
             generate_wai_witness(
                 backend,
                 &circuit_path,
-                init_source,
+                &onnx_path,
+                donor_init_map,
                 params.as_ref().unwrap(),
                 &input_tensor,
             )?
@@ -467,7 +483,7 @@ fn execute_tiled(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     config: &RunConfig,
-    weights_onnx: Option<&Path>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
     let input_arr = tensor_cache
         .get(&tiling.input_name)
@@ -515,18 +531,13 @@ fn execute_tiled(
     let first_tile_info = tile_infos.first().or(single_tile);
     let tile_onnx = first_tile_info.map(|ti| resolve_relative_path(slices_dir, &ti.path));
 
-    let _patched_tile_onnx = match (&tile_onnx, weights_onnx) {
-        (Some(onnx_path), Some(wp)) => {
-            let donor_model = crate::slicer::onnx_proto::load_model(wp)?;
-            let donor_graph = donor_model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-            })?;
-            let donor_init_map = crate::slicer::onnx_proto::build_initializer_map(donor_graph);
-            Some(crate::slicer::onnx_proto::build_patched_onnx(onnx_path, &donor_init_map)?)
+    let patched_tile_onnx = match (&tile_onnx, donor_init_map) {
+        (Some(onnx_path), Some(map)) => {
+            Some(crate::slicer::onnx_proto::build_patched_onnx(onnx_path, map)?)
         }
         _ => None,
     };
-    let effective_tile_onnx = _patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
+    let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
     let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
 
     let warm_model = match (effective_tile_onnx_ref, tiles.first()) {
@@ -551,8 +562,11 @@ fn execute_tiled(
         (Some(cp), Some(onnx_path)) => {
             let wc = crate::backend::jstprove::WarmCircuit::load(cp, vec![], backend.compress())?;
             if wc.params.weights_as_inputs {
-                let init_source = weights_onnx.unwrap_or(onnx_path.as_path());
-                let initializers = extract_onnx_initializers(init_source, &wc.params)?;
+                let initializers = if let Some(map) = donor_init_map {
+                    extract_initializers_from_map(map, &wc.params)?
+                } else {
+                    extract_onnx_initializers(onnx_path, &wc.params)?
+                };
                 let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
                 tracing::info!(slice = %slice_id, "loaded circuit bundle + initializers");
                 Some(wc)
@@ -619,9 +633,12 @@ fn execute_tiled(
                             ))
                         })
                     })
-                } else {
-                    let onnx = effective_tile_onnx_ref.unwrap();
+                } else if let Some(onnx) = effective_tile_onnx_ref {
                     run_onnx_inference(onnx, &tile_dyn)
+                } else {
+                    Err(DsperseError::Pipeline(format!(
+                        "tile {tile_idx}: no ONNX model available for inference"
+                    )))
                 };
 
                 let output_tensor = match tile_output {
@@ -819,14 +836,14 @@ fn execute_tiled(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_channel_split(
+fn execute_channel_split<'a>(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    weights_onnx: Option<&Path>,
+    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
 ) -> Result<ExecutionInfo> {
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
@@ -910,7 +927,7 @@ fn execute_channel_split(
         std::fs::create_dir_all(&group_dir).map_err(|e| DsperseError::io(e, &group_dir))?;
 
         let group_output =
-            execute_channel_group(&slice_dir, &group_dir, group, &group_input_dyn, backend, weights_onnx)?;
+            execute_channel_group(&slice_dir, &group_dir, group, &group_input_dyn, backend, donor_init_map)?;
 
         let group_4d = if group_output.ndim() == 4 {
             let s = group_output.shape();
@@ -1013,23 +1030,18 @@ fn execute_channel_split(
     })
 }
 
-fn execute_channel_group(
+fn execute_channel_group<'a>(
     slice_dir: &Path,
     group_dir: &Path,
     group: &ChannelGroupInfo,
     group_input: &ArrayD<f64>,
     backend: &JstproveBackend,
-    weights_onnx: Option<&Path>,
+    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
 ) -> Result<ArrayD<f64>> {
     let onnx_path = resolve_relative_path(slice_dir, &group.path);
 
-    let patched_onnx = if let Some(wp) = weights_onnx {
-        let donor_model = crate::slicer::onnx_proto::load_model(wp)?;
-        let donor_graph = donor_model.graph.as_ref().ok_or_else(|| {
-            DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-        })?;
-        let donor_init_map = crate::slicer::onnx_proto::build_initializer_map(donor_graph);
-        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, &donor_init_map)?)
+    let patched_onnx = if let Some(map) = donor_init_map {
+        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
     } else {
         None
     };
@@ -1043,11 +1055,11 @@ fn execute_channel_group(
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
         let witness_bytes = if is_wai {
-            let init_source = weights_onnx.unwrap_or(onnx_path.as_path());
             generate_wai_witness(
                 backend,
                 &circuit_path,
-                init_source,
+                &onnx_path,
+                donor_init_map,
                 params.as_ref().unwrap(),
                 group_input,
             )?
@@ -1371,17 +1383,10 @@ pub(crate) fn build_run_metadata(
     }
 }
 
-fn extract_onnx_initializers(
-    onnx_path: &Path,
+fn extract_initializers_from_map(
+    init_map: &HashMap<String, &TensorProto>,
     params: &CircuitParams,
 ) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
-    let model = crate::slicer::onnx_proto::load_model(onnx_path)?;
-    let graph = model
-        .graph
-        .as_ref()
-        .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
-    let init_map = crate::slicer::onnx_proto::build_initializer_map(graph);
-
     let num_non_init = params
         .inputs
         .len()
@@ -1401,14 +1406,32 @@ fn extract_onnx_initializers(
     Ok(initializers)
 }
 
+fn extract_onnx_initializers(
+    onnx_path: &Path,
+    params: &CircuitParams,
+) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
+    let model = crate::slicer::onnx_proto::load_model(onnx_path)?;
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
+    let init_map = crate::slicer::onnx_proto::build_initializer_map(graph);
+    extract_initializers_from_map(&init_map, params)
+}
+
 fn generate_wai_witness(
     backend: &JstproveBackend,
     circuit_path: &Path,
-    onnx_path: &Path,
+    slice_onnx_path: &Path,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
     params: &CircuitParams,
     activations: &ArrayD<f64>,
 ) -> Result<Vec<u8>> {
-    let initializers = extract_onnx_initializers(onnx_path, params)?;
+    let initializers = if let Some(map) = donor_init_map {
+        extract_initializers_from_map(map, params)?
+    } else {
+        extract_onnx_initializers(slice_onnx_path, params)?
+    };
     let flat_activations: Vec<f64> = activations.iter().copied().collect();
     backend.witness_f64(circuit_path, &flat_activations, &initializers)
 }

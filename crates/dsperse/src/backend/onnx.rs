@@ -60,11 +60,27 @@ pub fn run_inference_multi(
         .model_for_path(onnx_path)
         .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
 
-    for (i, (_, _, shape)) in inputs.iter().enumerate() {
-        if i < model.inputs.len() {
+    let input_by_name: std::collections::HashMap<&str, usize> =
+        inputs.iter().enumerate().map(|(idx, entry)| (entry.0, idx)).collect();
+
+    let model_input_count = model.inputs.len();
+    let model_input_names: Vec<(usize, String)> = model
+        .inputs
+        .iter()
+        .enumerate()
+        .map(|(i, outlet)| (i, model.nodes[outlet.node].name.clone()))
+        .collect();
+
+    let mut input_order: Vec<Option<usize>> = vec![None; model_input_count];
+    for (i, name) in &model_input_names {
+        if let Some(&provided_idx) = input_by_name.get(name.as_str()) {
             model = model
-                .with_input_fact(i, InferenceFact::dt_shape(f32::datum_type(), shape))
-                .map_err(|e| DsperseError::Onnx(format!("set input {i} shape: {e}")))?;
+                .with_input_fact(
+                    *i,
+                    InferenceFact::dt_shape(f32::datum_type(), &inputs[provided_idx].2),
+                )
+                .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
+            input_order[*i] = Some(provided_idx);
         }
     }
 
@@ -75,7 +91,11 @@ pub fn run_inference_multi(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 
     let mut input_tvs = TVec::new();
-    for (_, data, shape) in inputs {
+    for idx in &input_order {
+        let provided_idx = idx.ok_or_else(|| {
+            DsperseError::Onnx("model input not matched to provided tensors".into())
+        })?;
+        let (_, ref data, ref shape) = inputs[provided_idx];
         let f32_data: Vec<f32> = data.iter().map(|&v| v as f32).collect();
         let tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), f32_data)
             .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;

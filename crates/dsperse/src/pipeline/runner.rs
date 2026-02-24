@@ -299,13 +299,19 @@ fn execute_single(
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
 
-    let inputs = &meta.dependencies.filtered_inputs;
-    let input_tensor = gather_inputs_from_cache(tensor_cache, inputs)?;
+    let inputs: Vec<String> = meta
+        .dependencies
+        .filtered_inputs
+        .iter()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs)?;
 
     if node.use_circuit {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
         let output_tensor = if inputs.len() > 1 {
-            run_onnx_inference_multi(&onnx_path, tensor_cache, inputs)?
+            run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?
         } else {
             run_onnx_inference(&onnx_path, &input_tensor)?
         };
@@ -354,7 +360,7 @@ fn execute_single(
     } else {
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
         let output = if inputs.len() > 1 {
-            run_onnx_inference_multi(&onnx_path, tensor_cache, inputs)?
+            run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?
         } else {
             run_onnx_inference(&onnx_path, &input_tensor)?
         };

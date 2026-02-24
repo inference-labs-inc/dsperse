@@ -672,6 +672,16 @@ pub fn create_channel_group_slice(
     }))
 }
 
+fn checked_dim_product(factors: &[usize]) -> Result<usize> {
+    factors.iter().try_fold(1usize, |acc, &f| {
+        acc.checked_mul(f).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "slice_weights: dimension product overflow (factors={factors:?})"
+            ))
+        })
+    })
+}
+
 fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<WeightInfo> {
     if weights.dims.len() < 4 {
         return Err(crate::error::DsperseError::Slicer(format!(
@@ -690,7 +700,7 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
     let c_in = to_usize(weights.dims[1], "c_in")?;
     let kh = to_usize(weights.dims[2], "kh")?;
     let kw = to_usize(weights.dims[3], "kw")?;
-    let expected_len = c_out * c_in * kh * kw;
+    let expected_len = checked_dim_product(&[c_out, c_in, kh, kw])?;
     if weights.data.len() != expected_len {
         return Err(crate::error::DsperseError::Slicer(format!(
             "slice_weights: data length {} != expected {} (dims={:?})",
@@ -710,13 +720,16 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
         )));
     }
     let c_group = c_end - c_start;
+    let capacity = checked_dim_product(&[c_out, c_group, kh, kw])?;
+    let stride_cin = checked_dim_product(&[c_in, kh, kw])?;
+    let stride_kh = checked_dim_product(&[kh, kw])?;
 
-    let mut sliced = Vec::with_capacity(c_out * c_group * kh * kw);
+    let mut sliced = Vec::with_capacity(capacity);
     for o in 0..c_out {
         for c in c_start..c_end {
             for h in 0..kh {
                 for w_idx in 0..kw {
-                    let idx = o * c_in * kh * kw + c * kh * kw + h * kw + w_idx;
+                    let idx = o * stride_cin + c * stride_kh + h * kw + w_idx;
                     sliced.push(weights.data[idx]);
                 }
             }

@@ -17,10 +17,8 @@ jobs:
         with:
           submodules: true
 
-      - uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: nightly-2025-03-27
-          components: clippy, rustfmt
+      - name: Install Rust toolchain
+        run: rustup show
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -28,13 +26,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --manifest-path crates/dsperse/Cargo.toml
+        run: cargo build --locked --manifest-path crates/dsperse/Cargo.toml
 
       - name: Test
-        run: cargo test --manifest-path crates/dsperse/Cargo.toml
+        run: cargo test --locked --manifest-path crates/dsperse/Cargo.toml
 
       - name: Check (with python feature)
-        run: cargo check --manifest-path crates/dsperse/Cargo.toml --features python
+        run: cargo check --locked --manifest-path crates/dsperse/Cargo.toml --features python
 
       - name: Clippy
-        run: cargo clippy --manifest-path crates/dsperse/Cargo.toml -- -D warnings
+        run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml -- -D warnings

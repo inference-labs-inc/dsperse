@@ -370,9 +370,6 @@ fn execute_tiled(
     backend: &JstproveBackend,
     _config: &RunConfig,
 ) -> Result<ExecutionInfo> {
-    let slice_idx = parse_slice_idx(slice_id)?;
-    let slice_dir = slice_dir_path(slices_dir, slice_idx);
-
     let input_arr = tensor_cache
         .get(&tiling.input_name)
         .ok_or_else(|| {
@@ -428,7 +425,7 @@ fn execute_tiled(
         let tile_dyn = tile_data.clone().into_dyn();
 
         let result = if let Some(ti) = tile_info {
-            let tile_onnx = resolve_relative_path(&slice_dir, &ti.path);
+            let tile_onnx = resolve_relative_path(slices_dir, &ti.path);
 
             let tile_output = run_onnx_inference(&tile_onnx, &tile_dyn);
 
@@ -437,7 +434,7 @@ fn execute_tiled(
                     let circuit_path = ti
                         .jstprove_circuit_path
                         .as_deref()
-                        .map(|p| resolve_relative_path(&slice_dir, p));
+                        .map(|p| resolve_relative_path(slices_dir, p));
                     let circuit_path = match circuit_path {
                         Some(p) => p,
                         None => {

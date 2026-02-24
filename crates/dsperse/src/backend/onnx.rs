@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use ndarray::IxDyn;
@@ -52,15 +53,77 @@ pub fn run_inference(
     extract_first_output(&result)
 }
 
+pub fn run_inference_named(
+    onnx_path: &Path,
+    input_data: &[f64],
+    input_shape: &[usize],
+) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+    let model = tract_onnx::onnx()
+        .model_for_path(onnx_path)
+        .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
+
+    let output_names = collect_output_names(&model);
+
+    let concrete_shape: Vec<usize> = if input_shape.is_empty() {
+        let input_fact = model
+            .input_fact(0)
+            .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
+        input_fact
+            .shape
+            .as_concrete_finite()
+            .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
+            .ok_or_else(|| {
+                DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
+            })?
+            .to_vec()
+    } else {
+        input_shape.to_vec()
+    };
+
+    let model = model
+        .with_input_fact(
+            0,
+            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
+        )
+        .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
+        .into_optimized()
+        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+        .into_runnable()
+        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
+
+    let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
+    let input_tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(&concrete_shape), input_f32)
+        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
+
+    let result = model
+        .run(tvec!(input_tensor.into_tvalue()))
+        .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
+
+    zip_named_outputs(&output_names, &result)
+}
+
 pub fn run_inference_multi(
     onnx_path: &Path,
     inputs: &[(&str, Vec<f64>, Vec<usize>)],
 ) -> Result<(Vec<f64>, Vec<usize>)> {
+    let named = run_inference_multi_named(onnx_path, inputs)?;
+    named
+        .into_values()
+        .next()
+        .ok_or_else(|| DsperseError::Onnx("no outputs".into()))
+}
+
+pub fn run_inference_multi_named(
+    onnx_path: &Path,
+    inputs: &[(&str, Vec<f64>, Vec<usize>)],
+) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
     let mut model = tract_onnx::onnx()
         .model_for_path(onnx_path)
         .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
 
-    let input_by_name: std::collections::HashMap<&str, usize> =
+    let output_names = collect_output_names(&model);
+
+    let input_by_name: HashMap<&str, usize> =
         inputs.iter().enumerate().map(|(idx, entry)| (entry.0, idx)).collect();
 
     let model_input_count = model.inputs.len();
@@ -80,20 +143,7 @@ pub fn run_inference_multi(
                     InferenceFact::dt_shape(f32::datum_type(), &inputs[provided_idx].2),
                 )
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
-            tracing::debug!(
-                model_input_index = i,
-                model_input_name = name.as_str(),
-                shape = ?inputs[provided_idx].2,
-                "matched model input"
-            );
             input_order[*i] = Some(provided_idx);
-        } else {
-            tracing::warn!(
-                model_input_index = i,
-                model_input_name = name.as_str(),
-                provided_names = ?inputs.iter().map(|(n, _, _)| *n).collect::<Vec<_>>(),
-                "no match for model input in provided tensors"
-            );
         }
     }
 
@@ -129,7 +179,32 @@ pub fn run_inference_multi(
         .run(input_tvs)
         .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
 
-    extract_first_output(&result)
+    zip_named_outputs(&output_names, &result)
+}
+
+fn collect_output_names(model: &InferenceModel) -> Vec<String> {
+    model
+        .outputs
+        .iter()
+        .map(|outlet| model.nodes[outlet.node].name.clone())
+        .collect()
+}
+
+fn zip_named_outputs(
+    names: &[String],
+    result: &[TValue],
+) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+    let mut map = HashMap::new();
+    for (i, tv) in result.iter().enumerate() {
+        let arr = tv
+            .to_array_view::<f32>()
+            .map_err(|e| DsperseError::Onnx(format!("output {i}: {e}")))?;
+        let shape = arr.shape().to_vec();
+        let data: Vec<f64> = arr.iter().map(|&v| f64::from(v)).collect();
+        let name = names.get(i).cloned().unwrap_or_else(|| format!("output_{i}"));
+        map.insert(name, (data, shape));
+    }
+    Ok(map)
 }
 
 fn extract_first_output(result: &[TValue]) -> Result<(Vec<f64>, Vec<usize>)> {

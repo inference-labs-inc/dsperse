@@ -308,17 +308,11 @@ fn execute_single(
         .collect();
     let multi_input = inputs.len() > 1;
 
+    let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
+
     if node.use_circuit {
-        let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let (input_tensor, output_tensor) = if multi_input {
-            let out = run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?;
-            let inp = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
-            (inp, out)
-        } else {
-            let inp = gather_inputs_from_cache(tensor_cache, &inputs)?;
-            let out = run_onnx_inference(&onnx_path, &inp)?;
-            (inp, out)
-        };
+        let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
+        let output_tensor = run_onnx_inference(&onnx_path, &input_tensor)?;
 
         let circuit_path = meta
             .jstprove_circuit_path
@@ -352,7 +346,8 @@ fn execute_single(
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
 
-        store_outputs(tensor_cache, &meta.dependencies.output, output_tensor)?;
+        let named = run_onnx_inference_named(&onnx_path, &input_tensor)?;
+        store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
 
         Ok(ExecutionInfo {
             method: ExecutionMethod::JstproveGenWitness.to_string(),
@@ -362,14 +357,13 @@ fn execute_single(
             tile_exec_infos: Vec::new(),
         })
     } else {
-        let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
-        let output = if multi_input {
-            run_onnx_inference_multi(&onnx_path, tensor_cache, &inputs)?
+        let named = if multi_input {
+            run_onnx_inference_multi_named(&onnx_path, tensor_cache, &inputs)?
         } else {
             let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs)?;
-            run_onnx_inference(&onnx_path, &input_tensor)?
+            run_onnx_inference_named(&onnx_path, &input_tensor)?
         };
-        store_outputs(tensor_cache, &meta.dependencies.output, output)?;
+        store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
 
         Ok(ExecutionInfo {
             method: ExecutionMethod::OnnxOnly.to_string(),
@@ -942,18 +936,17 @@ fn parse_slice_idx(slice_id: &str) -> Result<usize> {
         .ok_or_else(|| DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}")))
 }
 
-fn store_outputs(
+fn store_named_outputs(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     output_names: &[String],
-    output: ArrayD<f64>,
+    named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
 ) -> Result<()> {
-    if output_names.is_empty() {
-        return Err(DsperseError::Pipeline(
-            "store_outputs called with empty output_names".into(),
-        ));
-    }
     for name in output_names {
-        tensor_cache.insert(name.clone(), output.clone());
+        if let Some((data, shape)) = named_outputs.get(name) {
+            let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
+                .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
+            tensor_cache.insert(name.clone(), arr);
+        }
     }
     Ok(())
 }
@@ -968,22 +961,26 @@ fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f6
         .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
 }
 
-fn run_onnx_inference_multi(
+fn run_onnx_inference_named(
+    onnx_path: &Path,
+    input: &ArrayD<f64>,
+) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+    let input_flat: Vec<f64> = input.iter().copied().collect();
+    let input_shape = input.shape();
+    crate::backend::onnx::run_inference_named(onnx_path, &input_flat, input_shape)
+}
+
+fn run_onnx_inference_multi_named(
     onnx_path: &Path,
     tensor_cache: &HashMap<String, ArrayD<f64>>,
     input_names: &[String],
-) -> Result<ArrayD<f64>> {
+) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
     let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = input_names
         .iter()
         .map(|name| {
             let arr = tensor_cache.get(name).ok_or_else(|| {
                 DsperseError::Pipeline(format!("missing tensor '{name}' in cache"))
             })?;
-            tracing::debug!(
-                name = name.as_str(),
-                shape = ?arr.shape(),
-                "multi-input tensor from cache"
-            );
             Ok((
                 name.as_str(),
                 arr.iter().copied().collect(),
@@ -991,10 +988,7 @@ fn run_onnx_inference_multi(
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    let (output_data, output_shape) =
-        crate::backend::onnx::run_inference_multi(onnx_path, &inputs)?;
-    ArrayD::from_shape_vec(IxDyn(&output_shape), output_data)
-        .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
+    crate::backend::onnx::run_inference_multi_named(onnx_path, &inputs)
 }
 
 pub(crate) fn build_execution_chain(

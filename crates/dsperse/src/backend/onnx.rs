@@ -186,7 +186,14 @@ fn collect_output_names(model: &InferenceModel) -> Vec<String> {
     model
         .outputs
         .iter()
-        .map(|outlet| model.nodes[outlet.node].name.clone())
+        .map(|outlet| {
+            model
+                .outlet_label(*outlet)
+                .map(String::from)
+                .unwrap_or_else(|| {
+                    format!("{}_output_{}", model.nodes[outlet.node].name, outlet.slot)
+                })
+        })
         .collect()
 }
 

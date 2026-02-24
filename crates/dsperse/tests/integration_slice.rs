@@ -9,16 +9,13 @@ fn test_models_dir() -> &'static Path {
 #[test]
 fn slice_net_model() {
     let model_path = test_models_dir().join("net/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).unwrap();
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
     assert_eq!(metadata.model_type, "ONNX");
@@ -29,7 +26,8 @@ fn slice_net_model() {
     assert!(meta_path.exists(), "metadata.json must be written");
 
     let loaded: ModelMetadata =
-        serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&meta_path).expect("read metadata"))
+            .expect("parse metadata");
     assert_eq!(loaded.slices.len(), metadata.slices.len());
 
     for slice in &loaded.slices {
@@ -50,16 +48,13 @@ fn slice_net_model() {
 #[test]
 fn slice_doom_model() {
     let model_path = test_models_dir().join("doom/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).unwrap();
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -73,16 +68,13 @@ fn slice_doom_model() {
 #[test]
 fn slice_with_tile_size() {
     let model_path = test_models_dir().join("net/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), Some(8)).unwrap();
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), Some(8)).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -93,20 +85,17 @@ fn slice_with_tile_size() {
 #[test]
 fn slice_metadata_roundtrip_from_disk() {
     let model_path = test_models_dir().join("net/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
     let original =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).unwrap();
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
 
     let meta_path = output_dir.join("metadata.json");
-    let json = std::fs::read_to_string(&meta_path).unwrap();
-    let deserialized: ModelMetadata = serde_json::from_str(&json).unwrap();
+    let json = std::fs::read_to_string(&meta_path).expect("read metadata");
+    let deserialized: ModelMetadata = serde_json::from_str(&json).expect("parse metadata");
 
     assert_eq!(original.slices.len(), deserialized.slices.len());
     assert_eq!(original.original_model, deserialized.original_model);

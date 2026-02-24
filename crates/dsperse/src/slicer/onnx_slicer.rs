@@ -680,7 +680,9 @@ fn get_segment_details(
         ctx.graph.output.iter().map(|o| o.name.clone()).collect();
 
     let mut added_inputs: HashSet<String> = HashSet::new();
-    for inp_name in query.seg_inputs_set {
+    let mut sorted_inputs: Vec<_> = query.seg_inputs_set.iter().collect();
+    sorted_inputs.sort();
+    for inp_name in sorted_inputs {
         if query.seg_outputs.contains(inp_name) {
             continue;
         }
@@ -717,7 +719,9 @@ fn get_segment_details(
         }
     }
 
-    for out_name in query.seg_outputs {
+    let mut sorted_outputs: Vec<_> = query.seg_outputs.iter().collect();
+    sorted_outputs.sort();
+    for out_name in sorted_outputs {
         let consumed_internally = query.nodes.iter().any(|n| n.input.contains(out_name));
         let needed_externally =
             query.future_inputs.contains(out_name) || model_output_names.contains(out_name);

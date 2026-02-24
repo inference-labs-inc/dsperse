@@ -9,14 +9,11 @@ fn test_models_dir() -> &'static Path {
 #[test]
 fn convert_dirs_to_dslice_roundtrip() {
     let model_path = test_models_dir().join("net/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let slices_dir = tmp.path().join("slices");
-    dsperse::slicer::slice_model(&model_path, Some(&slices_dir), None).unwrap();
+    dsperse::slicer::slice_model(&model_path, Some(&slices_dir), None).expect("slice_model");
 
     let dslice_out = converter::convert(
         &slices_dir,
@@ -25,11 +22,11 @@ fn convert_dirs_to_dslice_roundtrip() {
         false,
         true,
     )
-    .unwrap();
-    assert!(dslice_out.exists());
+    .expect("convert to dslice");
+    assert!(dslice_out.exists(), "dslice output must exist");
 
     let has_dslice_files = std::fs::read_dir(&dslice_out)
-        .unwrap()
+        .expect("read dslice output dir")
         .filter_map(|e| e.ok())
         .any(|e| e.path().extension().map_or(false, |ext| ext == "dslice"));
     assert!(has_dslice_files, "dslice files must be produced");
@@ -38,14 +35,11 @@ fn convert_dirs_to_dslice_roundtrip() {
 #[test]
 fn convert_dirs_to_dsperse_roundtrip() {
     let model_path = test_models_dir().join("net/model.onnx");
-    if !model_path.exists() {
-        eprintln!("skipping: test model not found at {}", model_path.display());
-        return;
-    }
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
 
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().expect("create temp dir");
     let slices_dir = tmp.path().join("slices");
-    dsperse::slicer::slice_model(&model_path, Some(&slices_dir), None).unwrap();
+    dsperse::slicer::slice_model(&model_path, Some(&slices_dir), None).expect("slice_model");
 
     let dsperse_path = converter::convert(
         &slices_dir,
@@ -54,8 +48,8 @@ fn convert_dirs_to_dsperse_roundtrip() {
         false,
         true,
     )
-    .unwrap();
-    assert!(dsperse_path.exists());
+    .expect("convert to dsperse");
+    assert!(dsperse_path.exists(), "dsperse archive must exist");
     assert!(dsperse_path.extension().map_or(false, |e| e == "dsperse"));
 
     let restored_dir = tmp.path().join("restored");
@@ -66,6 +60,6 @@ fn convert_dirs_to_dsperse_roundtrip() {
         false,
         true,
     )
-    .unwrap();
-    assert!(restored.join("metadata.json").exists());
+    .expect("convert back to dirs");
+    assert!(restored.join("metadata.json").exists(), "restored metadata.json must exist");
 }

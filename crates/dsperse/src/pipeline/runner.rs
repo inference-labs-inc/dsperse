@@ -518,9 +518,12 @@ fn execute_tiled(
 
                 let tile_output = if let Some(ref wm) = warm_model {
                     let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                    wm.run(&input_flat).map(|(data, shape)| {
-                        ArrayD::from_shape_vec(IxDyn(&shape), data)
-                            .expect("warm model output reshape")
+                    wm.run(&input_flat).and_then(|(data, shape)| {
+                        ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {
+                            crate::error::DsperseError::Pipeline(format!(
+                                "warm model output reshape: {e}"
+                            ))
+                        })
                     })
                 } else {
                     let onnx = tile_onnx.as_ref().unwrap();

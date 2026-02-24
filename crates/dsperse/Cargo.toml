@@ -30,3 +30,4 @@ prost-build = "0.13"
 
 [lib]
 name = "dsperse"
+crate-type = ["cdylib", "lib"]

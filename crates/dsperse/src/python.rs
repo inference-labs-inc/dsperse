@@ -14,80 +14,67 @@ fn to_py_err(e: DsperseError) -> PyErr {
 
 #[pyfunction]
 #[pyo3(signature = (model_path, output_dir=None, tile_size=None))]
-fn slice_model(model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>) -> PyResult<String> {
+fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>) -> PyResult<String> {
     let model = PathBuf::from(model_path);
     let out = output_dir.map(PathBuf::from);
-    let metadata = crate::slicer::slice_model(&model, out.as_deref(), tile_size).map_err(to_py_err)?;
+    let metadata = py.allow_threads(|| {
+        crate::slicer::slice_model(&model, out.as_deref(), tile_size)
+    }).map_err(to_py_err)?;
     serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
 }
 
 #[pyfunction]
 #[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None))]
-fn compile_slices(slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>) -> PyResult<()> {
+fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>) -> PyResult<()> {
     let backend = JstproveBackend::default();
-    pipeline::compile_slices(
-        &PathBuf::from(slices_dir),
-        &backend,
-        parallel,
-        weights_as_inputs,
-        layers.as_deref(),
-    )
-    .map_err(to_py_err)
+    let dir = PathBuf::from(slices_dir);
+    py.allow_threads(|| {
+        pipeline::compile_slices(&dir, &backend, parallel, weights_as_inputs, layers.as_deref())
+    }).map_err(to_py_err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false))]
-fn run_inference(slices_dir: &str, input_file: &str, run_dir: &str, parallel: usize, batch: bool) -> PyResult<String> {
+fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &str, parallel: usize, batch: bool) -> PyResult<String> {
     let backend = JstproveBackend::default();
     let config = RunConfig { parallel, batch };
-    let metadata = pipeline::run_inference(
-        &PathBuf::from(slices_dir),
-        &PathBuf::from(input_file),
-        &PathBuf::from(run_dir),
-        &backend,
-        &config,
-    )
-    .map_err(to_py_err)?;
+    let sd = PathBuf::from(slices_dir);
+    let inf = PathBuf::from(input_file);
+    let rd = PathBuf::from(run_dir);
+    let metadata = py.allow_threads(|| {
+        pipeline::run_inference(&sd, &inf, &rd, &backend, &config)
+    }).map_err(to_py_err)?;
     serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
 }
 
 #[pyfunction]
 #[pyo3(signature = (run_dir, slices_dir, parallel=1))]
-fn prove_run(run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
+fn prove_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
     let backend = JstproveBackend::default();
-    let metadata = pipeline::prove_run(
-        &PathBuf::from(run_dir),
-        &PathBuf::from(slices_dir),
-        &backend,
-        parallel,
-    )
-    .map_err(to_py_err)?;
+    let rd = PathBuf::from(run_dir);
+    let sd = PathBuf::from(slices_dir);
+    let metadata = py.allow_threads(|| {
+        pipeline::prove_run(&rd, &sd, &backend, parallel)
+    }).map_err(to_py_err)?;
     serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
 }
 
 #[pyfunction]
 #[pyo3(signature = (run_dir, slices_dir, parallel=1))]
-fn verify_run(run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
+fn verify_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
     let backend = JstproveBackend::default();
-    let metadata = pipeline::verify_run(
-        &PathBuf::from(run_dir),
-        &PathBuf::from(slices_dir),
-        &backend,
-        parallel,
-    )
-    .map_err(to_py_err)?;
+    let rd = PathBuf::from(run_dir);
+    let sd = PathBuf::from(slices_dir);
+    let metadata = py.allow_threads(|| {
+        pipeline::verify_run(&rd, &sd, &backend, parallel)
+    }).map_err(to_py_err)?;
     serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
 }
 
 #[pyfunction]
 #[pyo3(signature = (input, to, output=None, expand_slices=false, cleanup=false))]
 fn convert(input: &str, to: &str, output: Option<&str>, expand_slices: bool, cleanup: bool) -> PyResult<String> {
-    let format: FormatType = match to {
-        "dirs" => FormatType::Dirs,
-        "dslice" => FormatType::Dslice,
-        "dsperse" => FormatType::Dsperse,
-        other => return Err(PyRuntimeError::new_err(format!("unknown format: {other}"))),
-    };
+    let format: FormatType = to.parse().map_err(to_py_err)?;
     let result = converter::convert(
         &PathBuf::from(input),
         format,
@@ -125,13 +112,13 @@ fn cli_main() -> PyResult<()> {
         Convert(crate::cli::ConvertArgs),
     }
 
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&cli.log_level)),
         )
-        .init();
+        .try_init();
 
     let result = match cli.command {
         Commands::Slice(args) => crate::cli::cmd_slice(args),

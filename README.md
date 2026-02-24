@@ -105,7 +105,7 @@ All functions return JSON strings that can be parsed with `json.loads()`.
 
 ## Project Structure
 
-```
+```text
 crates/dsperse/
   src/
     cli/          CLI argument parsing and command dispatch

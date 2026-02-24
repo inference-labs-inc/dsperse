@@ -437,7 +437,7 @@ pub fn create_tile_slice(
         conv_attrs,
     )];
 
-    integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes);
+    integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes)?;
 
     let graph = onnx_proto::make_graph(
         &format!("tile_{slice_idx}"),
@@ -465,18 +465,20 @@ fn integrate_extra_ops(
     conv_node: &NodeProto,
     initializers: &mut Vec<onnx_proto::TensorProto>,
     nodes: &mut Vec<NodeProto>,
-) {
+) -> crate::error::Result<()> {
     let orig_input_name = graph.input.first().map(|i| i.name.as_str()).unwrap_or("");
 
     let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
 
     if non_conv.is_empty() {
-        assert!(
-            !nodes.is_empty(),
-            "integrate_extra_ops requires at least one node"
-        );
-        nodes.last_mut().unwrap().output[0] = "tile_out".to_string();
-        return;
+        if let Some(last) = nodes.last_mut() {
+            last.output[0] = "tile_out".to_string();
+        } else {
+            return Err(crate::error::DsperseError::Slicer(
+                "integrate_extra_ops: no nodes to set output on".into(),
+            ));
+        }
+        return Ok(());
     }
 
     let mut conv_weight_names: HashSet<String> = HashSet::new();
@@ -535,6 +537,8 @@ fn integrate_extra_ops(
             device_configurations: vec![],
         });
     }
+
+    Ok(())
 }
 
 pub fn create_channel_group_slice(
@@ -671,6 +675,11 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
             weights.data.len(),
             expected_len,
             weights.dims
+        )));
+    }
+    if c_start >= c_end {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: c_start ({c_start}) >= c_end ({c_end})"
         )));
     }
     if c_end > c_in {

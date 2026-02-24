@@ -71,7 +71,7 @@ pub fn run_pipeline_stage(
         circuit_slices
             .par_iter()
             .map(|(slice_id, meta)| {
-                let slice_idx: usize =
+                let _slice_idx: usize =
                     match slice_id.strip_prefix("slice_").and_then(|s| s.parse().ok()) {
                         Some(idx) => idx,
                         None => {
@@ -83,11 +83,10 @@ pub fn run_pipeline_stage(
                             );
                         }
                     };
-                let slice_dir = slices_dir.join(format!("slice_{slice_idx}"));
                 let slice_run_dir = run_dir.join(slice_id);
 
                 let result =
-                    execute_single_slice(stage, &slice_dir, &slice_run_dir, slice_id, meta, backend);
+                    execute_single_slice(stage, slices_dir, &slice_run_dir, slice_id, meta, backend);
 
                 match &result {
                     Ok(r) if r.success => tracing::info!(slice = %slice_id, "{}", stage.past_label()),
@@ -152,7 +151,7 @@ pub fn run_pipeline_stage(
 
 fn execute_single_slice(
     stage: PipelineStage,
-    slice_dir: &Path,
+    slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     meta: &RunSliceMetadata,
@@ -164,7 +163,7 @@ fn execute_single_slice(
     let circuit_path = meta
         .jstprove_circuit_path
         .as_deref()
-        .map(|p| resolve_relative_path(slice_dir, p))
+        .map(|p| resolve_relative_path(slices_dir, p))
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
     let witness_path = slice_run_dir.join("witness.bin");

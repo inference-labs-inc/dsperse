@@ -89,7 +89,7 @@ pub fn run_inference(
         .slices
         .first()
         .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
-    let declared_inputs = &first_slice.dependencies.input;
+    let declared_inputs = &first_slice.dependencies.filtered_inputs;
     if declared_inputs.is_empty() {
         return Err(DsperseError::Pipeline(
             "first slice has no input dependency".into(),

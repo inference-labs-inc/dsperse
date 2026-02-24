@@ -34,31 +34,23 @@ pub fn prove_run(
         circuit_slices
             .par_iter()
             .map(|(slice_id, meta)| {
-                let slice_idx: usize = match slice_id
-                    .strip_prefix("slice_")
-                    .and_then(|s| s.parse().ok())
-                {
-                    Some(idx) => idx,
-                    None => {
-                        return (
-                            slice_id.clone(),
-                            Err(DsperseError::Pipeline(format!(
-                                "invalid slice_id format: {slice_id:?}"
-                            ))),
-                        )
-                    }
-                };
+                let slice_idx: usize =
+                    match slice_id.strip_prefix("slice_").and_then(|s| s.parse().ok()) {
+                        Some(idx) => idx,
+                        None => {
+                            return (
+                                slice_id.clone(),
+                                Err(DsperseError::Pipeline(format!(
+                                    "invalid slice_id format: {slice_id:?}"
+                                ))),
+                            );
+                        }
+                    };
                 let slice_dir = slices_dir.join(format!("slice_{slice_idx}"));
                 let slice_run_dir = run_dir.join(slice_id);
 
-                let result = prove_single_slice(
-                    &slice_dir,
-                    &slice_run_dir,
-                    slice_id,
-                    meta,
-                    backend,
-                    tiles,
-                );
+                let result =
+                    prove_single_slice(&slice_dir, &slice_run_dir, slice_id, meta, backend, tiles);
 
                 match &result {
                     Ok(r) if r.success => tracing::info!(slice = %slice_id, "proved"),

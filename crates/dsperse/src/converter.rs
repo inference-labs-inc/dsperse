@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
-use jstprove_circuits::circuit_functions::utils::onnx_types::{ONNXLayer, ONNXIO};
+use jstprove_circuits::circuit_functions::utils::onnx_types::{ONNXIO, ONNXLayer};
 use serde_json::json;
 
 use crate::error::{DsperseError, Result};
@@ -23,9 +23,10 @@ pub fn prepare_jstprove_artifacts(
     weights_as_inputs: bool,
 ) -> Result<(CircuitParams, Architecture, WANDB)> {
     let model = onnx_proto::load_model(onnx_path)?;
-    let graph = model.graph.as_ref().ok_or_else(|| {
-        DsperseError::Pipeline(format!("no graph in {}", onnx_path.display()))
-    })?;
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Pipeline(format!("no graph in {}", onnx_path.display())))?;
 
     let init_map = build_initializer_map(graph);
     let opset_version = model.opset_import.first().map_or(13, |o| o.version) as i16;
@@ -78,9 +79,10 @@ pub fn prepare_jstprove_artifacts(
             node.name.clone()
         };
 
-        let input_name = node.input.first().ok_or_else(|| {
-            DsperseError::Pipeline(format!("Conv node {node_name} has no input"))
-        })?;
+        let input_name = node
+            .input
+            .first()
+            .ok_or_else(|| DsperseError::Pipeline(format!("Conv node {node_name} has no input")))?;
         let input_shape = shape_map.get(input_name).ok_or_else(|| {
             DsperseError::Pipeline(format!("missing shape for Conv input {input_name}"))
         })?;
@@ -91,36 +93,26 @@ pub fn prepare_jstprove_artifacts(
         let weight_tensor = init_map.get(weight_name).ok_or_else(|| {
             DsperseError::Pipeline(format!("weight initializer {weight_name} not found"))
         })?;
-        let weight_shape: Vec<usize> =
-            weight_tensor.dims.iter().map(|&d| d as usize).collect();
+        let weight_shape: Vec<usize> = weight_tensor.dims.iter().map(|&d| d as usize).collect();
         let weight_floats = tensor_to_f32(weight_tensor);
 
-        let (bias_name, bias_floats, bias_shape) = resolve_bias(
-            node,
-            &node_name,
-            &init_map,
-            weight_shape[0],
-        )?;
+        let (bias_name, bias_floats, bias_shape) =
+            resolve_bias(node, &node_name, &init_map, weight_shape[0])?;
 
         let kernel_shape = get_attribute_ints(node, "kernel_shape")
             .unwrap_or_else(|| vec![weight_shape[2] as i64, weight_shape[3] as i64]);
         let strides = get_attribute_ints(node, "strides").unwrap_or_else(|| vec![1, 1]);
         let pads = get_attribute_ints(node, "pads").unwrap_or_else(|| vec![0, 0, 0, 0]);
-        let dilations =
-            get_attribute_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
+        let dilations = get_attribute_ints(node, "dilations").unwrap_or_else(|| vec![1, 1]);
         let group = get_attribute_int(node, "group").unwrap_or(1);
 
         let (n, h_in, w_in) = parse_spatial_dims(input_shape);
         let c_out = weight_shape[0];
 
-        let h_out = (h_in as i64 + pads[0] + pads[2]
-            - dilations[0] * (kernel_shape[0] - 1)
-            - 1)
+        let h_out = (h_in as i64 + pads[0] + pads[2] - dilations[0] * (kernel_shape[0] - 1) - 1)
             / strides[0]
             + 1;
-        let w_out = (w_in as i64 + pads[1] + pads[3]
-            - dilations[1] * (kernel_shape[1] - 1)
-            - 1)
+        let w_out = (w_in as i64 + pads[1] + pads[3] - dilations[1] * (kernel_shape[1] - 1) - 1)
             / strides[1]
             + 1;
 
@@ -308,9 +300,7 @@ fn parse_spatial_dims(shape: &[usize]) -> (usize, usize, usize) {
 fn build_nested_array(flat: &[i64], shape: &[usize]) -> serde_json::Value {
     if shape.len() <= 1 {
         return serde_json::Value::Array(
-            flat.iter()
-                .map(|&v| serde_json::Value::from(v))
-                .collect(),
+            flat.iter().map(|&v| serde_json::Value::from(v)).collect(),
         );
     }
 

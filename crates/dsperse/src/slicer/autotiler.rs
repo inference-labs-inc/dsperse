@@ -2,15 +2,29 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::analyzer::TiledResult;
-use super::onnx_proto::{
-    self, GraphProto, ModelProto, NodeProto, TensorProto,
-};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TileInfo, TilingInfo};
 
 const ELEMENTWISE_OPS: &[&str] = &[
-    "Sigmoid", "Mul", "Add", "Sub", "Div", "Relu", "LeakyRelu", "PRelu",
-    "Tanh", "Clip", "Neg", "Abs", "Sqrt", "Exp", "Log", "Pow", "Sin", "Cos",
+    "Sigmoid",
+    "Mul",
+    "Add",
+    "Sub",
+    "Div",
+    "Relu",
+    "LeakyRelu",
+    "PRelu",
+    "Tanh",
+    "Clip",
+    "Neg",
+    "Abs",
+    "Sqrt",
+    "Exp",
+    "Log",
+    "Pow",
+    "Sin",
+    "Cos",
 ];
 
 pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
@@ -42,16 +56,40 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
         if node.op_type == "Conv" {
             let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape")
-                .and_then(|v| if v.len() >= 2 { Some([v[0], v[1]]) } else { None })
+                .and_then(|v| {
+                    if v.len() >= 2 {
+                        Some([v[0], v[1]])
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or([3, 3]);
             let stride = onnx_proto::get_attribute_ints(node, "strides")
-                .and_then(|v| if v.len() >= 2 { Some([v[0], v[1]]) } else { None })
+                .and_then(|v| {
+                    if v.len() >= 2 {
+                        Some([v[0], v[1]])
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or([1, 1]);
             let dilation = onnx_proto::get_attribute_ints(node, "dilations")
-                .and_then(|v| if v.len() >= 2 { Some([v[0], v[1]]) } else { None })
+                .and_then(|v| {
+                    if v.len() >= 2 {
+                        Some([v[0], v[1]])
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or([1, 1]);
             let pads = onnx_proto::get_attribute_ints(node, "pads")
-                .and_then(|v| if v.len() >= 4 { Some([v[0], v[1], v[2], v[3]]) } else { None })
+                .and_then(|v| {
+                    if v.len() >= 4 {
+                        Some([v[0], v[1], v[2], v[3]])
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or([0, 0, 0, 0]);
             let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
 
@@ -125,7 +163,13 @@ fn get_model_dimensions(graph: &GraphProto) -> Option<(String, String, i64, i64,
     if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 || dims[2] != dims[3] {
         return None;
     }
-    Some((inp.name.clone(), out.name.clone(), dims[1], dims[2], dims[3]))
+    Some((
+        inp.name.clone(),
+        out.name.clone(),
+        dims[1],
+        dims[2],
+        dims[3],
+    ))
 }
 
 fn find_weights_and_bias(
@@ -155,7 +199,12 @@ struct WeightInfo {
     dims: Vec<i64>,
 }
 
-fn find_optimal_tile_size(spatial_dim: i64, target: i64, min_tile: i64, stride: i64) -> Option<i64> {
+fn find_optimal_tile_size(
+    spatial_dim: i64,
+    target: i64,
+    min_tile: i64,
+    stride: i64,
+) -> Option<i64> {
     if min_tile <= target && target < spatial_dim {
         for tile in (min_tile..=target).rev() {
             if spatial_dim % tile == 0 && tile % stride == 0 {
@@ -267,7 +316,9 @@ pub fn detect_tiling_needs(
         });
     }
 
-    if matches!(skip_reason, Some("min_tile_too_large" | "no_divisor")) && is_channel_splittable(graph) {
+    if matches!(skip_reason, Some("min_tile_too_large" | "no_divisor"))
+        && is_channel_splittable(graph)
+    {
         if let Some((num_groups, cpg)) =
             calculate_channel_split_config(c_in, c_out, h, w, tile_size)
         {
@@ -435,20 +486,15 @@ fn integrate_extra_ops(
     initializers: &mut Vec<onnx_proto::TensorProto>,
     nodes: &mut Vec<NodeProto>,
 ) {
-    let orig_input_name = graph
-        .input
-        .first()
-        .map(|i| i.name.as_str())
-        .unwrap_or("");
+    let orig_input_name = graph.input.first().map(|i| i.name.as_str()).unwrap_or("");
 
-    let non_conv: Vec<&NodeProto> = graph
-        .node
-        .iter()
-        .filter(|n| n.op_type != "Conv")
-        .collect();
+    let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
 
     if non_conv.is_empty() {
-        assert!(!nodes.is_empty(), "integrate_extra_ops requires at least one node");
+        assert!(
+            !nodes.is_empty(),
+            "integrate_extra_ops requires at least one node"
+        );
         nodes.last_mut().unwrap().output[0] = "tile_out".to_string();
         return;
     }
@@ -751,12 +797,7 @@ pub fn apply_channel_splitting(
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
         let group_info = match create_channel_group_slice(
-            model,
-            g as usize,
-            c_start,
-            c_end,
-            slice_idx,
-            output_dir,
+            model, g as usize, c_start, c_end, slice_idx, output_dir,
         ) {
             Ok(info) => info,
             Err(e) => {
@@ -817,7 +858,10 @@ pub fn apply_tiling(
             None => continue,
         };
 
-        let output_dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let output_dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         match detection {
             TilingDetection::ChannelSplit {
                 input_name,

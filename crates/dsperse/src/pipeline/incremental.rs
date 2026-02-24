@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 use ndarray::ArrayD;
 
 use crate::error::{DsperseError, Result};
-use crate::schema::execution::{
-    ExecutionChain, ExecutionInfo, ExecutionResultEntry, RunMetadata,
-};
+use crate::schema::execution::{ExecutionChain, ExecutionInfo, ExecutionResultEntry, RunMetadata};
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
 use crate::utils::io::gather_inputs_from_cache;
@@ -89,19 +87,25 @@ impl IncrementalRun {
         })?;
 
         let input = if let Some(ref cs) = meta.channel_split {
-            self.tensor_cache.get(&cs.input_name).ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "channel split input '{}' not in cache for {slice_id}",
-                    cs.input_name
-                ))
-            })?.clone()
+            self.tensor_cache
+                .get(&cs.input_name)
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "channel split input '{}' not in cache for {slice_id}",
+                        cs.input_name
+                    ))
+                })?
+                .clone()
         } else if let Some(ref tiling) = meta.tiling {
-            self.tensor_cache.get(&tiling.input_name).ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "tiling input '{}' not in cache for {slice_id}",
-                    tiling.input_name
-                ))
-            })?.clone()
+            self.tensor_cache
+                .get(&tiling.input_name)
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "tiling input '{}' not in cache for {slice_id}",
+                        tiling.input_name
+                    ))
+                })?
+                .clone()
         } else {
             gather_inputs_from_cache(&self.tensor_cache, &meta.dependencies.filtered_inputs)?
         };

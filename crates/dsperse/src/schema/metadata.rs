@@ -205,13 +205,15 @@ pub struct ModelMetadata {
 
 impl ModelMetadata {
     pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
-        let data = std::fs::read_to_string(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
+        let data =
+            std::fs::read_to_string(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
         serde_json::from_str(&data).map_err(Into::into)
     }
 
     pub fn save(&self, path: &std::path::Path) -> crate::error::Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| crate::error::DsperseError::io(e, parent))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| crate::error::DsperseError::io(e, parent))?;
         }
         let data = serde_json::to_string_pretty(self)?;
         std::fs::write(path, data).map_err(|e| crate::error::DsperseError::io(e, path))

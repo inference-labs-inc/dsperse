@@ -10,8 +10,8 @@ use prost::Message;
 use crate::error::{DsperseError, Result};
 
 pub use onnx::{
-    AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
-    TypeProto, ValueInfoProto,
+    AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto, TypeProto,
+    ValueInfoProto,
 };
 
 pub fn load_model(path: &Path) -> Result<ModelProto> {
@@ -28,11 +28,7 @@ pub fn save_model(model: &ModelProto, path: &Path) -> Result<()> {
     std::fs::write(path, bytes).map_err(|e| DsperseError::io(e, path))
 }
 
-pub fn make_tensor_value_info(
-    name: &str,
-    elem_type: i32,
-    shape: &[i64],
-) -> ValueInfoProto {
+pub fn make_tensor_value_info(name: &str, elem_type: i32, shape: &[i64]) -> ValueInfoProto {
     ValueInfoProto {
         name: name.to_string(),
         r#type: Some(TypeProto {
@@ -45,9 +41,9 @@ pub fn make_tensor_value_info(
                             .iter()
                             .map(|&d| onnx::tensor_shape_proto::Dimension {
                                 denotation: String::new(),
-                                value: Some(
-                                    onnx::tensor_shape_proto::dimension::Value::DimValue(d),
-                                ),
+                                value: Some(onnx::tensor_shape_proto::dimension::Value::DimValue(
+                                    d,
+                                )),
                             })
                             .collect(),
                     }),
@@ -145,10 +141,7 @@ pub fn get_attribute_ints(node: &NodeProto, name: &str) -> Option<Vec<i64>> {
 }
 
 pub fn get_attribute_int(node: &NodeProto, name: &str) -> Option<i64> {
-    node.attribute
-        .iter()
-        .find(|a| a.name == name)
-        .map(|a| a.i)
+    node.attribute.iter().find(|a| a.name == name).map(|a| a.i)
 }
 
 pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
@@ -199,7 +192,11 @@ pub fn tensor_numel(tensor: &TensorProto) -> usize {
 }
 
 pub fn build_initializer_map(graph: &GraphProto) -> HashMap<String, &TensorProto> {
-    graph.initializer.iter().map(|i| (i.name.clone(), i)).collect()
+    graph
+        .initializer
+        .iter()
+        .map(|i| (i.name.clone(), i))
+        .collect()
 }
 
 pub fn build_value_info_map(graph: &GraphProto) -> HashMap<String, &ValueInfoProto> {

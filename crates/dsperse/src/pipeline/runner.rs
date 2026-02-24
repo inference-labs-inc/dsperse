@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use ndarray::{s, Array4, ArrayD, IxDyn};
+use ndarray::{Array4, ArrayD, IxDyn, s};
+
+use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
 use crate::backend::JstproveBackend;
 use crate::error::{DsperseError, Result};
@@ -79,14 +81,19 @@ pub fn run_inference(
     let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
 
     let input_val = extract_input_data(&input_data).ok_or_else(|| {
-        DsperseError::Pipeline("input JSON has no recognized input key (input_data, input, data, inputs)".into())
+        DsperseError::Pipeline(
+            "input JSON has no recognized input key (input_data, input, data, inputs)".into(),
+        )
     })?;
-    let first_slice = model_meta.slices.first().ok_or_else(|| {
-        DsperseError::Pipeline("model has no slices".into())
-    })?;
+    let first_slice = model_meta
+        .slices
+        .first()
+        .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let declared_inputs = &first_slice.dependencies.input;
     if declared_inputs.is_empty() {
-        return Err(DsperseError::Pipeline("first slice has no input dependency".into()));
+        return Err(DsperseError::Pipeline(
+            "first slice has no input dependency".into(),
+        ));
     }
     if input_val.is_object() {
         for name in declared_inputs {
@@ -116,16 +123,12 @@ pub fn run_inference(
             .get(&slice_id)
             .ok_or_else(|| DsperseError::Pipeline(format!("missing node {slice_id}")))?;
 
-        let slice_meta = run_meta
-            .slices
-            .get(&slice_id)
-            .ok_or_else(|| {
-                DsperseError::Pipeline(format!("missing run slice metadata {slice_id}"))
-            })?;
+        let slice_meta = run_meta.slices.get(&slice_id).ok_or_else(|| {
+            DsperseError::Pipeline(format!("missing run slice metadata {slice_id}"))
+        })?;
 
         let slice_run_dir = run_dir.join(&slice_id);
-        std::fs::create_dir_all(&slice_run_dir)
-            .map_err(|e| DsperseError::io(e, &slice_run_dir))?;
+        std::fs::create_dir_all(&slice_run_dir).map_err(|e| DsperseError::io(e, &slice_run_dir))?;
 
         tracing::info!(slice = %slice_id, circuit = node.use_circuit, "executing");
 
@@ -187,9 +190,10 @@ pub fn run_inference(
     let meta_json = serde_json::to_string_pretty(&final_meta)?;
     std::fs::write(&meta_out, meta_json).map_err(|e| DsperseError::io(e, &meta_out))?;
 
-    let last_slice = model_meta.slices.last().ok_or_else(|| {
-        DsperseError::Pipeline("model has no slices".into())
-    })?;
+    let last_slice = model_meta
+        .slices
+        .last()
+        .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let last_slice_id = format!("slice_{}", last_slice.index);
     let output_arr = if let Some(meta) = final_meta.slices.get(&last_slice_id) {
         if let Some(ref cs) = meta.channel_split {
@@ -197,10 +201,18 @@ pub fn run_inference(
         } else if let Some(ref tiling) = meta.tiling {
             tensor_cache.get(&tiling.output_name)
         } else {
-            last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
+            last_slice
+                .dependencies
+                .output
+                .first()
+                .and_then(|n| tensor_cache.get(n))
         }
     } else {
-        last_slice.dependencies.output.first().and_then(|n| tensor_cache.get(n))
+        last_slice
+            .dependencies
+            .output
+            .first()
+            .and_then(|n| tensor_cache.get(n))
     };
     let output_arr = output_arr.ok_or_else(|| {
         let first_error = final_meta
@@ -215,9 +227,7 @@ pub fn run_inference(
             })
             .next();
         match first_error {
-            Some(err) => DsperseError::Pipeline(format!(
-                "pipeline failed at {err}"
-            )),
+            Some(err) => DsperseError::Pipeline(format!("pipeline failed at {err}")),
             None => DsperseError::Pipeline(format!(
                 "no output tensor found for last slice {last_slice_id}"
             )),
@@ -225,7 +235,10 @@ pub fn run_inference(
     })?;
     let output_path = run_dir.join("output.json");
     let output_json = arrayd_to_json(output_arr);
-    write_input_json(&output_path, &serde_json::json!({ "output_data": output_json }))?;
+    write_input_json(
+        &output_path,
+        &serde_json::json!({ "output_data": output_json }),
+    )?;
 
     Ok(final_meta)
 }
@@ -241,14 +254,37 @@ fn execute_slice(
     config: &RunConfig,
 ) -> Result<ExecutionInfo> {
     if let Some(ref cs) = meta.channel_split {
-        return execute_channel_split(slices_dir, slice_run_dir, slice_id, cs, tensor_cache, backend);
+        return execute_channel_split(
+            slices_dir,
+            slice_run_dir,
+            slice_id,
+            cs,
+            tensor_cache,
+            backend,
+        );
     }
 
     if let Some(ref tiling) = meta.tiling {
-        return execute_tiled(slices_dir, slice_run_dir, slice_id, tiling, tensor_cache, backend, config);
+        return execute_tiled(
+            slices_dir,
+            slice_run_dir,
+            slice_id,
+            tiling,
+            tensor_cache,
+            backend,
+            config,
+        );
     }
 
-    execute_single(slices_dir, slice_run_dir, slice_id, node, meta, tensor_cache, backend)
+    execute_single(
+        slices_dir,
+        slice_run_dir,
+        slice_id,
+        node,
+        meta,
+        tensor_cache,
+        backend,
+    )
 }
 
 fn execute_single(
@@ -269,13 +305,6 @@ fn execute_single(
         let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
         let output_tensor = run_onnx_inference(&onnx_path, &input_tensor)?;
 
-        let input_json_bytes = serde_json::to_vec(
-            &serde_json::json!({ "input_data": arrayd_to_json(&input_tensor) }),
-        )?;
-        let output_json_bytes = serde_json::to_vec(
-            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
-        )?;
-
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
@@ -283,18 +312,30 @@ fn execute_single(
             .map(|p| resolve_relative_path(&slice_dir, p))
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
-        let witness_bytes = backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?;
+        let params = backend.load_params(&circuit_path)?;
+        let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
+
+        let witness_bytes = if is_wai {
+            generate_wai_witness(
+                backend,
+                &circuit_path,
+                &onnx_path,
+                params.as_ref().unwrap(),
+                &input_tensor,
+            )?
+        } else {
+            let input_json_bytes = serde_json::to_vec(
+                &serde_json::json!({ "input_data": arrayd_to_json(&input_tensor) }),
+            )?;
+            let output_json_bytes = serde_json::to_vec(
+                &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+            )?;
+            backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?
+        };
 
         let witness_path = slice_run_dir.join("witness.bin");
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
-
-        let input_path = slice_run_dir.join("input.json");
-        std::fs::write(&input_path, &input_json_bytes)
-            .map_err(|e| DsperseError::io(e, &input_path))?;
-        let output_path = slice_run_dir.join("output.json");
-        std::fs::write(&output_path, &output_json_bytes)
-            .map_err(|e| DsperseError::io(e, &output_path))?;
 
         store_outputs(tensor_cache, &meta.dependencies.output, output_tensor)?;
 
@@ -383,8 +424,7 @@ fn execute_tiled(
     for (tile_idx, tile_data) in tiles.iter().enumerate() {
         let start = std::time::Instant::now();
         let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
-        std::fs::create_dir_all(&tile_dir)
-            .map_err(|e| DsperseError::io(e, &tile_dir))?;
+        std::fs::create_dir_all(&tile_dir).map_err(|e| DsperseError::io(e, &tile_dir))?;
 
         let tile_info = tile_infos.get(tile_idx).or(single_tile);
         let tile_dyn = tile_data.clone().into_dyn();
@@ -416,14 +456,28 @@ fn execute_tiled(
                         }
                     };
 
-                    let input_json_bytes = serde_json::to_vec(
-                        &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
-                    )?;
-                    let output_json_bytes = serde_json::to_vec(
-                        &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
-                    )?;
+                    let params = backend.load_params(&circuit_path)?;
+                    let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
-                    match backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes) {
+                    let witness_result = if is_wai {
+                        generate_wai_witness(
+                            backend,
+                            &circuit_path,
+                            &tile_onnx,
+                            params.as_ref().unwrap(),
+                            &tile_dyn,
+                        )
+                    } else {
+                        let input_json_bytes = serde_json::to_vec(
+                            &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
+                        )?;
+                        let output_json_bytes = serde_json::to_vec(
+                            &serde_json::json!({ "output_data": arrayd_to_json(output_tensor) }),
+                        )?;
+                        backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)
+                    };
+
+                    match witness_result {
                         Ok(witness_bytes) => {
                             let witness_path = tile_dir.join("witness.bin");
                             std::fs::write(&witness_path, &witness_bytes)
@@ -474,7 +528,8 @@ fn execute_tiled(
 
     if tile_results.is_empty() {
         return Err(DsperseError::Pipeline(format!(
-            "tiling produced zero tiles for '{}'", tiling.output_name
+            "tiling produced zero tiles for '{}'",
+            tiling.output_name
         )));
     }
 
@@ -540,11 +595,9 @@ fn execute_channel_split(
             )));
         }
         let h = s[2];
-        let arr = Array4::from_shape_vec(
-            (n, s[1], s[2], s[3]),
-            input_arr.iter().copied().collect(),
-        )
-        .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
+        let arr =
+            Array4::from_shape_vec((n, s[1], s[2], s[3]), input_arr.iter().copied().collect())
+                .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
         (arr, n, h)
     } else {
         let n = 1usize;
@@ -567,12 +620,13 @@ fn execute_channel_split(
                 "channel split reshape: spatial {spatial} not divisible by h={h}"
             )));
         }
-        let w = if spatial > 0 && h > 0 { spatial / h } else { cs.w.max(1) };
-        let arr = Array4::from_shape_vec(
-            (n, cs.c_in, h, w),
-            input_flat,
-        )
-        .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
+        let w = if spatial > 0 && h > 0 {
+            spatial / h
+        } else {
+            cs.w.max(1)
+        };
+        let arr = Array4::from_shape_vec((n, cs.c_in, h, w), input_flat)
+            .map_err(|e| DsperseError::Pipeline(format!("channel split reshape: {e}")))?;
         (arr, n, h)
     };
 
@@ -592,19 +646,16 @@ fn execute_channel_split(
                 group.group_idx, group.c_start, group.c_end, n_channels
             )));
         }
-        let group_input = input_4d.slice(s![.., group.c_start..group.c_end, .., ..]).to_owned();
+        let group_input = input_4d
+            .slice(s![.., group.c_start..group.c_end, .., ..])
+            .to_owned();
         let group_input_dyn = group_input.into_dyn();
 
         let group_dir = slice_run_dir.join(format!("group_{}", group.group_idx));
         std::fs::create_dir_all(&group_dir).map_err(|e| DsperseError::io(e, &group_dir))?;
 
-        let group_output = execute_channel_group(
-            &slice_dir,
-            &group_dir,
-            group,
-            &group_input_dyn,
-            backend,
-        )?;
+        let group_output =
+            execute_channel_group(&slice_dir, &group_dir, group, &group_input_dyn, backend)?;
 
         let group_4d = if group_output.ndim() == 4 {
             let s = group_output.shape();
@@ -624,25 +675,26 @@ fn execute_channel_split(
                 } else {
                     return Err(DsperseError::Pipeline(format!(
                         "cannot determine spatial layout for channel_split output: {} elements, c_out={}, set out_h/out_w in metadata",
-                        group_flat.len(), cs.c_out
+                        group_flat.len(),
+                        cs.c_out
                     )));
                 }
             } else {
-                return Err(DsperseError::Pipeline(
-                    "channel split c_out is 0".into()
-                ));
+                return Err(DsperseError::Pipeline("channel split c_out is 0".into()));
             };
             if n * cs.c_out * out_h * out_w != group_flat.len() {
                 return Err(DsperseError::Pipeline(format!(
                     "group output reshape mismatch: expected {} elements (n={}, c_out={}, h={}, w={}), got {}",
-                    n * cs.c_out * out_h * out_w, n, cs.c_out, out_h, out_w, group_flat.len()
+                    n * cs.c_out * out_h * out_w,
+                    n,
+                    cs.c_out,
+                    out_h,
+                    out_w,
+                    group_flat.len()
                 )));
             }
-            Array4::from_shape_vec(
-                (n, cs.c_out, out_h, out_w),
-                group_flat,
-            )
-            .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?
+            Array4::from_shape_vec((n, cs.c_out, out_h, out_w), group_flat)
+                .map_err(|e| DsperseError::Pipeline(format!("group output reshape: {e}")))?
         };
 
         accumulated = Some(match accumulated {
@@ -650,7 +702,9 @@ fn execute_channel_split(
                 if acc.shape() != group_4d.shape() {
                     return Err(DsperseError::Pipeline(format!(
                         "channel group {} shape {:?} does not match accumulator shape {:?}",
-                        group.group_idx, group_4d.shape(), acc.shape()
+                        group.group_idx,
+                        group_4d.shape(),
+                        acc.shape()
                     )));
                 }
                 acc + &group_4d
@@ -672,7 +726,8 @@ fn execute_channel_split(
         if bias_flat.len() != cs.c_out {
             return Err(DsperseError::Pipeline(format!(
                 "bias length {} does not match c_out {}",
-                bias_flat.len(), cs.c_out
+                bias_flat.len(),
+                cs.c_out
             )));
         }
         if let Some(ref mut acc) = accumulated {
@@ -715,14 +770,26 @@ fn execute_channel_group(
         let onnx_path = resolve_relative_path(slice_dir, &group.path);
         let output_tensor = run_onnx_inference(&onnx_path, group_input)?;
 
-        let input_json_bytes = serde_json::to_vec(
-            &serde_json::json!({ "input_data": arrayd_to_json(group_input) }),
-        )?;
-        let output_json_bytes = serde_json::to_vec(
-            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
-        )?;
+        let params = backend.load_params(&circuit_path)?;
+        let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
-        let witness_bytes = backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?;
+        let witness_bytes = if is_wai {
+            generate_wai_witness(
+                backend,
+                &circuit_path,
+                &onnx_path,
+                params.as_ref().unwrap(),
+                group_input,
+            )?
+        } else {
+            let input_json_bytes = serde_json::to_vec(
+                &serde_json::json!({ "input_data": arrayd_to_json(group_input) }),
+            )?;
+            let output_json_bytes = serde_json::to_vec(
+                &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+            )?;
+            backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?
+        };
 
         let witness_path = group_dir.join("witness.bin");
         std::fs::write(&witness_path, &witness_bytes)
@@ -785,7 +852,9 @@ fn reconstruct_from_tiles(
     tiling: &TilingInfo,
 ) -> Result<ArrayD<f64>> {
     if tile_outputs.is_empty() {
-        return Err(DsperseError::Pipeline("no tile outputs to reconstruct".into()));
+        return Err(DsperseError::Pipeline(
+            "no tile outputs to reconstruct".into(),
+        ));
     }
 
     let out_h = tiling.out_tile[0].max(1) as usize;
@@ -803,7 +872,8 @@ fn reconstruct_from_tiles(
         let tile_flat: Vec<f64> = tile_arr.iter().copied().collect();
         if tile_flat.is_empty() {
             return Err(DsperseError::Pipeline(format!(
-                "tile ({},{}) marked successful but produced no data", ty, tx
+                "tile ({},{}) marked successful but produced no data",
+                ty, tx
             )));
         }
 
@@ -811,14 +881,20 @@ fn reconstruct_from_tiles(
         if tile_flat.len() != tile_elements {
             return Err(DsperseError::Pipeline(format!(
                 "tile ({},{}) has {} elements, expected {} (c_out={}, out_h={}, out_w={})",
-                ty, tx, tile_flat.len(), tile_elements, c_out, out_h, out_w
+                ty,
+                tx,
+                tile_flat.len(),
+                tile_elements,
+                c_out,
+                out_h,
+                out_w
             )));
         }
 
         let tile_4d = Array4::from_shape_vec((1, c_out, out_h, out_w), tile_flat.to_vec())
-            .map_err(|e| DsperseError::Pipeline(format!(
-                "tile ({},{}) reshape failed: {e}", ty, tx
-            )))?;
+            .map_err(|e| {
+                DsperseError::Pipeline(format!("tile ({},{}) reshape failed: {e}", ty, tx))
+            })?;
         let y_start = ty * out_h;
         let x_start = tx * out_w;
         output
@@ -850,9 +926,7 @@ fn parse_slice_idx(slice_id: &str) -> Result<usize> {
     slice_id
         .strip_prefix("slice_")
         .and_then(|s| s.parse().ok())
-        .ok_or_else(|| {
-            DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}"))
-        })
+        .ok_or_else(|| DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}")))
 }
 
 fn store_outputs(
@@ -871,10 +945,7 @@ fn store_outputs(
     Ok(())
 }
 
-fn run_onnx_inference(
-    onnx_path: &Path,
-    input: &ArrayD<f64>,
-) -> Result<ArrayD<f64>> {
+fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f64>> {
     let input_flat: Vec<f64> = input.iter().copied().collect();
     let input_shape = input.shape();
     let (output_data, output_shape) =
@@ -884,7 +955,10 @@ fn run_onnx_inference(
         .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
 }
 
-pub(crate) fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Path) -> ExecutionChain {
+pub(crate) fn build_execution_chain(
+    model_meta: &ModelMetadata,
+    slices_dir: &Path,
+) -> ExecutionChain {
     let mut nodes = HashMap::new();
     let mut head = None;
 
@@ -903,29 +977,18 @@ pub(crate) fn build_execution_chain(model_meta: &ModelMetadata, slices_dir: &Pat
             .map(|s| format!("slice_{}", s.index));
 
         let circuit_path = if has_circuit {
-            slice
-                .compilation
-                .jstprove
-                .files
-                .compiled
-                .as_ref()
-                .map(|p| {
-                    slice_dir
-                        .join("jstprove")
-                        .join(p)
-                        .to_string_lossy()
-                        .into_owned()
-                })
+            slice.compilation.jstprove.files.compiled.as_ref().map(|p| {
+                slice_dir
+                    .join("jstprove")
+                    .join(p)
+                    .to_string_lossy()
+                    .into_owned()
+            })
         } else {
             None
         };
 
-        let onnx_path = Some(
-            slice_dir
-                .join(&slice.path)
-                .to_string_lossy()
-                .into_owned(),
-        );
+        let onnx_path = Some(slice_dir.join(&slice.path).to_string_lossy().into_owned());
 
         let backend = if has_circuit { "jstprove" } else { "onnx" };
 
@@ -977,10 +1040,7 @@ pub(crate) fn build_run_metadata(
         let has_circuit = node.is_some_and(|n| n.use_circuit);
 
         let run_slice = RunSliceMetadata {
-            path: slice_dir
-                .join(&slice.path)
-                .to_string_lossy()
-                .into_owned(),
+            path: slice_dir.join(&slice.path).to_string_lossy().into_owned(),
             input_shape: slice.shape.tensor_shape.input.clone(),
             output_shape: slice.shape.tensor_shape.output.clone(),
             dependencies: slice.dependencies.clone(),
@@ -1016,4 +1076,46 @@ pub(crate) fn build_run_metadata(
         run_directory: None,
         model_path: None,
     }
+}
+
+fn extract_onnx_initializers(
+    onnx_path: &Path,
+    params: &CircuitParams,
+) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
+    let model = crate::slicer::onnx_proto::load_model(onnx_path)?;
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
+    let init_map = crate::slicer::onnx_proto::build_initializer_map(graph);
+
+    let num_non_init = params
+        .inputs
+        .len()
+        .saturating_sub(init_map.len().min(params.inputs.len()));
+
+    let mut initializers = Vec::new();
+    for io in &params.inputs[num_non_init..] {
+        let tensor = init_map.get(&io.name).ok_or_else(|| {
+            DsperseError::Pipeline(format!("initializer '{}' not found in ONNX model", io.name))
+        })?;
+        let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
+        let f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
+        let shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+        initializers.push((f64_vals, shape));
+    }
+
+    Ok(initializers)
+}
+
+fn generate_wai_witness(
+    backend: &JstproveBackend,
+    circuit_path: &Path,
+    onnx_path: &Path,
+    params: &CircuitParams,
+    activations: &ArrayD<f64>,
+) -> Result<Vec<u8>> {
+    let initializers = extract_onnx_initializers(onnx_path, params)?;
+    let flat_activations: Vec<f64> = activations.iter().copied().collect();
+    backend.witness_f64(circuit_path, &flat_activations, &initializers)
 }

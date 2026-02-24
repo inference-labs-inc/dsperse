@@ -2,7 +2,9 @@ use std::path::Path;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
-use jstprove_circuits::onnx::{compile_bn254, prove_bn254, verify_bn254, witness_bn254};
+use jstprove_circuits::onnx::{
+    compile_bn254, prove_bn254, verify_bn254, witness_bn254, witness_bn254_from_f64,
+};
 use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
 use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
 
@@ -72,6 +74,35 @@ impl JstproveBackend {
             .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
 
         Ok(result.witness)
+    }
+
+    pub fn witness_f64(
+        &self,
+        circuit_path: &Path,
+        activations: &[f64],
+        initializers: &[(Vec<f64>, Vec<usize>)],
+    ) -> Result<Vec<u8>> {
+        let bundle = load_bundle(circuit_path)?;
+        let params = bundle.metadata.as_ref().ok_or_else(|| {
+            DsperseError::Backend("circuit bundle missing metadata for WAI witness".into())
+        })?;
+
+        let result = witness_bn254_from_f64(
+            &bundle.circuit,
+            &bundle.witness_solver,
+            params,
+            activations,
+            initializers,
+            self.compress,
+        )
+        .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
+
+        Ok(result.witness)
+    }
+
+    pub fn load_params(&self, circuit_path: &Path) -> Result<Option<CircuitParams>> {
+        let bundle = load_bundle(circuit_path)?;
+        Ok(bundle.metadata)
     }
 
     pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {

@@ -77,15 +77,18 @@ impl TensorGraph {
 
             for output in &node.output {
                 if !output.is_empty() {
-                    let t = self.tensors.entry(output.clone()).or_insert_with(|| TensorInfo {
-                        name: output.clone(),
-                        producer_node: None,
-                        producer_node_idx: None,
-                        consumers: Vec::new(),
-                        is_input: false,
-                        is_output: false,
-                        is_initializer: false,
-                    });
+                    let t = self
+                        .tensors
+                        .entry(output.clone())
+                        .or_insert_with(|| TensorInfo {
+                            name: output.clone(),
+                            producer_node: None,
+                            producer_node_idx: None,
+                            consumers: Vec::new(),
+                            is_input: false,
+                            is_output: false,
+                            is_initializer: false,
+                        });
                     t.producer_node = Some(node_name.clone());
                     t.producer_node_idx = Some(idx);
                 }
@@ -93,15 +96,18 @@ impl TensorGraph {
 
             for inp in &node.input {
                 if !inp.is_empty() {
-                    let t = self.tensors.entry(inp.clone()).or_insert_with(|| TensorInfo {
-                        name: inp.clone(),
-                        producer_node: None,
-                        producer_node_idx: None,
-                        consumers: Vec::new(),
-                        is_input: false,
-                        is_output: false,
-                        is_initializer: false,
-                    });
+                    let t = self
+                        .tensors
+                        .entry(inp.clone())
+                        .or_insert_with(|| TensorInfo {
+                            name: inp.clone(),
+                            producer_node: None,
+                            producer_node_idx: None,
+                            consumers: Vec::new(),
+                            is_input: false,
+                            is_output: false,
+                            is_initializer: false,
+                        });
                     t.consumers.push((node_name.clone(), idx));
                 }
             }
@@ -114,7 +120,12 @@ impl TensorGraph {
         }
     }
 
-    pub fn get_slice_inputs(&self, graph: &GraphProto, start_idx: usize, end_idx: usize) -> Vec<String> {
+    pub fn get_slice_inputs(
+        &self,
+        graph: &GraphProto,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> Vec<String> {
         let mut internal_outputs: HashSet<String> = HashSet::new();
         for idx in start_idx..end_idx {
             if let Some(node) = graph.node.get(idx) {
@@ -131,7 +142,10 @@ impl TensorGraph {
         for idx in start_idx..end_idx {
             if let Some(node) = graph.node.get(idx) {
                 for inp in &node.input {
-                    if !inp.is_empty() && !internal_outputs.contains(inp) && seen.insert(inp.clone()) {
+                    if !inp.is_empty()
+                        && !internal_outputs.contains(inp)
+                        && seen.insert(inp.clone())
+                    {
                         if let Some(info) = self.tensors.get(inp) {
                             if !info.is_initializer {
                                 external_inputs.push(inp.clone());
@@ -144,7 +158,12 @@ impl TensorGraph {
         external_inputs
     }
 
-    pub fn get_slice_outputs(&self, graph: &GraphProto, start_idx: usize, end_idx: usize) -> Vec<String> {
+    pub fn get_slice_outputs(
+        &self,
+        graph: &GraphProto,
+        start_idx: usize,
+        end_idx: usize,
+    ) -> Vec<String> {
         let mut outputs = Vec::new();
         for idx in start_idx..end_idx {
             if let Some(node) = graph.node.get(idx) {

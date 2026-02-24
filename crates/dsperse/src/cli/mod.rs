@@ -116,11 +116,8 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
             args.model_dir.display()
         )));
     }
-    let metadata = crate::slicer::slice_model(
-        &model_path,
-        args.output_dir.as_deref(),
-        args.tile_size,
-    )?;
+    let metadata =
+        crate::slicer::slice_model(&model_path, args.output_dir.as_deref(), args.tile_size)?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
 
     if args.format != FormatType::Dirs {
@@ -134,9 +131,15 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = args
+        .slices_dir
+        .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let layers = args.layers.as_ref().map(|s| parse_index_spec(s)).transpose()?;
+    let layers = args
+        .layers
+        .as_ref()
+        .map(|s| parse_index_spec(s))
+        .transpose()?;
 
     pipeline::compile_slices(
         &slices_dir,
@@ -156,11 +159,13 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let backend = JstproveBackend::default();
-    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = args
+        .slices_dir
+        .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let run_dir = args.run_dir.unwrap_or_else(|| {
-        args.model_dir.join("run").join(format!("run_{}", run_id()))
-    });
+    let run_dir = args
+        .run_dir
+        .unwrap_or_else(|| args.model_dir.join("run").join(format!("run_{}", run_id())));
 
     let config = RunConfig {
         parallel: args.parallel.get(),
@@ -173,9 +178,15 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = args
+        .slices_dir
+        .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let tiles = args.tiles.as_ref().map(|s| parse_index_spec(s)).transpose()?;
+    let tiles = args
+        .tiles
+        .as_ref()
+        .map(|s| parse_index_spec(s))
+        .transpose()?;
 
     pipeline::prove_run(
         &args.run_dir,
@@ -189,7 +200,9 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args.slices_dir.unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = args
+        .slices_dir
+        .unwrap_or_else(|| args.model_dir.join("slices"));
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
@@ -213,7 +226,11 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         )));
     }
 
-    let layers = args.layers.as_ref().map(|s| parse_index_spec(s)).transpose()?;
+    let layers = args
+        .layers
+        .as_ref()
+        .map(|s| parse_index_spec(s))
+        .transpose()?;
 
     tracing::info!("compiling slices");
     pipeline::compile_slices(
@@ -245,7 +262,13 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
 }
 
 pub fn cmd_convert(args: ConvertArgs) -> Result<()> {
-    converter::convert(&args.input, args.to, args.output.as_deref(), args.cleanup, args.expand_slices)?;
+    converter::convert(
+        &args.input,
+        args.to,
+        args.output.as_deref(),
+        args.cleanup,
+        args.expand_slices,
+    )?;
     Ok(())
 }
 
@@ -270,9 +293,9 @@ fn parse_index_spec(spec: &str) -> Result<Vec<usize>> {
             }
             layers.extend(s..=e);
         } else {
-            let n: usize = part.parse().map_err(|_| {
-                DsperseError::Other(format!("invalid index spec token: {part:?}"))
-            })?;
+            let n: usize = part
+                .parse()
+                .map_err(|_| DsperseError::Other(format!("invalid index spec token: {part:?}")))?;
             layers.push(n);
         }
     }

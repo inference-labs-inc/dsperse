@@ -249,10 +249,7 @@ fn backend_serde() {
         serde_json::to_string(&Backend::Jstprove).unwrap(),
         r#""jstprove""#
     );
-    assert_eq!(
-        serde_json::to_string(&Backend::Onnx).unwrap(),
-        r#""onnx""#
-    );
+    assert_eq!(serde_json::to_string(&Backend::Onnx).unwrap(), r#""onnx""#);
 
     let b: Backend = serde_json::from_str(r#""jstprove""#).unwrap();
     assert_eq!(b, Backend::Jstprove);

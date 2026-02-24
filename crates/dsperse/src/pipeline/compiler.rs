@@ -17,8 +17,9 @@ pub fn compile_slices(
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
 ) -> Result<()> {
-    let meta_path =
-        find_metadata_path(slices_dir).ok_or_else(|| DsperseError::Metadata("no metadata.json found in slices directory".into()))?;
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata("no metadata.json found in slices directory".into())
+    })?;
     let metadata = ModelMetadata::load(&meta_path)?;
 
     let slices: Vec<_> = metadata
@@ -74,10 +75,14 @@ pub fn compile_slices(
 
 fn is_jstprove_compatible(onnx_path: &Path) -> Result<bool> {
     let model = onnx_proto::load_model(onnx_path)?;
-    let graph = model.graph.as_ref().ok_or_else(|| {
-        DsperseError::Slicer(format!("no graph in {}", onnx_path.display()))
-    })?;
-    Ok(graph.node.iter().all(|n| JSTPROVE_SUPPORTED_OPS.contains(&n.op_type.as_str())))
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Slicer(format!("no graph in {}", onnx_path.display())))?;
+    Ok(graph
+        .node
+        .iter()
+        .all(|n| JSTPROVE_SUPPORTED_OPS.contains(&n.op_type.as_str())))
 }
 
 fn compile_single_slice(

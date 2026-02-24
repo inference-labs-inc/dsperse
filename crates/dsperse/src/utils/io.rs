@@ -95,10 +95,7 @@ pub fn arrayd_to_json(arr: &ArrayD<f64>) -> serde_json::Value {
     match arr.ndim() {
         0 => serde_json::json!(arr[IxDyn(&[])]),
         1 => {
-            let vals: Vec<serde_json::Value> = arr
-                .iter()
-                .map(|&v| serde_json::json!(v))
-                .collect();
+            let vals: Vec<serde_json::Value> = arr.iter().map(|&v| serde_json::json!(v)).collect();
             serde_json::Value::Array(vals)
         }
         _ => {
@@ -159,7 +156,9 @@ pub fn gather_inputs_from_cache(
         if arr.shape()[1..] != *ref_shape {
             return Err(DsperseError::Pipeline(format!(
                 "shape mismatch at input {}: expected trailing dims {:?}, got {:?}",
-                i, ref_shape, &arr.shape()[1..]
+                i,
+                ref_shape,
+                &arr.shape()[1..]
             )));
         }
     }

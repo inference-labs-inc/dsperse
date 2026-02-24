@@ -33,20 +33,18 @@ pub fn verify_run(
         circuit_slices
             .par_iter()
             .map(|(slice_id, meta)| {
-                let slice_idx: usize = match slice_id
-                    .strip_prefix("slice_")
-                    .and_then(|s| s.parse().ok())
-                {
-                    Some(idx) => idx,
-                    None => {
-                        return (
-                            slice_id.clone(),
-                            Err(DsperseError::Pipeline(format!(
-                                "invalid slice_id format: {slice_id:?}"
-                            ))),
-                        )
-                    }
-                };
+                let slice_idx: usize =
+                    match slice_id.strip_prefix("slice_").and_then(|s| s.parse().ok()) {
+                        Some(idx) => idx,
+                        None => {
+                            return (
+                                slice_id.clone(),
+                                Err(DsperseError::Pipeline(format!(
+                                    "invalid slice_id format: {slice_id:?}"
+                                ))),
+                            );
+                        }
+                    };
                 let slice_dir = slices_dir.join(format!("slice_{slice_idx}"));
                 let slice_run_dir = run_dir.join(slice_id);
 
@@ -103,7 +101,11 @@ pub fn verify_run(
     let meta_json = serde_json::to_string_pretty(&run_meta)?;
     std::fs::write(&meta_path, meta_json).map_err(|e| DsperseError::io(e, &meta_path))?;
 
-    tracing::info!(verified, total = circuit_slices.len(), "verification complete");
+    tracing::info!(
+        verified,
+        total = circuit_slices.len(),
+        "verification complete"
+    );
     Ok(run_meta)
 }
 
@@ -142,8 +144,7 @@ fn verify_single_slice(
 
     let witness_bytes =
         std::fs::read(&witness_path).map_err(|e| DsperseError::io(e, &witness_path))?;
-    let proof_bytes =
-        std::fs::read(&proof_path).map_err(|e| DsperseError::io(e, &proof_path))?;
+    let proof_bytes = std::fs::read(&proof_path).map_err(|e| DsperseError::io(e, &proof_path))?;
 
     let valid = backend.verify(&circuit_path, &witness_bytes, &proof_bytes)?;
 

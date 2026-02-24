@@ -3,9 +3,7 @@ use std::path::Path;
 
 use super::analyzer::{self, AnalysisResult, NodeAnalysis, TiledResult};
 use super::autotiler::{self, JSTPROVE_SUPPORTED_OPS};
-use super::onnx_proto::{
-    self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto,
-};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
 use super::tensor_graph::TensorGraph;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
@@ -22,20 +20,20 @@ pub fn slice_model(
 
     let analysis = analyzer::analyze(&model, Some(onnx_path));
 
-    let output_dir = output_path
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| {
-            onnx_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("slices")
-        });
-    std::fs::create_dir_all(&output_dir)
-        .map_err(|e| DsperseError::io(e, &output_dir))?;
+    let output_dir = output_path.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+        onnx_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("slices")
+    });
+    std::fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
     let slice_points = determine_slice_points(&analysis, tile_size);
     tracing::info!(points = ?slice_points, "determined slice points");
-    debug_assert!(!slice_points.is_empty(), "complete_slice_points guarantees at least [0, end]");
+    debug_assert!(
+        !slice_points.is_empty(),
+        "complete_slice_points guarantees at least [0, end]"
+    );
 
     let model_with_shapes = apply_traced_shapes(model, &traced_shapes);
 
@@ -136,8 +134,24 @@ fn optimize_jstprove_slices(points: &[usize], analysis: &AnalysisResult) -> Vec<
 
 fn optimize_for_tiling(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     let elementwise_ops: HashSet<&str> = [
-        "Sigmoid", "Mul", "Add", "Sub", "Div", "Relu", "LeakyRelu", "PRelu",
-        "Tanh", "Clip", "Neg", "Abs", "Sqrt", "Exp", "Log", "Pow", "Sin", "Cos",
+        "Sigmoid",
+        "Mul",
+        "Add",
+        "Sub",
+        "Div",
+        "Relu",
+        "LeakyRelu",
+        "PRelu",
+        "Tanh",
+        "Clip",
+        "Neg",
+        "Abs",
+        "Sqrt",
+        "Exp",
+        "Log",
+        "Pow",
+        "Sin",
+        "Cos",
     ]
     .into_iter()
     .collect();
@@ -147,9 +161,8 @@ fn optimize_for_tiling(points: &[usize], analysis: &AnalysisResult) -> Vec<usize
     sorted_nodes.sort_by_key(|n| n.index);
     let max_idx = sorted_nodes.last().map(|n| n.index).unwrap_or(0);
 
-    let is_tileable = |n: &NodeAnalysis| {
-        n.node_type == "Conv" || elementwise_ops.contains(n.node_type.as_str())
-    };
+    let is_tileable =
+        |n: &NodeAnalysis| n.node_type == "Conv" || elementwise_ops.contains(n.node_type.as_str());
 
     for i in 0..sorted_nodes.len().saturating_sub(1) {
         let curr = sorted_nodes[i];
@@ -193,7 +206,11 @@ fn filter_constant_only_slices(points: &[usize], analysis: &AnalysisResult) -> V
     if !to_remove.is_empty() {
         tracing::info!(count = to_remove.len(), "merged constant-only slices");
     }
-    points.iter().filter(|p| !to_remove.contains(p)).copied().collect()
+    points
+        .iter()
+        .filter(|p| !to_remove.contains(p))
+        .copied()
+        .collect()
 }
 
 fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
@@ -209,7 +226,10 @@ fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     points.dedup();
 }
 
-fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<HashMap<String, Vec<i64>>> {
+fn trace_shapes_tract(
+    onnx_path: &Path,
+    proto_model: &ModelProto,
+) -> Result<HashMap<String, Vec<i64>>> {
     use tract_onnx::prelude::*;
 
     let mut model = tract_onnx::onnx()
@@ -227,12 +247,11 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
                 .iter()
                 .map(|d| d.to_i64().unwrap_or(1) as usize)
                 .collect();
-            model.set_input_fact(
-                i,
-                InferenceFact::dt_shape(tf.datum_type, &concrete),
-            ).map_err(|e| DsperseError::Slicer(format!(
-                "set_input_fact({i}, shape={concrete:?}): {e}"
-            )))?;
+            model
+                .set_input_fact(i, InferenceFact::dt_shape(tf.datum_type, &concrete))
+                .map_err(|e| {
+                    DsperseError::Slicer(format!("set_input_fact({i}, shape={concrete:?}): {e}"))
+                })?;
         }
     }
 
@@ -303,10 +322,25 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
         }
 
         let shape_preserving: HashSet<&str> = [
-            "Relu", "LeakyRelu", "PRelu", "Sigmoid", "Tanh", "Clip", "Neg",
-            "Abs", "Sqrt", "Exp", "Log", "Sin", "Cos", "BatchNormalization",
-            "Dropout", "Identity",
-        ].into_iter().collect();
+            "Relu",
+            "LeakyRelu",
+            "PRelu",
+            "Sigmoid",
+            "Tanh",
+            "Clip",
+            "Neg",
+            "Abs",
+            "Sqrt",
+            "Exp",
+            "Log",
+            "Sin",
+            "Cos",
+            "BatchNormalization",
+            "Dropout",
+            "Identity",
+        ]
+        .into_iter()
+        .collect();
         for node in &graph.node {
             if shape_preserving.contains(node.op_type.as_str()) {
                 if let Some(inp) = node.input.first() {
@@ -321,12 +355,14 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
             }
         }
 
-        let binary_ops: HashSet<&str> = [
-            "Add", "Sub", "Mul", "Div", "Pow", "Max", "Min",
-        ].into_iter().collect();
+        let binary_ops: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"]
+            .into_iter()
+            .collect();
         for node in &graph.node {
             if binary_ops.contains(node.op_type.as_str()) {
-                let best = node.input.iter()
+                let best = node
+                    .input
+                    .iter()
                     .filter_map(|inp| shapes.get(inp))
                     .max_by_key(|s| s.len())
                     .cloned();
@@ -345,14 +381,33 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
                 if let Some(inp) = node.input.first() {
                     if let Some(in_shape) = shapes.get(inp).cloned() {
                         if in_shape.len() == 4 {
-                            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
-                            let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
-                            let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-                            if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
-                                let pad_h = if pads.len() >= 4 { pads[0] + pads[2] } else { 0 };
-                                let pad_w = if pads.len() >= 4 { pads[1] + pads[3] } else { 0 };
-                                let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
-                                let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
+                            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape")
+                                .unwrap_or_default();
+                            let strides =
+                                onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
+                            let pads =
+                                onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+                            if kernel.len() >= 2
+                                && strides.len() >= 2
+                                && strides[0] > 0
+                                && strides[1] > 0
+                            {
+                                let pad_h = if pads.len() >= 4 {
+                                    pads[0] + pads[2]
+                                } else {
+                                    0
+                                };
+                                let pad_w = if pads.len() >= 4 {
+                                    pads[1] + pads[3]
+                                } else {
+                                    0
+                                };
+                                let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0]))
+                                    / strides[0]
+                                    + 1;
+                                let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1]))
+                                    / strides[1]
+                                    + 1;
                                 let out_shape = vec![in_shape[0], in_shape[1], h, w];
                                 for out in &node.output {
                                     if !out.is_empty() && !shapes.contains_key(out) {
@@ -366,11 +421,17 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
             }
         }
 
-        for vi in graph.input.iter().chain(graph.output.iter()).chain(graph.value_info.iter()) {
+        for vi in graph
+            .input
+            .iter()
+            .chain(graph.output.iter())
+            .chain(graph.value_info.iter())
+        {
             if !shapes.contains_key(&vi.name) {
                 let dims = onnx_proto::vi_shape(vi);
                 if !dims.is_empty() {
-                    let concrete: Vec<i64> = dims.iter().map(|&d| if d <= 0 { 1 } else { d }).collect();
+                    let concrete: Vec<i64> =
+                        dims.iter().map(|&d| if d <= 0 { 1 } else { d }).collect();
                     shapes.insert(vi.name.clone(), concrete);
                 }
             }
@@ -381,10 +442,7 @@ fn trace_shapes_tract(onnx_path: &Path, proto_model: &ModelProto) -> Result<Hash
     Ok(shapes)
 }
 
-fn apply_traced_shapes(
-    mut model: ModelProto,
-    shapes: &HashMap<String, Vec<i64>>,
-) -> ModelProto {
+fn apply_traced_shapes(mut model: ModelProto, shapes: &HashMap<String, Vec<i64>>) -> ModelProto {
     fn set_shape(vi: &mut ValueInfoProto, shape: &[i64]) {
         if let Some(ref mut tp) = vi.r#type {
             if let Some(onnx_proto::onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value {
@@ -443,11 +501,9 @@ fn apply_traced_shapes(
                     .copied()
                     .or_else(|| node_output_types.get(name).copied())
                     .unwrap_or(TensorProto::FLOAT);
-                graph.value_info.push(onnx_proto::make_tensor_value_info(
-                    name,
-                    elem_type,
-                    shape,
-                ));
+                graph
+                    .value_info
+                    .push(onnx_proto::make_tensor_value_info(name, elem_type, shape));
             }
         }
     }
@@ -461,7 +517,9 @@ fn slice_graph(
     output_dir: &Path,
     traced_shapes: &HashMap<String, Vec<i64>>,
 ) -> Result<(HashMap<usize, String>, TensorGraph)> {
-    let graph = model.graph.as_ref()
+    let graph = model
+        .graph
+        .as_ref()
         .ok_or_else(|| DsperseError::Slicer("model.graph is None in slice_graph".into()))?;
     let tensor_graph = TensorGraph::new(graph);
 
@@ -553,15 +611,13 @@ fn slice_graph(
 
         let save_path = output_dir.join(format!("slice_{seg_idx}"));
         let payload_dir = save_path.join("payload");
-        std::fs::create_dir_all(&payload_dir)
-            .map_err(|e| DsperseError::io(e, &payload_dir))?;
+        std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;
         let file_path = payload_dir.join(format!("slice_{seg_idx}.onnx"));
 
         match onnx_proto::save_model(&seg_model, &file_path) {
             Ok(()) => {
                 tracing::info!(slice = seg_idx, "built slice");
-                slices_paths
-                    .insert(seg_idx, file_path.to_string_lossy().to_string());
+                slices_paths.insert(seg_idx, file_path.to_string_lossy().to_string());
             }
             Err(e) => {
                 tracing::error!(slice = seg_idx, err = %e, "failed to build slice");
@@ -610,7 +666,11 @@ fn compute_future_dependencies(
         let inputs: HashSet<String> = graph.node[start..end]
             .iter()
             .flat_map(|n| n.input.iter())
-            .filter(|inp| !inp.is_empty() && !seg_outputs.contains(inp.as_str()) && !init_map.contains_key(inp.as_str()))
+            .filter(|inp| {
+                !inp.is_empty()
+                    && !seg_outputs.contains(inp.as_str())
+                    && !init_map.contains_key(inp.as_str())
+            })
             .cloned()
             .collect();
 
@@ -648,8 +708,7 @@ fn get_segment_details<'a>(
     let mut outputs = Vec::new();
     let mut initializers = Vec::new();
 
-    let model_output_names: HashSet<String> =
-        graph.output.iter().map(|o| o.name.clone()).collect();
+    let model_output_names: HashSet<String> = graph.output.iter().map(|o| o.name.clone()).collect();
 
     let mut added_inputs: HashSet<String> = HashSet::new();
     for inp_name in seg_inputs_set {
@@ -679,9 +738,7 @@ fn get_segment_details<'a>(
                     .or_else(|| node_output_types.get(inp_name).copied())
                     .unwrap_or(TensorProto::FLOAT);
                 inputs.push(onnx_proto::make_tensor_value_info(
-                    inp_name,
-                    elem_type,
-                    &shape,
+                    inp_name, elem_type, &shape,
                 ));
             }
             added_inputs.insert(inp_name.clone());
@@ -710,9 +767,7 @@ fn get_segment_details<'a>(
                     .or_else(|| node_output_types.get(out_name).copied())
                     .unwrap_or(TensorProto::FLOAT);
                 outputs.push(onnx_proto::make_tensor_value_info(
-                    out_name,
-                    elem_type,
-                    &shape,
+                    out_name, elem_type, &shape,
                 ));
             }
         }

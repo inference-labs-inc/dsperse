@@ -100,8 +100,7 @@ pub fn convert(
         (FormatType::Dirs, FormatType::Dsperse) => dirs_to_dsperse(path, output_path, cleanup),
         (FormatType::Dslice, FormatType::Dirs) => dslice_to_dirs(path, output_path, cleanup),
         (FormatType::Dslice, FormatType::Dsperse) => {
-            let temp = tempfile::tempdir()
-                .map_err(|e| DsperseError::io(e, path))?;
+            let temp = tempfile::tempdir().map_err(|e| DsperseError::io(e, path))?;
             let expanded = dslice_to_dirs(path, Some(temp.path()), false)?;
             let result = dirs_to_dsperse(&expanded, output_path, true)?;
             if cleanup {
@@ -321,7 +320,9 @@ pub fn dsperse_to_dirs(
 }
 
 pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> Result<PathBuf> {
-    if !archive_path.is_file() || archive_path.extension().and_then(|e| e.to_str()) != Some("dsperse") {
+    if !archive_path.is_file()
+        || archive_path.extension().and_then(|e| e.to_str()) != Some("dsperse")
+    {
         return Err(DsperseError::Archive(format!(
             "expected .dsperse file, got {}",
             archive_path.display()
@@ -337,8 +338,7 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
     };
     fs::create_dir_all(&out).map_err(|e| DsperseError::io(e, &out))?;
 
-    let file =
-        fs::File::open(archive_path).map_err(|e| DsperseError::io(e, archive_path))?;
+    let file = fs::File::open(archive_path).map_err(|e| DsperseError::io(e, archive_path))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| DsperseError::Archive(e.to_string()))?;
 
@@ -350,10 +350,8 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
         let name = entry.name().to_string();
         if name == "metadata.json" || name.ends_with("/metadata.json") {
             let dest = out.join("metadata.json");
-            let mut out_file =
-                fs::File::create(&dest).map_err(|e| DsperseError::io(e, &dest))?;
-            io::copy(&mut entry, &mut out_file)
-                .map_err(|e| DsperseError::io(e, &dest))?;
+            let mut out_file = fs::File::create(&dest).map_err(|e| DsperseError::io(e, &dest))?;
+            io::copy(&mut entry, &mut out_file).map_err(|e| DsperseError::io(e, &dest))?;
             found = true;
             break;
         }
@@ -400,8 +398,7 @@ pub fn extract_single_slice(
     if archive_path.is_file()
         && archive_path.extension().and_then(|e| e.to_str()) == Some("dsperse")
     {
-        let file =
-            fs::File::open(archive_path).map_err(|e| DsperseError::io(e, archive_path))?;
+        let file = fs::File::open(archive_path).map_err(|e| DsperseError::io(e, archive_path))?;
         let mut archive =
             zip::ZipArchive::new(file).map_err(|e| DsperseError::Archive(e.to_string()))?;
 
@@ -494,8 +491,7 @@ pub fn read_dslice_slice_metadata(
             entry
                 .read_to_string(&mut buf)
                 .map_err(|e| DsperseError::io(e, dslice_path))?;
-            let model_meta: crate::schema::metadata::ModelMetadata =
-                serde_json::from_str(&buf)?;
+            let model_meta: crate::schema::metadata::ModelMetadata = serde_json::from_str(&buf)?;
             return model_meta.slices.into_iter().next().ok_or_else(|| {
                 DsperseError::Metadata(format!(
                     "no slices in metadata inside {}",
@@ -533,8 +529,8 @@ fn write_sentinel(path: &Path) -> Result<()> {
 
 fn verify_archive(path: &Path) -> Result<()> {
     let file = fs::File::open(path).map_err(|e| DsperseError::io(e, path))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| DsperseError::Archive(format!("archive verification: {e}")))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| DsperseError::Archive(format!("archive verification: {e}")))?;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -554,7 +550,9 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
         let entry = entry_result.map_err(|e| {
             DsperseError::Archive(format!(
                 "unreadable entry in {}: {}",
-                e.path().map(|p| p.display().to_string()).unwrap_or_default(),
+                e.path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
                 e
             ))
         })?;
@@ -571,9 +569,9 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
             continue;
         }
 
-        let rel_str = rel.to_str().ok_or_else(|| {
-            DsperseError::Archive(format!("non-UTF-8 path: {}", rel.display()))
-        })?;
+        let rel_str = rel
+            .to_str()
+            .ok_or_else(|| DsperseError::Archive(format!("non-UTF-8 path: {}", rel.display())))?;
 
         let first_component = rel
             .components()
@@ -602,8 +600,7 @@ fn zip_directory(source: &Path, output: &Path, exclude_dir_prefixes: &[&str]) ->
         } else if entry_path.is_file() {
             zip.start_file(rel_str, options)
                 .map_err(|e| DsperseError::Archive(e.to_string()))?;
-            let mut f =
-                fs::File::open(entry_path).map_err(|e| DsperseError::io(e, entry_path))?;
+            let mut f = fs::File::open(entry_path).map_err(|e| DsperseError::io(e, entry_path))?;
             io::copy(&mut f, &mut zip).map_err(|e| DsperseError::io(e, entry_path))?;
         }
     }
@@ -703,14 +700,18 @@ fn path_name(path: &Path) -> Result<String> {
     path.file_name()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| DsperseError::Archive(format!("missing file name for path: {}", path.display())))
+        .ok_or_else(|| {
+            DsperseError::Archive(format!("missing file name for path: {}", path.display()))
+        })
 }
 
 fn path_stem(path: &Path) -> Result<String> {
     path.file_stem()
         .and_then(|n| n.to_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| DsperseError::Archive(format!("missing file stem for path: {}", path.display())))
+        .ok_or_else(|| {
+            DsperseError::Archive(format!("missing file stem for path: {}", path.display()))
+        })
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {
@@ -757,7 +758,13 @@ mod tests {
         let dirs_out = tmp.path().join("dirs_output");
         let result2 = dslice_to_dirs(&result, Some(&dirs_out), false).unwrap();
         assert!(result2.join("slice_0").join("metadata.json").exists());
-        assert!(result2.join("slice_1").join("payload").join("model.onnx").exists());
+        assert!(
+            result2
+                .join("slice_1")
+                .join("payload")
+                .join("model.onnx")
+                .exists()
+        );
     }
 
     #[test]
@@ -790,7 +797,13 @@ mod tests {
         let dirs_out = tmp.path().join("expanded");
         let result2 = dsperse_to_dirs(&result, Some(&dirs_out), true).unwrap();
         assert!(result2.join("slice_0").join("metadata.json").exists());
-        assert!(result2.join("slice_1").join("payload").join("model.onnx").exists());
+        assert!(
+            result2
+                .join("slice_1")
+                .join("payload")
+                .join("model.onnx")
+                .exists()
+        );
         assert!(result2.join("metadata.json").exists());
 
         let meta_content = fs::read_to_string(result2.join("metadata.json")).unwrap();
@@ -823,8 +836,7 @@ mod tests {
         dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
 
         let extract_dir = tmp.path().join("extracted");
-        let slice_dir =
-            extract_single_slice(&dsperse_file, "slice_1", Some(&extract_dir)).unwrap();
+        let slice_dir = extract_single_slice(&dsperse_file, "slice_1", Some(&extract_dir)).unwrap();
         assert!(slice_dir.join("metadata.json").exists());
         assert!(slice_dir.join("payload").join("model.onnx").exists());
         assert!(slice_dir.join(EXTRACTED_SENTINEL).exists());

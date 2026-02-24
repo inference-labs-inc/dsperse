@@ -42,9 +42,8 @@ pub fn run_inference(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 
     let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
-    let input_tensor =
-        tract_ndarray::ArrayD::from_shape_vec(IxDyn(&concrete_shape), input_f32)
-            .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
+    let input_tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(&concrete_shape), input_f32)
+        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
 
     let result = model
         .run(tvec!(input_tensor.into_tvalue()))
@@ -64,10 +63,7 @@ pub fn run_inference_multi(
     for (i, (_, _, shape)) in inputs.iter().enumerate() {
         if i < model.inputs.len() {
             model = model
-                .with_input_fact(
-                    i,
-                    InferenceFact::dt_shape(f32::datum_type(), shape),
-                )
+                .with_input_fact(i, InferenceFact::dt_shape(f32::datum_type(), shape))
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} shape: {e}")))?;
         }
     }
@@ -107,4 +103,3 @@ fn extract_first_output(result: &[TValue]) -> Result<(Vec<f64>, Vec<usize>)> {
 
     Ok((output_data, output_shape))
 }
-

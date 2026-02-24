@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::onnx_proto::{self, GraphProto, ModelProto, TensorProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
-    Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape, Compilation,
+    Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
 };
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
 
@@ -92,11 +92,8 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
         }
     }
 
-    let initializer_names: HashSet<String> = graph
-        .initializer
-        .iter()
-        .map(|i| i.name.clone())
-        .collect();
+    let initializer_names: HashSet<String> =
+        graph.initializer.iter().map(|i| i.name.clone()).collect();
 
     AnalysisResult {
         original_model: onnx_path.map(|p| p.to_string_lossy().to_string()),
@@ -124,7 +121,11 @@ fn get_model_input_shapes(
 }
 
 fn get_model_output_shapes(graph: &GraphProto) -> Vec<Vec<i64>> {
-    graph.output.iter().map(|out| onnx_proto::vi_shape(out)).collect()
+    graph
+        .output
+        .iter()
+        .map(|out| onnx_proto::vi_shape(out))
+        .collect()
 }
 
 fn get_parameter_details(
@@ -176,8 +177,7 @@ pub fn generate_slices_metadata(
         let filename = format!("slice_{segment_idx}.onnx");
         let slice_dir = output_dir.join(format!("slice_{segment_idx}"));
         let payload_dir = slice_dir.join("payload");
-        std::fs::create_dir_all(&payload_dir)
-            .map_err(|e| DsperseError::io(e, &payload_dir))?;
+        std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;
         let onnx_path = payload_dir.join(&filename);
 
         let mut tiling: Option<TilingInfo> = None;
@@ -282,7 +282,10 @@ fn get_segment_shape(slice_path: Option<&str>) -> TensorShape {
         })
         .collect();
 
-    TensorShape { input: inputs, output: outputs }
+    TensorShape {
+        input: inputs,
+        output: outputs,
+    }
 }
 
 fn get_segment_dependencies(

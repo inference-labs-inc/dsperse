@@ -1,0 +1,90 @@
+name: zeroclaw_guard
+description: >
+  Guard model derived from verifiedzeroclaw's PromptGuard patterns.
+  26 regex patterns across 6 categories collapsed into 8 feature dimensions.
+threshold: 0.5
+
+features:
+  - name: system_override
+    type: regex_count
+    index: 0
+    patterns:
+      - "(?i)ignore\\s+(previous|all|above|prior)\\s+(instructions?|prompts?|commands?)"
+      - "(?i)disregard\\s+(previous|all|above|prior)"
+      - "(?i)forget\\s+(previous|all|everything|above)"
+      - "(?i)new\\s+(instructions?|rules?|system\\s+prompt)"
+      - "(?i)override\\s+(system|instructions?|rules?)"
+      - "(?i)reset\\s+(instructions?|context|system)"
+
+  - name: role_confusion
+    type: regex_count
+    index: 1
+    patterns:
+      - "(?i)(you\\s+are\\s+now|act\\s+as|pretend\\s+(you're|to\\s+be))\\s+(a|an|the)?"
+      - "(?i)(your\\s+new\\s+role|you\\s+have\\s+become|you\\s+must\\s+be)"
+      - "(?i)from\\s+now\\s+on\\s+(you\\s+are|act\\s+as|pretend)"
+      - "(?i)(assistant|AI|system|model):\\s*\\[?(system|override|new\\s+role)"
+
+  - name: secret_extraction
+    type: regex_count
+    index: 2
+    patterns:
+      - "(?i)(list|show|print|display|reveal|tell\\s+me)\\s+(all\\s+)?(secrets?|credentials?|passwords?|tokens?|keys?)"
+      - "(?i)(what|show)\\s+(are|is|me)\\s+(your|the)\\s+(api\\s+)?(keys?|secrets?|credentials?)"
+      - "(?i)contents?\\s+of\\s+(vault|secrets?|credentials?)"
+      - "(?i)(dump|export)\\s+(vault|secrets?|credentials?)"
+
+  - name: jailbreak
+    type: regex_count
+    index: 3
+    patterns:
+      - "(?i)\\bDAN\\b.*mode"
+      - "(?i)do\\s+anything\\s+now"
+      - "(?i)enter\\s+(developer|debug|admin)\\s+mode"
+      - "(?i)enable\\s+(developer|debug|admin)\\s+mode"
+      - "(?i)in\\s+this\\s+hypothetical"
+      - "(?i)imagine\\s+you\\s+(have\\s+no|don't\\s+have)\\s+(restrictions?|rules?|limits?)"
+      - "(?i)decode\\s+(this|the\\s+following)\\s+(base64|hex|rot13)"
+
+  - name: tool_injection
+    type: string_match
+    index: 4
+    strings:
+      - "tool_calls"
+      - "function_call"
+      - '}"}'
+      - "}'"
+
+  - name: command_injection
+    type: string_match
+    index: 5
+    strings:
+      - "$("
+      - "&&"
+      - "||"
+      - ">/dev/"
+      - "2>&1"
+
+  - name: digit_ratio
+    type: builtin
+    index: 6
+    name: digit_ratio
+
+  - name: entropy
+    type: builtin
+    index: 7
+    name: entropy
+
+model:
+  layers:
+    - op: Gemm
+      out_dim: 16
+    - op: Relu
+    - op: Add
+      value: 0.05
+    - op: Mul
+      value: 1.1
+    - op: Sub
+      value: 0.02
+    - op: Gemm
+      out_dim: 1

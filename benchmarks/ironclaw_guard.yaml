@@ -1,0 +1,80 @@
+name: ironclaw_guard
+description: >
+  Guard model derived from ZKironclaw's Sanitizer patterns.
+  17 Aho-Corasick patterns + 4 regex patterns collapsed into 8 feature dimensions.
+threshold: 0.5
+
+features:
+  - name: instruction_override
+    type: regex_count
+    index: 0
+    patterns:
+      - "(?i)ignore\\s+(previous|all)"
+      - "(?i)disregard"
+      - "(?i)forget\\s+everything"
+      - "(?i)new\\s+instructions"
+      - "(?i)updated\\s+instructions"
+
+  - name: role_manipulation
+    type: regex_count
+    index: 1
+    patterns:
+      - "(?i)you\\s+are\\s+now"
+      - "(?i)act\\s+as"
+      - "(?i)pretend\\s+to\\s+be"
+
+  - name: system_injection
+    type: string_match
+    index: 2
+    strings:
+      - "system:"
+      - "assistant:"
+      - "user:"
+
+  - name: special_tokens
+    type: string_match
+    index: 3
+    strings:
+      - "<|"
+      - "|>"
+      - "[INST]"
+      - "[/INST]"
+
+  - name: code_injection
+    type: string_match
+    index: 4
+    strings:
+      - "```system"
+      - "```bash\nsudo"
+
+  - name: encoded_payload
+    type: regex_count
+    index: 5
+    patterns:
+      - "(?i)base64[:\\s]+[A-Za-z0-9+/=]{50,}"
+      - "(?i)eval\\s*\\("
+      - "(?i)exec\\s*\\("
+
+  - name: normalized_length
+    type: builtin
+    index: 6
+    name: normalized_length
+
+  - name: whitespace_ratio
+    type: builtin
+    index: 7
+    name: whitespace_ratio
+
+model:
+  layers:
+    - op: Gemm
+      out_dim: 16
+    - op: Relu
+    - op: Add
+      value: 0.05
+    - op: Mul
+      value: 1.1
+    - op: Sub
+      value: 0.02
+    - op: Gemm
+      out_dim: 1

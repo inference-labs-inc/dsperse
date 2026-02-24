@@ -38,7 +38,7 @@ impl PipelineStage {
 
     fn error_label(&self) -> &'static str {
         match self {
-            Self::Prove => "prove",
+            Self::Prove => "proof",
             Self::Verify => "verification",
         }
     }
@@ -71,18 +71,14 @@ pub fn run_pipeline_stage(
         circuit_slices
             .par_iter()
             .map(|(slice_id, meta)| {
-                let _slice_idx: usize =
-                    match slice_id.strip_prefix("slice_").and_then(|s| s.parse().ok()) {
-                        Some(idx) => idx,
-                        None => {
-                            return (
-                                slice_id.clone(),
-                                Err(DsperseError::Pipeline(format!(
-                                    "invalid slice_id format: {slice_id:?}"
-                                ))),
-                            );
-                        }
-                    };
+                if slice_id.strip_prefix("slice_").and_then(|s| s.parse::<usize>().ok()).is_none() {
+                    return (
+                        slice_id.clone(),
+                        Err(DsperseError::Pipeline(format!(
+                            "invalid slice_id format: {slice_id:?}"
+                        ))),
+                    );
+                }
                 let slice_run_dir = run_dir.join(slice_id);
 
                 let result =
@@ -134,6 +130,14 @@ pub fn run_pipeline_stage(
                 PipelineStage::Prove => entry.proof_execution = Some(slice_result),
                 PipelineStage::Verify => entry.verification_execution = Some(slice_result),
             }
+        } else {
+            tracing::warn!(
+                slice = %slice_id,
+                stage = ?stage,
+                success = slice_result.success,
+                error = slice_result.error.as_deref().unwrap_or("none"),
+                "no matching execution_results entry, result dropped"
+            );
         }
     }
 
@@ -167,31 +171,20 @@ fn execute_single_slice(
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
     let witness_path = slice_run_dir.join("witness.bin");
-
-    let required_files: Vec<(&str, std::path::PathBuf)> = match stage {
-        PipelineStage::Prove => vec![("witness", witness_path.clone())],
-        PipelineStage::Verify => vec![
-            ("witness", witness_path.clone()),
-            ("proof", slice_run_dir.join("proof.bin")),
-        ],
-    };
-
-    for (label, path) in &required_files {
-        if !path.exists() {
+    let witness_bytes = match std::fs::read(&witness_path) {
+        Ok(b) => b,
+        Err(e) => {
             return Ok(SliceResult {
                 slice_id: slice_id.into(),
                 success: false,
                 method: Some(method.to_string()),
-                error: Some(format!("{label} file not found: {}", path.display())),
+                error: Some(format!("witness file read error: {}: {e}", witness_path.display())),
                 proof_path: None,
                 time_sec: 0.0,
                 tiles: Vec::new(),
             });
         }
-    }
-
-    let witness_bytes =
-        std::fs::read(&witness_path).map_err(|e| DsperseError::io(e, &witness_path))?;
+    };
 
     match stage {
         PipelineStage::Prove => {
@@ -212,8 +205,20 @@ fn execute_single_slice(
         }
         PipelineStage::Verify => {
             let proof_path = slice_run_dir.join("proof.bin");
-            let proof_bytes =
-                std::fs::read(&proof_path).map_err(|e| DsperseError::io(e, &proof_path))?;
+            let proof_bytes = match std::fs::read(&proof_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    return Ok(SliceResult {
+                        slice_id: slice_id.into(),
+                        success: false,
+                        method: Some(method.to_string()),
+                        error: Some(format!("proof file read error: {}: {e}", proof_path.display())),
+                        proof_path: None,
+                        time_sec: 0.0,
+                        tiles: Vec::new(),
+                    });
+                }
+            };
 
             let valid = backend.verify(&circuit_path, &witness_bytes, &proof_bytes)?;
 

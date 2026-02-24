@@ -664,10 +664,17 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
             weights.dims.len()
         )));
     }
-    let c_out = weights.dims[0] as usize;
-    let c_in = weights.dims[1] as usize;
-    let kh = weights.dims[2] as usize;
-    let kw = weights.dims[3] as usize;
+    let to_usize = |dim: i64, name: &str| -> Result<usize> {
+        usize::try_from(dim).map_err(|_| {
+            crate::error::DsperseError::Slicer(format!(
+                "slice_weights: {name} dimension {dim} is negative or too large"
+            ))
+        })
+    };
+    let c_out = to_usize(weights.dims[0], "c_out")?;
+    let c_in = to_usize(weights.dims[1], "c_in")?;
+    let kh = to_usize(weights.dims[2], "kh")?;
+    let kw = to_usize(weights.dims[3], "kw")?;
     let expected_len = c_out * c_in * kh * kw;
     if weights.data.len() != expected_len {
         return Err(crate::error::DsperseError::Slicer(format!(

@@ -12,6 +12,10 @@ fn to_py_err(e: DsperseError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
+fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
+    serde_json::to_string_pretty(value).map_err(|e| to_py_err(DsperseError::Json(e)))
+}
+
 #[pyfunction]
 #[pyo3(signature = (model_path, output_dir=None, tile_size=None))]
 fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>) -> PyResult<String> {
@@ -20,7 +24,7 @@ fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_
     let metadata = py.allow_threads(|| {
         crate::slicer::slice_model(&model, out.as_deref(), tile_size)
     }).map_err(to_py_err)?;
-    serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
+    to_pretty_json(&metadata)
 }
 
 #[pyfunction]
@@ -44,7 +48,7 @@ fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &s
     let metadata = py.allow_threads(|| {
         pipeline::run_inference(&sd, &inf, &rd, &backend, &config)
     }).map_err(to_py_err)?;
-    serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
+    to_pretty_json(&metadata)
 }
 
 #[pyfunction]
@@ -56,7 +60,7 @@ fn prove_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -
     let metadata = py.allow_threads(|| {
         pipeline::prove_run(&rd, &sd, &backend, parallel)
     }).map_err(to_py_err)?;
-    serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
+    to_pretty_json(&metadata)
 }
 
 #[pyfunction]
@@ -68,17 +72,19 @@ fn verify_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) 
     let metadata = py.allow_threads(|| {
         pipeline::verify_run(&rd, &sd, &backend, parallel)
     }).map_err(to_py_err)?;
-    serde_json::to_string_pretty(&metadata).map_err(|e| to_py_err(DsperseError::Json(e)))
+    to_pretty_json(&metadata)
 }
 
 #[pyfunction]
 #[pyo3(signature = (input, to, output=None, expand_slices=false, cleanup=false))]
 fn convert(input: &str, to: &str, output: Option<&str>, expand_slices: bool, cleanup: bool) -> PyResult<String> {
     let format: FormatType = to.parse().map_err(to_py_err)?;
+    let input_path = PathBuf::from(input);
+    let output_path = output.map(PathBuf::from);
     let result = converter::convert(
-        &PathBuf::from(input),
+        &input_path,
         format,
-        output.map(PathBuf::from).as_deref(),
+        output_path.as_deref(),
         cleanup,
         expand_slices,
     )
@@ -87,7 +93,7 @@ fn convert(input: &str, to: &str, output: Option<&str>, expand_slices: bool, cle
 }
 
 #[pyfunction]
-fn cli_main() -> PyResult<()> {
+fn cli_main(py: Python<'_>) -> PyResult<()> {
     use clap::Parser;
     use tracing_subscriber::EnvFilter;
 
@@ -120,15 +126,17 @@ fn cli_main() -> PyResult<()> {
         )
         .try_init();
 
-    let result = match cli.command {
-        Commands::Slice(args) => crate::cli::cmd_slice(args),
-        Commands::Compile(args) => crate::cli::cmd_compile(args),
-        Commands::Run(args) => crate::cli::cmd_run(args),
-        Commands::Prove(args) => crate::cli::cmd_prove(args),
-        Commands::Verify(args) => crate::cli::cmd_verify(args),
-        Commands::FullRun(args) => crate::cli::cmd_full_run(args),
-        Commands::Convert(args) => crate::cli::cmd_convert(args),
-    };
+    let result = py.allow_threads(|| {
+        match cli.command {
+            Commands::Slice(args) => crate::cli::cmd_slice(args),
+            Commands::Compile(args) => crate::cli::cmd_compile(args),
+            Commands::Run(args) => crate::cli::cmd_run(args),
+            Commands::Prove(args) => crate::cli::cmd_prove(args),
+            Commands::Verify(args) => crate::cli::cmd_verify(args),
+            Commands::FullRun(args) => crate::cli::cmd_full_run(args),
+            Commands::Convert(args) => crate::cli::cmd_convert(args),
+        }
+    });
 
     result.map_err(to_py_err)
 }

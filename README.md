@@ -101,7 +101,7 @@ proof_json = dsperse.prove_run("models/net/run", "models/net/slices")
 verify_json = dsperse.verify_run("models/net/run", "models/net/slices")
 ```
 
-All functions return JSON strings that can be parsed with `json.loads()`.
+`slice_model`, `run_inference`, `prove_run`, and `verify_run` return JSON strings parseable with `json.loads()`. `compile_slices` returns `None`. `convert` returns a filesystem path string.
 
 ## Project Structure
 

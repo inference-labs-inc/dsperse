@@ -624,7 +624,7 @@ dependencies = [
 [[package]]
 name = "circuit-std-rs"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/ecc?rev=98ef4d3#98ef4d34702c4c9f536f3a8609bed1506a504645"
+source = "git+https://github.com/inference-labs-inc/ecc?rev=f858279#f858279483c5dfd8fed31a57097b55ccbd417e61"
 dependencies = [
  "arith",
  "ark-bls12-381",
@@ -1060,7 +1060,7 @@ checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
 [[package]]
 name = "expander_compiler"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/ecc?rev=98ef4d3#98ef4d34702c4c9f536f3a8609bed1506a504645"
+source = "git+https://github.com/inference-labs-inc/ecc?rev=f858279#f858279483c5dfd8fed31a57097b55ccbd417e61"
 dependencies = [
  "arith",
  "ark-std",
@@ -1922,7 +1922,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=8f1f086#8f1f0865f433dae89f97e971e5617654068b4e57"
+source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=d35a8ec#d35a8ec52d5795f3812d79baf33b0068c00108b8"
 dependencies = [
  "ark-std",
  "chrono",
@@ -2105,7 +2105,7 @@ dependencies = [
 [[package]]
 name = "macros"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/ecc?rev=98ef4d3#98ef4d34702c4c9f536f3a8609bed1506a504645"
+source = "git+https://github.com/inference-labs-inc/ecc?rev=f858279#f858279483c5dfd8fed31a57097b55ccbd417e61"
 dependencies = [
  "proc-macro2",
  "quote",

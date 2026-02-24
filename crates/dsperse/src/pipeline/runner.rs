@@ -269,7 +269,6 @@ fn execute_slice(
         let slice_circuit = meta
             .jstprove_circuit_path
             .as_deref()
-            .or(meta.circuit_path.as_deref())
             .map(std::path::PathBuf::from);
         return execute_tiled(
             slices_dir,
@@ -324,7 +323,6 @@ fn execute_single(
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
-            .or(meta.circuit_path.as_deref())
             .map(std::path::PathBuf::from)
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
@@ -390,7 +388,7 @@ fn execute_tiled(
     slice_circuit_path: Option<&Path>,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    _config: &RunConfig,
+    config: &RunConfig,
 ) -> Result<ExecutionInfo> {
     let input_arr = tensor_cache
         .get(&tiling.input_name)
@@ -476,7 +474,7 @@ fn execute_tiled(
     let circuit_path = circuit_path.map(Arc::from);
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(_config.parallel)
+        .num_threads(config.parallel)
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
@@ -1237,10 +1235,6 @@ pub(crate) fn build_run_metadata(
             } else {
                 "onnx".into()
             },
-            circuit_path: node.and_then(|n| n.circuit_path.clone()),
-            settings_path: None,
-            vk_path: None,
-            pk_path: None,
             jstprove_circuit_path: node.and_then(|n| n.circuit_path.clone()),
             jstprove_settings_path: None,
         };

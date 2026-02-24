@@ -30,9 +30,9 @@ impl std::fmt::Display for Backend {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TensorShape {
     #[serde(default)]
-    pub input: Vec<Vec<serde_json::Value>>,
+    pub input: Vec<Vec<i64>>,
     #[serde(default)]
-    pub output: Vec<Vec<serde_json::Value>>,
+    pub output: Vec<Vec<i64>>,
 }
 
 impl Default for TensorShape {
@@ -132,14 +132,6 @@ impl Default for SliceShapeWrapper {
 }
 
 impl SliceMetadata {
-    pub fn input_shape(&self) -> &[Vec<serde_json::Value>] {
-        &self.shape.tensor_shape.input
-    }
-
-    pub fn output_shape(&self) -> &[Vec<serde_json::Value>] {
-        &self.shape.tensor_shape.output
-    }
-
     pub fn output_names(&self) -> &[String] {
         &self.dependencies.output
     }
@@ -150,9 +142,9 @@ pub struct RunSliceMetadata {
     #[serde(default)]
     pub path: String,
     #[serde(default)]
-    pub input_shape: Vec<Vec<serde_json::Value>>,
+    pub input_shape: Vec<Vec<i64>>,
     #[serde(default)]
-    pub output_shape: Vec<Vec<serde_json::Value>>,
+    pub output_shape: Vec<Vec<i64>>,
     #[serde(default)]
     pub dependencies: Dependencies,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,31 +153,16 @@ pub struct RunSliceMetadata {
     pub channel_split: Option<ChannelSplitInfo>,
     #[serde(default)]
     pub backend: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub circuit_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vk_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pk_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "circuit_path"
+    )]
     pub jstprove_circuit_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jstprove_settings_path: Option<String>,
 }
 
-impl RunSliceMetadata {
-    pub fn get_target_shape(&self, index: usize) -> Vec<i64> {
-        if index >= self.output_shape.len() {
-            return Vec::new();
-        }
-        self.output_shape[index]
-            .iter()
-            .map(|d| d.as_i64().unwrap_or(1))
-            .collect()
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {

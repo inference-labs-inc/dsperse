@@ -3,29 +3,9 @@ use std::path::Path;
 
 use super::analyzer::TiledResult;
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
+use super::ELEMENTWISE_OPS;
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TileInfo, TilingInfo};
-
-const ELEMENTWISE_OPS: &[&str] = &[
-    "Sigmoid",
-    "Mul",
-    "Add",
-    "Sub",
-    "Div",
-    "Relu",
-    "LeakyRelu",
-    "PRelu",
-    "Tanh",
-    "Clip",
-    "Neg",
-    "Abs",
-    "Sqrt",
-    "Exp",
-    "Log",
-    "Pow",
-    "Sin",
-    "Cos",
-];
 
 pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
 
@@ -619,7 +599,7 @@ pub fn create_channel_group_slice(
         &[1, c_out, h_out, w_out],
     );
 
-    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize);
+    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize)?;
 
     let w_tensor = onnx_proto::make_tensor(
         "W",
@@ -670,35 +650,34 @@ pub fn create_channel_group_slice(
         vk_path: None,
         pk_path: None,
         jstprove_settings_path: None,
-        ezkl_circuit_path: None,
-        ezkl_settings_path: None,
-        ezkl_pk_path: None,
-        ezkl_vk_path: None,
     }))
 }
 
-fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightInfo {
-    assert!(
-        weights.dims.len() >= 4,
-        "slice_weights: expected >= 4 dims, got {}",
-        weights.dims.len()
-    );
+fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<WeightInfo> {
+    if weights.dims.len() < 4 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: expected >= 4 dims, got {}",
+            weights.dims.len()
+        )));
+    }
     let c_out = weights.dims[0] as usize;
     let c_in = weights.dims[1] as usize;
     let kh = weights.dims[2] as usize;
     let kw = weights.dims[3] as usize;
     let expected_len = c_out * c_in * kh * kw;
-    assert!(
-        weights.data.len() == expected_len,
-        "slice_weights: data length {} != expected {} (dims={:?})",
-        weights.data.len(),
-        expected_len,
-        weights.dims
-    );
-    assert!(
-        c_end <= c_in,
-        "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"
-    );
+    if weights.data.len() != expected_len {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: data length {} != expected {} (dims={:?})",
+            weights.data.len(),
+            expected_len,
+            weights.dims
+        )));
+    }
+    if c_end > c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"
+        )));
+    }
     let c_group = c_end - c_start;
 
     let mut sliced = Vec::with_capacity(c_out * c_group * kh * kw);
@@ -713,10 +692,10 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightIn
         }
     }
 
-    WeightInfo {
+    Ok(WeightInfo {
         data: sliced,
         dims: vec![c_out as i64, c_group as i64, kh as i64, kw as i64],
-    }
+    })
 }
 
 pub fn save_conv_bias(

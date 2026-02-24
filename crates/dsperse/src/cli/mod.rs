@@ -60,8 +60,6 @@ pub struct ProveArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(long)]
-    pub tiles: Option<String>,
 }
 
 #[derive(Args)]
@@ -182,18 +180,11 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
         .slices_dir
         .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let tiles = args
-        .tiles
-        .as_ref()
-        .map(|s| parse_index_spec(s))
-        .transpose()?;
-
     pipeline::prove_run(
         &args.run_dir,
         &slices_dir,
         &backend,
         args.parallel.get(),
-        tiles.as_deref(),
     )?;
     Ok(())
 }
@@ -252,7 +243,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::run_inference(&slices_dir, &input_file, &run_dir, &backend, &config)?;
 
     tracing::info!("proving");
-    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel.get(), None)?;
+    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;
 
     tracing::info!("verifying");
     pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;

@@ -20,7 +20,6 @@ pub struct SliceWork {
     pub channel_split: Option<ChannelSplitInfo>,
     pub circuit_path: Option<String>,
     pub onnx_path: Option<String>,
-    pub settings_path: Option<String>,
     pub slice_meta: RunSliceMetadata,
 }
 
@@ -119,7 +118,6 @@ impl IncrementalRun {
             channel_split: meta.channel_split.clone(),
             circuit_path: node.circuit_path.clone(),
             onnx_path: node.onnx_path.clone(),
-            settings_path: meta.settings_path.clone(),
             slice_meta: meta.clone(),
         }))
     }

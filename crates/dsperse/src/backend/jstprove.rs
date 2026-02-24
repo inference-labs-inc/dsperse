@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::Mutex;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
@@ -8,8 +7,6 @@ use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
 use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
 
 use crate::error::{DsperseError, Result};
-
-static COMPILE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug)]
 pub struct JstproveBackend {
@@ -39,10 +36,6 @@ impl JstproveBackend {
         architecture: Architecture,
         wandb: WANDB,
     ) -> Result<()> {
-        let _guard = COMPILE_LOCK
-            .lock()
-            .map_err(|e| DsperseError::Backend(format!("compile lock: {e}")))?;
-
         OnnxContext::set_params(params.clone());
         OnnxContext::set_architecture(architecture);
         OnnxContext::set_wandb(wandb);

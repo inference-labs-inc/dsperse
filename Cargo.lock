@@ -1922,7 +1922,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=2990bcb#2990bcb7db6ad5a5f7114712ca349e24e2c9b172"
+source = "git+ssh://git@github.com/inference-labs-inc/JSTprove.git?rev=222b54f#222b54f578a5cb0777b3d55944a8b5515bd67663"
 dependencies = [
  "ark-std",
  "chrono",

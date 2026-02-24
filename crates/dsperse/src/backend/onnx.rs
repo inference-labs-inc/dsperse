@@ -80,6 +80,12 @@ pub fn run_inference_multi(
                     InferenceFact::dt_shape(f32::datum_type(), &inputs[provided_idx].2),
                 )
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
+            tracing::debug!(
+                model_input_index = i,
+                model_input_name = name.as_str(),
+                shape = ?inputs[provided_idx].2,
+                "matched model input"
+            );
             input_order[*i] = Some(provided_idx);
         } else {
             tracing::warn!(

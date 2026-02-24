@@ -1006,19 +1006,24 @@ pub(crate) fn build_execution_chain(
             head = Some(slice_id.clone());
         }
 
-        let has_circuit = slice.compilation.jstprove.compiled;
+        let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
+            let path = slice.compilation.jstprove.files.compiled.as_ref().map(|p| {
+                slices_dir.join(p).to_string_lossy().into_owned()
+            });
+            (true, path)
+        } else {
+            let msgpack = slice_dir.join("jstprove/circuit.msgpack");
+            if msgpack.exists() {
+                tracing::info!(slice = %slice_id, "detected circuit on filesystem (metadata.compiled=false)");
+                (true, Some(msgpack.to_string_lossy().into_owned()))
+            } else {
+                (false, None)
+            }
+        };
         let next = model_meta
             .slices
             .get(i + 1)
             .map(|s| format!("slice_{}", s.index));
-
-        let circuit_path = if has_circuit {
-            slice.compilation.jstprove.files.compiled.as_ref().map(|p| {
-                slices_dir.join(p).to_string_lossy().into_owned()
-            })
-        } else {
-            None
-        };
 
         let onnx_path = Some(slice_dir.join(&slice.path).to_string_lossy().into_owned());
 

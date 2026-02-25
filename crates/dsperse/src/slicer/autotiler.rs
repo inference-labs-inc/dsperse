@@ -775,6 +775,7 @@ pub fn save_conv_bias(
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn apply_channel_splitting(
     model: &ModelProto,
     cfg: &ChannelSplitParams,

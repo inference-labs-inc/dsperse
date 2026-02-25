@@ -68,7 +68,7 @@ pub fn json_to_arrayd(value: &serde_json::Value) -> Result<ArrayD<f64>> {
     let flat = flatten_nested_list(value);
     let shape = infer_shape(value);
     if flat.is_empty() {
-        return ArrayD::from_shape_vec(IxDyn(&[0]), vec![])
+        return ArrayD::from_shape_vec(IxDyn(&shape), vec![])
             .map_err(|e| DsperseError::Pipeline(format!("empty arrayd: {e}")));
     }
     let product: usize = shape.iter().product();

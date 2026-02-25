@@ -142,7 +142,11 @@ pub struct RunSliceMetadata {
         alias = "circuit_path"
     )]
     pub jstprove_circuit_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "settings_path"
+    )]
     pub jstprove_settings_path: Option<String>,
 }
 

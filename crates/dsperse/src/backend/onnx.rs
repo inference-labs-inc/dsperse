@@ -258,6 +258,17 @@ fn collect_output_names(model: &InferenceModel) -> Vec<String> {
         .collect()
 }
 
+const I64_SAFE_BOUND: i64 = 9_007_199_254_740_992;
+
+fn i64_to_f64_checked(v: i64, label: &str) -> Result<f64> {
+    if v.abs() >= I64_SAFE_BOUND {
+        return Err(DsperseError::Onnx(format!(
+            "{label}: i64 value {v} exceeds IEEE-754 safe integer bound"
+        )));
+    }
+    Ok(v as f64)
+}
+
 fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let shape = tv.shape().to_vec();
     let dt = tv.datum_type();
@@ -275,7 +286,9 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
         let arr = tv
             .to_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
-        arr.iter().map(|&v| v as f64).collect()
+        arr.iter()
+            .map(|&v| i64_to_f64_checked(v, label))
+            .collect::<Result<Vec<_>>>()?
     } else if dt == i32::datum_type() {
         let arr = tv
             .to_array_view::<i32>()
@@ -288,7 +301,9 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
         let arr = casted
             .to_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
-        arr.iter().map(|&v| v as f64).collect()
+        arr.iter()
+            .map(|&v| i64_to_f64_checked(v, label))
+            .collect::<Result<Vec<_>>>()?
     } else {
         return Err(DsperseError::Onnx(format!(
             "{label}: unsupported datum type {dt:?}"

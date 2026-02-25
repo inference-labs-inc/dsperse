@@ -326,7 +326,7 @@ pub fn run_inference(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_slice<'a>(
+fn execute_slice(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
@@ -335,7 +335,7 @@ fn execute_slice<'a>(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
     config: &RunConfig,
-    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
     if let Some(ref cs) = meta.channel_split {
         return execute_channel_split(
@@ -380,7 +380,7 @@ fn execute_slice<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_single<'a>(
+fn execute_single(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
@@ -388,7 +388,7 @@ fn execute_single<'a>(
     meta: &RunSliceMetadata,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
@@ -427,8 +427,14 @@ fn execute_single<'a>(
             )));
         }
 
+        if multi_input {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: circuit path does not support multiple activation inputs"
+            )));
+        }
+
         let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
-        let output_tensor = run_onnx_inference(effective_onnx, &input_tensor)?;
+        let named = run_onnx_inference_named(effective_onnx, &input_tensor)?;
 
         let witness_bytes = if is_wai {
             generate_wai_witness(
@@ -440,6 +446,16 @@ fn execute_single<'a>(
                 &input_tensor,
             )?
         } else {
+            let output_name = meta.dependencies.output.first().ok_or_else(|| {
+                DsperseError::Pipeline(format!("no output name for {slice_id}"))
+            })?;
+            let (data, shape) = named.get(output_name).ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: named output '{output_name}' missing from inference results"
+                ))
+            })?;
+            let output_tensor = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
+                .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))?;
             let input_json_bytes = serde_json::to_vec(
                 &serde_json::json!({ "input_data": arrayd_to_json(&input_tensor) }),
             )?;
@@ -453,7 +469,6 @@ fn execute_single<'a>(
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
 
-        let named = run_onnx_inference_named(effective_onnx, &input_tensor)?;
         store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
 
         Ok(ExecutionInfo {
@@ -849,14 +864,14 @@ fn execute_tiled(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_channel_split<'a>(
+fn execute_channel_split(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
     let slice_idx = parse_slice_idx(slice_id)?;
     let slice_dir = slice_dir_path(slices_dir, slice_idx);
@@ -1043,13 +1058,13 @@ fn execute_channel_split<'a>(
     })
 }
 
-fn execute_channel_group<'a>(
+fn execute_channel_group(
     slice_dir: &Path,
     group_dir: &Path,
     group: &ChannelGroupInfo,
     group_input: &ArrayD<f64>,
     backend: &JstproveBackend,
-    donor_init_map: Option<&HashMap<String, &'a TensorProto>>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ArrayD<f64>> {
     let onnx_path = resolve_relative_path(slice_dir, &group.path);
 
@@ -1067,9 +1082,10 @@ fn execute_channel_group<'a>(
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
         if donor_init_map.is_some() && !is_wai {
-            return Err(DsperseError::Pipeline(
-                "consumer weights require circuits compiled with --weights-as-inputs".into(),
-            ));
+            return Err(DsperseError::Pipeline(format!(
+                "group_{}: consumer weights require circuits compiled with --weights-as-inputs",
+                group.group_idx
+            )));
         }
 
         let output_tensor = run_onnx_inference(effective_onnx, group_input)?;

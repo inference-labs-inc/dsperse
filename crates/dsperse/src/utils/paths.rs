@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 
+pub const METADATA_FILE: &str = "metadata.msgpack";
+pub const INPUT_FILE: &str = "input.msgpack";
+pub const OUTPUT_FILE: &str = "output.msgpack";
+pub const WITNESS_FILE: &str = "witness.bin";
+pub const PROOF_FILE: &str = "proof.bin";
+
 pub fn resolve_relative_path(base: &Path, relative: &str) -> PathBuf {
     if Path::new(relative).is_absolute() {
         PathBuf::from(relative)
@@ -47,11 +53,11 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 pub fn find_metadata_path(dir: &Path) -> Option<PathBuf> {
-    let direct = dir.join("metadata.json");
+    let direct = dir.join(METADATA_FILE);
     if direct.exists() {
         return Some(direct);
     }
-    let slices = dir.join("slices").join("metadata.json");
+    let slices = dir.join("slices").join(METADATA_FILE);
     if slices.exists() {
         return Some(slices);
     }

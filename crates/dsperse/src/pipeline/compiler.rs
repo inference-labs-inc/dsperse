@@ -18,7 +18,7 @@ pub fn compile_slices(
     layers: Option<&[usize]>,
 ) -> Result<()> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
-        DsperseError::Metadata("no metadata.json found in slices directory".into())
+        DsperseError::Metadata(format!("no {} found in slices directory", crate::utils::paths::METADATA_FILE))
     })?;
     let metadata = ModelMetadata::load(&meta_path)?;
 

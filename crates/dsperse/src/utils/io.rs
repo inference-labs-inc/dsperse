@@ -2,46 +2,48 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use ndarray::{ArrayD, Axis, IxDyn};
+use rmpv::Value;
 
 use crate::error::{DsperseError, Result};
 
-pub fn read_input_json(path: &Path) -> Result<serde_json::Value> {
-    let data = std::fs::read_to_string(path).map_err(|e| DsperseError::io(e, path))?;
-    serde_json::from_str(&data).map_err(Into::into)
+pub fn read_input_msgpack(path: &Path) -> Result<Value> {
+    let data = std::fs::read(path).map_err(|e| DsperseError::io(e, path))?;
+    rmp_serde::from_slice(&data).map_err(Into::into)
 }
 
-pub fn write_input_json(path: &Path, value: &serde_json::Value) -> Result<()> {
+pub fn write_input_msgpack(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }
-    let data = serde_json::to_string(value)?;
+    let data = rmp_serde::to_vec_named(value)?;
     std::fs::write(path, data).map_err(|e| DsperseError::io(e, path))
 }
 
-pub fn extract_input_data(value: &serde_json::Value) -> Option<&serde_json::Value> {
-    value
-        .get("input_data")
-        .or_else(|| value.get("input"))
-        .or_else(|| value.get("data"))
-        .or_else(|| value.get("inputs"))
+pub fn extract_input_data(value: &Value) -> Option<&Value> {
+    map_get_ref(value, "input_data")
+        .or_else(|| map_get_ref(value, "input"))
+        .or_else(|| map_get_ref(value, "data"))
+        .or_else(|| map_get_ref(value, "inputs"))
 }
 
-pub fn flatten_nested_list(value: &serde_json::Value) -> Vec<f64> {
+pub fn flatten_nested_list(value: &Value) -> Vec<f64> {
     let mut result = Vec::new();
     flatten_recursive(value, &mut result);
     result
 }
 
-fn flatten_recursive(value: &serde_json::Value, out: &mut Vec<f64>) {
+fn flatten_recursive(value: &Value, out: &mut Vec<f64>) {
     match value {
-        serde_json::Value::Number(n) => {
+        Value::F64(f) => out.push(*f),
+        Value::F32(f) => out.push(*f as f64),
+        Value::Integer(n) => {
             if let Some(f) = n.as_f64() {
                 out.push(f);
             } else {
-                tracing::warn!(number = %n, "dropping non-f64 representable number");
+                tracing::warn!(number = ?n, "dropping non-f64 representable integer");
             }
         }
-        serde_json::Value::Array(arr) => {
+        Value::Array(arr) => {
             for item in arr {
                 flatten_recursive(item, out);
             }
@@ -50,10 +52,10 @@ fn flatten_recursive(value: &serde_json::Value, out: &mut Vec<f64>) {
     }
 }
 
-pub fn infer_shape(value: &serde_json::Value) -> Vec<usize> {
+pub fn infer_shape(value: &Value) -> Vec<usize> {
     let mut shape = Vec::new();
     let mut current = value;
-    while let serde_json::Value::Array(arr) = current {
+    while let Value::Array(arr) = current {
         shape.push(arr.len());
         if let Some(first) = arr.first() {
             current = first;
@@ -64,7 +66,7 @@ pub fn infer_shape(value: &serde_json::Value) -> Vec<usize> {
     shape
 }
 
-pub fn json_to_arrayd(value: &serde_json::Value) -> Result<ArrayD<f64>> {
+pub fn value_to_arrayd(value: &Value) -> Result<ArrayD<f64>> {
     let flat = flatten_nested_list(value);
     let shape = infer_shape(value);
     if flat.is_empty() {
@@ -86,33 +88,33 @@ pub fn json_to_arrayd(value: &serde_json::Value) -> Result<ArrayD<f64>> {
         .map_err(|e| DsperseError::Pipeline(format!("arrayd reshape: {e}")))
 }
 
-pub fn arrayd_to_json(arr: &ArrayD<f64>) -> serde_json::Value {
+pub fn arrayd_to_value(arr: &ArrayD<f64>) -> Value {
     match arr.ndim() {
-        0 => serde_json::json!(arr[IxDyn(&[])]),
+        0 => Value::F64(arr[IxDyn(&[])]),
         1 => {
-            let vals: Vec<serde_json::Value> = arr.iter().map(|&v| serde_json::json!(v)).collect();
-            serde_json::Value::Array(vals)
+            let vals: Vec<Value> = arr.iter().map(|&v| Value::F64(v)).collect();
+            Value::Array(vals)
         }
         _ => {
-            let vals: Vec<serde_json::Value> = (0..arr.shape()[0])
+            let vals: Vec<Value> = (0..arr.shape()[0])
                 .map(|i| {
                     let sub = arr.index_axis(Axis(0), i).to_owned();
-                    arrayd_to_json(&sub)
+                    arrayd_to_value(&sub)
                 })
                 .collect();
-            serde_json::Value::Array(vals)
+            Value::Array(vals)
         }
     }
 }
 
-pub fn extract_output_tensor(data: &serde_json::Value) -> serde_json::Value {
-    data.get("output_data")
-        .or_else(|| data.get("output"))
+pub fn extract_output_tensor(data: &Value) -> Value {
+    map_get_ref(data, "output_data")
+        .or_else(|| map_get_ref(data, "output"))
         .cloned()
         .unwrap_or_else(|| data.clone())
 }
 
-pub fn extract_input_tensor(data: &serde_json::Value) -> serde_json::Value {
+pub fn extract_input_tensor(data: &Value) -> Value {
     extract_input_data(data)
         .cloned()
         .unwrap_or_else(|| data.clone())
@@ -162,4 +164,26 @@ pub fn gather_inputs_from_cache(
         &collected.iter().map(|a| a.view()).collect::<Vec<_>>(),
     )
     .map_err(|e| DsperseError::Pipeline(format!("concat inputs: {e}")))
+}
+
+pub fn build_msgpack_map(entries: Vec<(&str, Value)>) -> Value {
+    Value::Map(
+        entries
+            .into_iter()
+            .map(|(k, v)| (Value::String(k.into()), v))
+            .collect(),
+    )
+}
+
+fn map_get_ref<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+    match value {
+        Value::Map(entries) => entries.iter().find_map(|(k, v)| {
+            if k.as_str().is_some_and(|s| s == key) {
+                Some(v)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
 }

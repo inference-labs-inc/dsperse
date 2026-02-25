@@ -3,7 +3,7 @@ use std::path::Path;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::circuit_functions::utils::onnx_types::{ONNXIO, ONNXLayer};
-use serde_json::json;
+use rmpv::Value;
 
 use crate::error::{DsperseError, Result};
 use crate::slicer::onnx_proto::{
@@ -129,6 +129,13 @@ pub fn prepare_jstprove_artifacts(
             node_inputs[2] = bias_name.clone();
         }
 
+        let params_map = Value::Map(vec![
+            (Value::String("kernel_shape".into()), Value::Array(kernel_shape.iter().map(|&v| Value::from(v)).collect())),
+            (Value::String("strides".into()), Value::Array(strides.iter().map(|&v| Value::from(v)).collect())),
+            (Value::String("pads".into()), Value::Array(pads.iter().map(|&v| Value::from(v)).collect())),
+            (Value::String("dilations".into()), Value::Array(dilations.iter().map(|&v| Value::from(v)).collect())),
+            (Value::String("group".into()), Value::from(group)),
+        ]);
         arch_layers.push(ONNXLayer {
             id: idx,
             name: node_name.clone(),
@@ -137,13 +144,7 @@ pub fn prepare_jstprove_artifacts(
             outputs: node.output.clone(),
             shape: HashMap::from([(output_name.clone(), output_shape)]),
             tensor: None,
-            params: Some(json!({
-                "kernel_shape": kernel_shape,
-                "strides": strides,
-                "pads": pads,
-                "dilations": dilations,
-                "group": group,
-            })),
+            params: Some(params_map),
             opset_version_number: opset_version,
         });
 
@@ -298,15 +299,15 @@ fn parse_spatial_dims(shape: &[usize]) -> (usize, usize, usize) {
     }
 }
 
-fn build_nested_array(flat: &[i64], shape: &[usize]) -> serde_json::Value {
+fn build_nested_array(flat: &[i64], shape: &[usize]) -> Value {
     if shape.len() <= 1 {
-        return serde_json::Value::Array(
-            flat.iter().map(|&v| serde_json::Value::from(v)).collect(),
+        return Value::Array(
+            flat.iter().map(|&v| Value::from(v)).collect(),
         );
     }
 
     let inner_size: usize = shape[1..].iter().product();
-    serde_json::Value::Array(
+    Value::Array(
         flat.chunks(inner_size)
             .map(|chunk| build_nested_array(chunk, &shape[1..]))
             .collect(),

@@ -246,7 +246,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
 
     let input_file = args
         .input_file
-        .unwrap_or_else(|| args.model_dir.join("input.json"));
+        .unwrap_or_else(|| args.model_dir.join(crate::utils::paths::INPUT_FILE));
 
     if !input_file.is_file() {
         return Err(DsperseError::Other(format!(

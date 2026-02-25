@@ -7,7 +7,8 @@ edition = "2024"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+rmpv = { version = "1", features = ["with-serde"] }
+rmp-serde = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
@@ -21,4 +22,4 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 prost = "0.13"
 pyo3 = { version = "0.24" }
-jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "58b8234" }
+jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "08d466b" }

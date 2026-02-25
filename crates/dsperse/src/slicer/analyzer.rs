@@ -204,21 +204,26 @@ pub fn generate_slices_metadata(
             tiling,
             channel_split,
             compilation: Compilation::default(),
-            slice_metadata: Some(format!("slice_{segment_idx}/metadata.json")),
-            slice_metadata_relative_path: Some(format!("slice_{segment_idx}/metadata.json")),
+            slice_metadata: Some(format!("slice_{segment_idx}/metadata.msgpack")),
+            slice_metadata_relative_path: Some(format!("slice_{segment_idx}/metadata.msgpack")),
         });
     }
 
-    let metadata = ModelMetadata {
+    let mut metadata = ModelMetadata {
         original_model: analysis.original_model.clone().unwrap_or_default(),
         model_type: analysis.model_type.clone(),
         input_shape: analysis.input_shape.clone(),
         output_shapes: analysis.output_shapes.clone(),
         slice_points: slice_points[..slice_points.len().saturating_sub(1)].to_vec(),
         slices,
+        dsperse_version: None,
+        dsperse_rev: None,
+        jstprove_version: None,
+        jstprove_rev: None,
     };
+    metadata.stamp_version();
 
-    metadata.save(&output_dir.join("metadata.json"))?;
+    metadata.save(&output_dir.join(crate::utils::paths::METADATA_FILE))?;
     write_per_slice_metadata(&metadata, output_dir)?;
 
     Ok(metadata)
@@ -244,8 +249,12 @@ fn write_per_slice_metadata(metadata: &ModelMetadata, output_dir: &Path) -> Resu
             output_shapes: metadata.output_shapes.clone(),
             slice_points: vec![start, end],
             slices: vec![slice_meta.clone()],
+            dsperse_version: metadata.dsperse_version.clone(),
+            dsperse_rev: metadata.dsperse_rev.clone(),
+            jstprove_version: metadata.jstprove_version.clone(),
+            jstprove_rev: metadata.jstprove_rev.clone(),
         };
-        per_slice.save(&slice_dir.join("metadata.json"))?;
+        per_slice.save(&slice_dir.join(crate::utils::paths::METADATA_FILE))?;
     }
     Ok(())
 }

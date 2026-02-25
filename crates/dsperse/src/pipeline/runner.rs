@@ -18,7 +18,7 @@ use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
     arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache,
-    read_input_msgpack, value_to_arrayd, write_input_msgpack,
+    read_msgpack, value_to_arrayd, write_msgpack,
 };
 use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
@@ -155,7 +155,7 @@ pub fn run_inference(
 
     std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
 
-    let input_data = read_input_msgpack(input_path)?;
+    let input_data = read_msgpack(input_path)?;
 
     let chain = build_execution_chain(&model_meta, slices_dir);
     let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
@@ -194,7 +194,7 @@ pub fn run_inference(
     }
 
     let input_copy = run_dir.join(crate::utils::paths::INPUT_FILE);
-    write_input_msgpack(&input_copy, &input_data)?;
+    write_msgpack(&input_copy, &input_data)?;
 
     let mut results: Vec<ExecutionResultEntry> = Vec::new();
 
@@ -318,7 +318,7 @@ pub fn run_inference(
     })?;
     let output_path = run_dir.join(crate::utils::paths::OUTPUT_FILE);
     let output_val = arrayd_to_value(output_arr);
-    write_input_msgpack(
+    write_msgpack(
         &output_path,
         &build_msgpack_map(vec![("output_data", output_val)]),
     )?;
@@ -1026,7 +1026,7 @@ fn execute_channel_split(
                 bias_file.display()
             )));
         }
-        let bias_data = read_input_msgpack(&bias_file)?;
+        let bias_data = read_msgpack(&bias_file)?;
         let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
         if bias_flat.len() != cs.c_out {
             return Err(DsperseError::Pipeline(format!(

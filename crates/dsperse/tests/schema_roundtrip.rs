@@ -213,14 +213,14 @@ fn channel_split_roundtrip() {
             {"group_idx": 0, "c_start": 0, "c_end": 16, "path": "channel_groups/group_0.onnx"},
             {"group_idx": 1, "c_start": 16, "c_end": 32, "path": "channel_groups/group_1.onnx"}
         ],
-        "bias_path": "channel_groups/bias.npy"
+        "bias_path": "channel_groups/bias.msgpack"
     }"#;
 
     let info: ChannelSplitInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.num_groups, 4);
     assert_eq!(info.groups.len(), 2);
     assert_eq!(info.groups[0].c_end, 16);
-    assert_eq!(info.bias_path.as_deref(), Some("channel_groups/bias.npy"));
+    assert_eq!(info.bias_path.as_deref(), Some("channel_groups/bias.msgpack"));
 
     let msgpack_bytes = rmp_serde::to_vec_named(&info).unwrap();
     let info2: ChannelSplitInfo = rmp_serde::from_slice(&msgpack_bytes).unwrap();

@@ -13,7 +13,8 @@ fn to_py_err(e: DsperseError) -> PyErr {
 }
 
 fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
-    serde_json::to_string_pretty(value).map_err(|e| to_py_err(DsperseError::Other(e.to_string())))
+    serde_json::to_string_pretty(value)
+        .map_err(|e| to_py_err(DsperseError::Other(format!("pretty-json serialization failed: {e}"))))
 }
 
 fn require_nonzero(parallel: usize) -> PyResult<()> {

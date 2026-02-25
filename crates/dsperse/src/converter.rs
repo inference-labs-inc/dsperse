@@ -129,11 +129,12 @@ pub fn prepare_jstprove_artifacts(
             node_inputs[2] = bias_name.clone();
         }
 
+        let i64_vec = |v: &[i64]| Value::Array(v.iter().map(|&x| Value::from(x)).collect());
         let params_map = Value::Map(vec![
-            (Value::String("kernel_shape".into()), Value::Array(kernel_shape.iter().map(|&v| Value::from(v)).collect())),
-            (Value::String("strides".into()), Value::Array(strides.iter().map(|&v| Value::from(v)).collect())),
-            (Value::String("pads".into()), Value::Array(pads.iter().map(|&v| Value::from(v)).collect())),
-            (Value::String("dilations".into()), Value::Array(dilations.iter().map(|&v| Value::from(v)).collect())),
+            (Value::String("kernel_shape".into()), i64_vec(&kernel_shape)),
+            (Value::String("strides".into()), i64_vec(&strides)),
+            (Value::String("pads".into()), i64_vec(&pads)),
+            (Value::String("dilations".into()), i64_vec(&dilations)),
             (Value::String("group".into()), Value::from(group)),
         ]);
         arch_layers.push(ONNXLayer {
@@ -301,12 +302,17 @@ fn parse_spatial_dims(shape: &[usize]) -> (usize, usize, usize) {
 
 fn build_nested_array(flat: &[i64], shape: &[usize]) -> Value {
     if shape.len() <= 1 {
-        return Value::Array(
-            flat.iter().map(|&v| Value::from(v)).collect(),
-        );
+        return Value::Array(flat.iter().map(|&v| Value::from(v)).collect());
     }
 
     let inner_size: usize = shape[1..].iter().product();
+    if inner_size == 0 {
+        return Value::Array(
+            (0..shape[0])
+                .map(|_| build_nested_array(&[], &shape[1..]))
+                .collect(),
+        );
+    }
     Value::Array(
         flat.chunks(inner_size)
             .map(|chunk| build_nested_array(chunk, &shape[1..]))

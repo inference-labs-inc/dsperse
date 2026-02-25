@@ -12,5 +12,13 @@ fn main() {
             println!("cargo:rustc-env=DSPERSE_GIT_REV={rev}");
         }
     }
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+    {
+        if output.status.success() {
+            let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        }
+    }
 }

@@ -6,12 +6,12 @@ use rmpv::Value;
 
 use crate::error::{DsperseError, Result};
 
-pub fn read_input_msgpack(path: &Path) -> Result<Value> {
+pub fn read_msgpack(path: &Path) -> Result<Value> {
     let data = std::fs::read(path).map_err(|e| DsperseError::io(e, path))?;
     rmp_serde::from_slice(&data).map_err(Into::into)
 }
 
-pub fn write_input_msgpack(path: &Path, value: &Value) -> Result<()> {
+pub fn write_msgpack(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }

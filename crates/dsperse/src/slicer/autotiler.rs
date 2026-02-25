@@ -3,29 +3,9 @@ use std::path::Path;
 
 use super::analyzer::TiledResult;
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
+use super::ELEMENTWISE_OPS;
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TileInfo, TilingInfo};
-
-const ELEMENTWISE_OPS: &[&str] = &[
-    "Sigmoid",
-    "Mul",
-    "Add",
-    "Sub",
-    "Div",
-    "Relu",
-    "LeakyRelu",
-    "PRelu",
-    "Tanh",
-    "Clip",
-    "Neg",
-    "Abs",
-    "Sqrt",
-    "Exp",
-    "Log",
-    "Pow",
-    "Sin",
-    "Cos",
-];
 
 pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
 
@@ -41,6 +21,17 @@ fn model_opset(model: &ModelProto) -> i64 {
 
 fn is_elementwise(op: &str) -> bool {
     ELEMENTWISE_OPS.contains(&op)
+}
+
+#[derive(Debug, Clone)]
+pub struct ChannelSplitParams {
+    pub c_in: i64,
+    pub c_out: i64,
+    pub num_groups: i64,
+    pub channels_per_group: i64,
+    pub h: i64,
+    pub w: i64,
+    pub slice_idx: usize,
 }
 
 struct ConvParams {
@@ -406,7 +397,7 @@ pub fn create_tile_slice(
     let c_in = graph
         .input
         .first()
-        .map(|i| onnx_proto::vi_shape(i))
+        .map(onnx_proto::vi_shape)
         .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
         .unwrap_or(weights.dims.get(1).copied().unwrap_or(1));
 
@@ -457,7 +448,7 @@ pub fn create_tile_slice(
         conv_attrs,
     )];
 
-    integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes);
+    integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes)?;
 
     let graph = onnx_proto::make_graph(
         &format!("tile_{slice_idx}"),
@@ -485,18 +476,24 @@ fn integrate_extra_ops(
     conv_node: &NodeProto,
     initializers: &mut Vec<onnx_proto::TensorProto>,
     nodes: &mut Vec<NodeProto>,
-) {
+) -> crate::error::Result<()> {
     let orig_input_name = graph.input.first().map(|i| i.name.as_str()).unwrap_or("");
 
     let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
 
     if non_conv.is_empty() {
-        assert!(
-            !nodes.is_empty(),
-            "integrate_extra_ops requires at least one node"
-        );
-        nodes.last_mut().unwrap().output[0] = "tile_out".to_string();
-        return;
+        let last = nodes.last_mut().ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "integrate_extra_ops: no nodes to set output on".into(),
+            )
+        })?;
+        let out = last.output.get_mut(0).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "integrate_extra_ops: last node has no outputs".into(),
+            )
+        })?;
+        *out = "tile_out".to_string();
+        return Ok(());
     }
 
     let mut conv_weight_names: HashSet<String> = HashSet::new();
@@ -555,6 +552,8 @@ fn integrate_extra_ops(
             device_configurations: vec![],
         });
     }
+
+    Ok(())
 }
 
 pub fn create_channel_group_slice(
@@ -619,7 +618,7 @@ pub fn create_channel_group_slice(
         &[1, c_out, h_out, w_out],
     );
 
-    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize);
+    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize)?;
 
     let w_tensor = onnx_proto::make_tensor(
         "W",
@@ -670,53 +669,77 @@ pub fn create_channel_group_slice(
         vk_path: None,
         pk_path: None,
         jstprove_settings_path: None,
-        ezkl_circuit_path: None,
-        ezkl_settings_path: None,
-        ezkl_pk_path: None,
-        ezkl_vk_path: None,
     }))
 }
 
-fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> WeightInfo {
-    assert!(
-        weights.dims.len() >= 4,
-        "slice_weights: expected >= 4 dims, got {}",
-        weights.dims.len()
-    );
-    let c_out = weights.dims[0] as usize;
-    let c_in = weights.dims[1] as usize;
-    let kh = weights.dims[2] as usize;
-    let kw = weights.dims[3] as usize;
-    let expected_len = c_out * c_in * kh * kw;
-    assert!(
-        weights.data.len() == expected_len,
-        "slice_weights: data length {} != expected {} (dims={:?})",
-        weights.data.len(),
-        expected_len,
-        weights.dims
-    );
-    assert!(
-        c_end <= c_in,
-        "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"
-    );
-    let c_group = c_end - c_start;
+fn checked_dim_product(factors: &[usize]) -> Result<usize> {
+    factors.iter().try_fold(1usize, |acc, &f| {
+        acc.checked_mul(f).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "slice_weights: dimension product overflow (factors={factors:?})"
+            ))
+        })
+    })
+}
 
-    let mut sliced = Vec::with_capacity(c_out * c_group * kh * kw);
+fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<WeightInfo> {
+    if weights.dims.len() < 4 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: expected >= 4 dims, got {}",
+            weights.dims.len()
+        )));
+    }
+    let to_usize = |dim: i64, name: &str| -> Result<usize> {
+        usize::try_from(dim).map_err(|_| {
+            crate::error::DsperseError::Slicer(format!(
+                "slice_weights: {name} dimension {dim} is negative or too large"
+            ))
+        })
+    };
+    let c_out = to_usize(weights.dims[0], "c_out")?;
+    let c_in = to_usize(weights.dims[1], "c_in")?;
+    let kh = to_usize(weights.dims[2], "kh")?;
+    let kw = to_usize(weights.dims[3], "kw")?;
+    let expected_len = checked_dim_product(&[c_out, c_in, kh, kw])?;
+    if weights.data.len() != expected_len {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: data length {} != expected {} (dims={:?})",
+            weights.data.len(),
+            expected_len,
+            weights.dims
+        )));
+    }
+    if c_start >= c_end {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: c_start ({c_start}) >= c_end ({c_end})"
+        )));
+    }
+    if c_end > c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "slice_weights: c_end ({c_end}) exceeds c_in ({c_in})"
+        )));
+    }
+    let c_group = c_end - c_start;
+    let capacity = checked_dim_product(&[c_out, c_group, kh, kw])?;
+    let stride_cin = checked_dim_product(&[c_in, kh, kw])?;
+    let stride_kh = checked_dim_product(&[kh, kw])?;
+
+    let mut sliced = Vec::with_capacity(capacity);
     for o in 0..c_out {
         for c in c_start..c_end {
             for h in 0..kh {
                 for w_idx in 0..kw {
-                    let idx = o * c_in * kh * kw + c * kh * kw + h * kw + w_idx;
+                    let idx = o * stride_cin + c * stride_kh + h * kw + w_idx;
                     sliced.push(weights.data[idx]);
                 }
             }
         }
     }
 
-    WeightInfo {
+    Ok(WeightInfo {
         data: sliced,
         dims: vec![c_out as i64, c_group as i64, kh as i64, kw as i64],
-    }
+    })
 }
 
 pub fn save_conv_bias(
@@ -754,17 +777,15 @@ pub fn save_conv_bias(
 
 pub fn apply_channel_splitting(
     model: &ModelProto,
-    c_in: i64,
-    c_out: i64,
-    num_groups: i64,
-    channels_per_group: i64,
+    cfg: &ChannelSplitParams,
     input_name: &str,
     output_name: &str,
-    h: i64,
-    w: i64,
-    slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
+    let &ChannelSplitParams { c_in, c_out, num_groups, channels_per_group, h, w, slice_idx } = cfg;
+    if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
+        return Ok(None);
+    }
     let graph = match model.graph.as_ref() {
         Some(g) => g,
         None => return Ok(None),
@@ -881,17 +902,14 @@ pub fn apply_tiling(
                     num_groups,
                     "channel splitting Conv slice"
                 );
+                let cs_params = ChannelSplitParams {
+                    c_in, c_out, num_groups, channels_per_group, h, w, slice_idx: idx,
+                };
                 if let Some(info) = apply_channel_splitting(
                     &model,
-                    c_in,
-                    c_out,
-                    num_groups,
-                    channels_per_group,
+                    &cs_params,
                     &input_name,
                     &output_name,
-                    h,
-                    w,
-                    idx,
                     output_dir,
                 )? {
                     results.insert(

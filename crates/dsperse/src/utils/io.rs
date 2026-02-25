@@ -53,17 +53,12 @@ fn flatten_recursive(value: &serde_json::Value, out: &mut Vec<f64>) {
 pub fn infer_shape(value: &serde_json::Value) -> Vec<usize> {
     let mut shape = Vec::new();
     let mut current = value;
-    loop {
-        match current {
-            serde_json::Value::Array(arr) => {
-                shape.push(arr.len());
-                if let Some(first) = arr.first() {
-                    current = first;
-                } else {
-                    break;
-                }
-            }
-            _ => break,
+    while let serde_json::Value::Array(arr) = current {
+        shape.push(arr.len());
+        if let Some(first) = arr.first() {
+            current = first;
+        } else {
+            break;
         }
     }
     shape
@@ -73,8 +68,8 @@ pub fn json_to_arrayd(value: &serde_json::Value) -> Result<ArrayD<f64>> {
     let flat = flatten_nested_list(value);
     let shape = infer_shape(value);
     if flat.is_empty() {
-        return Ok(ArrayD::from_shape_vec(IxDyn(&[0]), vec![])
-            .map_err(|e| DsperseError::Pipeline(format!("empty arrayd: {e}")))?);
+        return ArrayD::from_shape_vec(IxDyn(&[0]), vec![])
+            .map_err(|e| DsperseError::Pipeline(format!("empty arrayd: {e}")));
     }
     let product: usize = shape.iter().product();
     if product != flat.len() || shape.is_empty() {

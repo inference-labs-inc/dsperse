@@ -44,8 +44,11 @@ pub struct AnalysisResult {
     pub initializer_names: HashSet<String>,
 }
 
-pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
-    let graph = model.graph.as_ref().expect("model has no graph");
+pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisResult> {
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Onnx("model has no graph".into()))?;
     let initializer_map: HashMap<&str, &TensorProto> = graph
         .initializer
         .iter()
@@ -95,7 +98,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
     let initializer_names: HashSet<String> =
         graph.initializer.iter().map(|i| i.name.clone()).collect();
 
-    AnalysisResult {
+    Ok(AnalysisResult {
         original_model: onnx_path.map(|p| p.to_string_lossy().to_string()),
         model_type: "ONNX".to_string(),
         node_count: graph.node.len(),
@@ -105,7 +108,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> AnalysisResult {
         opset_version,
         nodes,
         initializer_names,
-    }
+    })
 }
 
 fn get_model_input_shapes(
@@ -116,7 +119,7 @@ fn get_model_input_shapes(
         .input
         .iter()
         .filter(|inp| !initializer_map.contains_key(inp.name.as_str()))
-        .map(|inp| onnx_proto::vi_shape(inp))
+        .map(onnx_proto::vi_shape)
         .collect()
 }
 
@@ -124,7 +127,7 @@ fn get_model_output_shapes(graph: &GraphProto) -> Vec<Vec<i64>> {
     graph
         .output
         .iter()
-        .map(|out| onnx_proto::vi_shape(out))
+        .map(onnx_proto::vi_shape)
         .collect()
 }
 
@@ -260,26 +263,16 @@ fn get_segment_shape(slice_path: Option<&str>) -> TensorShape {
         None => return TensorShape::default(),
     };
 
-    let inputs: Vec<Vec<serde_json::Value>> = graph
+    let inputs: Vec<Vec<i64>> = graph
         .input
         .iter()
-        .map(|inp| {
-            onnx_proto::vi_shape(inp)
-                .iter()
-                .map(|&d| serde_json::Value::Number(d.into()))
-                .collect()
-        })
+        .map(onnx_proto::vi_shape)
         .collect();
 
-    let outputs: Vec<Vec<serde_json::Value>> = graph
+    let outputs: Vec<Vec<i64>> = graph
         .output
         .iter()
-        .map(|out| {
-            onnx_proto::vi_shape(out)
-                .iter()
-                .map(|&d| serde_json::Value::Number(d.into()))
-                .collect()
-        })
+        .map(onnx_proto::vi_shape)
         .collect();
 
     TensorShape {

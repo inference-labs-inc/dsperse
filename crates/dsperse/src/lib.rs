@@ -7,3 +7,6 @@ pub mod pipeline;
 pub mod schema;
 pub mod slicer;
 pub mod utils;
+
+#[cfg(feature = "python")]
+mod python;

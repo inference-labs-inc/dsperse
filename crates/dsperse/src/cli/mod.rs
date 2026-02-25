@@ -1,12 +1,45 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, Parser, Subcommand};
 
 use crate::archive::converter::{self, FormatType};
 use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
+
+#[derive(Parser)]
+#[command(name = "dsperse", about = "Distributed zkML Toolkit")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+    #[arg(long, default_value = "warn", global = true)]
+    pub log_level: String,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    Slice(SliceArgs),
+    Compile(CompileArgs),
+    Run(RunArgs),
+    Prove(ProveArgs),
+    Verify(VerifyArgs),
+    #[command(name = "full-run")]
+    FullRun(FullRunArgs),
+    Convert(ConvertArgs),
+}
+
+pub fn dispatch(command: Commands) -> Result<()> {
+    match command {
+        Commands::Slice(args) => cmd_slice(args),
+        Commands::Compile(args) => cmd_compile(args),
+        Commands::Run(args) => cmd_run(args),
+        Commands::Prove(args) => cmd_prove(args),
+        Commands::Verify(args) => cmd_verify(args),
+        Commands::FullRun(args) => cmd_full_run(args),
+        Commands::Convert(args) => cmd_convert(args),
+    }
+}
 
 #[derive(Args)]
 pub struct SliceArgs {
@@ -60,8 +93,6 @@ pub struct ProveArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(long)]
-    pub tiles: Option<String>,
 }
 
 #[derive(Args)]
@@ -182,18 +213,11 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
         .slices_dir
         .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    let tiles = args
-        .tiles
-        .as_ref()
-        .map(|s| parse_index_spec(s))
-        .transpose()?;
-
     pipeline::prove_run(
         &args.run_dir,
         &slices_dir,
         &backend,
         args.parallel.get(),
-        tiles.as_deref(),
     )?;
     Ok(())
 }
@@ -252,7 +276,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::run_inference(&slices_dir, &input_file, &run_dir, &backend, &config)?;
 
     tracing::info!("proving");
-    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel.get(), None)?;
+    pipeline::prove_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;
 
     tracing::info!("verifying");
     pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;

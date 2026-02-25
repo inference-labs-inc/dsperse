@@ -31,7 +31,7 @@ pub fn slice_dir_path(root: &Path, index: usize) -> PathBuf {
 }
 
 pub fn normalize_path(path: &str) -> PathBuf {
-    let expanded = if path.starts_with('~') {
+    if path.starts_with('~') {
         if let Some(home) = dirs_home() {
             PathBuf::from(path.replacen('~', &home.to_string_lossy(), 1))
         } else {
@@ -39,8 +39,7 @@ pub fn normalize_path(path: &str) -> PathBuf {
         }
     } else {
         PathBuf::from(path)
-    };
-    expanded
+    }
 }
 
 fn dirs_home() -> Option<PathBuf> {

@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
 use crate::backend::jstprove::JstproveBackend;
+use crate::backend::onnx::NamedOutputs;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
@@ -244,6 +245,7 @@ pub fn run_inference(
     Ok(final_meta)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_slice(
     slices_dir: &Path,
     slice_run_dir: &Path,
@@ -269,7 +271,6 @@ fn execute_slice(
         let slice_circuit = meta
             .jstprove_circuit_path
             .as_deref()
-            .or(meta.circuit_path.as_deref())
             .map(std::path::PathBuf::from);
         return execute_tiled(
             slices_dir,
@@ -324,7 +325,6 @@ fn execute_single(
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
-            .or(meta.circuit_path.as_deref())
             .map(std::path::PathBuf::from)
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
@@ -382,6 +382,7 @@ fn execute_single(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_tiled(
     slices_dir: &Path,
     slice_run_dir: &Path,
@@ -390,7 +391,7 @@ fn execute_tiled(
     slice_circuit_path: Option<&Path>,
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     backend: &JstproveBackend,
-    _config: &RunConfig,
+    config: &RunConfig,
 ) -> Result<ExecutionInfo> {
     let input_arr = tensor_cache
         .get(&tiling.input_name)
@@ -476,7 +477,7 @@ fn execute_tiled(
     let circuit_path = circuit_path.map(Arc::from);
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(_config.parallel)
+        .num_threads(config.parallel)
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
@@ -520,9 +521,12 @@ fn execute_tiled(
 
                 let tile_output = if let Some(ref wm) = warm_model {
                     let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                    wm.run(&input_flat).map(|(data, shape)| {
-                        ArrayD::from_shape_vec(IxDyn(&shape), data)
-                            .expect("warm model output reshape")
+                    wm.run(&input_flat).and_then(|(data, shape)| {
+                        ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {
+                            crate::error::DsperseError::Pipeline(format!(
+                                "warm model output reshape: {e}"
+                            ))
+                        })
                     })
                 } else {
                     let onnx = tile_onnx.as_ref().unwrap();
@@ -1113,7 +1117,7 @@ fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f6
 fn run_onnx_inference_named(
     onnx_path: &Path,
     input: &ArrayD<f64>,
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let input_flat: Vec<f64> = input.iter().copied().collect();
     let input_shape = input.shape();
     crate::backend::onnx::run_inference_named(onnx_path, &input_flat, input_shape)
@@ -1123,7 +1127,7 @@ fn run_onnx_inference_multi_named(
     onnx_path: &Path,
     tensor_cache: &HashMap<String, ArrayD<f64>>,
     input_names: &[String],
-) -> Result<HashMap<String, (Vec<f64>, Vec<usize>)>> {
+) -> Result<NamedOutputs> {
     let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = input_names
         .iter()
         .map(|name| {
@@ -1237,10 +1241,6 @@ pub(crate) fn build_run_metadata(
             } else {
                 "onnx".into()
             },
-            circuit_path: node.and_then(|n| n.circuit_path.clone()),
-            settings_path: None,
-            vk_path: None,
-            pk_path: None,
             jstprove_circuit_path: node.and_then(|n| n.circuit_path.clone()),
             jstprove_settings_path: None,
         };

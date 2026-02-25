@@ -25,7 +25,7 @@ pub fn compile_slices(
     let slices: Vec<_> = metadata
         .slices
         .iter()
-        .filter(|s| layers.map_or(true, |l| l.contains(&s.index)))
+        .filter(|s| layers.is_none_or(|l| l.contains(&s.index)))
         .collect();
 
     tracing::info!(total = slices.len(), "compiling slices");

@@ -3,6 +3,10 @@ name = "dsperse"
 version = "0.0.0"
 edition.workspace = true
 
+[features]
+default = []
+python = ["dep:pyo3"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -18,7 +22,12 @@ walkdir.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
 prost.workspace = true
+pyo3 = { workspace = true, optional = true }
 jstprove_circuits.workspace = true
 
 [build-dependencies]
 prost-build = "0.13"
+
+[lib]
+name = "dsperse"
+crate-type = ["cdylib", "lib"]

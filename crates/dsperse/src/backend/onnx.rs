@@ -258,17 +258,52 @@ fn collect_output_names(model: &InferenceModel) -> Vec<String> {
         .collect()
 }
 
+fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
+    let shape = tv.shape().to_vec();
+    let dt = tv.datum_type();
+    let data: Vec<f64> = if dt == f32::datum_type() {
+        let arr = tv
+            .to_array_view::<f32>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == f64::datum_type() {
+        let arr = tv
+            .to_array_view::<f64>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().copied().collect()
+    } else if dt == i64::datum_type() {
+        let arr = tv
+            .to_array_view::<i64>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| v as f64).collect()
+    } else if dt == i32::datum_type() {
+        let arr = tv
+            .to_array_view::<i32>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt.is_tdim() {
+        let casted = tv
+            .cast_to::<i64>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: TDim->i64 cast: {e}")))?;
+        let arr = casted
+            .to_array_view::<i64>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| v as f64).collect()
+    } else {
+        return Err(DsperseError::Onnx(format!(
+            "{label}: unsupported datum type {dt:?}"
+        )));
+    };
+    Ok((data, shape))
+}
+
 fn zip_named_outputs(
     names: &[String],
     result: &[TValue],
 ) -> Result<NamedOutputs> {
     let mut map = HashMap::new();
     for (i, tv) in result.iter().enumerate() {
-        let arr = tv
-            .to_array_view::<f32>()
-            .map_err(|e| DsperseError::Onnx(format!("output {i}: {e}")))?;
-        let shape = arr.shape().to_vec();
-        let data: Vec<f64> = arr.iter().map(|&v| f64::from(v)).collect();
+        let (data, shape) = tvalue_to_f64(tv, &format!("output {i}"))?;
         let name = names.get(i).cloned().unwrap_or_else(|| format!("output_{i}"));
         map.insert(name, (data, shape));
     }
@@ -279,13 +314,5 @@ fn extract_first_output(result: &[TValue]) -> Result<(Vec<f64>, Vec<usize>)> {
     let output = result
         .first()
         .ok_or_else(|| DsperseError::Onnx("no output from model".into()))?;
-
-    let output_tensor = output
-        .to_array_view::<f32>()
-        .map_err(|e| DsperseError::Onnx(format!("output tensor: {e}")))?;
-
-    let output_shape = output_tensor.shape().to_vec();
-    let output_data: Vec<f64> = output_tensor.iter().map(|&v| f64::from(v)).collect();
-
-    Ok((output_data, output_shape))
+    tvalue_to_f64(output, "output tensor")
 }

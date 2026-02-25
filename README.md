@@ -9,18 +9,50 @@
 
 DSperse is a toolkit for slicing, analyzing, and running neural network models. It currently supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
 
-## OpenClaw / PicoClaw verification demo (branch: `openclaw`)
+## OpenClaw (branch: `openclaw`)
 
-This branch includes `openclaw_demo/`, a minimal demo showing:
+This branch extends DSperse with **ZKProxy** — a zero-knowledge verification protocol for AI agent guardrails. Any ONNX guard model compiles to a ZK circuit via jstprove, and every guardrail decision is proven and verified before any action executes.
 
-- guardrail scanning (prompt injection, toxicity, PII anonymization)
-- ONNX inference using a small supported op set
-- DSperse slice/compile/run/prove/verify on the output layer only
-- a dashboard-style request table (events + metrics)
+### ZKProxy quick start
 
-Entry point:
+```bash
+# 1. Install (Python 3.13 required)
+git clone https://github.com/inference-labs-inc/dsperse && cd dsperse
+git checkout openclaw
+uv pip install -e .
 
-- `openclaw_demo/README.md`
+# 2. Build a guard model from a YAML spec
+python3 openclaw_demo/models/guard_builder.py benchmarks/ironclaw_guard.yaml
+export ZKPROXY_MODEL_PATH=./ironclaw_guard.onnx
+export ZKPROXY_CONFIG_PATH=./ironclaw_guard_config.json
+
+# 3. Start the JSON-RPC worker
+python3 benchmarks/zkproxy_worker.py
+# → {"jsonrpc": "2.0", "method": "startup", "params": {"status": "ready"}}
+
+# 4. Compile the circuit (send on stdin, once per session)
+echo '{"jsonrpc":"2.0","id":1,"method":"compile","params":{"model_path":"ironclaw_guard.onnx"}}' | ...
+
+# 5. Guard check (send on stdin for each request)
+echo '{"jsonrpc":"2.0","id":2,"method":"guard_check","params":{"model_path":"ironclaw_guard.onnx","features":[0.3,0.1,0.42,0.0,0.0,0.0,0.5,0.2]}}' | ...
+```
+
+The decision rule: `allowed = (score < threshold) AND (verified == true)`. A passing score without a verified proof is a block.
+
+### Key files (openclaw branch)
+
+| Path | Purpose |
+|------|---------|
+| `benchmarks/zkproxy_worker.py` | Persistent JSON-RPC worker subprocess |
+| `openclaw_demo/models/guard_builder.py` | YAML → ONNX + config JSON compiler |
+| `openclaw_demo/skills/zkproxy/SKILL.md` | Full protocol reference (RPC methods, YAML spec, error codes, audit log format) |
+| `benchmarks/ironclaw_guard.yaml` | 8-feature guard spec (Aho-Corasick patterns from IronClaw) |
+| `benchmarks/zeroclaw_guard.yaml` | 8-feature guard spec (regex patterns from ZeroClaw) |
+| `openclaw_demo/README.md` | Gateway demo with `/filter`, `/guarded_chat`, `/metrics`, `/events` endpoints |
+
+### Agent integration
+
+ZKProxy is agent-agnostic. The worker is a stdin/stdout JSON-RPC subprocess — any language or framework spawns it and sends requests. Rust integrations exist for [ZKironclaw](https://github.com/shirin-shahabi/ZKironclaw) and [verifiedzeroclaw](https://github.com/shirin-shahabi/verifiedzeroclaw), both behind a `zkproxy` feature flag.
 
 ## Features
 

@@ -584,23 +584,27 @@ fn execute_tiled(
 
     let warm_circuit = match (&circuit_path, &tile_onnx) {
         (Some(cp), Some(onnx_path)) => {
-            let wc = crate::backend::jstprove::WarmCircuit::load(cp, vec![], backend.compress())?;
-            if wc.params.weights_as_inputs {
-                let initializers = if let Some(map) = donor_init_map {
-                    extract_initializers_from_map(map, &wc.params)?
-                } else {
-                    extract_onnx_initializers(onnx_path, &wc.params)?
-                };
-                let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
-                tracing::info!(slice = %slice_id, "loaded circuit bundle + initializers");
-                Some(wc)
-            } else if donor_init_map.is_some() {
+            let params = backend.load_params(cp)?;
+            let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
+
+            if donor_init_map.is_some() && !is_wai {
                 return Err(DsperseError::Pipeline(format!(
                     "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
                 )));
-            } else {
-                Some(wc)
             }
+
+            let initializers = if is_wai {
+                if let Some(map) = donor_init_map {
+                    extract_initializers_from_map(map, params.as_ref().unwrap())?
+                } else {
+                    extract_onnx_initializers(onnx_path, params.as_ref().unwrap())?
+                }
+            } else {
+                vec![]
+            };
+            let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
+            tracing::info!(slice = %slice_id, wai = is_wai, "loaded circuit bundle");
+            Some(wc)
         }
         _ => None,
     };

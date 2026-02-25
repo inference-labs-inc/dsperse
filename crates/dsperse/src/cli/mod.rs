@@ -255,6 +255,12 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         )));
     }
 
+    if args.weights.is_some() && !args.weights_as_inputs {
+        return Err(DsperseError::Other(
+            "--weights requires --weights-as-inputs during compilation".into(),
+        ));
+    }
+
     let layers = args
         .layers
         .as_ref()

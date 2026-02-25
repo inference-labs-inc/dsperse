@@ -73,6 +73,10 @@ pub fn value_to_arrayd(value: &Value) -> Result<ArrayD<f64>> {
         return ArrayD::from_shape_vec(IxDyn(&shape), vec![])
             .map_err(|e| DsperseError::Pipeline(format!("empty arrayd: {e}")));
     }
+    if shape.is_empty() && flat.len() == 1 {
+        return ArrayD::from_shape_vec(IxDyn(&[]), flat)
+            .map_err(|e| DsperseError::Pipeline(format!("scalar arrayd: {e}")));
+    }
     let product: usize = shape.iter().product();
     if product != flat.len() || shape.is_empty() {
         tracing::warn!(
@@ -175,7 +179,7 @@ pub fn build_msgpack_map(entries: Vec<(&str, Value)>) -> Value {
     )
 }
 
-fn map_get_ref<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+pub fn map_get_ref<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     match value {
         Value::Map(entries) => entries.iter().find_map(|(k, v)| {
             if k.as_str().is_some_and(|s| s == key) {

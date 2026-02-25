@@ -17,7 +17,7 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
-    arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache,
+    arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache, map_get_ref,
     read_msgpack, value_to_arrayd, write_msgpack,
 };
 use crate::slicer::onnx_proto::TensorProto;
@@ -179,7 +179,7 @@ pub fn run_inference(
     }
     if input_val.is_map() {
         for name in declared_inputs {
-            let v = map_get_from_value(input_val, name).ok_or_else(|| {
+            let v = map_get_ref(input_val, name).ok_or_else(|| {
                 DsperseError::Pipeline(format!("input map missing key {name:?}"))
             })?;
             tensor_cache.insert(name.clone(), value_to_arrayd(v)?);
@@ -270,8 +270,7 @@ pub fn run_inference(
     final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
 
     let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
-    let meta_bytes = rmp_serde::to_vec_named(&final_meta)?;
-    std::fs::write(&meta_out, meta_bytes).map_err(|e| DsperseError::io(e, &meta_out))?;
+    crate::utils::metadata::save_run_metadata(&meta_out, &final_meta)?;
 
     let last_slice = model_meta
         .slices
@@ -1121,19 +1120,6 @@ fn execute_channel_group(
         Ok(output_tensor)
     } else {
         run_onnx_inference(effective_onnx, group_input)
-    }
-}
-
-fn map_get_from_value<'a>(value: &'a rmpv::Value, key: &str) -> Option<&'a rmpv::Value> {
-    match value {
-        rmpv::Value::Map(entries) => entries.iter().find_map(|(k, v)| {
-            if k.as_str().is_some_and(|s| s == key) {
-                Some(v)
-            } else {
-                None
-            }
-        }),
-        _ => None,
     }
 }
 

@@ -28,7 +28,7 @@ fn convert_dirs_to_dslice_roundtrip() {
     let has_dslice_files = std::fs::read_dir(&dslice_out)
         .expect("read dslice output dir")
         .filter_map(|e| e.ok())
-        .any(|e| e.path().extension().map_or(false, |ext| ext == "dslice"));
+        .any(|e| e.path().extension().is_some_and(|ext| ext == "dslice"));
     assert!(has_dslice_files, "dslice files must be produced");
 }
 
@@ -50,7 +50,7 @@ fn convert_dirs_to_dsperse_roundtrip() {
     )
     .expect("convert to dsperse");
     assert!(dsperse_path.exists(), "dsperse archive must exist");
-    assert!(dsperse_path.extension().map_or(false, |e| e == "dsperse"));
+    assert!(dsperse_path.extension().is_some_and(|e| e == "dsperse"));
 
     let restored_dir = tmp.path().join("restored");
     let restored = converter::convert(

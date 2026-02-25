@@ -1,12 +1,45 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use clap::Args;
+use clap::{Args, Parser, Subcommand};
 
 use crate::archive::converter::{self, FormatType};
 use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
+
+#[derive(Parser)]
+#[command(name = "dsperse", about = "Distributed zkML Toolkit")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+    #[arg(long, default_value = "warn", global = true)]
+    pub log_level: String,
+}
+
+#[derive(Subcommand)]
+pub enum Commands {
+    Slice(SliceArgs),
+    Compile(CompileArgs),
+    Run(RunArgs),
+    Prove(ProveArgs),
+    Verify(VerifyArgs),
+    #[command(name = "full-run")]
+    FullRun(FullRunArgs),
+    Convert(ConvertArgs),
+}
+
+pub fn dispatch(command: Commands) -> Result<()> {
+    match command {
+        Commands::Slice(args) => cmd_slice(args),
+        Commands::Compile(args) => cmd_compile(args),
+        Commands::Run(args) => cmd_run(args),
+        Commands::Prove(args) => cmd_prove(args),
+        Commands::Verify(args) => cmd_verify(args),
+        Commands::FullRun(args) => cmd_full_run(args),
+        Commands::Convert(args) => cmd_convert(args),
+    }
+}
 
 #[derive(Args)]
 pub struct SliceArgs {

@@ -16,6 +16,13 @@ fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
     serde_json::to_string_pretty(value).map_err(|e| to_py_err(DsperseError::Json(e)))
 }
 
+fn require_nonzero(parallel: usize) -> PyResult<()> {
+    if parallel == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("parallel must be > 0"));
+    }
+    Ok(())
+}
+
 #[pyfunction]
 #[pyo3(signature = (model_path, output_dir=None, tile_size=None))]
 fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>) -> PyResult<String> {
@@ -30,6 +37,7 @@ fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_
 #[pyfunction]
 #[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None))]
 fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>) -> PyResult<()> {
+    require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
     let dir = PathBuf::from(slices_dir);
     py.allow_threads(|| {
@@ -40,6 +48,7 @@ fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_
 #[pyfunction]
 #[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false, weights_onnx=None))]
 fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &str, parallel: usize, batch: bool, weights_onnx: Option<&str>) -> PyResult<String> {
+    require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
     let config = RunConfig { parallel, batch, weights_onnx: weights_onnx.map(PathBuf::from) };
     let sd = PathBuf::from(slices_dir);
@@ -54,6 +63,7 @@ fn run_inference(py: Python<'_>, slices_dir: &str, input_file: &str, run_dir: &s
 #[pyfunction]
 #[pyo3(signature = (run_dir, slices_dir, parallel=1))]
 fn prove_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
+    require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
     let rd = PathBuf::from(run_dir);
     let sd = PathBuf::from(slices_dir);
@@ -66,6 +76,7 @@ fn prove_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -
 #[pyfunction]
 #[pyo3(signature = (run_dir, slices_dir, parallel=1))]
 fn verify_run(py: Python<'_>, run_dir: &str, slices_dir: &str, parallel: usize) -> PyResult<String> {
+    require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
     let rd = PathBuf::from(run_dir);
     let sd = PathBuf::from(slices_dir);
@@ -95,36 +106,19 @@ fn convert(py: Python<'_>, input: &str, to: &str, output: Option<&str>, expand_s
 }
 
 #[pyfunction]
-fn cli_main(py: Python<'_>) -> PyResult<()> {
+#[pyo3(signature = (argv=None))]
+fn cli_main(py: Python<'_>, argv: Option<Vec<String>>) -> PyResult<()> {
     use clap::Parser;
     use tracing_subscriber::EnvFilter;
 
-    #[derive(Parser)]
-    #[command(name = "dsperse", about = "Distributed zkML Toolkit")]
-    struct Cli {
-        #[command(subcommand)]
-        command: Commands,
-        #[arg(long, default_value = "warn", global = true)]
-        log_level: String,
-    }
-
-    #[derive(clap::Subcommand)]
-    enum Commands {
-        Slice(crate::cli::SliceArgs),
-        Compile(crate::cli::CompileArgs),
-        Run(crate::cli::RunArgs),
-        Prove(crate::cli::ProveArgs),
-        Verify(crate::cli::VerifyArgs),
-        #[command(name = "full-run")]
-        FullRun(crate::cli::FullRunArgs),
-        Convert(crate::cli::ConvertArgs),
-    }
-
-    let argv: Vec<String> = py
-        .import("sys")?
-        .getattr("argv")?
-        .extract()?;
-    let cli = Cli::try_parse_from(argv).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+    let cli = match argv {
+        Some(args) => crate::cli::Cli::try_parse_from(args.clone()).or_else(|_| {
+            let mut with_prog = vec!["dsperse".to_string()];
+            with_prog.extend(args);
+            crate::cli::Cli::try_parse_from(with_prog)
+        }),
+        None => crate::cli::Cli::try_parse(),
+    }.map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -132,17 +126,7 @@ fn cli_main(py: Python<'_>) -> PyResult<()> {
         )
         .try_init();
 
-    let result = py.allow_threads(|| {
-        match cli.command {
-            Commands::Slice(args) => crate::cli::cmd_slice(args),
-            Commands::Compile(args) => crate::cli::cmd_compile(args),
-            Commands::Run(args) => crate::cli::cmd_run(args),
-            Commands::Prove(args) => crate::cli::cmd_prove(args),
-            Commands::Verify(args) => crate::cli::cmd_verify(args),
-            Commands::FullRun(args) => crate::cli::cmd_full_run(args),
-            Commands::Convert(args) => crate::cli::cmd_convert(args),
-        }
-    });
+    let result = py.allow_threads(|| crate::cli::dispatch(cli.command));
 
     result.map_err(to_py_err)
 }

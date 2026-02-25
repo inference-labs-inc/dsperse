@@ -23,6 +23,17 @@ fn is_elementwise(op: &str) -> bool {
     ELEMENTWISE_OPS.contains(&op)
 }
 
+#[derive(Debug, Clone)]
+pub struct ChannelSplitParams {
+    pub c_in: i64,
+    pub c_out: i64,
+    pub num_groups: i64,
+    pub channels_per_group: i64,
+    pub h: i64,
+    pub w: i64,
+    pub slice_idx: usize,
+}
+
 struct ConvParams {
     node_idx: usize,
     kernel: [i64; 2],
@@ -471,13 +482,17 @@ fn integrate_extra_ops(
     let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
 
     if non_conv.is_empty() {
-        if let Some(last) = nodes.last_mut() {
-            last.output[0] = "tile_out".to_string();
-        } else {
-            return Err(crate::error::DsperseError::Slicer(
+        let last = nodes.last_mut().ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
                 "integrate_extra_ops: no nodes to set output on".into(),
-            ));
-        }
+            )
+        })?;
+        let out = last.output.get_mut(0).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "integrate_extra_ops: last node has no outputs".into(),
+            )
+        })?;
+        *out = "tile_out".to_string();
         return Ok(());
     }
 
@@ -657,6 +672,16 @@ pub fn create_channel_group_slice(
     }))
 }
 
+fn checked_dim_product(factors: &[usize]) -> Result<usize> {
+    factors.iter().try_fold(1usize, |acc, &f| {
+        acc.checked_mul(f).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "slice_weights: dimension product overflow (factors={factors:?})"
+            ))
+        })
+    })
+}
+
 fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<WeightInfo> {
     if weights.dims.len() < 4 {
         return Err(crate::error::DsperseError::Slicer(format!(
@@ -675,7 +700,7 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
     let c_in = to_usize(weights.dims[1], "c_in")?;
     let kh = to_usize(weights.dims[2], "kh")?;
     let kw = to_usize(weights.dims[3], "kw")?;
-    let expected_len = c_out * c_in * kh * kw;
+    let expected_len = checked_dim_product(&[c_out, c_in, kh, kw])?;
     if weights.data.len() != expected_len {
         return Err(crate::error::DsperseError::Slicer(format!(
             "slice_weights: data length {} != expected {} (dims={:?})",
@@ -695,13 +720,16 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
         )));
     }
     let c_group = c_end - c_start;
+    let capacity = checked_dim_product(&[c_out, c_group, kh, kw])?;
+    let stride_cin = checked_dim_product(&[c_in, kh, kw])?;
+    let stride_kh = checked_dim_product(&[kh, kw])?;
 
-    let mut sliced = Vec::with_capacity(c_out * c_group * kh * kw);
+    let mut sliced = Vec::with_capacity(capacity);
     for o in 0..c_out {
         for c in c_start..c_end {
             for h in 0..kh {
                 for w_idx in 0..kw {
-                    let idx = o * c_in * kh * kw + c * kh * kw + h * kw + w_idx;
+                    let idx = o * stride_cin + c * stride_kh + h * kw + w_idx;
                     sliced.push(weights.data[idx]);
                 }
             }
@@ -750,17 +778,15 @@ pub fn save_conv_bias(
 #[allow(clippy::too_many_arguments)]
 pub fn apply_channel_splitting(
     model: &ModelProto,
-    c_in: i64,
-    c_out: i64,
-    num_groups: i64,
-    channels_per_group: i64,
+    cfg: &ChannelSplitParams,
     input_name: &str,
     output_name: &str,
-    h: i64,
-    w: i64,
-    slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
+    let &ChannelSplitParams { c_in, c_out, num_groups, channels_per_group, h, w, slice_idx } = cfg;
+    if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
+        return Ok(None);
+    }
     let graph = match model.graph.as_ref() {
         Some(g) => g,
         None => return Ok(None),
@@ -877,17 +903,14 @@ pub fn apply_tiling(
                     num_groups,
                     "channel splitting Conv slice"
                 );
+                let cs_params = ChannelSplitParams {
+                    c_in, c_out, num_groups, channels_per_group, h, w, slice_idx: idx,
+                };
                 if let Some(info) = apply_channel_splitting(
                     &model,
-                    c_in,
-                    c_out,
-                    num_groups,
-                    channels_per_group,
+                    &cs_params,
                     &input_name,
                     &output_name,
-                    h,
-                    w,
-                    idx,
                     output_dir,
                 )? {
                     results.insert(

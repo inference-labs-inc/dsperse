@@ -81,6 +81,8 @@ pub struct RunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
+    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
+    pub weights: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -123,6 +125,8 @@ pub struct FullRunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
+    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
+    pub weights: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -201,6 +205,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
     let config = RunConfig {
         parallel: args.parallel.get(),
         batch: args.batch,
+        weights_onnx: args.weights,
     };
 
     pipeline::run_inference(&slices_dir, &args.input_file, &run_dir, &backend, &config)?;
@@ -250,6 +255,12 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         )));
     }
 
+    if args.weights.is_some() && !args.weights_as_inputs {
+        return Err(DsperseError::Other(
+            "--weights requires --weights-as-inputs during compilation".into(),
+        ));
+    }
+
     let layers = args
         .layers
         .as_ref()
@@ -270,6 +281,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let config = RunConfig {
         parallel: args.parallel.get(),
         batch: args.batch,
+        weights_onnx: args.weights,
     };
 
     tracing::info!("running inference");

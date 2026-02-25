@@ -55,10 +55,10 @@ DSperse provides seven subcommands that form a complete pipeline:
 |---------|-------------|
 | `slice` | Split an ONNX model into segments |
 | `compile` | Compile slices into ZK circuits |
-| `run` | Execute chained inference across slices |
+| `run` | Execute chained inference across slices (`--weights` to inject consumer ONNX) |
 | `prove` | Generate ZK proofs for a completed run |
 | `verify` | Verify ZK proofs |
-| `full-run` | Execute the entire pipeline (slice, compile, run, prove, verify) |
+| `full-run` | Execute the entire pipeline (slice, compile, run, prove, verify; supports `--weights`) |
 | `convert` | Convert between archive formats (dirs, dslice, dsperse) |
 
 ### Quickstart
@@ -75,6 +75,13 @@ Or run the entire pipeline at once:
 
 ```bash
 dsperse full-run --model-dir models/net --input-file models/net/input.json
+```
+
+To inject consumer weights from a fine-tuned ONNX model (same architecture, different weights):
+
+```bash
+dsperse run --model-dir models/net --input-file models/net/input.json --weights path/to/consumer.onnx
+dsperse full-run --model-dir models/net --input-file models/net/input.json --weights path/to/consumer.onnx
 ```
 
 ### Output Formats
@@ -99,6 +106,15 @@ dsperse.compile_slices("models/net/slices", parallel=4)
 run_json = dsperse.run_inference("models/net/slices", "models/net/input.json", "models/net/run")
 proof_json = dsperse.prove_run("models/net/run", "models/net/slices")
 verify_json = dsperse.verify_run("models/net/run", "models/net/slices")
+```
+
+To inject consumer weights at inference time, pass `weights_onnx` (path to a fine-tuned ONNX with the same architecture):
+
+```python
+run_json = dsperse.run_inference(
+    "models/net/slices", "models/net/input.json", "models/net/run",
+    weights_onnx="path/to/consumer.onnx",
+)
 ```
 
 `slice_model`, `run_inference`, `prove_run`, and `verify_run` return JSON strings parseable with `json.loads()`. `compile_slices` returns `None`. `convert` returns a filesystem path string.

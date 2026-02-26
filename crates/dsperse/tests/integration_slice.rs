@@ -15,7 +15,7 @@ fn slice_net_model() {
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
     assert_eq!(metadata.model_type, "ONNX");
@@ -45,7 +45,7 @@ fn slice_doom_model() {
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -57,6 +57,21 @@ fn slice_doom_model() {
 }
 
 #[test]
+fn slice_net_model_remainder() {
+    let model_path = test_models_dir().join("net/model.onnx");
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let output_dir = tmp.path().join("slices");
+
+    let metadata =
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Remainder.supported_ops()).expect("slice_model with Remainder");
+
+    assert!(!metadata.slices.is_empty());
+    assert_eq!(metadata.model_type, "ONNX");
+}
+
+#[test]
 fn slice_with_tile_size() {
     let model_path = test_models_dir().join("net/model.onnx");
     assert!(model_path.exists(), "test model not found at {}", model_path.display());
@@ -65,7 +80,7 @@ fn slice_with_tile_size() {
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), Some(8)).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), Some(8), jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -82,7 +97,7 @@ fn slice_metadata_roundtrip_from_disk() {
     let output_dir = tmp.path().join("slices");
 
     let original =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     let meta_path = output_dir.join("metadata.msgpack");
     let deserialized = ModelMetadata::load(&meta_path).expect("load metadata");
@@ -103,7 +118,7 @@ fn materialize_from_manifest() {
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     dsperse::slicer::materializer::ensure_all_slices_materialized(&output_dir, &metadata)
         .expect("materialize all slices");
@@ -129,7 +144,7 @@ fn resolve_onnx_points_to_existing_file_after_materialize() {
     let output_dir = tmp.path().join("slices");
 
     let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
 
     dsperse::slicer::materializer::ensure_all_slices_materialized(&output_dir, &metadata)
         .expect("materialize all slices");

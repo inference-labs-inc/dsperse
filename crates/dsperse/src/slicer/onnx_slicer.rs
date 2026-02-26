@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::analyzer::{self, AnalysisResult, NodeAnalysis};
-use super::autotiler::{self, JSTPROVE_SUPPORTED_OPS};
+use super::autotiler;
 use super::materializer;
 use super::onnx_proto::{self, ModelProto};
 use super::ELEMENTWISE_OPS;
@@ -15,6 +15,7 @@ pub fn slice_model(
     onnx_path: &Path,
     output_path: Option<&Path>,
     tile_size: Option<usize>,
+    jstprove_ops: &[&str],
 ) -> Result<ModelMetadata> {
     let model = onnx_proto::load_model(onnx_path)?;
 
@@ -31,7 +32,7 @@ pub fn slice_model(
     });
     std::fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
-    let slice_points = determine_slice_points(&analysis, tile_size);
+    let slice_points = determine_slice_points(&analysis, tile_size, jstprove_ops);
     tracing::info!(points = ?slice_points, "determined slice points");
     debug_assert!(
         !slice_points.is_empty(),
@@ -232,7 +233,7 @@ fn build_shape_from_traced(
     }
 }
 
-fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>) -> Vec<usize> {
+fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>, jstprove_ops: &[&str]) -> Vec<usize> {
     let mut points: HashSet<usize> = HashSet::new();
 
     for node in analysis.nodes.values() {
@@ -245,7 +246,7 @@ fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>) -
     sorted_points.sort();
 
     sorted_points = isolate_conv(&sorted_points, analysis);
-    sorted_points = optimize_jstprove_slices(&sorted_points, analysis);
+    sorted_points = optimize_jstprove_slices(&sorted_points, analysis, jstprove_ops);
 
     if tile_size.is_some() {
         sorted_points = optimize_for_tiling(&sorted_points, analysis);
@@ -276,13 +277,13 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     v
 }
 
-fn optimize_jstprove_slices(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
+fn optimize_jstprove_slices(points: &[usize], analysis: &AnalysisResult, jstprove_ops: &[&str]) -> Vec<usize> {
     let mut updated: HashSet<usize> = points.iter().copied().collect();
     let mut sorted_nodes: Vec<&NodeAnalysis> = analysis.nodes.values().collect();
     sorted_nodes.sort_by_key(|n| n.index);
     let max_idx = sorted_nodes.last().map(|n| n.index).unwrap_or(0);
 
-    let is_supported = |n: &NodeAnalysis| JSTPROVE_SUPPORTED_OPS.contains(&n.node_type.as_str());
+    let is_supported = |n: &NodeAnalysis| jstprove_ops.contains(&n.node_type.as_str());
 
     for i in 0..sorted_nodes.len().saturating_sub(1) {
         if is_supported(sorted_nodes[i]) != is_supported(sorted_nodes[i + 1]) {

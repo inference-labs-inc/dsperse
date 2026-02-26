@@ -6,8 +6,6 @@ use super::ELEMENTWISE_OPS;
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
-pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
-
 fn model_opset(model: &ModelProto) -> i64 {
     model
         .opset_import

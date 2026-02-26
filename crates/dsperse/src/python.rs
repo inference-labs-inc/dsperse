@@ -18,7 +18,7 @@ fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
         .map_err(|e| to_py_err(DsperseError::Other(format!("pretty-json serialization failed: {e}"))))
 }
 
-fn resolve_ops(proof_system: &str, circuit_ops: Option<&Vec<String>>) -> PyResult<Vec<String>> {
+fn resolve_ops(proof_system: &str, circuit_ops: Option<&[String]>) -> PyResult<Vec<String>> {
     let ps: ProofSystem = proof_system
         .parse()
         .map_err(|e: String| PyRuntimeError::new_err(e))?;
@@ -33,7 +33,7 @@ fn resolve_ops(proof_system: &str, circuit_ops: Option<&Vec<String>>) -> PyResul
                     )));
                 }
             }
-            Ok(ops.clone())
+            Ok(ops.to_vec())
         }
     }
 }

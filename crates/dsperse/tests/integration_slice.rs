@@ -57,6 +57,21 @@ fn slice_doom_model() {
 }
 
 #[test]
+fn slice_net_model_remainder() {
+    let model_path = test_models_dir().join("net/model.onnx");
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let output_dir = tmp.path().join("slices");
+
+    let metadata =
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Remainder.supported_ops()).expect("slice_model with Remainder");
+
+    assert!(!metadata.slices.is_empty());
+    assert_eq!(metadata.model_type, "ONNX");
+}
+
+#[test]
 fn slice_with_tile_size() {
     let model_path = test_models_dir().join("net/model.onnx");
     assert!(model_path.exists(), "test model not found at {}", model_path.display());

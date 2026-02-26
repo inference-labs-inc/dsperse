@@ -40,7 +40,7 @@ fn flatten_recursive(value: &Value, out: &mut Vec<f64>) {
             if let Some(f) = n.as_f64() {
                 out.push(f);
             } else {
-                tracing::warn!(number = ?n, "dropping non-f64 representable integer");
+                tracing::warn!(number = ?n, "flatten_recursive: dropping non-f64 representable integer");
             }
         }
         Value::Array(arr) => {
@@ -48,7 +48,9 @@ fn flatten_recursive(value: &Value, out: &mut Vec<f64>) {
                 flatten_recursive(item, out);
             }
         }
-        _ => {}
+        other => {
+            tracing::warn!(variant = %other, "flatten_recursive: dropping non-numeric value during flattening");
+        }
     }
 }
 

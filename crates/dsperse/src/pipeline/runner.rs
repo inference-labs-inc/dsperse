@@ -709,70 +709,44 @@ fn execute_tiled(
                         let flat: Vec<f64> = tile_dyn.iter().copied().collect();
                         wc.witness_f64(&flat)
                     } else {
-                        let Ok(input_bytes) = rmp_serde::to_vec_named(
-                            &build_msgpack_map(vec![("input_data", arrayd_to_value(&tile_dyn))]),
-                        ) else {
-                            return (
-                                TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some("msgpack serialize input".into()),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
-                                None,
-                            );
+                        let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
+                            Ok(pair) => pair,
+                            Err(msg) => {
+                                return (
+                                    TileResult {
+                                        tile_idx,
+                                        success: false,
+                                        error: Some(msg),
+                                        method: Some("jstprove".into()),
+                                        time_sec: start.elapsed().as_secs_f64(),
+                                        proof_path: None,
+                                    },
+                                    None,
+                                );
+                            }
                         };
-                        let Ok(output_bytes) = rmp_serde::to_vec_named(
-                            &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
-                        ) else {
-                            return (
-                                TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some("msgpack serialize output".into()),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
-                                None,
-                            );
-                        };
-                        backend.witness(circuit_path.as_ref().unwrap(), &input_bytes, &output_bytes)
+                        let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
+                        backend.witness(cp, &input_bytes, &output_bytes)
                     }
                 } else {
-                    let Ok(input_bytes) = rmp_serde::to_vec_named(
-                        &build_msgpack_map(vec![("input_data", arrayd_to_value(&tile_dyn))]),
-                    ) else {
-                        return (
-                            TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some("msgpack serialize input".into()),
-                                method: Some("jstprove".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
-                            None,
-                        );
+                    let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
+                        Ok(pair) => pair,
+                        Err(msg) => {
+                            return (
+                                TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some(msg),
+                                    method: Some("jstprove".into()),
+                                    time_sec: start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                },
+                                None,
+                            );
+                        }
                     };
-                    let Ok(output_bytes) = rmp_serde::to_vec_named(
-                        &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
-                    ) else {
-                        return (
-                            TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some("msgpack serialize output".into()),
-                                method: Some("jstprove".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
-                            None,
-                        );
-                    };
-                    backend.witness(circuit_path.as_ref().unwrap(), &input_bytes, &output_bytes)
+                    let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
+                    backend.witness(cp, &input_bytes, &output_bytes)
                 };
 
                 match witness_result {
@@ -1121,6 +1095,21 @@ fn execute_channel_group(
     } else {
         run_onnx_inference(effective_onnx, group_input)
     }
+}
+
+fn serialize_witness_pair(
+    input: &ArrayD<f64>,
+    output: &ArrayD<f64>,
+) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
+    let input_bytes = rmp_serde::to_vec_named(
+        &build_msgpack_map(vec![("input_data", arrayd_to_value(input))]),
+    )
+    .map_err(|e| format!("msgpack serialize input: {e}"))?;
+    let output_bytes = rmp_serde::to_vec_named(
+        &build_msgpack_map(vec![("output_data", arrayd_to_value(output))]),
+    )
+    .map_err(|e| format!("msgpack serialize output: {e}"))?;
+    Ok((input_bytes, output_bytes))
 }
 
 fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {

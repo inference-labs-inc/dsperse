@@ -22,12 +22,10 @@ fn slice_net_model() {
     assert!(!metadata.input_shape.is_empty());
     assert!(!metadata.output_shapes.is_empty());
 
-    let meta_path = output_dir.join("metadata.json");
-    assert!(meta_path.exists(), "metadata.json must be written");
+    let meta_path = output_dir.join("metadata.msgpack");
+    assert!(meta_path.exists(), "metadata.msgpack must be written");
 
-    let loaded: ModelMetadata =
-        serde_json::from_str(&std::fs::read_to_string(&meta_path).expect("read metadata"))
-            .expect("parse metadata");
+    let loaded = ModelMetadata::load(&meta_path).expect("load metadata");
     assert_eq!(loaded.slices.len(), metadata.slices.len());
 
     for slice in &loaded.slices {
@@ -40,8 +38,8 @@ fn slice_net_model() {
         let onnx_file = payload_dir.join(&slice.filename);
         assert!(onnx_file.exists(), "onnx file must exist: {}", onnx_file.display());
 
-        let per_slice_meta = slice_dir.join("metadata.json");
-        assert!(per_slice_meta.exists(), "per-slice metadata.json must exist");
+        let per_slice_meta = slice_dir.join("metadata.msgpack");
+        assert!(per_slice_meta.exists(), "per-slice metadata.msgpack must exist");
     }
 }
 
@@ -78,7 +76,7 @@ fn slice_with_tile_size() {
 
     assert!(!metadata.slices.is_empty());
 
-    let meta_path = output_dir.join("metadata.json");
+    let meta_path = output_dir.join("metadata.msgpack");
     assert!(meta_path.exists());
 }
 
@@ -93,9 +91,8 @@ fn slice_metadata_roundtrip_from_disk() {
     let original =
         dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
 
-    let meta_path = output_dir.join("metadata.json");
-    let json = std::fs::read_to_string(&meta_path).expect("read metadata");
-    let deserialized: ModelMetadata = serde_json::from_str(&json).expect("parse metadata");
+    let meta_path = output_dir.join("metadata.msgpack");
+    let deserialized = ModelMetadata::load(&meta_path).expect("load metadata");
 
     assert_eq!(original.slices.len(), deserialized.slices.len());
     assert_eq!(original.original_model, deserialized.original_model);

@@ -10,8 +10,11 @@ pub enum DsperseError {
         path: PathBuf,
     },
 
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("msgpack encode error: {0}")]
+    MsgpackEncode(#[from] rmp_serde::encode::Error),
+
+    #[error("msgpack decode error: {0}")]
+    MsgpackDecode(#[from] rmp_serde::decode::Error),
 
     #[error("ONNX error: {0}")]
     Onnx(String),

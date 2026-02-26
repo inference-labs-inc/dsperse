@@ -61,5 +61,5 @@ fn convert_dirs_to_dsperse_roundtrip() {
         true,
     )
     .expect("convert back to dirs");
-    assert!(restored.join("metadata.json").exists(), "restored metadata.json must exist");
+    assert!(restored.join("metadata.msgpack").exists(), "restored metadata.msgpack must exist");
 }

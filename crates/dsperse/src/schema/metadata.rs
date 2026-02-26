@@ -165,13 +165,21 @@ pub struct ModelMetadata {
     pub slice_points: Vec<usize>,
     #[serde(default)]
     pub slices: Vec<SliceMetadata>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsperse_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsperse_rev: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jstprove_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jstprove_rev: Option<String>,
 }
 
 impl ModelMetadata {
     pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
         let data =
-            std::fs::read_to_string(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
-        serde_json::from_str(&data).map_err(Into::into)
+            std::fs::read(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
+        rmp_serde::from_slice(&data).map_err(Into::into)
     }
 
     pub fn save(&self, path: &std::path::Path) -> crate::error::Result<()> {
@@ -179,7 +187,15 @@ impl ModelMetadata {
             std::fs::create_dir_all(parent)
                 .map_err(|e| crate::error::DsperseError::io(e, parent))?;
         }
-        let data = serde_json::to_string_pretty(self)?;
+        let data = rmp_serde::to_vec_named(self)?;
         std::fs::write(path, data).map_err(|e| crate::error::DsperseError::io(e, path))
+    }
+
+    pub fn stamp_version(&mut self) {
+        let ver = crate::version::dsperse_artifact_version();
+        self.dsperse_version = Some(ver.dsperse_version);
+        self.dsperse_rev = ver.dsperse_rev;
+        self.jstprove_version = Some(ver.jstprove_version);
+        self.jstprove_rev = ver.jstprove_rev;
     }
 }

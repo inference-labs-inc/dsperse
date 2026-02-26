@@ -108,8 +108,8 @@ fn model_metadata_roundtrip() {
     assert_eq!(tiling.halo, [1, 1]);
     assert_eq!(tiling.tiles.as_ref().unwrap().len(), 2);
 
-    let roundtrip = serde_json::to_string_pretty(&meta).unwrap();
-    let meta2: ModelMetadata = serde_json::from_str(&roundtrip).unwrap();
+    let msgpack_bytes = rmp_serde::to_vec_named(&meta).unwrap();
+    let meta2: ModelMetadata = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(meta2.slices.len(), 2);
     assert_eq!(meta2.slices[0].index, 0);
 }
@@ -173,8 +173,8 @@ fn run_metadata_roundtrip() {
     assert_eq!(circuit_slices.len(), 1);
     assert_eq!(circuit_slices[0].0, "slice_0");
 
-    let roundtrip = serde_json::to_string_pretty(&meta).unwrap();
-    let meta2: RunMetadata = serde_json::from_str(&roundtrip).unwrap();
+    let msgpack_bytes = rmp_serde::to_vec_named(&meta).unwrap();
+    let meta2: RunMetadata = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(meta2.slices.len(), 1);
 }
 
@@ -213,17 +213,17 @@ fn channel_split_roundtrip() {
             {"group_idx": 0, "c_start": 0, "c_end": 16, "path": "channel_groups/group_0.onnx"},
             {"group_idx": 1, "c_start": 16, "c_end": 32, "path": "channel_groups/group_1.onnx"}
         ],
-        "bias_path": "channel_groups/bias.npy"
+        "bias_path": "channel_groups/bias.msgpack"
     }"#;
 
     let info: ChannelSplitInfo = serde_json::from_str(json).unwrap();
     assert_eq!(info.num_groups, 4);
     assert_eq!(info.groups.len(), 2);
     assert_eq!(info.groups[0].c_end, 16);
-    assert_eq!(info.bias_path.as_deref(), Some("channel_groups/bias.npy"));
+    assert_eq!(info.bias_path.as_deref(), Some("channel_groups/bias.msgpack"));
 
-    let roundtrip = serde_json::to_string(&info).unwrap();
-    let info2: ChannelSplitInfo = serde_json::from_str(&roundtrip).unwrap();
+    let msgpack_bytes = rmp_serde::to_vec_named(&info).unwrap();
+    let info2: ChannelSplitInfo = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(info2.num_groups, 4);
 }
 
@@ -268,8 +268,8 @@ fn tensor_shape_i64_deserialization() {
     assert_eq!(shape.input, vec![vec![1i64, 3, 224, 224]]);
     assert_eq!(shape.output, vec![vec![1i64, 1000]]);
 
-    let roundtrip = serde_json::to_string(&shape).unwrap();
-    let shape2: TensorShape = serde_json::from_str(&roundtrip).unwrap();
+    let msgpack_bytes = rmp_serde::to_vec_named(&shape).unwrap();
+    let shape2: TensorShape = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(shape2.input, shape.input);
     assert_eq!(shape2.output, shape.output);
 }
@@ -299,8 +299,8 @@ fn run_slice_metadata_i64_shapes() {
     assert_eq!(meta.input_shape, vec![vec![1i64, 3, 32, 32]]);
     assert_eq!(meta.output_shape, vec![vec![1i64, 16, 16, 16]]);
 
-    let roundtrip = serde_json::to_string_pretty(&meta).unwrap();
-    let meta2: RunSliceMetadata = serde_json::from_str(&roundtrip).unwrap();
+    let msgpack_bytes = rmp_serde::to_vec_named(&meta).unwrap();
+    let meta2: RunSliceMetadata = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(meta2.input_shape, meta.input_shape);
     assert_eq!(meta2.output_shape, meta.output_shape);
 }

@@ -234,7 +234,7 @@ pub fn dirs_to_dsperse(path: &Path, output_path: Option<&Path>, cleanup: bool) -
         for d in &slice_dirs {
             let _ = fs::remove_dir_all(d);
         }
-        let metadata_file = path.join("metadata.json");
+        let metadata_file = path.join(crate::utils::paths::METADATA_FILE);
         if metadata_file.exists() {
             let _ = fs::remove_file(&metadata_file);
         }
@@ -348,8 +348,9 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
             .by_index(i)
             .map_err(|e| DsperseError::Archive(e.to_string()))?;
         let name = entry.name().to_string();
-        if name == "metadata.json" || name.ends_with("/metadata.json") {
-            let dest = out.join("metadata.json");
+        let meta_name = crate::utils::paths::METADATA_FILE;
+        if name == meta_name || name.ends_with(&format!("/{meta_name}")) {
+            let dest = out.join(meta_name);
             let mut out_file = fs::File::create(&dest).map_err(|e| DsperseError::io(e, &dest))?;
             io::copy(&mut entry, &mut out_file).map_err(|e| DsperseError::io(e, &dest))?;
             found = true;
@@ -359,7 +360,8 @@ pub fn extract_metadata_only(archive_path: &Path, output_dir: Option<&Path>) -> 
 
     if !found {
         return Err(DsperseError::Archive(format!(
-            "no metadata.json found in {}",
+            "no {} found in {}",
+            crate::utils::paths::METADATA_FILE,
             archive_path.display()
         )));
     }
@@ -486,12 +488,12 @@ pub fn read_dslice_slice_metadata(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| DsperseError::Archive(e.to_string()))?;
-        if entry.name() == "metadata.json" {
-            let mut buf = String::new();
+        if entry.name() == crate::utils::paths::METADATA_FILE {
+            let mut buf = Vec::new();
             entry
-                .read_to_string(&mut buf)
+                .read_to_end(&mut buf)
                 .map_err(|e| DsperseError::io(e, dslice_path))?;
-            let model_meta: crate::schema::metadata::ModelMetadata = serde_json::from_str(&buf)?;
+            let model_meta: crate::schema::metadata::ModelMetadata = rmp_serde::from_slice(&buf)?;
             return model_meta.slices.into_iter().next().ok_or_else(|| {
                 DsperseError::Metadata(format!(
                     "no slices in metadata inside {}",
@@ -502,7 +504,8 @@ pub fn read_dslice_slice_metadata(
     }
 
     Err(DsperseError::Metadata(format!(
-        "no metadata.json found in {}",
+        "no {} found in {}",
+        crate::utils::paths::METADATA_FILE,
         dslice_path.display()
     )))
 }
@@ -636,7 +639,7 @@ fn has_slice_dirs(path: &Path) -> bool {
 }
 
 fn is_slice_dir(path: &Path) -> bool {
-    path.is_dir() && path.join("metadata.json").exists() && path.join("payload").exists()
+    path.is_dir() && path.join(crate::utils::paths::METADATA_FILE).exists() && path.join("payload").exists()
 }
 
 fn has_dslice_files(path: &Path) -> bool {
@@ -725,27 +728,30 @@ fn ensure_parent(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn write_test_msgpack<T: serde::Serialize>(path: &std::path::Path, value: &T) {
+        let bytes = rmp_serde::to_vec_named(value).unwrap();
+        fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn roundtrip_dirs_to_dslice_to_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let slices_dir = tmp.path().join("slices");
 
-        for i in 0..2 {
+        for i in 0..2u32 {
             let slice_dir = slices_dir.join(format!("slice_{i}"));
             let payload_dir = slice_dir.join("payload");
             fs::create_dir_all(&payload_dir).unwrap();
-            fs::write(
-                slice_dir.join("metadata.json"),
-                format!(r#"{{"index": {i}}}"#),
-            )
-            .unwrap();
+            write_test_msgpack(
+                &slice_dir.join("metadata.msgpack"),
+                &std::collections::HashMap::from([("index", i)]),
+            );
             fs::write(payload_dir.join("model.onnx"), b"fake onnx data").unwrap();
         }
-        fs::write(
-            slices_dir.join("metadata.json"),
-            r#"{"original_model": "test.onnx"}"#,
-        )
-        .unwrap();
+        write_test_msgpack(
+            &slices_dir.join("metadata.msgpack"),
+            &std::collections::HashMap::from([("original_model", "test.onnx")]),
+        );
 
         assert_eq!(detect_type(&slices_dir).unwrap(), FormatType::Dirs);
 
@@ -757,7 +763,7 @@ mod tests {
 
         let dirs_out = tmp.path().join("dirs_output");
         let result2 = dslice_to_dirs(&result, Some(&dirs_out), false).unwrap();
-        assert!(result2.join("slice_0").join("metadata.json").exists());
+        assert!(result2.join("slice_0").join("metadata.msgpack").exists());
         assert!(
             result2
                 .join("slice_1")
@@ -772,22 +778,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let slices_dir = tmp.path().join("slices");
 
-        for i in 0..2 {
+        for i in 0..2u32 {
             let slice_dir = slices_dir.join(format!("slice_{i}"));
             let payload_dir = slice_dir.join("payload");
             fs::create_dir_all(&payload_dir).unwrap();
-            fs::write(
-                slice_dir.join("metadata.json"),
-                format!(r#"{{"index": {i}}}"#),
-            )
-            .unwrap();
+            write_test_msgpack(
+                &slice_dir.join("metadata.msgpack"),
+                &std::collections::HashMap::from([("index", i)]),
+            );
             fs::write(payload_dir.join("model.onnx"), b"fake onnx data").unwrap();
         }
-        fs::write(
-            slices_dir.join("metadata.json"),
-            r#"{"original_model": "test.onnx"}"#,
-        )
-        .unwrap();
+        write_test_msgpack(
+            &slices_dir.join("metadata.msgpack"),
+            &std::collections::HashMap::from([("original_model", "test.onnx")]),
+        );
 
         let dsperse_file = tmp.path().join("test.dsperse");
         let result = dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
@@ -796,7 +800,7 @@ mod tests {
 
         let dirs_out = tmp.path().join("expanded");
         let result2 = dsperse_to_dirs(&result, Some(&dirs_out), true).unwrap();
-        assert!(result2.join("slice_0").join("metadata.json").exists());
+        assert!(result2.join("slice_0").join("metadata.msgpack").exists());
         assert!(
             result2
                 .join("slice_1")
@@ -804,10 +808,12 @@ mod tests {
                 .join("model.onnx")
                 .exists()
         );
-        assert!(result2.join("metadata.json").exists());
+        assert!(result2.join("metadata.msgpack").exists());
 
-        let meta_content = fs::read_to_string(result2.join("metadata.json")).unwrap();
-        assert!(meta_content.contains("test.onnx"));
+        let meta_bytes = fs::read(result2.join("metadata.msgpack")).unwrap();
+        let meta: std::collections::HashMap<String, String> =
+            rmp_serde::from_slice(&meta_bytes).unwrap();
+        assert_eq!(meta.get("original_model").unwrap(), "test.onnx");
     }
 
     #[test]
@@ -815,29 +821,31 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let slices_dir = tmp.path().join("slices");
 
-        for i in 0..3 {
+        for i in 0..3u32 {
             let slice_dir = slices_dir.join(format!("slice_{i}"));
             let payload_dir = slice_dir.join("payload");
             fs::create_dir_all(&payload_dir).unwrap();
-            fs::write(
-                slice_dir.join("metadata.json"),
-                format!(r#"{{"index": {i}}}"#),
-            )
-            .unwrap();
+            write_test_msgpack(
+                &slice_dir.join("metadata.msgpack"),
+                &std::collections::HashMap::from([("index", i)]),
+            );
             fs::write(
                 payload_dir.join("model.onnx"),
                 format!("onnx data for slice {i}"),
             )
             .unwrap();
         }
-        fs::write(slices_dir.join("metadata.json"), "{}").unwrap();
+        write_test_msgpack(
+            &slices_dir.join("metadata.msgpack"),
+            &std::collections::HashMap::<String, String>::new(),
+        );
 
         let dsperse_file = tmp.path().join("test.dsperse");
         dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
 
         let extract_dir = tmp.path().join("extracted");
         let slice_dir = extract_single_slice(&dsperse_file, "slice_1", Some(&extract_dir)).unwrap();
-        assert!(slice_dir.join("metadata.json").exists());
+        assert!(slice_dir.join("metadata.msgpack").exists());
         assert!(slice_dir.join("payload").join("model.onnx").exists());
         assert!(slice_dir.join(EXTRACTED_SENTINEL).exists());
 
@@ -857,20 +865,22 @@ mod tests {
         let slice_dir = slices_dir.join("slice_0");
         let payload_dir = slice_dir.join("payload");
         fs::create_dir_all(&payload_dir).unwrap();
-        fs::write(slice_dir.join("metadata.json"), r#"{"index": 0}"#).unwrap();
+        write_test_msgpack(
+            &slice_dir.join("metadata.msgpack"),
+            &std::collections::HashMap::from([("index", 0u32)]),
+        );
         fs::write(payload_dir.join("model.onnx"), b"data").unwrap();
-        fs::write(
-            slices_dir.join("metadata.json"),
-            r#"{"original_model": "test.onnx"}"#,
-        )
-        .unwrap();
+        write_test_msgpack(
+            &slices_dir.join("metadata.msgpack"),
+            &std::collections::HashMap::from([("original_model", "test.onnx")]),
+        );
 
         let dsperse_file = tmp.path().join("test.dsperse");
         dirs_to_dsperse(&slices_dir, Some(&dsperse_file), false).unwrap();
 
         let out_dir = tmp.path().join("meta_only");
         let result = extract_metadata_only(&dsperse_file, Some(&out_dir)).unwrap();
-        assert!(result.join("metadata.json").exists());
+        assert!(result.join("metadata.msgpack").exists());
         assert!(!result.join("slice_0").exists());
     }
 }

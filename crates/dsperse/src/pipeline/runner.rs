@@ -17,8 +17,8 @@ use crate::schema::execution::{
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::utils::io::{
-    arrayd_to_json, extract_input_data, gather_inputs_from_cache, json_to_arrayd, read_input_json,
-    write_input_json,
+    arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache, map_get_ref,
+    read_msgpack, value_to_arrayd, write_msgpack,
 };
 use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
@@ -41,14 +41,15 @@ impl Default for RunConfig {
 
 pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
     let meta_path = find_metadata_path(slices_dir)
-        .ok_or_else(|| DsperseError::Metadata("no metadata.json in slices".into()))?;
+        .ok_or_else(|| DsperseError::Metadata(format!("no {} in slices", crate::utils::paths::METADATA_FILE)))?;
     let mut model_meta = ModelMetadata::load(&meta_path)?;
 
     if model_meta.slices.is_empty() {
         let dslice_files = crate::archive::converter::find_dslice_files(slices_dir);
         if dslice_files.is_empty() {
             return Err(DsperseError::Metadata(format!(
-                "metadata.json has no slices and no .dslice files found in {}",
+                "{} has no slices and no .dslice files found in {}",
+                crate::utils::paths::METADATA_FILE,
                 slices_dir.display()
             )));
         }
@@ -154,7 +155,7 @@ pub fn run_inference(
 
     std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
 
-    let input_data = read_input_json(input_path)?;
+    let input_data = read_msgpack(input_path)?;
 
     let chain = build_execution_chain(&model_meta, slices_dir);
     let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
@@ -163,7 +164,7 @@ pub fn run_inference(
 
     let input_val = extract_input_data(&input_data).ok_or_else(|| {
         DsperseError::Pipeline(
-            "input JSON has no recognized input key (input_data, input, data, inputs)".into(),
+            "input has no recognized input key (input_data, input, data, inputs)".into(),
         )
     })?;
     let first_slice = model_meta
@@ -176,24 +177,24 @@ pub fn run_inference(
             "first slice has no input dependency".into(),
         ));
     }
-    if input_val.is_object() {
+    if input_val.is_map() {
         for name in declared_inputs {
-            let v = input_val.get(name).ok_or_else(|| {
-                DsperseError::Pipeline(format!("input JSON object missing key {name:?}"))
+            let v = map_get_ref(input_val, name).ok_or_else(|| {
+                DsperseError::Pipeline(format!("input map missing key {name:?}"))
             })?;
-            tensor_cache.insert(name.clone(), json_to_arrayd(v)?);
+            tensor_cache.insert(name.clone(), value_to_arrayd(v)?);
         }
     } else if declared_inputs.len() == 1 {
-        tensor_cache.insert(declared_inputs[0].clone(), json_to_arrayd(input_val)?);
+        tensor_cache.insert(declared_inputs[0].clone(), value_to_arrayd(input_val)?);
     } else {
         return Err(DsperseError::Pipeline(format!(
-            "model declares {} inputs but input JSON is not an object",
+            "model declares {} inputs but input is not a map",
             declared_inputs.len()
         )));
     }
 
-    let input_copy = run_dir.join("input.json");
-    write_input_json(&input_copy, &input_data)?;
+    let input_copy = run_dir.join(crate::utils::paths::INPUT_FILE);
+    write_msgpack(&input_copy, &input_data)?;
 
     let mut results: Vec<ExecutionResultEntry> = Vec::new();
 
@@ -268,9 +269,8 @@ pub fn run_inference(
     final_meta.execution_chain.execution_results = results;
     final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
 
-    let meta_out = run_dir.join("metadata.json");
-    let meta_json = serde_json::to_string_pretty(&final_meta)?;
-    std::fs::write(&meta_out, meta_json).map_err(|e| DsperseError::io(e, &meta_out))?;
+    let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
+    crate::utils::metadata::save_run_metadata(&meta_out, &final_meta)?;
 
     let last_slice = model_meta
         .slices
@@ -315,11 +315,11 @@ pub fn run_inference(
             )),
         }
     })?;
-    let output_path = run_dir.join("output.json");
-    let output_json = arrayd_to_json(output_arr);
-    write_input_json(
+    let output_path = run_dir.join(crate::utils::paths::OUTPUT_FILE);
+    let output_val = arrayd_to_value(output_arr);
+    write_msgpack(
         &output_path,
-        &serde_json::json!({ "output_data": output_json }),
+        &build_msgpack_map(vec![("output_data", output_val)]),
     )?;
 
     Ok(final_meta)
@@ -456,16 +456,16 @@ fn execute_single(
             })?;
             let output_tensor = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
                 .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))?;
-            let input_json_bytes = serde_json::to_vec(
-                &serde_json::json!({ "input_data": arrayd_to_json(&input_tensor) }),
+            let input_bytes = rmp_serde::to_vec_named(
+                &build_msgpack_map(vec![("input_data", arrayd_to_value(&input_tensor))]),
             )?;
-            let output_json_bytes = serde_json::to_vec(
-                &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+            let output_bytes = rmp_serde::to_vec_named(
+                &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
             )?;
-            backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?
+            backend.witness(&circuit_path, &input_bytes, &output_bytes)?
         };
 
-        let witness_path = slice_run_dir.join("witness.bin");
+        let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
 
@@ -709,75 +709,49 @@ fn execute_tiled(
                         let flat: Vec<f64> = tile_dyn.iter().copied().collect();
                         wc.witness_f64(&flat)
                     } else {
-                        let Ok(input_json_bytes) = serde_json::to_vec(
-                            &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
-                        ) else {
-                            return (
-                                TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some("json serialize input".into()),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
-                                None,
-                            );
+                        let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
+                            Ok(pair) => pair,
+                            Err(msg) => {
+                                return (
+                                    TileResult {
+                                        tile_idx,
+                                        success: false,
+                                        error: Some(msg),
+                                        method: Some("jstprove".into()),
+                                        time_sec: start.elapsed().as_secs_f64(),
+                                        proof_path: None,
+                                    },
+                                    None,
+                                );
+                            }
                         };
-                        let Ok(output_json_bytes) = serde_json::to_vec(
-                            &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
-                        ) else {
-                            return (
-                                TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some("json serialize output".into()),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
-                                None,
-                            );
-                        };
-                        backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
+                        let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
+                        backend.witness(cp, &input_bytes, &output_bytes)
                     }
                 } else {
-                    let Ok(input_json_bytes) = serde_json::to_vec(
-                        &serde_json::json!({ "input_data": arrayd_to_json(&tile_dyn) }),
-                    ) else {
-                        return (
-                            TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some("json serialize input".into()),
-                                method: Some("jstprove".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
-                            None,
-                        );
+                    let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
+                        Ok(pair) => pair,
+                        Err(msg) => {
+                            return (
+                                TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some(msg),
+                                    method: Some("jstprove".into()),
+                                    time_sec: start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                },
+                                None,
+                            );
+                        }
                     };
-                    let Ok(output_json_bytes) = serde_json::to_vec(
-                        &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
-                    ) else {
-                        return (
-                            TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some("json serialize output".into()),
-                                method: Some("jstprove".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
-                            None,
-                        );
-                    };
-                    backend.witness(circuit_path.as_ref().unwrap(), &input_json_bytes, &output_json_bytes)
+                    let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
+                    backend.witness(cp, &input_bytes, &output_bytes)
                 };
 
                 match witness_result {
                     Ok(witness_bytes) => {
-                        let witness_path = tile_dir.join("witness.bin");
+                        let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
                         if let Err(e) = std::fs::write(&witness_path, &witness_bytes) {
                             return (
                                 TileResult {
@@ -1025,7 +999,7 @@ fn execute_channel_split(
                 bias_file.display()
             )));
         }
-        let bias_data = read_input_json(&bias_file)?;
+        let bias_data = read_msgpack(&bias_file)?;
         let bias_flat = crate::utils::io::flatten_nested_list(&bias_data);
         if bias_flat.len() != cs.c_out {
             return Err(DsperseError::Pipeline(format!(
@@ -1104,16 +1078,16 @@ fn execute_channel_group(
                 group_input,
             )?
         } else {
-            let input_json_bytes = serde_json::to_vec(
-                &serde_json::json!({ "input_data": arrayd_to_json(group_input) }),
+            let input_bytes = rmp_serde::to_vec_named(
+                &build_msgpack_map(vec![("input_data", arrayd_to_value(group_input))]),
             )?;
-            let output_json_bytes = serde_json::to_vec(
-                &serde_json::json!({ "output_data": arrayd_to_json(&output_tensor) }),
+            let output_bytes = rmp_serde::to_vec_named(
+                &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
             )?;
-            backend.witness(&circuit_path, &input_json_bytes, &output_json_bytes)?
+            backend.witness(&circuit_path, &input_bytes, &output_bytes)?
         };
 
-        let witness_path = group_dir.join("witness.bin");
+        let witness_path = group_dir.join(crate::utils::paths::WITNESS_FILE);
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
 
@@ -1121,6 +1095,21 @@ fn execute_channel_group(
     } else {
         run_onnx_inference(effective_onnx, group_input)
     }
+}
+
+fn serialize_witness_pair(
+    input: &ArrayD<f64>,
+    output: &ArrayD<f64>,
+) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
+    let input_bytes = rmp_serde::to_vec_named(
+        &build_msgpack_map(vec![("input_data", arrayd_to_value(input))]),
+    )
+    .map_err(|e| format!("msgpack serialize input: {e}"))?;
+    let output_bytes = rmp_serde::to_vec_named(
+        &build_msgpack_map(vec![("output_data", arrayd_to_value(output))]),
+    )
+    .map_err(|e| format!("msgpack serialize output: {e}"))?;
+    Ok((input_bytes, output_bytes))
 }
 
 fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {

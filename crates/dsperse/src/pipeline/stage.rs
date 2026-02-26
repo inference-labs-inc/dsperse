@@ -51,9 +51,9 @@ pub fn run_pipeline_stage(
     backend: &JstproveBackend,
     parallel: usize,
 ) -> Result<RunMetadata> {
-    let meta_path = run_dir.join("metadata.json");
-    let data = std::fs::read_to_string(&meta_path).map_err(|e| DsperseError::io(e, &meta_path))?;
-    let mut run_meta: RunMetadata = serde_json::from_str(&data)?;
+    let meta_path = run_dir.join(crate::utils::paths::METADATA_FILE);
+    let data = std::fs::read(&meta_path).map_err(|e| DsperseError::io(e, &meta_path))?;
+    let mut run_meta: RunMetadata = rmp_serde::from_slice(&data)?;
 
     let circuit_slices: Vec<(String, _)> = run_meta
         .iter_circuit_slices()
@@ -146,8 +146,8 @@ pub fn run_pipeline_stage(
         PipelineStage::Verify => run_meta.execution_chain.jstprove_verified_slices = succeeded,
     }
 
-    let meta_json = serde_json::to_string_pretty(&run_meta)?;
-    std::fs::write(&meta_path, meta_json).map_err(|e| DsperseError::io(e, &meta_path))?;
+    let meta_bytes = rmp_serde::to_vec_named(&run_meta)?;
+    std::fs::write(&meta_path, meta_bytes).map_err(|e| DsperseError::io(e, &meta_path))?;
 
     tracing::info!(succeeded, total = circuit_slices.len(), "{} complete", stage.action_label());
     Ok(run_meta)
@@ -170,7 +170,7 @@ fn execute_single_slice(
         .map(|p| resolve_relative_path(slices_dir, p))
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
-    let witness_path = slice_run_dir.join("witness.bin");
+    let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
     let witness_bytes = match std::fs::read(&witness_path) {
         Ok(b) => b,
         Err(e) => {
@@ -189,7 +189,7 @@ fn execute_single_slice(
     match stage {
         PipelineStage::Prove => {
             let proof_bytes = backend.prove(&circuit_path, &witness_bytes)?;
-            let proof_path = slice_run_dir.join("proof.bin");
+            let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
             std::fs::write(&proof_path, &proof_bytes)
                 .map_err(|e| DsperseError::io(e, &proof_path))?;
 
@@ -204,7 +204,7 @@ fn execute_single_slice(
             })
         }
         PipelineStage::Verify => {
-            let proof_path = slice_run_dir.join("proof.bin");
+            let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
             let proof_bytes = match std::fs::read(&proof_path) {
                 Ok(b) => b,
                 Err(e) => {

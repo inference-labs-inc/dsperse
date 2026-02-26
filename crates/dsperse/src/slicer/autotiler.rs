@@ -765,13 +765,13 @@ pub fn save_conv_bias(
     std::fs::create_dir_all(&groups_dir)
         .map_err(|e| crate::error::DsperseError::io(e, &groups_dir))?;
 
-    let bias_json = serde_json::to_string(&bias_data)?;
-    let bias_path = groups_dir.join("bias.json");
-    std::fs::write(&bias_path, bias_json)
+    let bias_bytes = rmp_serde::to_vec_named(&bias_data)?;
+    let bias_path = groups_dir.join("bias.msgpack");
+    std::fs::write(&bias_path, bias_bytes)
         .map_err(|e| crate::error::DsperseError::io(e, &bias_path))?;
 
     Ok(Some(format!(
-        "slice_{slice_idx}/payload/channel_groups/bias.json"
+        "slice_{slice_idx}/payload/channel_groups/bias.msgpack"
     )))
 }
 

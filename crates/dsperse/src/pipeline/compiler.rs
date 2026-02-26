@@ -115,7 +115,7 @@ fn compile_single_slice(
     let jst_dir = slice_dir.join("jstprove");
     std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
 
-    let circuit_path = jst_dir.join("circuit.bin");
+    let circuit_path = jst_dir.join("circuit.msgpack");
 
     let (params, architecture, wandb) =
         converter::prepare_jstprove_artifacts(&onnx_path, weights_as_inputs)?;

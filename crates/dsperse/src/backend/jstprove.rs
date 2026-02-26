@@ -130,12 +130,11 @@ impl JstproveBackend {
 }
 
 fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {
-    let msgpack_path = circuit_path.with_extension("msgpack");
-    let msgpack_str = msgpack_path
+    let path_str = circuit_path
         .to_str()
-        .ok_or_else(|| DsperseError::Backend("non-UTF8 msgpack path".into()))?;
+        .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
 
-    read_circuit_msgpack(msgpack_str)
+    read_circuit_msgpack(path_str)
         .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))
 }
 

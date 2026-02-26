@@ -7,6 +7,8 @@ use crate::backend::jstprove::JstproveBackend;
 use crate::error::DsperseError;
 use crate::pipeline::{self, RunConfig};
 
+use jstprove_circuits::ProofSystem;
+
 fn to_py_err(e: DsperseError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
@@ -14,6 +16,26 @@ fn to_py_err(e: DsperseError) -> PyErr {
 fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
     serde_json::to_string_pretty(value)
         .map_err(|e| to_py_err(DsperseError::Other(format!("pretty-json serialization failed: {e}"))))
+}
+
+fn resolve_ops(proof_system: &str, circuit_ops: Option<&Vec<String>>) -> PyResult<Vec<String>> {
+    let ps: ProofSystem = proof_system
+        .parse()
+        .map_err(|e: String| PyRuntimeError::new_err(e))?;
+    let supported = ps.supported_ops();
+    match circuit_ops {
+        None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),
+        Some(ops) => {
+            for op in ops {
+                if !supported.contains(&op.as_str()) {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "op {op:?} not supported by proof system {ps}. Supported: {supported:?}"
+                    )));
+                }
+            }
+            Ok(ops.clone())
+        }
+    }
 }
 
 fn require_nonzero(parallel: usize) -> PyResult<()> {
@@ -24,24 +46,28 @@ fn require_nonzero(parallel: usize) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_path, output_dir=None, tile_size=None))]
-fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>) -> PyResult<String> {
+#[pyo3(signature = (model_path, output_dir=None, tile_size=None, proof_system="expander", circuit_ops=None))]
+fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_size: Option<usize>, proof_system: &str, circuit_ops: Option<Vec<String>>) -> PyResult<String> {
     let model = PathBuf::from(model_path);
     let out = output_dir.map(PathBuf::from);
+    let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
+    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     let metadata = py.allow_threads(|| {
-        crate::slicer::slice_model(&model, out.as_deref(), tile_size)
+        crate::slicer::slice_model(&model, out.as_deref(), tile_size, &ops_refs)
     }).map_err(to_py_err)?;
     to_pretty_json(&metadata)
 }
 
 #[pyfunction]
-#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None))]
-fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>) -> PyResult<()> {
+#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None))]
+fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>, proof_system: &str, circuit_ops: Option<Vec<String>>) -> PyResult<()> {
     require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
     let dir = PathBuf::from(slices_dir);
+    let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
+    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     py.allow_threads(|| {
-        pipeline::compile_slices(&dir, &backend, parallel, weights_as_inputs, layers.as_deref())
+        pipeline::compile_slices(&dir, &backend, parallel, weights_as_inputs, layers.as_deref(), &ops_refs)
     }).map_err(to_py_err)
 }
 

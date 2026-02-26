@@ -6,7 +6,6 @@ use crate::backend::jstprove::JstproveBackend;
 use crate::converter;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
-use crate::slicer::autotiler::JSTPROVE_SUPPORTED_OPS;
 use crate::slicer::onnx_proto;
 use crate::utils::paths::{find_metadata_path, slice_dir_path};
 
@@ -16,6 +15,7 @@ pub fn compile_slices(
     parallel: usize,
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
+    jstprove_ops: &[&str],
 ) -> Result<()> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!("no {} found in slices directory", crate::utils::paths::METADATA_FILE))
@@ -43,7 +43,7 @@ pub fn compile_slices(
         slices
             .par_iter()
             .filter_map(|slice| {
-                match compile_single_slice(slices_dir, slice, backend, weights_as_inputs) {
+                match compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops) {
                     Ok(true) => {
                         tracing::info!(slice = slice.index, "compiled");
                         None
@@ -77,7 +77,7 @@ pub fn compile_slices(
     }
 }
 
-fn is_jstprove_compatible(onnx_path: &Path) -> Result<bool> {
+fn is_jstprove_compatible(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<bool> {
     let model = onnx_proto::load_model(onnx_path)?;
     let graph = model
         .graph
@@ -86,7 +86,7 @@ fn is_jstprove_compatible(onnx_path: &Path) -> Result<bool> {
     Ok(graph
         .node
         .iter()
-        .all(|n| JSTPROVE_SUPPORTED_OPS.contains(&n.op_type.as_str())))
+        .all(|n| jstprove_ops.contains(&n.op_type.as_str())))
 }
 
 fn compile_single_slice(
@@ -94,6 +94,7 @@ fn compile_single_slice(
     slice: &crate::schema::metadata::SliceMetadata,
     backend: &JstproveBackend,
     weights_as_inputs: bool,
+    jstprove_ops: &[&str],
 ) -> Result<bool> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -112,7 +113,7 @@ fn compile_single_slice(
         )));
     }
 
-    if !is_jstprove_compatible(&onnx_path)? {
+    if !is_jstprove_compatible(&onnx_path, jstprove_ops)? {
         return Ok(false);
     }
 

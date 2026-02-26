@@ -1345,7 +1345,6 @@ pub(crate) fn build_run_metadata(
     chain: &ExecutionChain,
 ) -> RunMetadata {
     let mut slices = HashMap::new();
-    let mut circuit_slices = HashMap::new();
 
     for slice in &model_meta.slices {
         let slice_id = format!("slice_{}", slice.index);
@@ -1368,17 +1367,12 @@ pub(crate) fn build_run_metadata(
             jstprove_settings_path: None,
         };
 
-        if has_circuit {
-            circuit_slices.insert(slice_id.clone(), true);
-        }
-
         slices.insert(slice_id, run_slice);
     }
 
     RunMetadata {
         slices,
         execution_chain: chain.clone(),
-        circuit_slices,
         overall_security: 0.0,
         packaging_type: None,
         source_path: Some(slices_dir.to_string_lossy().into_owned()),

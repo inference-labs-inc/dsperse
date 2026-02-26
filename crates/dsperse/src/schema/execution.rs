@@ -9,10 +9,8 @@ use super::metadata::{Backend, RunSliceMetadata};
 pub enum ExecutionMethod {
     JstproveGenWitness,
     OnnxOnly,
-    OnnxMultiInput,
     Tiled,
     ChannelSplit,
-    JstproveFallbackOnnx,
     JstproveProve,
     JstproveVerify,
 }
@@ -22,10 +20,8 @@ impl std::fmt::Display for ExecutionMethod {
         match self {
             Self::JstproveGenWitness => write!(f, "jstprove_gen_witness"),
             Self::OnnxOnly => write!(f, "onnx_only"),
-            Self::OnnxMultiInput => write!(f, "onnx_multi_input"),
             Self::Tiled => write!(f, "tiled"),
             Self::ChannelSplit => write!(f, "channel_split"),
-            Self::JstproveFallbackOnnx => write!(f, "jstprove_fallback_onnx"),
             Self::JstproveProve => write!(f, "jstprove_prove"),
             Self::JstproveVerify => write!(f, "jstprove_verify"),
         }
@@ -150,8 +146,6 @@ pub struct RunMetadata {
     pub slices: HashMap<String, RunSliceMetadata>,
     #[serde(default)]
     pub execution_chain: ExecutionChain,
-    #[serde(default)]
-    pub circuit_slices: HashMap<String, bool>,
     #[serde(default)]
     pub overall_security: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

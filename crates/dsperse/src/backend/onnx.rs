@@ -163,17 +163,6 @@ pub fn run_inference_named(
     zip_named_outputs(&output_names, &result)
 }
 
-pub fn run_inference_multi(
-    onnx_path: &Path,
-    inputs: &[(&str, Vec<f64>, Vec<usize>)],
-) -> Result<(Vec<f64>, Vec<usize>)> {
-    let named = run_inference_multi_named(onnx_path, inputs)?;
-    named
-        .into_values()
-        .next()
-        .ok_or_else(|| DsperseError::Onnx("no outputs".into()))
-}
-
 pub fn run_inference_multi_named(
     onnx_path: &Path,
     inputs: &[(&str, Vec<f64>, Vec<usize>)],

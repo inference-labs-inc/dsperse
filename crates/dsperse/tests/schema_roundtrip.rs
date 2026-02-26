@@ -152,7 +152,6 @@ fn run_metadata_roundtrip() {
             "jstprove_proved_slices": 0,
             "jstprove_verified_slices": 0
         },
-        "circuit_slices": {"slice_0": true},
         "overall_security": 100.0
     }"#;
 

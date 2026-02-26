@@ -113,19 +113,6 @@ pub fn arrayd_to_value(arr: &ArrayD<f64>) -> Value {
     }
 }
 
-pub fn extract_output_tensor(data: &Value) -> Value {
-    map_get_ref(data, "output_data")
-        .or_else(|| map_get_ref(data, "output"))
-        .cloned()
-        .unwrap_or_else(|| data.clone())
-}
-
-pub fn extract_input_tensor(data: &Value) -> Value {
-    extract_input_data(data)
-        .cloned()
-        .unwrap_or_else(|| data.clone())
-}
-
 pub fn gather_inputs_from_cache(
     cache: &HashMap<String, ArrayD<f64>>,
     inputs: &[String],

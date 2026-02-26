@@ -10,7 +10,6 @@ pub enum Backend {
     #[serde(alias = "JSTPROVE")]
     Jstprove,
     Onnx,
-    Auto,
 }
 
 impl Default for Backend {
@@ -24,7 +23,6 @@ impl std::fmt::Display for Backend {
         match self {
             Self::Jstprove => write!(f, "jstprove"),
             Self::Onnx => write!(f, "onnx"),
-            Self::Auto => write!(f, "auto"),
         }
     }
 }

@@ -20,36 +20,8 @@ pub fn relativize_path(path: &Path, base: &Path) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().to_string())
 }
 
-pub fn dirs_root_from(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
-    if name.starts_with("slice_") {
-        path.parent().unwrap_or(path).to_path_buf()
-    } else {
-        path.to_path_buf()
-    }
-}
-
 pub fn slice_dir_path(root: &Path, index: usize) -> PathBuf {
     root.join(format!("slice_{index}"))
-}
-
-pub fn normalize_path(path: &str) -> PathBuf {
-    if path.starts_with('~') {
-        if let Some(home) = dirs_home() {
-            PathBuf::from(path.replacen('~', &home.to_string_lossy(), 1))
-        } else {
-            PathBuf::from(path)
-        }
-    } else {
-        PathBuf::from(path)
-    }
-}
-
-fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 pub fn find_metadata_path(dir: &Path) -> Option<PathBuf> {

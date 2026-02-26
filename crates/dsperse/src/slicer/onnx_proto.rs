@@ -187,10 +187,6 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     Vec::new()
 }
 
-pub fn tensor_numel(tensor: &TensorProto) -> usize {
-    tensor.dims.iter().map(|&d| d as usize).product()
-}
-
 pub fn build_initializer_map(graph: &GraphProto) -> HashMap<String, &TensorProto> {
     graph
         .initializer

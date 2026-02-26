@@ -13,9 +13,9 @@ use crate::slicer::onnx_proto::{
 
 const SCALE_BASE: u32 = 2;
 const SCALE_EXPONENT: u32 = 18;
-const ALPHA: f64 = 262144.0;
-const WEIGHT_SCALE: f64 = 262144.0;
-const BIAS_SCALE: f64 = 68719476736.0;
+const ALPHA: f64 = (1u64 << SCALE_EXPONENT) as f64;
+const WEIGHT_SCALE: f64 = ALPHA;
+const BIAS_SCALE: f64 = (1u64 << (SCALE_EXPONENT * 2)) as f64;
 const MIN_N_BITS: usize = 16;
 
 pub fn prepare_jstprove_artifacts(

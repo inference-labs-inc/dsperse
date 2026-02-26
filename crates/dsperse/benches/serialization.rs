@@ -136,9 +136,6 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
             jstprove_proved_slices: num_slices,
             jstprove_verified_slices: 0,
         },
-        circuit_slices: (0..num_slices)
-            .map(|i| (format!("slice_{i}"), true))
-            .collect(),
         overall_security: 128.0,
         packaging_type: Some("dsperse".into()),
         source_path: Some("/tmp/model.onnx".into()),

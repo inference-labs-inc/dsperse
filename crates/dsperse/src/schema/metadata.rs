@@ -118,6 +118,14 @@ impl SliceMetadata {
     pub fn output_names(&self) -> &[String] {
         &self.dependencies.output
     }
+
+    pub fn resolve_onnx(&self, slices_dir: &std::path::Path) -> std::path::PathBuf {
+        if self.relative_path.is_empty() {
+            slices_dir.join("model.onnx")
+        } else {
+            slices_dir.join(&self.relative_path)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

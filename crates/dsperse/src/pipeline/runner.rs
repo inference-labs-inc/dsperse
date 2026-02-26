@@ -74,8 +74,7 @@ fn validate_weights_onnx(
     slices_dir: &Path,
 ) -> Result<()> {
     for slice in &model_meta.slices {
-        let slice_dir = slice_dir_path(slices_dir, slice.index);
-        let onnx_path = resolve_relative_path(&slice_dir, &slice.path);
+        let onnx_path = slice.resolve_onnx(slices_dir);
         if !onnx_path.exists() {
             return Err(DsperseError::Pipeline(format!(
                 "slice_{} ONNX not found at {}",
@@ -368,7 +367,6 @@ fn execute_slice(
     }
 
     execute_single(
-        slices_dir,
         slice_run_dir,
         slice_id,
         node,
@@ -379,9 +377,7 @@ fn execute_slice(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_single(
-    slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     node: &ExecutionNode,
@@ -390,9 +386,6 @@ fn execute_single(
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let slice_idx = parse_slice_idx(slice_id)?;
-    let slice_dir = slice_dir_path(slices_dir, slice_idx);
-
     let inputs: Vec<String> = meta
         .dependencies
         .filtered_inputs
@@ -402,7 +395,7 @@ fn execute_single(
         .collect();
     let multi_input = inputs.len() > 1;
 
-    let onnx_path = resolve_relative_path(&slice_dir, &meta.path);
+    let onnx_path = PathBuf::from(&meta.path);
 
     let patched_onnx = if let Some(map) = donor_init_map {
         Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
@@ -851,9 +844,6 @@ fn execute_channel_split(
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let slice_idx = parse_slice_idx(slice_id)?;
-    let slice_dir = slice_dir_path(slices_dir, slice_idx);
-
     let input_arr = tensor_cache
         .get(&cs.input_name)
         .ok_or_else(|| {
@@ -933,7 +923,7 @@ fn execute_channel_split(
         std::fs::create_dir_all(&group_dir).map_err(|e| DsperseError::io(e, &group_dir))?;
 
         let group_output =
-            execute_channel_group(&slice_dir, &group_dir, group, &group_input_dyn, backend, donor_init_map)?;
+            execute_channel_group(slices_dir, &group_dir, group, &group_input_dyn, backend, donor_init_map)?;
 
         let group_4d = if group_output.ndim() == 4 {
             let s = group_output.shape();
@@ -992,7 +982,7 @@ fn execute_channel_split(
     }
 
     if let Some(ref bias_path_str) = cs.bias_path {
-        let bias_file = resolve_relative_path(&slice_dir, bias_path_str);
+        let bias_file = resolve_relative_path(slices_dir, bias_path_str);
         if !bias_file.exists() {
             return Err(DsperseError::Pipeline(format!(
                 "configured bias file not found: {} (bias_path={bias_path_str})",
@@ -1037,14 +1027,14 @@ fn execute_channel_split(
 }
 
 fn execute_channel_group(
-    slice_dir: &Path,
+    slices_dir: &Path,
     group_dir: &Path,
     group: &ChannelGroupInfo,
     group_input: &ArrayD<f64>,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ArrayD<f64>> {
-    let onnx_path = resolve_relative_path(slice_dir, &group.path);
+    let onnx_path = resolve_relative_path(slices_dir, &group.path);
 
     let patched_onnx = if let Some(map) = donor_init_map {
         Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
@@ -1054,7 +1044,7 @@ fn execute_channel_group(
     let effective_onnx = patched_onnx.as_ref().map_or(onnx_path.as_path(), |t| t.path());
 
     if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
-        let circuit_path = resolve_relative_path(slice_dir, circuit_path_str);
+        let circuit_path = resolve_relative_path(slices_dir, circuit_path_str);
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -1230,13 +1220,6 @@ fn reshape_to_4d(flat: &[f64], c: usize, h: usize, w: usize) -> Result<Array4<f6
         .map_err(|e| DsperseError::Pipeline(format!("reshape: {e}")))
 }
 
-fn parse_slice_idx(slice_id: &str) -> Result<usize> {
-    slice_id
-        .strip_prefix("slice_")
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| DsperseError::Pipeline(format!("invalid slice_id format: {slice_id:?}")))
-}
-
 fn store_named_outputs(
     tensor_cache: &mut HashMap<String, ArrayD<f64>>,
     output_names: &[String],
@@ -1326,7 +1309,7 @@ pub(crate) fn build_execution_chain(
             .get(i + 1)
             .map(|s| format!("slice_{}", s.index));
 
-        let onnx_path = Some(slice_dir.join(&slice.path).to_string_lossy().into_owned());
+        let onnx_path = Some(slice.resolve_onnx(slices_dir).to_string_lossy().into_owned());
 
         let backend = if has_circuit { "jstprove" } else { "onnx" };
 
@@ -1373,12 +1356,11 @@ pub(crate) fn build_run_metadata(
 
     for slice in &model_meta.slices {
         let slice_id = format!("slice_{}", slice.index);
-        let slice_dir = slice_dir_path(slices_dir, slice.index);
         let node = chain.nodes.get(&slice_id);
         let has_circuit = node.is_some_and(|n| n.use_circuit);
 
         let run_slice = RunSliceMetadata {
-            path: slice_dir.join(&slice.path).to_string_lossy().into_owned(),
+            path: slice.resolve_onnx(slices_dir).to_string_lossy().into_owned(),
             input_shape: slice.shape.tensor_shape.input.clone(),
             output_shape: slice.shape.tensor_shape.output.clone(),
             dependencies: slice.dependencies.clone(),

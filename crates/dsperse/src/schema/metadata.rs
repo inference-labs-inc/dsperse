@@ -120,7 +120,11 @@ impl SliceMetadata {
     }
 
     pub fn resolve_onnx(&self, slices_dir: &std::path::Path) -> std::path::PathBuf {
-        slices_dir.join(&self.relative_path)
+        if self.relative_path.is_empty() {
+            slices_dir.join("model.onnx")
+        } else {
+            slices_dir.join(&self.relative_path)
+        }
     }
 }
 

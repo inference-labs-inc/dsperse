@@ -108,28 +108,23 @@ fn resolve_onnx_points_to_existing_file_after_slice() {
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+    dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
 
     let loaded = ModelMetadata::load(&output_dir.join("metadata.msgpack")).expect("load metadata");
+    assert!(!loaded.slices.is_empty());
 
     for slice in &loaded.slices {
         let resolved = slice.resolve_onnx(&output_dir);
         assert!(
-            resolved.exists(),
-            "resolve_onnx for slice {} must point to an existing file, got: {}",
+            resolved.is_file(),
+            "resolve_onnx for slice {} must point to a regular file, got: {}",
             slice.index,
             resolved.display()
         );
-        assert!(
-            !resolved.to_string_lossy().contains(&format!(
-                "slice_{}/{}",
-                slice.index,
-                output_dir.to_string_lossy()
-            )),
-            "resolved path must not contain doubled directory prefix"
-        );
+        let resolved_path = resolved.to_string_lossy();
+        let output_str = output_dir.to_string_lossy();
+        let count = resolved_path.matches(output_str.as_ref()).count();
+        assert!(resolved.starts_with(&output_dir), "resolved path must start with output_dir");
+        assert_eq!(count, 1, "output_dir must appear exactly once in resolved path, got {count}");
     }
-
-    assert!(!metadata.slices.is_empty());
 }

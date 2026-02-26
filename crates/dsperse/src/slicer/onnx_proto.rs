@@ -163,16 +163,6 @@ pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
         .unwrap_or_default()
 }
 
-pub fn vi_elem_type(vi: &ValueInfoProto) -> i32 {
-    vi.r#type
-        .as_ref()
-        .and_then(|t| match &t.value {
-            Some(onnx::type_proto::Value::TensorType(tt)) => Some(tt.elem_type),
-            _ => None,
-        })
-        .unwrap_or(1) // FLOAT
-}
-
 pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     if !tensor.float_data.is_empty() {
         return tensor.float_data.clone();

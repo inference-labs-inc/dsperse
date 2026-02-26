@@ -701,6 +701,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32c"
+version = "0.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+dependencies = [
+ "rustc_version",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1824,10 +1833,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "jstprove-io"
+version = "0.1.0"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=bd3e5ca#bd3e5cae42bead453a1f20f0db2ca2ad11b89d95"
+dependencies = [
+ "anyhow",
+ "crc32c",
+ "rmp-serde",
+ "serde",
+ "zstd",
+]
+
+[[package]]
+name = "jstprove-onnx"
+version = "0.1.0"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=bd3e5ca#bd3e5cae42bead453a1f20f0db2ca2ad11b89d95"
+dependencies = [
+ "anyhow",
+ "prost 0.13.5",
+ "prost-build",
+ "serde",
+]
+
+[[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=08d466bedecd8b471dd2b3cee9945f89a38b064c#08d466bedecd8b471dd2b3cee9945f89a38b064c"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=bd3e5ca#bd3e5cae42bead453a1f20f0db2ca2ad11b89d95"
 dependencies = [
+ "anyhow",
  "ark-std",
  "chrono",
  "circuit-std-rs",
@@ -1835,6 +1868,8 @@ dependencies = [
  "ethnum",
  "expander_compiler",
  "halo2curves",
+ "jstprove-io",
+ "jstprove-onnx",
  "lazy_static",
  "ndarray",
  "num-bigint",

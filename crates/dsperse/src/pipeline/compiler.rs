@@ -8,7 +8,7 @@ use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
 use crate::slicer::autotiler::JSTPROVE_SUPPORTED_OPS;
 use crate::slicer::onnx_proto;
-use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
+use crate::utils::paths::{find_metadata_path, slice_dir_path};
 
 pub fn compile_slices(
     slices_dir: &Path,
@@ -143,6 +143,5 @@ fn resolve_compile_onnx(
         }
     }
 
-    let slice_dir = slice_dir_path(slices_dir, slice.index);
-    Ok(resolve_relative_path(&slice_dir, &slice.path))
+    Ok(slice.resolve_onnx(slices_dir))
 }

@@ -99,3 +99,37 @@ fn slice_metadata_roundtrip_from_disk() {
     assert_eq!(original.input_shape, deserialized.input_shape);
     assert_eq!(original.output_shapes, deserialized.output_shapes);
 }
+
+#[test]
+fn resolve_onnx_points_to_existing_file_after_slice() {
+    let model_path = test_models_dir().join("net/model.onnx");
+    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+
+    let tmp = tempfile::tempdir().expect("create temp dir");
+    let output_dir = tmp.path().join("slices");
+
+    let metadata =
+        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None).expect("slice_model");
+
+    let loaded = ModelMetadata::load(&output_dir.join("metadata.msgpack")).expect("load metadata");
+
+    for slice in &loaded.slices {
+        let resolved = slice.resolve_onnx(&output_dir);
+        assert!(
+            resolved.exists(),
+            "resolve_onnx for slice {} must point to an existing file, got: {}",
+            slice.index,
+            resolved.display()
+        );
+        assert!(
+            !resolved.to_string_lossy().contains(&format!(
+                "slice_{}/{}",
+                slice.index,
+                output_dir.to_string_lossy()
+            )),
+            "resolved path must not contain doubled directory prefix"
+        );
+    }
+
+    assert!(!metadata.slices.is_empty());
+}

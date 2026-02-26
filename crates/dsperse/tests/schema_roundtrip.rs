@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use dsperse::schema::*;
 
 #[test]
@@ -303,4 +305,32 @@ fn run_slice_metadata_i64_shapes() {
     let meta2: RunSliceMetadata = rmp_serde::from_slice(&msgpack_bytes).unwrap();
     assert_eq!(meta2.input_shape, meta.input_shape);
     assert_eq!(meta2.output_shape, meta.output_shape);
+}
+
+#[test]
+fn resolve_onnx_uses_relative_path_not_absolute() {
+    let json = r#"{
+        "index": 0,
+        "filename": "slice_0.onnx",
+        "path": "/original/cwd/slices/slice_0/payload/slice_0.onnx",
+        "relative_path": "slice_0/payload/slice_0.onnx",
+        "shape": {"tensor_shape": {"input": [[1, 3, 32, 32]], "output": [[1, 10]]}},
+        "dependencies": {"input": [], "output": [], "filtered_inputs": []},
+        "compilation": {"jstprove": {"compiled": false, "tiled": false, "weights_as_inputs": false, "files": {}}}
+    }"#;
+
+    let slice: SliceMetadata = serde_json::from_str(json).unwrap();
+    let slices_dir = Path::new("/relocated/slices");
+    let resolved = slice.resolve_onnx(slices_dir);
+
+    assert_eq!(
+        resolved,
+        Path::new("/relocated/slices/slice_0/payload/slice_0.onnx"),
+        "resolve_onnx must use relative_path (relative to slices_dir), not the absolute path field"
+    );
+
+    assert!(
+        !resolved.to_string_lossy().contains("/original/"),
+        "resolved path must not contain the original CWD-relative path"
+    );
 }

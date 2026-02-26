@@ -22,6 +22,10 @@ pub fn compile_slices(
     })?;
     let metadata = ModelMetadata::load(&meta_path)?;
 
+    if metadata.original_model_path.is_some() {
+        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &metadata)?;
+    }
+
     let slices: Vec<_> = metadata
         .slices
         .iter()

@@ -50,6 +50,8 @@ fn make_model_metadata(num_slices: usize) -> ModelMetadata {
         dsperse_rev: Some("abc1234".into()),
         jstprove_version: Some("0.1.0".into()),
         jstprove_rev: Some("def5678".into()),
+        traced_shapes: None,
+        original_model_path: None,
     }
 }
 

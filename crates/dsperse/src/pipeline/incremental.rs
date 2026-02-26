@@ -43,6 +43,10 @@ impl IncrementalRun {
     pub fn new(slices_dir: &Path, input: ArrayD<f64>) -> Result<Self> {
         let model_meta = load_model_metadata(slices_dir)?;
 
+        if model_meta.original_model_path.is_some() {
+            crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
+        }
+
         let chain = build_execution_chain(&model_meta, slices_dir);
         let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
 

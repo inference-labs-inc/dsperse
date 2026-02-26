@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::analyzer::{self, AnalysisResult, NodeAnalysis, TiledResult};
+use super::analyzer::{self, AnalysisResult, NodeAnalysis};
 use super::autotiler::{self, JSTPROVE_SUPPORTED_OPS};
-use super::{ELEMENTWISE_OPS, SHAPE_PRESERVING_OPS};
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
-use super::tensor_graph::TensorGraph;
+use super::materializer;
+use super::onnx_proto::{self, ModelProto};
+use super::ELEMENTWISE_OPS;
 use crate::error::{DsperseError, Result};
-use crate::schema::metadata::ModelMetadata;
+use crate::schema::metadata::{
+    Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
+};
 
 pub fn slice_model(
     onnx_path: &Path,
@@ -36,38 +38,198 @@ pub fn slice_model(
         "complete_slice_points guarantees at least [0, end]"
     );
 
-    let model_with_shapes = apply_traced_shapes(model, &traced_shapes);
+    let model_dest = output_dir.join("model.onnx");
+    std::fs::copy(onnx_path, &model_dest).map_err(|e| DsperseError::io(e, &model_dest))?;
 
-    let (slices_paths, tg) = slice_graph(
-        &model_with_shapes,
-        &analysis,
-        &slice_points,
-        &output_dir,
-        &traced_shapes,
-    )?;
+    let segment_ranges = super::build_segment_ranges(&slice_points, None);
 
-    let mut tiled_info: HashMap<usize, TiledResult> = HashMap::new();
-    if let Some(ts) = tile_size {
-        tracing::info!(tile_size = ts, "applying tiling transform");
-        tiled_info = autotiler::apply_tiling(&slices_paths, ts)?;
+    let mut tiled_info = HashMap::new();
+    if tile_size.is_some() {
+        let temp_metadata = build_temp_metadata(&analysis, &slice_points);
+        for (seg_idx, _) in segment_ranges.iter().enumerate() {
+            let slice_model =
+                materializer::materialize_slice_model(&model, &temp_metadata, &traced_shapes, seg_idx)?;
+            if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
+                tiled_info.insert(seg_idx, detection);
+            }
+        }
     }
 
-    let metadata = analyzer::generate_slices_metadata(
+    let slices = build_slice_metadata(
         &analysis,
         &slice_points,
-        &slices_paths,
-        &output_dir,
+        &segment_ranges,
+        &traced_shapes,
         &tiled_info,
-    )?;
+    );
+
+    let mut metadata = ModelMetadata {
+        original_model: analysis.original_model.clone().unwrap_or_default(),
+        model_type: analysis.model_type.clone(),
+        input_shape: analysis.input_shape.clone(),
+        output_shapes: analysis.output_shapes.clone(),
+        slice_points: slice_points[..slice_points.len().saturating_sub(1)].to_vec(),
+        slices,
+        dsperse_version: None,
+        dsperse_rev: None,
+        jstprove_version: None,
+        jstprove_rev: None,
+        traced_shapes: Some(traced_shapes),
+        original_model_path: Some("model.onnx".to_string()),
+    };
+    metadata.stamp_version();
+    metadata.save(&output_dir.join(crate::utils::paths::METADATA_FILE))?;
 
     tracing::info!(
-        slices = slices_paths.len(),
+        slices = metadata.slices.len(),
         tiled = tiled_info.len(),
-        tensor_graph = %tg,
         "slicing complete"
     );
 
     Ok(metadata)
+}
+
+fn build_temp_metadata(_analysis: &AnalysisResult, slice_points: &[usize]) -> ModelMetadata {
+    ModelMetadata {
+        original_model: String::new(),
+        model_type: String::new(),
+        input_shape: Vec::new(),
+        output_shapes: Vec::new(),
+        slice_points: slice_points[..slice_points.len().saturating_sub(1)].to_vec(),
+        slices: Vec::new(),
+        dsperse_version: None,
+        dsperse_rev: None,
+        jstprove_version: None,
+        jstprove_rev: None,
+        traced_shapes: None,
+        original_model_path: None,
+    }
+}
+
+fn build_slice_metadata(
+    analysis: &AnalysisResult,
+    _slice_points: &[usize],
+    segment_ranges: &[(usize, usize)],
+    traced_shapes: &HashMap<String, Vec<i64>>,
+    tiled_info: &HashMap<usize, autotiler::TilingDetection>,
+) -> Vec<SliceMetadata> {
+    let mut slices = Vec::new();
+
+    for (seg_idx, &(start, end)) in segment_ranges.iter().enumerate() {
+        let dependencies = analyzer::get_segment_dependencies(analysis, start, end);
+
+        let shape = build_shape_from_traced(analysis, start, end, &dependencies, traced_shapes);
+
+        let filename = format!("slice_{seg_idx}.onnx");
+        let relative_path = format!("slice_{seg_idx}/payload/{filename}");
+
+        let mut tiling = None;
+        let mut channel_split = None;
+        if let Some(detection) = tiled_info.get(&seg_idx) {
+            match detection {
+                autotiler::TilingDetection::Spatial {
+                    input_name,
+                    output_name,
+                    c_in,
+                    c_out,
+                    h: _,
+                    w: _,
+                    tile_size: actual_tile,
+                    halo,
+                    tiles_y,
+                    tiles_x,
+                    out_tile,
+                    stride,
+                } => {
+                    tiling = Some(crate::schema::tiling::TilingInfo {
+                        slice_idx: seg_idx,
+                        tile_size: *actual_tile as usize,
+                        num_tiles: (*tiles_y * *tiles_x) as usize,
+                        tiles_y: *tiles_y as usize,
+                        tiles_x: *tiles_x as usize,
+                        halo: *halo,
+                        out_tile: *out_tile,
+                        stride: *stride,
+                        c_in: *c_in as usize,
+                        c_out: *c_out as usize,
+                        input_name: input_name.clone(),
+                        output_name: output_name.clone(),
+                        tile: None,
+                        tiles: None,
+                    });
+                }
+                autotiler::TilingDetection::ChannelSplit {
+                    input_name,
+                    output_name,
+                    c_in,
+                    c_out,
+                    h,
+                    w,
+                    num_groups,
+                    channels_per_group,
+                } => {
+                    channel_split = Some(crate::schema::tiling::ChannelSplitInfo {
+                        slice_idx: seg_idx,
+                        c_in: *c_in as usize,
+                        c_out: *c_out as usize,
+                        num_groups: *num_groups as usize,
+                        channels_per_group: *channels_per_group as usize,
+                        input_name: input_name.clone(),
+                        output_name: output_name.clone(),
+                        h: *h as usize,
+                        w: *w as usize,
+                        out_h: 0,
+                        out_w: 0,
+                        groups: Vec::new(),
+                        bias_path: None,
+                    });
+                }
+            }
+        }
+
+        slices.push(SliceMetadata {
+            index: seg_idx,
+            filename: filename.clone(),
+            path: format!("payload/{filename}"),
+            relative_path,
+            shape: SliceShapeWrapper {
+                tensor_shape: shape,
+            },
+            dependencies,
+            tiling,
+            channel_split,
+            compilation: Compilation::default(),
+            slice_metadata: None,
+            slice_metadata_relative_path: None,
+        });
+    }
+
+    slices
+}
+
+fn build_shape_from_traced(
+    _analysis: &AnalysisResult,
+    _start: usize,
+    _end: usize,
+    dependencies: &Dependencies,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+) -> TensorShape {
+    let input_shapes: Vec<Vec<i64>> = dependencies
+        .filtered_inputs
+        .iter()
+        .filter_map(|name| traced_shapes.get(name).cloned())
+        .collect();
+
+    let output_shapes: Vec<Vec<i64>> = dependencies
+        .output
+        .iter()
+        .filter_map(|name| traced_shapes.get(name).cloned())
+        .collect();
+
+    TensorShape {
+        input: input_shapes,
+        output: output_shapes,
+    }
 }
 
 fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>) -> Vec<usize> {
@@ -298,7 +460,7 @@ fn trace_shapes_tract(
         }
 
         for node in &graph.node {
-            if SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str()) {
+            if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str()) {
                 if let Some(inp) = node.input.first() {
                     if let Some(in_shape) = shapes.get(inp).cloned() {
                         for out in &node.output {
@@ -396,394 +558,4 @@ fn trace_shapes_tract(
 
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok(shapes)
-}
-
-fn apply_traced_shapes(mut model: ModelProto, shapes: &HashMap<String, Vec<i64>>) -> ModelProto {
-    fn set_shape(vi: &mut ValueInfoProto, shape: &[i64]) {
-        if let Some(ref mut tp) = vi.r#type {
-            if let Some(onnx_proto::onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value {
-                tt.shape = Some(onnx_proto::onnx::TensorShapeProto {
-                    dim: shape
-                        .iter()
-                        .map(|&d| onnx_proto::onnx::tensor_shape_proto::Dimension {
-                            denotation: String::new(),
-                            value: Some(
-                                onnx_proto::onnx::tensor_shape_proto::dimension::Value::DimValue(d),
-                            ),
-                        })
-                        .collect(),
-                });
-            }
-        }
-    }
-
-    if let Some(ref mut graph) = model.graph {
-        for inp in &mut graph.input {
-            if let Some(shape) = shapes.get(&inp.name) {
-                set_shape(inp, shape);
-            }
-        }
-        for out in &mut graph.output {
-            if let Some(shape) = shapes.get(&out.name) {
-                set_shape(out, shape);
-            }
-        }
-        for vi in &mut graph.value_info {
-            if let Some(shape) = shapes.get(&vi.name) {
-                set_shape(vi, shape);
-            }
-        }
-
-        let existing: HashSet<String> = graph
-            .input
-            .iter()
-            .chain(graph.output.iter())
-            .chain(graph.value_info.iter())
-            .map(|vi| vi.name.clone())
-            .collect();
-
-        let init_types: HashMap<&str, i32> = graph
-            .initializer
-            .iter()
-            .map(|i| (i.name.as_str(), i.data_type))
-            .collect();
-
-        let node_output_types = build_node_output_types(graph);
-
-        for (name, shape) in shapes {
-            if !existing.contains(name) {
-                let elem_type = init_types
-                    .get(name.as_str())
-                    .copied()
-                    .or_else(|| node_output_types.get(name).copied())
-                    .unwrap_or(TensorProto::FLOAT);
-                graph
-                    .value_info
-                    .push(onnx_proto::make_tensor_value_info(name, elem_type, shape));
-            }
-        }
-    }
-    model
-}
-
-fn slice_graph(
-    model: &ModelProto,
-    _analysis: &AnalysisResult,
-    slice_points: &[usize],
-    output_dir: &Path,
-    traced_shapes: &HashMap<String, Vec<i64>>,
-) -> Result<(HashMap<usize, String>, TensorGraph)> {
-    let graph = model
-        .graph
-        .as_ref()
-        .ok_or_else(|| DsperseError::Slicer("model.graph is None in slice_graph".into()))?;
-    let tensor_graph = TensorGraph::new(graph);
-
-    let init_map: HashMap<&str, &TensorProto> = graph
-        .initializer
-        .iter()
-        .map(|i| (i.name.as_str(), i))
-        .collect();
-
-    let vi_map = onnx_proto::build_value_info_map(graph);
-
-    let init_types: HashMap<&str, i32> = graph
-        .initializer
-        .iter()
-        .map(|i| (i.name.as_str(), i.data_type))
-        .collect();
-
-    let node_output_types = build_node_output_types(graph);
-
-    let segment_ranges = build_segment_ranges(slice_points);
-
-    let future_deps = compute_future_dependencies(graph, &segment_ranges, &init_map);
-
-    let opset_version = model
-        .opset_import
-        .iter()
-        .find(|o| o.domain.is_empty() || o.domain == "ai.onnx")
-        .map(|o| o.version)
-        .unwrap_or(13);
-
-    let constant_producers: HashMap<String, &TensorProto> = graph
-        .node
-        .iter()
-        .filter(|n| n.op_type == "Constant")
-        .flat_map(|n| {
-            n.output.iter().filter_map(|out| {
-                n.attribute
-                    .iter()
-                    .find(|a| a.name == "value")
-                    .and_then(|a| a.t.as_ref())
-                    .map(|t| (out.clone(), t))
-            })
-        })
-        .collect();
-
-    let mut slices_paths = HashMap::new();
-    let mut failures = Vec::new();
-
-    for (seg_idx, &(start, end)) in segment_ranges.iter().enumerate() {
-        let nodes: Vec<NodeProto> = graph.node[start..end].to_vec();
-        if nodes.is_empty() {
-            continue;
-        }
-
-        let seg_outputs: HashSet<String> = nodes
-            .iter()
-            .flat_map(|n| n.output.iter().cloned())
-            .collect();
-
-        let seg_inputs_set: HashSet<String> = nodes
-            .iter()
-            .flat_map(|n| n.input.iter().filter(|s| !s.is_empty()).cloned())
-            .collect();
-
-        let future = future_deps.get(&seg_idx).cloned().unwrap_or_default();
-
-        let query = SegmentQuery {
-            nodes: &nodes,
-            seg_outputs: &seg_outputs,
-            seg_inputs_set: &seg_inputs_set,
-            future_inputs: &future,
-        };
-        let ctx = ShapeContext {
-            graph,
-            init_map: &init_map,
-            vi_map: &vi_map,
-            traced_shapes,
-            init_types: &init_types,
-            node_output_types: &node_output_types,
-            constant_producers: &constant_producers,
-        };
-        let (inputs, outputs, initializers) = get_segment_details(&query, &ctx)?;
-
-        let seg_graph = onnx_proto::make_graph(
-            &format!("segment_{seg_idx}_graph"),
-            nodes,
-            inputs,
-            outputs,
-            initializers,
-        );
-        let seg_model = onnx_proto::make_model(seg_graph, opset_version);
-
-        let save_path = output_dir.join(format!("slice_{seg_idx}"));
-        let payload_dir = save_path.join("payload");
-        std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;
-        let file_path = payload_dir.join(format!("slice_{seg_idx}.onnx"));
-
-        match onnx_proto::save_model(&seg_model, &file_path) {
-            Ok(()) => {
-                tracing::info!(slice = seg_idx, "built slice");
-                slices_paths.insert(seg_idx, file_path.to_string_lossy().to_string());
-            }
-            Err(e) => {
-                tracing::error!(slice = seg_idx, err = %e, "failed to build slice");
-                failures.push((seg_idx, e));
-            }
-        }
-    }
-
-    if !failures.is_empty() {
-        let indices: Vec<usize> = failures.iter().map(|(i, _)| *i).collect();
-        return Err(DsperseError::Slicer(format!(
-            "failed to build {} slice(s): {:?}",
-            failures.len(),
-            indices
-        )));
-    }
-
-    Ok((slices_paths, tensor_graph))
-}
-
-fn build_segment_ranges(slice_points: &[usize]) -> Vec<(usize, usize)> {
-    let mut ranges = Vec::new();
-    for i in 0..slice_points.len() {
-        let start = if i > 0 { slice_points[i - 1] } else { 0 };
-        let end = slice_points[i];
-        if start < end {
-            ranges.push((start, end));
-        }
-    }
-    ranges
-}
-
-fn compute_future_dependencies(
-    graph: &GraphProto,
-    segment_ranges: &[(usize, usize)],
-    init_map: &HashMap<&str, &TensorProto>,
-) -> HashMap<usize, HashSet<String>> {
-    let mut seg_inputs: HashMap<usize, HashSet<String>> = HashMap::new();
-
-    for (seg_idx, &(start, end)) in segment_ranges.iter().enumerate() {
-        let seg_outputs: HashSet<String> = graph.node[start..end]
-            .iter()
-            .flat_map(|n| n.output.iter().cloned())
-            .collect();
-
-        let inputs: HashSet<String> = graph.node[start..end]
-            .iter()
-            .flat_map(|n| n.input.iter())
-            .filter(|inp| {
-                !inp.is_empty()
-                    && !seg_outputs.contains(inp.as_str())
-                    && !init_map.contains_key(inp.as_str())
-            })
-            .cloned()
-            .collect();
-
-        seg_inputs.insert(seg_idx, inputs);
-    }
-
-    let mut future: HashMap<usize, HashSet<String>> = HashMap::new();
-    for seg_idx in 0..segment_ranges.len() {
-        let mut deps = HashSet::new();
-        for future_idx in (seg_idx + 1)..segment_ranges.len() {
-            if let Some(inputs) = seg_inputs.get(&future_idx) {
-                deps.extend(inputs.iter().cloned());
-            }
-        }
-        future.insert(seg_idx, deps);
-    }
-    future
-}
-
-struct SegmentQuery<'a> {
-    nodes: &'a [NodeProto],
-    seg_outputs: &'a HashSet<String>,
-    seg_inputs_set: &'a HashSet<String>,
-    future_inputs: &'a HashSet<String>,
-}
-
-struct ShapeContext<'a> {
-    graph: &'a GraphProto,
-    init_map: &'a HashMap<&'a str, &'a TensorProto>,
-    vi_map: &'a HashMap<String, &'a ValueInfoProto>,
-    traced_shapes: &'a HashMap<String, Vec<i64>>,
-    init_types: &'a HashMap<&'a str, i32>,
-    node_output_types: &'a HashMap<String, i32>,
-    constant_producers: &'a HashMap<String, &'a TensorProto>,
-}
-
-fn get_segment_details(
-    query: &SegmentQuery<'_>,
-    ctx: &ShapeContext<'_>,
-) -> Result<(Vec<ValueInfoProto>, Vec<ValueInfoProto>, Vec<TensorProto>)> {
-    let mut inputs = Vec::new();
-    let mut outputs = Vec::new();
-    let mut initializers = Vec::new();
-
-    let model_output_names: HashSet<String> =
-        ctx.graph.output.iter().map(|o| o.name.clone()).collect();
-
-    let mut added_inputs: HashSet<String> = HashSet::new();
-    let mut sorted_inputs: Vec<_> = query.seg_inputs_set.iter().collect();
-    sorted_inputs.sort();
-    for inp_name in sorted_inputs {
-        if query.seg_outputs.contains(inp_name) {
-            continue;
-        }
-        if ctx.init_map.contains_key(inp_name.as_str()) {
-            initializers.push((*ctx.init_map[inp_name.as_str()]).clone());
-        } else if ctx.constant_producers.contains_key(inp_name) {
-            let mut tensor = ctx.constant_producers[inp_name].clone();
-            tensor.name = inp_name.clone();
-            initializers.push(tensor);
-        } else if !added_inputs.contains(inp_name) {
-            if let Some(vi) = ctx.vi_map.get(inp_name) {
-                inputs.push((*vi).clone());
-            } else {
-                let shape = ctx
-                    .traced_shapes
-                    .get(inp_name)
-                    .cloned()
-                    .ok_or_else(|| {
-                        DsperseError::Slicer(format!(
-                            "no traced shape for segment input tensor '{inp_name}'"
-                        ))
-                    })?;
-                let elem_type = ctx
-                    .init_types
-                    .get(inp_name.as_str())
-                    .copied()
-                    .or_else(|| ctx.node_output_types.get(inp_name).copied())
-                    .unwrap_or(TensorProto::FLOAT);
-                inputs.push(onnx_proto::make_tensor_value_info(
-                    inp_name, elem_type, &shape,
-                ));
-            }
-            added_inputs.insert(inp_name.clone());
-        }
-    }
-
-    let mut sorted_outputs: Vec<_> = query.seg_outputs.iter().collect();
-    sorted_outputs.sort();
-    for out_name in sorted_outputs {
-        let consumed_internally = query.nodes.iter().any(|n| n.input.contains(out_name));
-        let needed_externally =
-            query.future_inputs.contains(out_name) || model_output_names.contains(out_name);
-
-        if !consumed_internally || needed_externally {
-            if let Some(vi) = ctx.vi_map.get(out_name) {
-                outputs.push((*vi).clone());
-            } else {
-                let shape = ctx
-                    .traced_shapes
-                    .get(out_name)
-                    .cloned()
-                    .ok_or_else(|| {
-                        DsperseError::Slicer(format!(
-                            "no traced shape for segment output tensor '{out_name}'"
-                        ))
-                    })?;
-                let elem_type = ctx
-                    .init_types
-                    .get(out_name.as_str())
-                    .copied()
-                    .or_else(|| ctx.node_output_types.get(out_name).copied())
-                    .unwrap_or(TensorProto::FLOAT);
-                outputs.push(onnx_proto::make_tensor_value_info(
-                    out_name, elem_type, &shape,
-                ));
-            }
-        }
-    }
-
-    Ok((inputs, outputs, initializers))
-}
-
-fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
-    let mut types: HashMap<String, i32> = HashMap::new();
-    for node in &graph.node {
-        match node.op_type.as_str() {
-            "Cast" => {
-                if let Some(to) = onnx_proto::get_attribute_int(node, "to") {
-                    for out in &node.output {
-                        if !out.is_empty() {
-                            types.insert(out.clone(), to as i32);
-                        }
-                    }
-                }
-            }
-            "MaxPool" => {
-                if node.output.len() > 1 {
-                    if let Some(idx_out) = node.output.get(1) {
-                        if !idx_out.is_empty() {
-                            types.insert(idx_out.clone(), TensorProto::INT64);
-                        }
-                    }
-                }
-            }
-            "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
-                for out in &node.output {
-                    if !out.is_empty() {
-                        types.insert(out.clone(), TensorProto::INT64);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    types
 }

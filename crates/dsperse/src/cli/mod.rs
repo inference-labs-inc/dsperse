@@ -3,7 +3,6 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::archive::converter::{self, FormatType};
 use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
@@ -26,7 +25,6 @@ pub enum Commands {
     Verify(VerifyArgs),
     #[command(name = "full-run")]
     FullRun(FullRunArgs),
-    Convert(ConvertArgs),
 }
 
 pub fn dispatch(command: Commands) -> Result<()> {
@@ -37,7 +35,6 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Prove(args) => cmd_prove(args),
         Commands::Verify(args) => cmd_verify(args),
         Commands::FullRun(args) => cmd_full_run(args),
-        Commands::Convert(args) => cmd_convert(args),
     }
 }
 
@@ -47,8 +44,6 @@ pub struct SliceArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
-    #[arg(long, value_enum, default_value = "dirs")]
-    pub format: FormatType,
     #[arg(long)]
     pub tile_size: Option<usize>,
 }
@@ -129,20 +124,6 @@ pub struct FullRunArgs {
     pub weights: Option<PathBuf>,
 }
 
-#[derive(Args)]
-pub struct ConvertArgs {
-    #[arg(long)]
-    pub input: PathBuf,
-    #[arg(long, value_enum)]
-    pub to: FormatType,
-    #[arg(long)]
-    pub output: Option<PathBuf>,
-    #[arg(long)]
-    pub expand_slices: bool,
-    #[arg(long)]
-    pub cleanup: bool,
-}
-
 pub fn cmd_slice(args: SliceArgs) -> Result<()> {
     let model_path = args.model_dir.join("model.onnx");
     if !model_path.exists() {
@@ -154,13 +135,6 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
     let metadata =
         crate::slicer::slice_model(&model_path, args.output_dir.as_deref(), args.tile_size)?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
-
-    if args.format != FormatType::Dirs {
-        let default_dir = args.model_dir.join("slices");
-        let slices_dir = args.output_dir.as_deref().unwrap_or(&default_dir);
-        converter::convert(slices_dir, args.format, None, false, true)?;
-    }
-
     Ok(())
 }
 
@@ -294,17 +268,6 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;
 
     tracing::info!(run_dir = %run_dir.display(), "full run complete");
-    Ok(())
-}
-
-pub fn cmd_convert(args: ConvertArgs) -> Result<()> {
-    converter::convert(
-        &args.input,
-        args.to,
-        args.output.as_deref(),
-        args.cleanup,
-        args.expand_slices,
-    )?;
     Ok(())
 }
 

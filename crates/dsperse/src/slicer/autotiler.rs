@@ -1,11 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
-use super::analyzer::TiledResult;
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use super::ELEMENTWISE_OPS;
 use crate::error::Result;
-use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TileInfo, TilingInfo};
+use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
 pub const JSTPROVE_SUPPORTED_OPS: &[&str] = &["Conv"];
 
@@ -860,127 +859,6 @@ pub fn apply_channel_splitting(
         groups,
         bias_path,
     }))
-}
-
-pub fn apply_tiling(
-    slices_paths: &HashMap<usize, String>,
-    tile_size: usize,
-) -> Result<HashMap<usize, TiledResult>> {
-    let mut results = HashMap::new();
-
-    for (&idx, onnx_path) in slices_paths {
-        let path = Path::new(onnx_path);
-        if !path.exists() {
-            tracing::warn!(slice = idx, path = %onnx_path, "ONNX file not found, skipping tiling");
-            continue;
-        }
-        let model = onnx_proto::load_model(path)?;
-        let detection = match detect_tiling_needs(&model, Some(tile_size)) {
-            Some(d) => d,
-            None => continue,
-        };
-
-        let output_dir = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        match detection {
-            TilingDetection::ChannelSplit {
-                input_name,
-                output_name,
-                c_in,
-                c_out,
-                h,
-                w,
-                num_groups,
-                channels_per_group,
-            } => {
-                tracing::info!(
-                    slice = idx,
-                    c_in,
-                    h,
-                    w,
-                    num_groups,
-                    "channel splitting Conv slice"
-                );
-                let cs_params = ChannelSplitParams {
-                    c_in, c_out, num_groups, channels_per_group, h, w, slice_idx: idx,
-                };
-                if let Some(info) = apply_channel_splitting(
-                    &model,
-                    &cs_params,
-                    &input_name,
-                    &output_name,
-                    output_dir,
-                )? {
-                    results.insert(
-                        idx,
-                        TiledResult {
-                            channel_split: Some(info),
-                            tiling: None,
-                        },
-                    );
-                }
-            }
-            TilingDetection::Spatial {
-                input_name,
-                output_name,
-                c_in,
-                c_out,
-                h,
-                w,
-                tile_size: actual_tile,
-                halo,
-                tiles_y,
-                tiles_x,
-                out_tile,
-                stride,
-            } => {
-                tracing::info!(
-                    slice = idx,
-                    c_in,
-                    h,
-                    w,
-                    tile_size = actual_tile,
-                    tiles = tiles_y * tiles_x,
-                    "tiling Conv slice"
-                );
-                if let Some(tile_result) = create_tile_slice(&model, actual_tile, idx, output_dir)?
-                {
-                    let info = TilingInfo {
-                        slice_idx: idx,
-                        tile_size: actual_tile as usize,
-                        num_tiles: (tiles_y * tiles_x) as usize,
-                        tiles_y: tiles_y as usize,
-                        tiles_x: tiles_x as usize,
-                        halo,
-                        out_tile,
-                        stride,
-                        c_in: c_in as usize,
-                        c_out: c_out as usize,
-                        input_name,
-                        output_name,
-                        tile: Some(TileInfo {
-                            path: tile_result.path,
-                            conv_out: tile_result.conv_out,
-                            jstprove_circuit_path: None,
-                        }),
-                        tiles: None,
-                    };
-                    results.insert(
-                        idx,
-                        TiledResult {
-                            tiling: Some(info),
-                            channel_split: None,
-                        },
-                    );
-                }
-            }
-        }
-    }
-
-    tracing::info!(count = results.len(), "tiled Conv slices");
-    Ok(results)
 }
 
 #[derive(Debug)]

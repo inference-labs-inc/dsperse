@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::tiling::{ChannelSplitInfo, TilingInfo};
@@ -181,6 +183,10 @@ pub struct ModelMetadata {
     pub jstprove_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jstprove_rev: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traced_shapes: Option<HashMap<String, Vec<i64>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_model_path: Option<String>,
 }
 
 impl ModelMetadata {

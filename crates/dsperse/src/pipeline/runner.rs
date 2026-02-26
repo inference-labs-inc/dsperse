@@ -45,22 +45,11 @@ pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
     let mut model_meta = ModelMetadata::load(&meta_path)?;
 
     if model_meta.slices.is_empty() {
-        let dslice_files = crate::archive::converter::find_dslice_files(slices_dir);
-        if dslice_files.is_empty() {
-            return Err(DsperseError::Metadata(format!(
-                "{} has no slices and no .dslice files found in {}",
-                crate::utils::paths::METADATA_FILE,
-                slices_dir.display()
-            )));
-        }
-        let mut slices = Vec::with_capacity(dslice_files.len());
-        for dslice_path in &dslice_files {
-            slices.push(crate::archive::converter::read_dslice_slice_metadata(
-                dslice_path,
-            )?);
-        }
-        slices.sort_by_key(|s| s.index);
-        model_meta.slices = slices;
+        return Err(DsperseError::Metadata(format!(
+            "{} has no slices in {}",
+            crate::utils::paths::METADATA_FILE,
+            slices_dir.display()
+        )));
     }
 
     model_meta.slices.sort_by_key(|s| s.index);
@@ -123,6 +112,10 @@ pub fn run_inference(
     config: &RunConfig,
 ) -> Result<RunMetadata> {
     let model_meta = load_model_metadata(slices_dir)?;
+
+    if model_meta.original_model_path.is_some() {
+        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
+    }
 
     let donor_model = if let Some(ref weights_path) = config.weights_onnx {
         if !weights_path.is_file() {

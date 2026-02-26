@@ -1,103 +1,7 @@
-use std::io::Write;
 use std::path::Path;
 
 use ndarray::{ArrayD, IxDyn};
 use rmpv::Value;
-use zip::write::SimpleFileOptions;
-
-fn create_dslice_zip(path: &Path, metadata_bytes: &[u8], payload_content: &[u8]) {
-    let file = std::fs::File::create(path).unwrap();
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    zip.start_file("metadata.msgpack", opts).unwrap();
-    zip.write_all(metadata_bytes).unwrap();
-
-    zip.add_directory("payload/", opts).unwrap();
-    zip.start_file("payload/model.onnx", opts).unwrap();
-    zip.write_all(payload_content).unwrap();
-
-    zip.finish().unwrap();
-}
-
-fn metadata_msgpack() -> Vec<u8> {
-    use serde_json::json;
-    let val = json!({
-        "original_model": "test.onnx",
-        "model_type": "ONNX",
-        "input_shape": [[1, 3, 28, 28]],
-        "output_shapes": [[1, 10]],
-        "slice_points": [0],
-        "slices": [{
-            "index": 0,
-            "filename": "slice_0",
-            "path": "payload/model.onnx",
-            "relative_path": "slice_0",
-            "shape": {"tensor_shape": {"input": [[1, 3, 28, 28]], "output": [[1, 10]]}},
-            "dependencies": {"input": [], "output": [], "filtered_inputs": []},
-            "compilation": {
-                "jstprove": {
-                    "compiled": true,
-                    "tiled": false,
-                    "weights_as_inputs": false,
-                    "files": {
-                        "compiled": "model.compiled"
-                    }
-                }
-            }
-        }]
-    });
-    let meta: dsperse::schema::metadata::ModelMetadata =
-        serde_json::from_value(val).unwrap();
-    rmp_serde::to_vec_named(&meta).unwrap()
-}
-
-#[test]
-fn extract_single_slice_from_dslice_directory() {
-    let tmp = tempfile::tempdir().unwrap();
-    let slices_dir = tmp.path().join("slices");
-    std::fs::create_dir_all(&slices_dir).unwrap();
-
-    create_dslice_zip(
-        &slices_dir.join("slice_0.dslice"),
-        &metadata_msgpack(),
-        b"fake onnx bytes",
-    );
-
-    let result =
-        dsperse::archive::extract_single_slice(&slices_dir, "slice_0", None).unwrap();
-
-    assert_eq!(result, slices_dir.join("slice_0"));
-    assert!(result.join("metadata.msgpack").exists());
-    assert!(result.join("payload").join("model.onnx").exists());
-
-    let onnx = std::fs::read(result.join("payload").join("model.onnx")).unwrap();
-    assert_eq!(onnx, b"fake onnx bytes");
-
-    let result2 =
-        dsperse::archive::extract_single_slice(&slices_dir, "slice_0", None).unwrap();
-    assert_eq!(result, result2);
-    assert!(result2.join("metadata.msgpack").exists());
-}
-
-#[test]
-fn read_dslice_slice_metadata_field_access_pattern() {
-    let tmp = tempfile::tempdir().unwrap();
-    let dslice_path = tmp.path().join("slice_0.dslice");
-
-    create_dslice_zip(&dslice_path, &metadata_msgpack(), b"fake onnx");
-
-    let slice_meta = dsperse::archive::read_dslice_slice_metadata(&dslice_path).unwrap();
-
-    assert!(slice_meta.compilation.jstprove.compiled);
-    assert_eq!(
-        slice_meta.compilation.jstprove.files.compiled.as_deref(),
-        Some("model.compiled")
-    );
-    assert_eq!(slice_meta.path, "payload/model.onnx");
-    assert_eq!(slice_meta.index, 0);
-    assert_eq!(slice_meta.filename, "slice_0");
-}
 
 fn make_value_array(vals: &[f64]) -> Value {
     Value::Array(vals.iter().map(|&v| Value::F64(v)).collect())
@@ -247,41 +151,6 @@ fn slice_dir_path_formats_correctly() {
         dsperse::utils::paths::slice_dir_path(root, 42),
         Path::new("/some/root/slice_42")
     );
-}
-
-#[test]
-fn extract_single_slice_combined_with_metadata_read() {
-    let tmp = tempfile::tempdir().unwrap();
-    let slices_dir = tmp.path().join("slices");
-    std::fs::create_dir_all(&slices_dir).unwrap();
-
-    let meta = metadata_msgpack();
-    create_dslice_zip(&slices_dir.join("slice_0.dslice"), &meta, b"onnx payload");
-
-    let slice_idx: usize = 0;
-    let slice_id = format!("slice_{slice_idx}");
-
-    dsperse::archive::extract_single_slice(&slices_dir, &slice_id, None).unwrap();
-
-    let dslice_file = slices_dir.join(format!("{slice_id}.dslice"));
-    let slice_meta = dsperse::archive::read_dslice_slice_metadata(&dslice_file).unwrap();
-
-    assert!(slice_meta.compilation.jstprove.compiled);
-
-    let slice_dir = dsperse::utils::paths::slice_dir_path(&slices_dir, slice_idx);
-
-    let compiled = slice_meta
-        .compilation
-        .jstprove
-        .files
-        .compiled
-        .as_ref()
-        .unwrap();
-    assert_eq!(compiled, "model.compiled");
-
-    let onnx_path = slice_dir.join(&slice_meta.path);
-    assert!(onnx_path.exists());
-    assert_eq!(onnx_path, slices_dir.join("slice_0/payload/model.onnx"));
 }
 
 #[test]

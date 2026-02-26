@@ -1397,7 +1397,7 @@ fn extract_initializers_from_map(
     Ok(initializers)
 }
 
-fn extract_onnx_initializers(
+pub fn extract_onnx_initializers(
     onnx_path: &Path,
     params: &CircuitParams,
 ) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {

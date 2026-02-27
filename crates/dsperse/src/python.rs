@@ -7,7 +7,7 @@ use crate::backend::jstprove::JstproveBackend;
 use crate::error::DsperseError;
 use crate::pipeline::{self, RunConfig};
 
-use jstprove_circuits::ProofSystem;
+use jstprove_circuits::{ProofSystem, ProofSystemParseError};
 
 fn to_py_err(e: DsperseError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
@@ -21,7 +21,7 @@ fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
 fn resolve_ops(proof_system: &str, circuit_ops: Option<&[String]>) -> PyResult<Vec<String>> {
     let ps: ProofSystem = proof_system
         .parse()
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(|e: ProofSystemParseError| PyRuntimeError::new_err(e.to_string()))?;
     let supported = ps.supported_ops();
     match circuit_ops {
         None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),

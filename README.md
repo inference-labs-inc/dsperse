@@ -7,7 +7,7 @@
 [![Website](https://img.shields.io/badge/Website-Visit%20Us-ff7139?style=flat-square&logo=firefox-browser)](https://inferencelabs.com)
 [![Whitepaper](https://img.shields.io/badge/Whitepaper-Read-lightgrey?style=flat-square&logo=read-the-docs)](http://arxiv.org/abs/2508.06972)
 
-DSperse is a Rust-native toolkit for slicing, analyzing, and running neural network models with zero-knowledge proof generation. It supports ONNX models, allowing you to break down complex models into smaller segments for distributed analysis, optimization, and verification.
+DSperse is a proving-system-agnostic intelligent slicer for verifiable AI. It decomposes ONNX neural network models into circuit-compatible segments and orchestrates compilation, inference, proving, and verification across pluggable ZK backends.
 
 ## Features
 
@@ -16,7 +16,7 @@ DSperse is a Rust-native toolkit for slicing, analyzing, and running neural netw
 - **Layered Inference**: Run inference on sliced models, chaining the output of each segment
 - **Zero-Knowledge Proofs**: Generate and verify proofs for model execution via JSTprove
 - **Tiling and Channel Splitting**: Automatically decompose large convolutions for circuit-compatible execution
-- **Archive Formats**: Package slices as `.dslice` or `.dsperse` bundles for portable distribution
+- **Proof System Agnostic**: Pluggable backend architecture supporting Expander and Remainder proof systems
 
 ## Documentation
 
@@ -49,7 +49,7 @@ dsperse = { git = "https://github.com/inference-labs-inc/dsperse.git" }
 
 ## CLI Usage
 
-DSperse provides seven subcommands that form a complete pipeline:
+DSperse provides six subcommands that form a complete pipeline:
 
 | Command | Description |
 |---------|-------------|
@@ -58,13 +58,12 @@ DSperse provides seven subcommands that form a complete pipeline:
 | `run` | Execute chained inference across slices (`--weights` to inject consumer ONNX) |
 | `prove` | Generate ZK proofs for a completed run |
 | `verify` | Verify ZK proofs |
-| `full-run` | Execute the entire pipeline (slice, compile, run, prove, verify; supports `--weights`) |
-| `convert` | Convert between archive formats (dirs, dslice, dsperse) |
+| `full-run` | Execute compile, run, prove, verify in sequence (supports `--weights`) |
 
 ### Quickstart
 
 ```bash
-dsperse slice --model-dir models/net --format dirs
+dsperse slice --model-dir models/net
 dsperse compile --model-dir models/net --parallel 4
 dsperse run --model-dir models/net --input-file models/net/input.json
 dsperse prove --model-dir models/net --run-dir models/net/run/run_*
@@ -83,18 +82,6 @@ To inject consumer weights from a fine-tuned ONNX model (same architecture, diff
 dsperse run --model-dir models/net --input-file models/net/input.json --weights path/to/consumer.onnx
 dsperse full-run --model-dir models/net --input-file models/net/input.json --weights path/to/consumer.onnx
 ```
-
-### Output Formats
-
-The `--format` flag on `slice` controls the output layout:
-
-| Format | Description |
-|--------|-------------|
-| `dirs` (default) | Raw `slice_N/` directories with `payload/` and per-slice `metadata.json` |
-| `dslice` | Per-slice `.dslice` ZIP archives |
-| `dsperse` | Single `.dsperse` bundle containing all slices |
-
-Use `dsperse convert` to transform between formats after slicing.
 
 ## Python Library Usage
 
@@ -117,7 +104,7 @@ run_json = dsperse.run_inference(
 )
 ```
 
-`slice_model`, `run_inference`, `prove_run`, and `verify_run` return JSON strings parseable with `json.loads()`. `compile_slices` returns `None`. `convert` returns a filesystem path string.
+`slice_model`, `run_inference`, `prove_run`, and `verify_run` return JSON strings parseable with `json.loads()`. `compile_slices` returns `None`.
 
 ## Project Structure
 
@@ -129,7 +116,7 @@ crates/dsperse/
     pipeline/     Compilation, inference, proving, verification orchestration
     backend/      JSTprove backend integration
     schema/       Metadata and execution result types (serde)
-    archive/      Format conversion (dirs, dslice, dsperse)
+    converter.rs  Prepares JSTprove artifacts from ONNX files
     utils/        I/O helpers and path resolution
   tests/          Unit and integration tests
 python/           Thin Python wrapper for PyO3 bindings

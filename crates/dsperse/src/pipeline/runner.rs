@@ -443,10 +443,10 @@ fn execute_single(
             let output_tensor = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
                 .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))?;
             let input_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("input_data", arrayd_to_value(&input_tensor))]),
+                &build_msgpack_map(vec![("input", arrayd_to_value(&input_tensor))]),
             )?;
             let output_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
+                &build_msgpack_map(vec![("output", arrayd_to_value(&output_tensor))]),
             )?;
             backend.witness(&circuit_path, &input_bytes, &output_bytes)?
         };
@@ -1062,10 +1062,10 @@ fn execute_channel_group(
             )?
         } else {
             let input_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("input_data", arrayd_to_value(group_input))]),
+                &build_msgpack_map(vec![("input", arrayd_to_value(group_input))]),
             )?;
             let output_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("output_data", arrayd_to_value(&output_tensor))]),
+                &build_msgpack_map(vec![("output", arrayd_to_value(&output_tensor))]),
             )?;
             backend.witness(&circuit_path, &input_bytes, &output_bytes)?
         };
@@ -1085,11 +1085,11 @@ fn serialize_witness_pair(
     output: &ArrayD<f64>,
 ) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
     let input_bytes = rmp_serde::to_vec_named(
-        &build_msgpack_map(vec![("input_data", arrayd_to_value(input))]),
+        &build_msgpack_map(vec![("input", arrayd_to_value(input))]),
     )
     .map_err(|e| format!("msgpack serialize input: {e}"))?;
     let output_bytes = rmp_serde::to_vec_named(
-        &build_msgpack_map(vec![("output_data", arrayd_to_value(output))]),
+        &build_msgpack_map(vec![("output", arrayd_to_value(output))]),
     )
     .map_err(|e| format!("msgpack serialize output: {e}"))?;
     Ok((input_bytes, output_bytes))

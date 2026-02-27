@@ -122,6 +122,11 @@ fn compile_single_slice(
 
     let circuit_path = jst_dir.join("circuit.msgpack");
 
+    if circuit_path.exists() {
+        tracing::info!(slice = slice.index, "already compiled, skipping");
+        return Ok(true);
+    }
+
     let (params, architecture, wandb) =
         converter::prepare_jstprove_artifacts(&onnx_path, weights_as_inputs)?;
 

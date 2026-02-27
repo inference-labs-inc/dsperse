@@ -5,7 +5,7 @@ use super::analyzer::{self, AnalysisResult, NodeAnalysis};
 use super::autotiler;
 use super::materializer;
 use super::onnx_proto::{self, ModelProto};
-use super::ELEMENTWISE_OPS;
+use super::{ELEMENTWISE_OPS, SHAPE_PRESERVING_OPS};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
     Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
@@ -155,7 +155,11 @@ fn build_slice_metadata(
                         c_out: *c_out as usize,
                         input_name: input_name.clone(),
                         output_name: output_name.clone(),
-                        tile: None,
+                        tile: Some(crate::schema::tiling::TileInfo {
+                            path: format!("slice_{seg_idx}/payload/tiles/tile.onnx"),
+                            conv_out: *out_tile,
+                            jstprove_circuit_path: None,
+                        }),
                         tiles: None,
                     });
                 }
@@ -263,12 +267,33 @@ fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>, j
 fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     let mut updated: HashSet<usize> = points.iter().copied().collect();
     let max_idx = analysis.nodes.values().map(|n| n.index).max().unwrap_or(0);
+    let mut sorted_nodes: Vec<&NodeAnalysis> = analysis.nodes.values().collect();
+    sorted_nodes.sort_by_key(|n| n.index);
 
-    for node in analysis.nodes.values() {
+    for (pos, node) in sorted_nodes.iter().enumerate() {
         if node.node_type == "Conv" {
             updated.insert(node.index);
-            if node.index < max_idx {
-                updated.insert(node.index + 1);
+            let mut produced: HashSet<&str> =
+                node.dependencies.output.iter().map(|s| s.as_str()).collect();
+            let mut end = pos + 1;
+            while end < sorted_nodes.len() {
+                let candidate = sorted_nodes[end];
+                if !SHAPE_PRESERVING_OPS.contains(&candidate.node_type.as_str()) {
+                    break;
+                }
+                let consumes_produced = candidate.dependencies.input.iter().any(|inp| {
+                    !analysis.initializer_names.contains(inp) && produced.contains(inp.as_str())
+                });
+                if !consumes_produced {
+                    break;
+                }
+                for out in &candidate.dependencies.output {
+                    produced.insert(out.as_str());
+                }
+                end += 1;
+            }
+            if end < sorted_nodes.len() && sorted_nodes[end].index <= max_idx {
+                updated.insert(sorted_nodes[end].index);
             }
         }
     }

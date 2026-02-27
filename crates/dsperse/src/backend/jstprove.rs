@@ -89,7 +89,7 @@ impl JstproveBackend {
     ) -> Result<Vec<u8>> {
         let bundle = load_bundle(circuit_path)?;
         let params = bundle.metadata.as_ref().ok_or_else(|| {
-            DsperseError::Backend("circuit bundle missing metadata for WAI witness".into())
+            DsperseError::Backend("circuit bundle missing metadata (required for quantization)".into())
         })?;
 
         let result = witness_bn254_from_f64(

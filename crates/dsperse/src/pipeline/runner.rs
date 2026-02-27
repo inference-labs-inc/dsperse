@@ -1219,7 +1219,7 @@ pub(crate) fn build_execution_chain(
             (true, path)
         } else {
             let bundle = slice_dir.join("jstprove/circuit.bundle");
-            if bundle.exists() {
+            if bundle.is_dir() {
                 tracing::info!(slice = %slice_id, "detected circuit on filesystem (metadata.compiled=false)");
                 (true, Some(bundle.to_string_lossy().into_owned()))
             } else {

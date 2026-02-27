@@ -130,7 +130,8 @@ fn compile_single_slice(
             }
             Err(e) => {
                 tracing::warn!(slice = slice.index, error = %e, "cached circuit invalid, recompiling");
-                let _ = std::fs::remove_dir_all(&circuit_path);
+                std::fs::remove_dir_all(&circuit_path)
+                    .map_err(|e| DsperseError::io(e, &circuit_path))?;
             }
         }
     }

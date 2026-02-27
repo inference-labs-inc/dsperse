@@ -1835,7 +1835,7 @@ dependencies = [
 [[package]]
 name = "jstprove-direct-builder"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7c4fcde#7c4fcde9892a202089c9e6a10812aff37eb9292d"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
 dependencies = [
  "arith",
  "ethnum",
@@ -1845,7 +1845,7 @@ dependencies = [
 [[package]]
 name = "jstprove-io"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7c4fcde#7c4fcde9892a202089c9e6a10812aff37eb9292d"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
 dependencies = [
  "anyhow",
  "crc32c",
@@ -1857,7 +1857,7 @@ dependencies = [
 [[package]]
 name = "jstprove-onnx"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7c4fcde#7c4fcde9892a202089c9e6a10812aff37eb9292d"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
 dependencies = [
  "anyhow",
  "prost 0.13.5",
@@ -1868,7 +1868,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7c4fcde#7c4fcde9892a202089c9e6a10812aff37eb9292d"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
 dependencies = [
  "anyhow",
  "arith",

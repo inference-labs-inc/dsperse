@@ -1220,10 +1220,10 @@ pub(crate) fn build_execution_chain(
             });
             (true, path)
         } else {
-            let msgpack = slice_dir.join("jstprove/circuit.msgpack");
-            if msgpack.exists() {
+            let bundle = slice_dir.join("jstprove/circuit.bundle");
+            if bundle.is_dir() {
                 tracing::info!(slice = %slice_id, "detected circuit on filesystem (metadata.compiled=false)");
-                (true, Some(msgpack.to_string_lossy().into_owned()))
+                (true, Some(bundle.to_string_lossy().into_owned()))
             } else {
                 (false, None)
             }

@@ -4,7 +4,6 @@ from dsperse._native import (
     run_inference,
     prove_run,
     verify_run,
-    convert,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "run_inference",
     "prove_run",
     "verify_run",
-    "convert",
 ]

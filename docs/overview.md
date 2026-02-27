@@ -2,10 +2,10 @@
 
 ## Overview
 
-DSperse is a toolkit for slicing, analyzing, and running neural network models. It supports ONNX models, allowing you to break down complex models into smaller segments for detailed analysis, optimization, and verification.
+DSperse is a proving-system-agnostic intelligent slicer for verifiable AI. It decomposes ONNX neural network models into circuit-compatible segments and orchestrates compilation, inference, proving, and verification across pluggable ZK backends.
 
 ### Core Purpose
-The project aims to solve a significant challenge in zkML (zero-knowledge machine learning) by introducing a distributed approach to proof computation and providing tools for model slicing and analysis.
+The project solves a significant challenge in zkML (zero-knowledge machine learning) by introducing intelligent model slicing that enables distributed proof computation across heterogeneous hardware.
 
 ### Key Technical Innovation
 The main innovation is the concept of "model slicing" where:
@@ -35,15 +35,15 @@ The main innovation is the concept of "model slicing" where:
     - Adaptable to different hardware capabilities
 
 5. **Zero-Knowledge Proofs**
-    - Generate proofs for model execution via ezkl integration
-    - Support for both whole model and sliced model proofs
+    - Generate proofs for sliced model execution via JSTprove integration
+    - Proving-system-agnostic design supporting Expander and Remainder backends
     - Optimize proof generation for distributed environments
 
 ### Implementation Framework
 - Built on top of existing tools:
     - ONNX for model representation and interoperability
-    - ezkl for zero-knowledge proof generation
-    - Halo 2 as the underlying proving system
+    - JSTprove (`jstprove_circuits` Rust crate) for zero-knowledge proof generation
+    - Expander and Remainder as the underlying proving systems
 
 - Comprehensive CLI interface for:
     - Model slicing

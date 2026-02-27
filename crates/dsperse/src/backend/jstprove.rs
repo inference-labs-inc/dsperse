@@ -122,6 +122,11 @@ impl JstproveBackend {
         witness_bytes: &[u8],
         num_model_inputs: usize,
     ) -> Result<Vec<f64>> {
+        if num_model_inputs == 0 {
+            return Err(DsperseError::Backend(
+                "extract_outputs: num_model_inputs must be > 0".into(),
+            ));
+        }
         let result = extract_outputs_bn254(witness_bytes, num_model_inputs)
             .map_err(|e| DsperseError::Backend(format!("extract_outputs: {e}")))?;
         Ok(result.outputs)

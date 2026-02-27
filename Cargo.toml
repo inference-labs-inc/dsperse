@@ -20,4 +20,4 @@ uuid = { version = "1", features = ["v4"] }
 tempfile = "3"
 prost = "0.13"
 pyo3 = { version = "0.24" }
-jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "c07f4ad" }
+jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "54f096c" }

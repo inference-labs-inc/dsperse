@@ -21,7 +21,7 @@ fn to_pretty_json<T: serde::Serialize>(value: &T) -> PyResult<String> {
 fn resolve_ops(proof_system: &str, circuit_ops: Option<&[String]>) -> PyResult<Vec<String>> {
     let ps: ProofSystem = proof_system
         .parse()
-        .map_err(|e: String| PyRuntimeError::new_err(e))?;
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
     let supported = ps.supported_ops();
     match circuit_ops {
         None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),

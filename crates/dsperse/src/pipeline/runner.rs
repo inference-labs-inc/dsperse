@@ -1071,20 +1071,11 @@ fn reconstruct_from_tiles(
     tile_outputs: &[ArrayD<f64>],
     tiling: &TilingInfo,
 ) -> Result<ArrayD<f64>> {
-    if tile_outputs.is_empty() {
-        return Err(DsperseError::Pipeline(
-            "no tile outputs to reconstruct".into(),
-        ));
-    }
-
     let expected_tiles = tiling.tiles_y * tiling.tiles_x;
     if tile_outputs.len() != expected_tiles {
         return Err(DsperseError::Pipeline(format!(
-            "expected {} tiles ({}x{}), got {}",
-            expected_tiles,
-            tiling.tiles_y,
-            tiling.tiles_x,
-            tile_outputs.len()
+            "reconstruct: expected {} tiles ({}x{}), got {}",
+            expected_tiles, tiling.tiles_y, tiling.tiles_x, tile_outputs.len()
         )));
     }
 

@@ -1148,6 +1148,17 @@ fn reconstruct_from_tiles(
         ));
     }
 
+    let expected_tiles = tiling.tiles_y * tiling.tiles_x;
+    if tile_outputs.len() != expected_tiles {
+        return Err(DsperseError::Pipeline(format!(
+            "expected {} tiles ({}x{}), got {}",
+            expected_tiles,
+            tiling.tiles_y,
+            tiling.tiles_x,
+            tile_outputs.len()
+        )));
+    }
+
     let out_h = tiling.out_tile[0].max(1) as usize;
     let out_w = tiling.out_tile[1].max(1) as usize;
     let c_out = tiling.c_out;
@@ -1561,6 +1572,25 @@ mod tests {
         let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
         let bad_tile = vec![ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0; 3]).unwrap()];
         assert!(reconstruct_from_tiles(&bad_tile, &tiling).is_err());
+    }
+
+    #[test]
+    fn reconstruct_from_tiles_wrong_tile_count() {
+        let c_out = 1;
+        let out_h = 2i64;
+        let out_w = 2i64;
+        let tiling = make_tiling(4, 2, 2, [0, 0], [out_h, out_w], c_out);
+        let make_tile = || {
+            ArrayD::from_shape_vec(
+                IxDyn(&[1, c_out, out_h as usize, out_w as usize]),
+                vec![0.0f64; c_out * out_h as usize * out_w as usize],
+            )
+            .unwrap()
+        };
+        let too_few: Vec<ArrayD<f64>> = (0..3).map(|_| make_tile()).collect();
+        assert!(reconstruct_from_tiles(&too_few, &tiling).is_err());
+        let too_many: Vec<ArrayD<f64>> = (0..5).map(|_| make_tile()).collect();
+        assert!(reconstruct_from_tiles(&too_many, &tiling).is_err());
     }
 
     #[test]

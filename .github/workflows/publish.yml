@@ -1,132 +1,186 @@
-name: Publish to PyPI
+name: Build and Publish to PyPI
 
 on:
   push:
     tags:
-      - 'v*'
-
-concurrency:
-  group: publish-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
-  id-token: write
+      - "v*"
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64
-          - os: ubuntu-latest
-            target: aarch64
-          - os: macos-14
-            target: x86_64
-          - os: macos-14
-            target: aarch64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Set version from tag
-        id: version
-        run: |
-          if [[ "${{ github.ref_name }}" =~ ^v(.+)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Update pyproject.toml with tag version
-        run: |
-          set -euo pipefail
-          python3 -c "
-          import re
-          version = '${{ steps.version.outputs.version }}'
-          with open('pyproject.toml', 'r') as f:
-              content = f.read()
-          updated = re.sub(
-              r'^version\s*=\s*[\"\'](.*?)[\"\']',
-              f'version = \"{version}\"',
-              content,
-              flags=re.MULTILINE
-          )
-          with open('pyproject.toml', 'w') as f:
-              f.write(updated)
-          "
-
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist
-          manylinux: auto
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
-          path: dist
-
-  sdist:
+  build-linux:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'test-build')
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
+      - uses: actions/checkout@v6
 
-      - name: Set version from tag
-        id: version
+      - name: Install system dependencies
         run: |
-          if [[ "${{ github.ref_name }}" =~ ^v(.+)$ ]]; then
-            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          dnf install -y protobuf-compiler protobuf-devel pkgconf-pkg-config perl-IPC-Cmd perl-Time-Piece clang-devel
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly-2025-03-27
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install maturin
+        run: pip3 install maturin
+
+      - name: Extract version
+        id: get_version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
           else
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
           fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Update pyproject.toml with tag version
+      - name: Update versions
         run: |
-          set -euo pipefail
-          python3 -c "
-          import re
-          version = '${{ steps.version.outputs.version }}'
-          with open('pyproject.toml', 'r') as f:
-              content = f.read()
-          updated = re.sub(
-              r'^version\s*=\s*[\"\'](.*?)[\"\']',
-              f'version = \"{version}\"',
-              content,
-              flags=re.MULTILINE
-          )
-          with open('pyproject.toml', 'w') as f:
-              f.write(updated)
-          "
+          sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/}' pyproject.toml
+          sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/}' crates/dsperse/Cargo.toml
 
-      - uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
+      - name: Install Rust target
+        run: rustup target add x86_64-unknown-linux-gnu
 
-      - uses: actions/upload-artifact@v4
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
         with:
-          name: wheels-sdist
-          path: dist
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: manylinux-2-28-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            manylinux-2-28-cargo-
+
+      - name: Build wheel
+        run: maturin build --release --target x86_64-unknown-linux-gnu --manylinux 2_28
+
+      - name: Test wheel installation
+        run: |
+          pip3 install target/wheels/*.whl
+          python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheel-ubuntu-x86_64
+          path: ./target/wheels/*.whl
+
+  build-macos:
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'test-build')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: brew install protobuf llvm
+
+      - name: Install maturin
+        run: pip3 install maturin
+
+      - name: Extract version
+        id: get_version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(grep -m1 '^version' pyproject.toml | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update versions
+        run: |
+          sed -i '' '1,/^version = /{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/;}' pyproject.toml
+          sed -i '' '1,/^version = /{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/;}' crates/dsperse/Cargo.toml
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-03-27
+
+      - name: Install Rust target
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-cargo-
+
+      - name: Build wheel
+        run: maturin build --release --target aarch64-apple-darwin
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+      - name: Test wheel installation
+        run: |
+          pip3 install target/wheels/*.whl
+          python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: wheel-macos-aarch64
+          path: ./target/wheels/*.whl
 
   publish:
-    needs: [build, sdist]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
+      contents: write
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all wheels
+        uses: actions/download-artifact@v7
         with:
-          pattern: wheels-*
+          pattern: wheel-*
           merge-multiple: true
-          path: dist
+          path: ./dist
 
-      - uses: PyO3/maturin-action@v1
+      - name: Extract version from tag
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release with wheels
+        uses: softprops/action-gh-release@v2
         with:
-          command: upload
-          args: --non-interactive --skip-existing dist/*
+          name: Release ${{ steps.get_version.outputs.version }}
+          files: ./dist/*.whl
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Publish to PyPI
+        run: uv publish ./dist/*

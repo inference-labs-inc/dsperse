@@ -120,7 +120,7 @@ fn compile_single_slice(
     let jst_dir = slice_dir.join("jstprove");
     std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
 
-    let circuit_path = jst_dir.join("circuit.msgpack");
+    let circuit_path = jst_dir.join("circuit.bundle");
 
     if circuit_path.exists() {
         match backend.load_params(&circuit_path) {
@@ -130,7 +130,7 @@ fn compile_single_slice(
             }
             Err(e) => {
                 tracing::warn!(slice = slice.index, error = %e, "cached circuit invalid, recompiling");
-                let _ = std::fs::remove_file(&circuit_path);
+                let _ = std::fs::remove_dir_all(&circuit_path);
             }
         }
     }

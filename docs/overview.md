@@ -5,7 +5,7 @@
 DSperse is a proving-system-agnostic intelligent slicer for verifiable AI. It decomposes ONNX neural network models into circuit-compatible segments and orchestrates compilation, inference, proving, and verification across pluggable ZK backends.
 
 ### Core Purpose
-The project aims to solve a significant challenge in zkML (zero-knowledge machine learning) by introducing intelligent model slicing that enables distributed proof computation across heterogeneous hardware.
+The project solves a significant challenge in zkML (zero-knowledge machine learning) by introducing intelligent model slicing that enables distributed proof computation across heterogeneous hardware.
 
 ### Key Technical Innovation
 The main innovation is the concept of "model slicing" where:

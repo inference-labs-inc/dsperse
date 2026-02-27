@@ -54,13 +54,14 @@ impl IncrementalRun {
             .slices
             .first()
             .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
-        if first_slice.dependencies.input.len() != 1 {
+        let filtered = &first_slice.dependencies.filtered_inputs;
+        if filtered.len() != 1 {
             return Err(DsperseError::Pipeline(format!(
-                "multi-input models not supported: first slice declares {} inputs",
-                first_slice.dependencies.input.len()
+                "multi-input models not supported: first slice declares {} filtered inputs",
+                filtered.len()
             )));
         }
-        let input_name = first_slice.dependencies.input[0].clone();
+        let input_name = filtered[0].clone();
         let mut tensor_cache = HashMap::new();
         tensor_cache.insert(input_name, input);
 

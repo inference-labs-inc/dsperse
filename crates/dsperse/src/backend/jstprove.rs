@@ -3,7 +3,8 @@ use std::path::Path;
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
 use jstprove_circuits::onnx::{
-    compile_bn254, prove_bn254, verify_bn254, witness_bn254, witness_bn254_from_f64,
+    compile_bn254, extract_outputs_bn254, prove_bn254, verify_bn254, witness_bn254,
+    witness_bn254_from_f64,
 };
 use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
 use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
@@ -114,6 +115,16 @@ impl JstproveBackend {
 
         prove_bn254(&bundle.circuit, witness_bytes, self.compress)
             .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
+    }
+
+    pub fn extract_outputs(
+        &self,
+        witness_bytes: &[u8],
+        num_model_inputs: usize,
+    ) -> Result<Vec<f64>> {
+        let result = extract_outputs_bn254(witness_bytes, num_model_inputs)
+            .map_err(|e| DsperseError::Backend(format!("extract_outputs: {e}")))?;
+        Ok(result.outputs)
     }
 
     pub fn verify(

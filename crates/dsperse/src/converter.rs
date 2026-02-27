@@ -19,3 +19,20 @@ pub fn prepare_jstprove_artifacts(
 
     Ok((params, meta.architecture, meta.wandb))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_jstprove_artifacts_nonexistent_model() {
+        let result = prepare_jstprove_artifacts(Path::new("/nonexistent.onnx"), false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn prepare_jstprove_artifacts_with_weights_as_inputs() {
+        let result = prepare_jstprove_artifacts(Path::new("/nonexistent.onnx"), true);
+        assert!(result.is_err());
+    }
+}

@@ -864,3 +864,258 @@ pub struct TileSliceResult {
     pub path: String,
     pub conv_out: [i64; 2],
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn halo_3x3_no_dilation() {
+        assert_eq!(compute_halo_size([3, 3], [1, 1]), [1, 1]);
+    }
+
+    #[test]
+    fn halo_5x5_no_dilation() {
+        assert_eq!(compute_halo_size([5, 5], [1, 1]), [2, 2]);
+    }
+
+    #[test]
+    fn halo_3x3_dilation_2() {
+        assert_eq!(compute_halo_size([3, 3], [2, 2]), [2, 2]);
+    }
+
+    #[test]
+    fn halo_1x1_kernel() {
+        assert_eq!(compute_halo_size([1, 1], [1, 1]), [0, 0]);
+    }
+
+    #[test]
+    fn halo_asymmetric_kernel() {
+        assert_eq!(compute_halo_size([3, 5], [1, 1]), [1, 2]);
+    }
+
+    #[test]
+    fn min_tile_3x3_no_dilation() {
+        assert_eq!(compute_min_spatial_tile([3, 3], [1, 1]), 4);
+    }
+
+    #[test]
+    fn min_tile_5x5_no_dilation() {
+        assert_eq!(compute_min_spatial_tile([5, 5], [1, 1]), 6);
+    }
+
+    #[test]
+    fn min_tile_3x3_dilation_2() {
+        let eff = (3 - 1) * 2 + 1;
+        assert_eq!(compute_min_spatial_tile([3, 3], [2, 2]), eff + 1);
+    }
+
+    #[test]
+    fn min_tile_1x1() {
+        assert_eq!(compute_min_spatial_tile([1, 1], [1, 1]), 2);
+    }
+
+    #[test]
+    fn optimal_tile_exact_divisor() {
+        assert_eq!(find_optimal_tile_size(64, 32, 4, 1), Some(32));
+    }
+
+    #[test]
+    fn optimal_tile_no_exact_divisor_falls_back() {
+        assert_eq!(find_optimal_tile_size(64, 30, 4, 1), Some(16));
+    }
+
+    #[test]
+    fn optimal_tile_target_equals_spatial() {
+        assert_eq!(find_optimal_tile_size(32, 32, 4, 1), None);
+    }
+
+    #[test]
+    fn optimal_tile_min_exceeds_target() {
+        assert_eq!(find_optimal_tile_size(64, 3, 4, 1), None);
+    }
+
+    #[test]
+    fn optimal_tile_stride_constraint() {
+        assert_eq!(find_optimal_tile_size(64, 32, 4, 2), Some(32));
+        assert_eq!(find_optimal_tile_size(12, 8, 2, 4), Some(4));
+    }
+
+    #[test]
+    fn optimal_tile_no_valid_stride_divisor() {
+        assert_eq!(find_optimal_tile_size(15, 10, 2, 4), None);
+    }
+
+    #[test]
+    fn checked_dim_product_normal() {
+        assert_eq!(checked_dim_product(&[2, 3, 4]).unwrap(), 24);
+    }
+
+    #[test]
+    fn checked_dim_product_empty() {
+        assert_eq!(checked_dim_product(&[]).unwrap(), 1);
+    }
+
+    #[test]
+    fn checked_dim_product_overflow() {
+        assert!(checked_dim_product(&[usize::MAX, 2]).is_err());
+    }
+
+    #[test]
+    fn checked_dim_product_single() {
+        assert_eq!(checked_dim_product(&[42]).unwrap(), 42);
+    }
+
+    #[test]
+    fn slice_weights_basic() {
+        let weights = WeightInfo {
+            data: (0..24).map(|i| i as f32).collect(),
+            dims: vec![2, 3, 2, 2],
+        };
+        let sliced = slice_weights(&weights, 0, 2).unwrap();
+        assert_eq!(sliced.dims, vec![2, 2, 2, 2]);
+        assert_eq!(sliced.data.len(), 16);
+        assert_eq!(sliced.data[0], 0.0);
+        assert_eq!(sliced.data[1], 1.0);
+        assert_eq!(sliced.data[2], 2.0);
+        assert_eq!(sliced.data[3], 3.0);
+    }
+
+    #[test]
+    fn slice_weights_single_channel() {
+        let weights = WeightInfo {
+            data: (0..24).map(|i| i as f32).collect(),
+            dims: vec![2, 3, 2, 2],
+        };
+        let sliced = slice_weights(&weights, 1, 2).unwrap();
+        assert_eq!(sliced.dims, vec![2, 1, 2, 2]);
+        assert_eq!(sliced.data.len(), 8);
+    }
+
+    #[test]
+    fn slice_weights_start_ge_end() {
+        let weights = WeightInfo {
+            data: vec![1.0; 16],
+            dims: vec![1, 4, 2, 2],
+        };
+        assert!(slice_weights(&weights, 3, 2).is_err());
+    }
+
+    #[test]
+    fn slice_weights_end_exceeds_c_in() {
+        let weights = WeightInfo {
+            data: vec![1.0; 16],
+            dims: vec![1, 4, 2, 2],
+        };
+        assert!(slice_weights(&weights, 0, 5).is_err());
+    }
+
+    #[test]
+    fn slice_weights_insufficient_dims() {
+        let weights = WeightInfo {
+            data: vec![1.0; 6],
+            dims: vec![2, 3],
+        };
+        assert!(slice_weights(&weights, 0, 1).is_err());
+    }
+
+    #[test]
+    fn slice_weights_data_length_mismatch() {
+        let weights = WeightInfo {
+            data: vec![1.0; 10],
+            dims: vec![2, 3, 2, 2],
+        };
+        assert!(slice_weights(&weights, 0, 2).is_err());
+    }
+
+    #[test]
+    fn elementwise_ops_recognized() {
+        assert!(is_elementwise("Relu"));
+        assert!(is_elementwise("Sigmoid"));
+        assert!(is_elementwise("Add"));
+        assert!(is_elementwise("Mul"));
+    }
+
+    #[test]
+    fn non_elementwise_ops_rejected() {
+        assert!(!is_elementwise("Conv"));
+        assert!(!is_elementwise("MaxPool"));
+        assert!(!is_elementwise("Gemm"));
+        assert!(!is_elementwise("BatchNormalization"));
+    }
+
+    #[test]
+    fn spatial_tile_config_already_fits() {
+        let (tile, reason) = calculate_spatial_tile_config(3, 4, 4, 64, 4, 1);
+        assert!(tile.is_none());
+        assert_eq!(reason, Some("already_fits"));
+    }
+
+    #[test]
+    fn spatial_tile_config_min_tile_too_large() {
+        let (tile, reason) = calculate_spatial_tile_config(64, 8, 8, 100, 8, 1);
+        assert!(tile.is_none());
+        assert_eq!(reason, Some("min_tile_too_large"));
+    }
+
+    #[test]
+    fn spatial_tile_config_finds_tile() {
+        let (tile, reason) = calculate_spatial_tile_config(3, 64, 64, 3 * 32 * 32, 4, 1);
+        assert!(tile.is_some());
+        assert!(reason.is_none());
+        let t = tile.unwrap();
+        assert!(64 % t == 0);
+        assert!(t >= 4);
+    }
+
+    #[test]
+    fn channel_split_config_basic() {
+        let result = calculate_channel_split_config(64, 32, 4, 4, 32);
+        assert!(result.is_some());
+        let (num_groups, cpg) = result.unwrap();
+        assert!(num_groups > 1);
+        assert!(cpg > 0);
+        assert!(cpg * (num_groups - 1) < 64);
+    }
+
+    #[test]
+    fn channel_split_config_zero_dims() {
+        assert!(calculate_channel_split_config(64, 32, 0, 4, 32).is_none());
+        assert!(calculate_channel_split_config(64, 32, 4, 0, 32).is_none());
+    }
+
+    #[test]
+    fn channel_split_config_fits_without_splitting() {
+        assert!(calculate_channel_split_config(4, 32, 2, 2, 100).is_none());
+    }
+
+    #[test]
+    fn detect_tiling_none_without_tile_size() {
+        let model = onnx_proto::make_model(
+            onnx_proto::make_graph("test", vec![], vec![], vec![], vec![]),
+            13,
+        );
+        assert!(detect_tiling_needs(&model, None).is_none());
+    }
+
+    #[test]
+    fn detect_tiling_none_empty_graph() {
+        let model = onnx_proto::make_model(
+            onnx_proto::make_graph("test", vec![], vec![], vec![], vec![]),
+            13,
+        );
+        assert!(detect_tiling_needs(&model, Some(1024)).is_none());
+    }
+
+    #[test]
+    fn slice_weights_full_range_is_identity() {
+        let data: Vec<f32> = (0..48).map(|i| i as f32).collect();
+        let weights = WeightInfo {
+            data: data.clone(),
+            dims: vec![2, 3, 2, 4],
+        };
+        let sliced = slice_weights(&weights, 0, 3).unwrap();
+        assert_eq!(sliced.dims, vec![2, 3, 2, 4]);
+        assert_eq!(sliced.data, data);
+    }
+}

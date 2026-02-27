@@ -585,3 +585,248 @@ fn trace_shapes_tract(
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok(shapes)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use analyzer::NodeDependencies;
+
+    fn make_analysis(nodes: Vec<(&str, usize, &str)>) -> AnalysisResult {
+        let mut node_map = HashMap::new();
+        for (name, index, op_type) in &nodes {
+            node_map.insert(
+                name.to_string(),
+                NodeAnalysis {
+                    index: *index,
+                    slice_name: format!("{}_{}", op_type, index),
+                    node_type: op_type.to_string(),
+                    parameter_details: HashMap::new(),
+                    dependencies: NodeDependencies {
+                        input: vec![],
+                        output: vec![],
+                    },
+                },
+            );
+        }
+        AnalysisResult {
+            original_model: None,
+            model_type: "ONNX".to_string(),
+            node_count: nodes.len(),
+            initializer_count: 0,
+            input_shape: vec![],
+            output_shapes: vec![],
+            opset_version: Some(18),
+            nodes: node_map,
+            initializer_names: HashSet::new(),
+        }
+    }
+
+    fn make_analysis_with_params(
+        nodes: Vec<(&str, usize, &str, bool)>,
+    ) -> AnalysisResult {
+        let mut node_map = HashMap::new();
+        for (name, index, op_type, has_params) in &nodes {
+            let mut parameter_details = HashMap::new();
+            if *has_params {
+                parameter_details.insert(
+                    format!("{}_weight", name),
+                    analyzer::ParameterDetail {
+                        shape: vec![3, 3],
+                        size: 9,
+                    },
+                );
+            }
+            node_map.insert(
+                name.to_string(),
+                NodeAnalysis {
+                    index: *index,
+                    slice_name: format!("{}_{}", op_type, index),
+                    node_type: op_type.to_string(),
+                    parameter_details,
+                    dependencies: NodeDependencies {
+                        input: vec![],
+                        output: vec![],
+                    },
+                },
+            );
+        }
+        AnalysisResult {
+            original_model: None,
+            model_type: "ONNX".to_string(),
+            node_count: nodes.len(),
+            initializer_count: 0,
+            input_shape: vec![],
+            output_shapes: vec![],
+            opset_version: Some(18),
+            nodes: node_map,
+            initializer_names: HashSet::new(),
+        }
+    }
+
+    const TEST_OPS: &[&str] = &["Conv", "Gemm", "MatMul"];
+
+    #[test]
+    fn complete_slice_points_adds_boundaries() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Relu"),
+            ("c", 2, "Conv"),
+        ]);
+        let mut points = vec![1];
+        complete_slice_points(&mut points, &analysis);
+        assert!(points.contains(&0));
+        assert!(points.contains(&3));
+        assert!(points.contains(&1));
+    }
+
+    #[test]
+    fn complete_slice_points_already_complete() {
+        let analysis = make_analysis(vec![("a", 0, "Conv"), ("b", 1, "Relu")]);
+        let mut points = vec![0, 2];
+        complete_slice_points(&mut points, &analysis);
+        assert_eq!(points, vec![0, 2]);
+    }
+
+    #[test]
+    fn complete_slice_points_deduplicates() {
+        let analysis = make_analysis(vec![("a", 0, "Conv")]);
+        let mut points = vec![0, 0, 1, 1];
+        complete_slice_points(&mut points, &analysis);
+        assert_eq!(points, vec![0, 1]);
+    }
+
+    #[test]
+    fn isolate_conv_inserts_boundaries() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Relu"),
+            ("c", 2, "MaxPool"),
+            ("d", 3, "Conv"),
+            ("e", 4, "Relu"),
+        ]);
+        let points = vec![0, 3];
+        let result = isolate_conv(&points, &analysis);
+        assert!(result.contains(&0));
+        assert!(result.contains(&1));
+        assert!(result.contains(&3));
+        assert!(result.contains(&4));
+    }
+
+    #[test]
+    fn isolate_conv_no_convs() {
+        let analysis = make_analysis(vec![("a", 0, "Relu"), ("b", 1, "MaxPool")]);
+        let points = vec![0];
+        let result = isolate_conv(&points, &analysis);
+        assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn optimize_jstprove_slices_splits_at_boundary() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Relu"),
+            ("c", 2, "Conv"),
+        ]);
+        let points = vec![0];
+        let result = optimize_jstprove_slices(&points, &analysis, TEST_OPS);
+        assert!(result.contains(&1));
+        assert!(result.contains(&2));
+    }
+
+    #[test]
+    fn optimize_jstprove_slices_all_supported() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Conv"),
+        ]);
+        let points = vec![0, 1];
+        let result = optimize_jstprove_slices(&points, &analysis, TEST_OPS);
+        assert_eq!(result, vec![0, 1]);
+    }
+
+    #[test]
+    fn optimize_for_tiling_splits_tileable_boundary() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Relu"),
+            ("c", 2, "MaxPool"),
+            ("d", 3, "Conv"),
+        ]);
+        let points = vec![0, 3];
+        let result = optimize_for_tiling(&points, &analysis);
+        assert!(result.contains(&2));
+    }
+
+    #[test]
+    fn optimize_for_tiling_relu_after_non_tileable_kept() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "MaxPool"),
+            ("b", 1, "Relu"),
+            ("c", 2, "Conv"),
+        ]);
+        let points = vec![0, 2];
+        let result = optimize_for_tiling(&points, &analysis);
+        assert!(!result.contains(&1));
+    }
+
+    #[test]
+    fn filter_constant_only_slices_removes_constant_segments() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Constant"),
+            ("b", 1, "Constant"),
+            ("c", 2, "Conv"),
+            ("d", 3, "Relu"),
+        ]);
+        let points = vec![2, 4];
+        let result = filter_constant_only_slices(&points, &analysis);
+        assert!(!result.contains(&2));
+        assert!(result.contains(&4));
+    }
+
+    #[test]
+    fn filter_constant_only_slices_keeps_non_constant() {
+        let analysis = make_analysis(vec![
+            ("a", 0, "Conv"),
+            ("b", 1, "Relu"),
+        ]);
+        let points = vec![1, 2];
+        let result = filter_constant_only_slices(&points, &analysis);
+        assert_eq!(result, vec![1, 2]);
+    }
+
+    #[test]
+    fn filter_constant_only_slices_empty_points() {
+        let analysis = make_analysis(vec![("a", 0, "Conv")]);
+        let result = filter_constant_only_slices(&[], &analysis);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn determine_slice_points_includes_parameterized_nodes() {
+        let analysis = make_analysis_with_params(vec![
+            ("conv0", 0, "Conv", true),
+            ("relu0", 1, "Relu", false),
+            ("conv1", 2, "Conv", true),
+            ("relu1", 3, "Relu", false),
+        ]);
+        let points = determine_slice_points(&analysis, None, TEST_OPS);
+        assert!(points.contains(&0));
+        assert!(points.contains(&2));
+        let max = *points.last().unwrap();
+        assert_eq!(max, 4);
+    }
+
+    #[test]
+    fn determine_slice_points_with_tile_size() {
+        let analysis = make_analysis_with_params(vec![
+            ("conv0", 0, "Conv", true),
+            ("relu0", 1, "Relu", false),
+            ("pool", 2, "MaxPool", false),
+            ("conv1", 3, "Conv", true),
+        ]);
+        let points = determine_slice_points(&analysis, Some(1024), TEST_OPS);
+        assert!(points.contains(&0));
+        assert!(points.len() >= 3);
+    }
+}

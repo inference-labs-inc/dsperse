@@ -320,3 +320,98 @@ fn extract_first_output(result: &[TValue]) -> Result<(Vec<f64>, Vec<usize>)> {
         .ok_or_else(|| DsperseError::Onnx("no output from model".into()))?;
     tvalue_to_f64(output, "output tensor")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_OPS: &[&str] = &["Conv", "Gemm", "MatMul"];
+
+    #[test]
+    fn run_inference_on_sliced_model() {
+        let models_dir =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models/net"));
+        let model_path = models_dir.join("model.onnx");
+        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+            .expect("slice_model failed");
+        crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
+            .expect("materialization failed");
+        assert!(!meta.slices.is_empty(), "model produced zero slices");
+        let first_slice = &meta.slices[0];
+        let onnx_path = tmp
+            .path()
+            .join(format!("slice_0/payload/{}", first_slice.filename));
+        assert!(onnx_path.exists(), "sliced ONNX missing: {}", onnx_path.display());
+        let input_shape = &first_slice.shape.tensor_shape.input;
+        assert!(!input_shape.is_empty() && !input_shape[0].is_empty(), "empty input shape");
+        let shape: Vec<usize> = input_shape[0].iter().map(|&d| d.max(1) as usize).collect();
+        let elem_count: usize = shape.iter().product();
+        let input_data = vec![0.0f64; elem_count];
+        let result = run_inference(&onnx_path, &input_data, &shape);
+        assert!(result.is_ok());
+        let (output_data, output_shape) = result.unwrap();
+        assert!(!output_data.is_empty());
+        assert!(!output_shape.is_empty());
+    }
+
+    #[test]
+    fn run_inference_nonexistent_model() {
+        let result = run_inference(
+            Path::new("/nonexistent/model.onnx"),
+            &[1.0],
+            &[1],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn warm_model_load_nonexistent() {
+        let result = WarmModel::load(Path::new("/nonexistent/model.onnx"), &[1, 1, 28, 28]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn warm_model_load_and_run_on_slice() {
+        let models_dir =
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models/net"));
+        let model_path = models_dir.join("model.onnx");
+        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        let tmp = tempfile::tempdir().unwrap();
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+            .expect("slice_model failed");
+        crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
+            .expect("materialization failed");
+        assert!(!meta.slices.is_empty(), "model produced zero slices");
+        let first_slice = &meta.slices[0];
+        let onnx_path = tmp
+            .path()
+            .join(format!("slice_0/payload/{}", first_slice.filename));
+        assert!(onnx_path.exists(), "sliced ONNX missing: {}", onnx_path.display());
+        let input_shape = &first_slice.shape.tensor_shape.input;
+        assert!(!input_shape.is_empty() && !input_shape[0].is_empty(), "empty input shape");
+        let shape: Vec<usize> = input_shape[0].iter().map(|&d| d.max(1) as usize).collect();
+        let elem_count: usize = shape.iter().product();
+
+        let warm = WarmModel::load(&onnx_path, &shape).expect("WarmModel::load failed");
+        let input = vec![0.0f64; elem_count];
+        let (data1, shape1) = warm.run(&input).unwrap();
+        let (data2, shape2) = warm.run(&input).unwrap();
+        assert!(!data1.is_empty());
+        assert_eq!(shape1, shape2);
+        assert_eq!(data1, data2);
+    }
+
+    #[test]
+    fn zip_named_outputs_empty() {
+        let result = zip_named_outputs(&[], &[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn extract_first_output_empty() {
+        let result = extract_first_output(&[]);
+        assert!(result.is_err());
+    }
+}

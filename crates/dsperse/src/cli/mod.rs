@@ -358,3 +358,161 @@ fn run_id() -> String {
     let uuid = uuid::Uuid::new_v4();
     format!("{}_{}", now.as_secs(), uuid.as_simple())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn parse_index_spec_single() {
+        assert_eq!(parse_index_spec("3").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn parse_index_spec_multiple() {
+        assert_eq!(parse_index_spec("1,3,5").unwrap(), vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn parse_index_spec_range() {
+        assert_eq!(parse_index_spec("2-5").unwrap(), vec![2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn parse_index_spec_mixed() {
+        assert_eq!(parse_index_spec("0,2-4,7").unwrap(), vec![0, 2, 3, 4, 7]);
+    }
+
+    #[test]
+    fn parse_index_spec_whitespace_tolerance() {
+        assert_eq!(parse_index_spec(" 1 , 2 - 3 ").unwrap(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn parse_index_spec_empty_rejected() {
+        assert!(parse_index_spec("").is_err());
+    }
+
+    #[test]
+    fn parse_index_spec_invalid_token() {
+        assert!(parse_index_spec("abc").is_err());
+    }
+
+    #[test]
+    fn parse_index_spec_reversed_range() {
+        assert!(parse_index_spec("5-2").is_err());
+    }
+
+    #[test]
+    fn parse_index_spec_trailing_comma() {
+        assert_eq!(parse_index_spec("1,2,").unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn run_id_format() {
+        let id = run_id();
+        let parts: Vec<&str> = id.splitn(2, '_').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].parse::<u64>().is_ok());
+        assert_eq!(parts[1].len(), 32);
+    }
+
+    #[test]
+    fn run_id_unique() {
+        let id1 = run_id();
+        let id2 = run_id();
+        assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn cli_parse_slice_command() {
+        let cli = Cli::parse_from(["dsperse", "slice", "--model-dir", "/tmp/model"]);
+        assert!(matches!(cli.command, Commands::Slice(_)));
+    }
+
+    #[test]
+    fn cli_parse_run_command() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "run",
+            "--model-dir",
+            "/tmp/model",
+            "--input-file",
+            "/tmp/input.json",
+        ]);
+        assert!(matches!(cli.command, Commands::Run(_)));
+    }
+
+    #[test]
+    fn cli_log_level_default() {
+        let cli = Cli::parse_from(["dsperse", "slice", "--model-dir", "/tmp"]);
+        assert_eq!(cli.log_level, "warn");
+    }
+
+    #[test]
+    fn cli_log_level_override() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "--log-level",
+            "debug",
+            "slice",
+            "--model-dir",
+            "/tmp",
+        ]);
+        assert_eq!(cli.log_level, "debug");
+    }
+
+    #[test]
+    fn cli_compile_with_layers() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "compile",
+            "--model-dir",
+            "/tmp",
+            "--layers",
+            "0,2-4",
+        ]);
+        if let Commands::Compile(args) = cli.command {
+            assert_eq!(args.layers.as_deref(), Some("0,2-4"));
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
+    fn cli_run_parallel() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "run",
+            "--model-dir",
+            "/tmp",
+            "--input-file",
+            "/tmp/in.json",
+            "--parallel",
+            "4",
+        ]);
+        if let Commands::Run(args) = cli.command {
+            assert_eq!(args.parallel.get(), 4);
+        } else {
+            panic!("expected Run");
+        }
+    }
+
+    #[test]
+    fn cli_slice_with_tile_size() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "slice",
+            "--model-dir",
+            "/tmp",
+            "--tile-size",
+            "1024",
+        ]);
+        if let Commands::Slice(args) = cli.command {
+            assert_eq!(args.tile_size, Some(1024));
+        } else {
+            panic!("expected Slice");
+        }
+    }
+}

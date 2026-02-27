@@ -150,3 +150,131 @@ fn resolve_compile_onnx(
 
     Ok(slice.resolve_onnx(slices_dir))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::metadata::{
+        Compilation, Dependencies, SliceMetadata, SliceShapeWrapper, TensorShape,
+    };
+    use crate::schema::tiling::{TileInfo, TilingInfo};
+
+    fn test_models_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models"))
+    }
+
+    fn make_slice_metadata(index: usize, path: &str) -> SliceMetadata {
+        SliceMetadata {
+            index,
+            filename: format!("slice_{index}.onnx"),
+            path: path.to_string(),
+            relative_path: path.to_string(),
+            shape: SliceShapeWrapper {
+                tensor_shape: TensorShape::default(),
+            },
+            dependencies: Dependencies {
+                input: vec![],
+                output: vec![],
+                filtered_inputs: vec![],
+            },
+            tiling: None,
+            channel_split: None,
+            compilation: Compilation::default(),
+            slice_metadata: None,
+            slice_metadata_relative_path: None,
+        }
+    }
+
+    const TEST_OPS: &[&str] = &["Conv", "Gemm", "MatMul"];
+
+    #[test]
+    fn is_jstprove_compatible_nonexistent() {
+        let result = is_jstprove_compatible(Path::new("/nonexistent.onnx"), TEST_OPS);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_jstprove_compatible_test_model() {
+        let model_path = test_models_dir().join("net/model.onnx");
+        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        let result = is_jstprove_compatible(&model_path, TEST_OPS).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn resolve_compile_onnx_no_tiling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slices_dir = tmp.path();
+        let slice_dir = slices_dir.join("slice_0");
+        std::fs::create_dir_all(&slice_dir).unwrap();
+
+        let meta = make_slice_metadata(0, "slice_0.onnx");
+        let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
+        assert!(path.ends_with("slice_0.onnx"));
+    }
+
+    #[test]
+    fn resolve_compile_onnx_with_tile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slices_dir = tmp.path();
+        let tile_path = slices_dir.join("slice_0/payload/tiles/tile.onnx");
+        std::fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        std::fs::write(&tile_path, b"dummy").unwrap();
+
+        let mut meta = make_slice_metadata(0, "slice_0.onnx");
+        meta.tiling = Some(TilingInfo {
+            slice_idx: 0,
+            tile_size: 8,
+            num_tiles: 4,
+            tiles_y: 2,
+            tiles_x: 2,
+            halo: [1, 1],
+            out_tile: [4, 4],
+            stride: [1, 1],
+            c_in: 3,
+            c_out: 16,
+            input_name: "input".into(),
+            output_name: "output".into(),
+            tile: Some(TileInfo {
+                path: "slice_0/payload/tiles/tile.onnx".into(),
+                conv_out: [4, 4],
+                jstprove_circuit_path: None,
+            }),
+            tiles: None,
+        });
+        let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
+        assert!(path.ends_with("tile.onnx"));
+    }
+
+    #[test]
+    fn resolve_compile_onnx_tile_missing_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slices_dir = tmp.path();
+        let slice_dir = slices_dir.join("slice_0");
+        std::fs::create_dir_all(&slice_dir).unwrap();
+
+        let mut meta = make_slice_metadata(0, "slice_0.onnx");
+        meta.tiling = Some(TilingInfo {
+            slice_idx: 0,
+            tile_size: 8,
+            num_tiles: 4,
+            tiles_y: 2,
+            tiles_x: 2,
+            halo: [1, 1],
+            out_tile: [4, 4],
+            stride: [1, 1],
+            c_in: 3,
+            c_out: 16,
+            input_name: "input".into(),
+            output_name: "output".into(),
+            tile: Some(TileInfo {
+                path: "slice_0/payload/tiles/nonexistent.onnx".into(),
+                conv_out: [4, 4],
+                jstprove_circuit_path: None,
+            }),
+            tiles: None,
+        });
+        let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
+        assert!(path.ends_with("slice_0.onnx"));
+    }
+}

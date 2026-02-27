@@ -1426,3 +1426,193 @@ fn generate_wai_witness(
     let flat_activations: Vec<f64> = activations.iter().copied().collect();
     backend.witness_f64(circuit_path, &flat_activations, &initializers)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::Array4;
+
+    fn make_tiling(
+        tile_size: usize,
+        tiles_y: usize,
+        tiles_x: usize,
+        halo: [i64; 2],
+        out_tile: [i64; 2],
+        c_out: usize,
+    ) -> TilingInfo {
+        TilingInfo {
+            slice_idx: 0,
+            tile_size,
+            num_tiles: tiles_y * tiles_x,
+            tiles_y,
+            tiles_x,
+            halo,
+            out_tile,
+            stride: [1, 1],
+            c_in: 1,
+            c_out,
+            input_name: "input".into(),
+            output_name: "output".into(),
+            tile: None,
+            tiles: None,
+        }
+    }
+
+    #[test]
+    fn reshape_to_4d_valid() {
+        let data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        let arr = reshape_to_4d(&data, 2, 3, 4).unwrap();
+        assert_eq!(arr.dim(), (1, 2, 3, 4));
+    }
+
+    #[test]
+    fn reshape_to_4d_single_element() {
+        let data = vec![42.0];
+        let arr = reshape_to_4d(&data, 1, 1, 1).unwrap();
+        assert_eq!(arr.dim(), (1, 1, 1, 1));
+        assert_eq!(arr[[0, 0, 0, 0]], 42.0);
+    }
+
+    #[test]
+    fn reshape_to_4d_mismatch() {
+        let data = vec![1.0; 10];
+        assert!(reshape_to_4d(&data, 2, 3, 4).is_err());
+    }
+
+    #[test]
+    fn reshape_to_4d_empty() {
+        let data: Vec<f64> = vec![];
+        assert!(reshape_to_4d(&data, 1, 1, 1).is_err());
+    }
+
+    #[test]
+    fn split_into_tiles_2x2_no_halo() {
+        let input = Array4::from_shape_vec(
+            (1, 1, 4, 4),
+            (0..16).map(|i| i as f64).collect(),
+        )
+        .unwrap();
+        let tiling = make_tiling(2, 2, 2, [0, 0], [2, 2], 1);
+        let tiles = split_into_tiles(&input, &tiling).unwrap();
+        assert_eq!(tiles.len(), 4);
+        for tile in &tiles {
+            assert_eq!(tile.dim(), (1, 1, 2, 2));
+        }
+    }
+
+    #[test]
+    fn split_into_tiles_with_halo() {
+        let input = Array4::from_shape_vec(
+            (1, 1, 4, 4),
+            (0..16).map(|i| i as f64).collect(),
+        )
+        .unwrap();
+        let tiling = make_tiling(2, 2, 2, [1, 1], [2, 2], 1);
+        let tiles = split_into_tiles(&input, &tiling).unwrap();
+        assert_eq!(tiles.len(), 4);
+        for tile in &tiles {
+            assert_eq!(tile.dim(), (1, 1, 4, 4));
+        }
+    }
+
+    #[test]
+    fn split_into_tiles_negative_halo_rejected() {
+        let input = Array4::zeros((1, 1, 4, 4));
+        let tiling = make_tiling(2, 2, 2, [-1, 0], [2, 2], 1);
+        assert!(split_into_tiles(&input, &tiling).is_err());
+    }
+
+    #[test]
+    fn split_into_tiles_batch_gt1_rejected() {
+        let input = Array4::zeros((2, 1, 4, 4));
+        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        assert!(split_into_tiles(&input, &tiling).is_err());
+    }
+
+    #[test]
+    fn reconstruct_from_tiles_2x2() {
+        let c_out = 1;
+        let out_h = 2usize;
+        let out_w = 2usize;
+        let tiling = make_tiling(4, 2, 2, [0, 0], [out_h as i64, out_w as i64], c_out);
+
+        let tiles: Vec<ArrayD<f64>> = (0..4)
+            .map(|i| {
+                ArrayD::from_shape_vec(
+                    IxDyn(&[1, c_out, out_h, out_w]),
+                    vec![i as f64; c_out * out_h * out_w],
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let output = reconstruct_from_tiles(&tiles, &tiling).unwrap();
+        assert_eq!(output.shape(), &[1, c_out, 4, 4]);
+    }
+
+    #[test]
+    fn reconstruct_from_tiles_empty() {
+        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        assert!(reconstruct_from_tiles(&[], &tiling).is_err());
+    }
+
+    #[test]
+    fn reconstruct_from_tiles_wrong_element_count() {
+        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        let bad_tile = vec![ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0; 3]).unwrap()];
+        assert!(reconstruct_from_tiles(&bad_tile, &tiling).is_err());
+    }
+
+    #[test]
+    fn split_reconstruct_roundtrip() {
+        let c = 2;
+        let h = 8;
+        let w = 8;
+        let data: Vec<f64> = (0..(c * h * w)).map(|i| i as f64).collect();
+        let input = Array4::from_shape_vec((1, c, h, w), data).unwrap();
+
+        let tile_size = 4;
+        let tiling = make_tiling(tile_size, 2, 2, [0, 0], [4, 4], c);
+
+        let tiles = split_into_tiles(&input, &tiling).unwrap();
+        assert_eq!(tiles.len(), 4);
+
+        let tile_outputs: Vec<ArrayD<f64>> = tiles.into_iter().map(|t| t.into_dyn()).collect();
+        let reconstructed = reconstruct_from_tiles(&tile_outputs, &tiling).unwrap();
+        assert_eq!(reconstructed.shape(), &[1, c, h, w]);
+
+        let input_dyn = input.into_dyn();
+        assert_eq!(input_dyn, reconstructed);
+    }
+
+    #[test]
+    fn store_named_outputs_basic() {
+        let mut cache: HashMap<String, ArrayD<f64>> = HashMap::new();
+        let names = vec!["out_a".to_string(), "out_b".to_string()];
+        let mut named = HashMap::new();
+        named.insert("out_a".to_string(), (vec![1.0, 2.0], vec![2]));
+        named.insert("out_b".to_string(), (vec![3.0], vec![1]));
+
+        store_named_outputs(&mut cache, &names, named).unwrap();
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache["out_a"].shape(), &[2]);
+        assert_eq!(cache["out_b"].shape(), &[1]);
+    }
+
+    #[test]
+    fn store_named_outputs_missing_name_ignored() {
+        let mut cache: HashMap<String, ArrayD<f64>> = HashMap::new();
+        let names = vec!["missing".to_string()];
+        let named = HashMap::new();
+        store_named_outputs(&mut cache, &names, named).unwrap();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn run_config_default() {
+        let config = RunConfig::default();
+        assert_eq!(config.parallel, 1);
+        assert!(!config.batch);
+        assert!(config.weights_onnx.is_none());
+    }
+}

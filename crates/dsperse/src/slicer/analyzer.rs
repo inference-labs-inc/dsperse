@@ -204,3 +204,171 @@ pub fn get_segment_dependencies(
         filtered_inputs,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_node(op: &str, idx: usize, inputs: Vec<&str>, outputs: Vec<&str>) -> onnx_proto::NodeProto {
+        onnx_proto::NodeProto {
+            op_type: op.into(),
+            name: format!("{}_{}", op, idx),
+            input: inputs.into_iter().map(String::from).collect(),
+            output: outputs.into_iter().map(String::from).collect(),
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        }
+    }
+
+    fn make_model_with_nodes(nodes: Vec<onnx_proto::NodeProto>) -> ModelProto {
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let output = onnx_proto::make_tensor_value_info("y", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph("test", nodes, vec![input], vec![output], vec![]);
+        onnx_proto::make_model(graph, 13)
+    }
+
+    fn make_model_with_initializers(
+        nodes: Vec<onnx_proto::NodeProto>,
+        initializers: Vec<TensorProto>,
+    ) -> ModelProto {
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let output = onnx_proto::make_tensor_value_info("y", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph("test", nodes, vec![input], vec![output], initializers);
+        onnx_proto::make_model(graph, 13)
+    }
+
+    #[test]
+    fn analyze_empty_model() {
+        let model = make_model_with_nodes(vec![]);
+        let result = analyze(&model, None).unwrap();
+        assert_eq!(result.node_count, 0);
+        assert!(result.nodes.is_empty());
+        assert_eq!(result.model_type, "ONNX");
+    }
+
+    #[test]
+    fn analyze_single_relu() {
+        let model = make_model_with_nodes(vec![make_node("Relu", 0, vec!["x"], vec!["y"])]);
+        let result = analyze(&model, None).unwrap();
+        assert_eq!(result.node_count, 1);
+        let node = result.nodes.values().next().unwrap();
+        assert_eq!(node.node_type, "Relu");
+        assert!(node.parameter_details.is_empty());
+    }
+
+    #[test]
+    fn analyze_conv_with_initializer() {
+        let weight_data: Vec<f32> = vec![1.0; 27];
+        let weight_tensor = onnx_proto::make_tensor(
+            "conv_weight",
+            TensorProto::FLOAT,
+            &[1, 3, 3, 3],
+            weight_data,
+        );
+        let conv = make_node("Conv", 0, vec!["x", "conv_weight"], vec!["y"]);
+        let model = make_model_with_initializers(vec![conv], vec![weight_tensor]);
+        let result = analyze(&model, None).unwrap();
+        assert_eq!(result.initializer_count, 1);
+        let node = result.nodes.values().next().unwrap();
+        assert!(!node.parameter_details.is_empty());
+        let detail = node.parameter_details.get("conv_weight").unwrap();
+        assert_eq!(detail.shape, vec![1, 3, 3, 3]);
+        assert_eq!(detail.size, 27);
+    }
+
+    #[test]
+    fn analyze_non_param_op_has_no_details() {
+        let weight_data: Vec<f32> = vec![1.0; 27];
+        let weight_tensor = onnx_proto::make_tensor(
+            "add_weight",
+            TensorProto::FLOAT,
+            &[1, 3, 3, 3],
+            weight_data,
+        );
+        let add = make_node("Add", 0, vec!["x", "add_weight"], vec!["y"]);
+        let model = make_model_with_initializers(vec![add], vec![weight_tensor]);
+        let result = analyze(&model, None).unwrap();
+        let node = result.nodes.values().next().unwrap();
+        assert!(node.parameter_details.is_empty());
+    }
+
+    #[test]
+    fn analyze_model_no_graph() {
+        let model = ModelProto {
+            graph: None,
+            ..Default::default()
+        };
+        assert!(analyze(&model, None).is_err());
+    }
+
+    #[test]
+    fn analyze_dependencies_tracked() {
+        let conv = make_node("Conv", 0, vec!["x", "w"], vec!["conv_out"]);
+        let relu = make_node("Relu", 1, vec!["conv_out"], vec!["y"]);
+        let model = make_model_with_nodes(vec![conv, relu]);
+        let result = analyze(&model, None).unwrap();
+        assert_eq!(result.node_count, 2);
+
+        let relu_node = result.nodes.values().find(|n| n.node_type == "Relu").unwrap();
+        assert_eq!(relu_node.dependencies.input, vec!["conv_out"]);
+        assert_eq!(relu_node.dependencies.output, vec!["y"]);
+    }
+
+    #[test]
+    fn analyze_unnamed_nodes_get_generated_keys() {
+        let mut node = make_node("Relu", 0, vec!["x"], vec!["y"]);
+        node.name = String::new();
+        let model = make_model_with_nodes(vec![node]);
+        let result = analyze(&model, None).unwrap();
+        assert!(result.nodes.contains_key("Relu_0"));
+    }
+
+    #[test]
+    fn get_segment_dependencies_basic() {
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            "conv".into(),
+            NodeAnalysis {
+                index: 0,
+                slice_name: "Conv_0".into(),
+                node_type: "Conv".into(),
+                parameter_details: HashMap::new(),
+                dependencies: NodeDependencies {
+                    input: vec!["x".into(), "w".into()],
+                    output: vec!["conv_out".into()],
+                },
+            },
+        );
+        nodes.insert(
+            "relu".into(),
+            NodeAnalysis {
+                index: 1,
+                slice_name: "Relu_1".into(),
+                node_type: "Relu".into(),
+                parameter_details: HashMap::new(),
+                dependencies: NodeDependencies {
+                    input: vec!["conv_out".into()],
+                    output: vec!["relu_out".into()],
+                },
+            },
+        );
+        let analysis = AnalysisResult {
+            original_model: None,
+            model_type: "ONNX".into(),
+            node_count: 2,
+            initializer_count: 1,
+            input_shape: vec![],
+            output_shapes: vec![],
+            opset_version: Some(13),
+            nodes,
+            initializer_names: HashSet::from(["w".into()]),
+        };
+        let deps = get_segment_dependencies(&analysis, 0, 2);
+        assert!(deps.output.contains(&"relu_out".to_string()));
+        assert!(!deps.filtered_inputs.contains(&"w".to_string()));
+    }
+}

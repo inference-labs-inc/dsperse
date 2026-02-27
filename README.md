@@ -21,7 +21,6 @@ DSperse is a proving-system-agnostic intelligent slicer for verifiable AI. It de
 ## Documentation
 
 - [Overview](docs/overview.md): High-level overview of the project, its goals, and features
-- [Architecture](docs/arc42.md): Architecture summary (arc42-style)
 - [JSTprove Backend](docs/JSTPROVE_BACKEND.md): JSTprove integration and usage
 
 ## Installation

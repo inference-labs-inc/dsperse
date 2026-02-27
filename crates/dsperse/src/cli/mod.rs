@@ -141,7 +141,7 @@ pub struct FullRunArgs {
 fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<Vec<String>> {
     let ps: ProofSystem = proof_system_str
         .parse()
-        .map_err(|e: String| DsperseError::Other(e))?;
+        .map_err(|e: jstprove_circuits::ProofSystemParseError| DsperseError::Other(e.to_string()))?;
 
     let supported = ps.supported_ops();
 

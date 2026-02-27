@@ -432,23 +432,8 @@ fn execute_single(
                 &input_tensor,
             )?
         } else {
-            let output_name = meta.dependencies.output.first().ok_or_else(|| {
-                DsperseError::Pipeline(format!("no output name for {slice_id}"))
-            })?;
-            let (data, shape) = named.get(output_name).ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "{slice_id}: named output '{output_name}' missing from inference results"
-                ))
-            })?;
-            let output_tensor = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
-                .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))?;
-            let input_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("input", arrayd_to_value(&input_tensor))]),
-            )?;
-            let output_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("output", arrayd_to_value(&output_tensor))]),
-            )?;
-            backend.witness(&circuit_path, &input_bytes, &output_bytes)?
+            let flat: Vec<f64> = input_tensor.iter().copied().collect();
+            backend.witness_f64(&circuit_path, &flat, &[])?
         };
 
         let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
@@ -691,48 +676,12 @@ fn execute_tiled(
                 }
 
                 let witness_result = if let Some(ref wc) = warm_circuit {
-                    if wc.params.weights_as_inputs {
-                        let flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                        wc.witness_f64(&flat)
-                    } else {
-                        let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
-                            Ok(pair) => pair,
-                            Err(msg) => {
-                                return (
-                                    TileResult {
-                                        tile_idx,
-                                        success: false,
-                                        error: Some(msg),
-                                        method: Some("jstprove".into()),
-                                        time_sec: start.elapsed().as_secs_f64(),
-                                        proof_path: None,
-                                    },
-                                    None,
-                                );
-                            }
-                        };
-                        let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
-                        backend.witness(cp, &input_bytes, &output_bytes)
-                    }
+                    let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                    wc.witness_f64(&flat)
                 } else {
-                    let (input_bytes, output_bytes) = match serialize_witness_pair(&tile_dyn, &output_tensor) {
-                        Ok(pair) => pair,
-                        Err(msg) => {
-                            return (
-                                TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some(msg),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
-                                None,
-                            );
-                        }
-                    };
-                    let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return at line 693");
-                    backend.witness(cp, &input_bytes, &output_bytes)
+                    let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                    let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return");
+                    backend.witness_f64(cp, &flat, &[])
                 };
 
                 match witness_result {
@@ -1061,13 +1010,8 @@ fn execute_channel_group(
                 group_input,
             )?
         } else {
-            let input_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("input", arrayd_to_value(group_input))]),
-            )?;
-            let output_bytes = rmp_serde::to_vec_named(
-                &build_msgpack_map(vec![("output", arrayd_to_value(&output_tensor))]),
-            )?;
-            backend.witness(&circuit_path, &input_bytes, &output_bytes)?
+            let flat: Vec<f64> = group_input.iter().copied().collect();
+            backend.witness_f64(&circuit_path, &flat, &[])?
         };
 
         let witness_path = group_dir.join(crate::utils::paths::WITNESS_FILE);
@@ -1078,21 +1022,6 @@ fn execute_channel_group(
     } else {
         run_onnx_inference(effective_onnx, group_input)
     }
-}
-
-fn serialize_witness_pair(
-    input: &ArrayD<f64>,
-    output: &ArrayD<f64>,
-) -> std::result::Result<(Vec<u8>, Vec<u8>), String> {
-    let input_bytes = rmp_serde::to_vec_named(
-        &build_msgpack_map(vec![("input", arrayd_to_value(input))]),
-    )
-    .map_err(|e| format!("msgpack serialize input: {e}"))?;
-    let output_bytes = rmp_serde::to_vec_named(
-        &build_msgpack_map(vec![("output", arrayd_to_value(output))]),
-    )
-    .map_err(|e| format!("msgpack serialize output: {e}"))?;
-    Ok((input_bytes, output_bytes))
 }
 
 fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {

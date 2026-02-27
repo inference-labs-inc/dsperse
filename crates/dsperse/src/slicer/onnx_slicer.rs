@@ -273,10 +273,23 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     for (pos, node) in sorted_nodes.iter().enumerate() {
         if node.node_type == "Conv" {
             updated.insert(node.index);
+            let mut produced: HashSet<&str> =
+                node.dependencies.output.iter().map(|s| s.as_str()).collect();
             let mut end = pos + 1;
-            while end < sorted_nodes.len()
-                && SHAPE_PRESERVING_OPS.contains(&sorted_nodes[end].node_type.as_str())
-            {
+            while end < sorted_nodes.len() {
+                let candidate = sorted_nodes[end];
+                if !SHAPE_PRESERVING_OPS.contains(&candidate.node_type.as_str()) {
+                    break;
+                }
+                let consumes_produced = candidate.dependencies.input.iter().any(|inp| {
+                    !analysis.initializer_names.contains(inp) && produced.contains(inp.as_str())
+                });
+                if !consumes_produced {
+                    break;
+                }
+                for out in &candidate.dependencies.output {
+                    produced.insert(out.as_str());
+                }
                 end += 1;
             }
             if end < sorted_nodes.len() && sorted_nodes[end].index <= max_idx {

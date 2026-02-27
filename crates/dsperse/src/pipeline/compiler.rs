@@ -123,8 +123,16 @@ fn compile_single_slice(
     let circuit_path = jst_dir.join("circuit.msgpack");
 
     if circuit_path.exists() {
-        tracing::info!(slice = slice.index, "already compiled, skipping");
-        return Ok(true);
+        match backend.load_params(&circuit_path) {
+            Ok(_) => {
+                tracing::info!(slice = slice.index, "already compiled, skipping");
+                return Ok(true);
+            }
+            Err(e) => {
+                tracing::warn!(slice = slice.index, error = %e, "cached circuit invalid, recompiling");
+                let _ = std::fs::remove_file(&circuit_path);
+            }
+        }
     }
 
     let (params, architecture, wandb) =

@@ -122,7 +122,7 @@ fn compile_single_slice(
 
     let circuit_path = jst_dir.join("circuit.bundle");
 
-    if circuit_path.exists() {
+    if circuit_path.is_dir() {
         match backend.load_params(&circuit_path) {
             Ok(_) => {
                 tracing::info!(slice = slice.index, "already compiled, skipping");

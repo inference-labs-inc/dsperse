@@ -70,6 +70,8 @@ pub struct CompileArgs {
     pub proof_system: String,
     #[arg(long, help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)")]
     pub circuit_ops: Option<String>,
+    #[arg(long, help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify")]
+    pub fast_compile: bool,
 }
 
 #[derive(Args)]
@@ -136,6 +138,8 @@ pub struct FullRunArgs {
     pub proof_system: String,
     #[arg(long, help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)")]
     pub circuit_ops: Option<String>,
+    #[arg(long, help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify")]
+    pub fast_compile: bool,
 }
 
 fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<Vec<String>> {
@@ -178,7 +182,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
     let slices_dir = args
         .slices_dir
         .unwrap_or_else(|| args.model_dir.join("slices"));
@@ -255,7 +259,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
 
     let slices_dir = args
         .slices_dir

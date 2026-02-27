@@ -59,10 +59,11 @@ fn slice_model(py: Python<'_>, model_path: &str, output_dir: Option<&str>, tile_
 }
 
 #[pyfunction]
-#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None))]
-fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>, proof_system: &str, circuit_ops: Option<Vec<String>>) -> PyResult<()> {
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None, fast_compile=false))]
+fn compile_slices(py: Python<'_>, slices_dir: &str, parallel: usize, weights_as_inputs: bool, layers: Option<Vec<usize>>, proof_system: &str, circuit_ops: Option<Vec<String>>, fast_compile: bool) -> PyResult<()> {
     require_nonzero(parallel)?;
-    let backend = JstproveBackend::default();
+    let backend = JstproveBackend::default().with_fast_compile(fast_compile);
     let dir = PathBuf::from(slices_dir);
     let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();

@@ -14,11 +14,12 @@ use crate::error::{DsperseError, Result};
 #[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
+    fast_compile: bool,
 }
 
 impl Default for JstproveBackend {
     fn default() -> Self {
-        Self { compress: true }
+        Self { compress: true, fast_compile: false }
     }
 }
 
@@ -29,6 +30,11 @@ impl JstproveBackend {
 
     pub fn with_compress(mut self, compress: bool) -> Self {
         self.compress = compress;
+        self
+    }
+
+    pub fn with_fast_compile(mut self, fast_compile: bool) -> Self {
+        self.fast_compile = fast_compile;
         self
     }
 
@@ -51,7 +57,7 @@ impl JstproveBackend {
             .to_str()
             .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
 
-        compile_bn254(circuit_path_str, self.compress, Some(params))
+        compile_bn254(circuit_path_str, self.compress, Some(params), self.fast_compile)
             .map_err(|e| DsperseError::Backend(format!("compile: {e}")))
     }
 
@@ -192,5 +198,37 @@ impl WarmCircuit {
         .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
 
         Ok(result.witness)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_fast_compile_is_false() {
+        let backend = JstproveBackend::default();
+        assert!(!backend.fast_compile);
+    }
+
+    #[test]
+    fn with_fast_compile_sets_flag() {
+        let backend = JstproveBackend::default().with_fast_compile(true);
+        assert!(backend.fast_compile);
+    }
+
+    #[test]
+    fn with_fast_compile_false_preserves_default() {
+        let backend = JstproveBackend::default().with_fast_compile(false);
+        assert!(!backend.fast_compile);
+    }
+
+    #[test]
+    fn builder_chain_compress_and_fast_compile() {
+        let backend = JstproveBackend::default()
+            .with_compress(false)
+            .with_fast_compile(true);
+        assert!(!backend.compress());
+        assert!(backend.fast_compile);
     }
 }

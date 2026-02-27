@@ -1835,7 +1835,7 @@ dependencies = [
 [[package]]
 name = "jstprove-io"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7e54b10#7e54b10fb2e5f8b4fa60a37d047a164e2627cbe7"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=c07f4ad#c07f4adeb49cfb98e2ccd61de64834a0f2688798"
 dependencies = [
  "anyhow",
  "crc32c",
@@ -1847,7 +1847,7 @@ dependencies = [
 [[package]]
 name = "jstprove-onnx"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7e54b10#7e54b10fb2e5f8b4fa60a37d047a164e2627cbe7"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=c07f4ad#c07f4adeb49cfb98e2ccd61de64834a0f2688798"
 dependencies = [
  "anyhow",
  "prost 0.13.5",
@@ -1858,7 +1858,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=7e54b10#7e54b10fb2e5f8b4fa60a37d047a164e2627cbe7"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=c07f4ad#c07f4adeb49cfb98e2ccd61de64834a0f2688798"
 dependencies = [
  "anyhow",
  "ark-std",

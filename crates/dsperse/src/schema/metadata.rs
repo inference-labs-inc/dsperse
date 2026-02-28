@@ -170,6 +170,8 @@ pub struct ModelMetadata {
     #[serde(default)]
     pub output_shapes: Vec<Vec<i64>>,
     #[serde(default)]
+    pub output_names: Vec<String>,
+    #[serde(default)]
     pub slice_points: Vec<usize>,
     #[serde(default)]
     pub slices: Vec<SliceMetadata>,

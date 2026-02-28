@@ -44,6 +44,7 @@ fn make_model_metadata(num_slices: usize) -> ModelMetadata {
         model_type: "ONNX".into(),
         input_shape: vec![vec![1, 3, 224, 224]],
         output_shapes: vec![vec![1, 1000]],
+        output_names: vec!["output".into()],
         slice_points,
         slices,
         dsperse_version: Some("0.0.0".into()),

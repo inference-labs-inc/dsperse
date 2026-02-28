@@ -36,6 +36,7 @@ pub struct AnalysisResult {
     pub initializer_count: usize,
     pub input_shape: Vec<Vec<i64>>,
     pub output_shapes: Vec<Vec<i64>>,
+    pub output_names: Vec<String>,
     pub opset_version: Option<i64>,
     pub nodes: HashMap<String, NodeAnalysis>,
     pub initializer_names: HashSet<String>,
@@ -54,6 +55,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
 
     let input_shapes = get_model_input_shapes(graph, &initializer_map);
     let output_shapes = get_model_output_shapes(graph);
+    let output_names = get_model_output_names(graph);
 
     let mut nodes = HashMap::new();
     for (i, node) in graph.node.iter().enumerate() {
@@ -102,6 +104,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
         initializer_count: graph.initializer.len(),
         input_shape: input_shapes,
         output_shapes,
+        output_names,
         opset_version,
         nodes,
         initializer_names,
@@ -126,6 +129,10 @@ fn get_model_output_shapes(graph: &GraphProto) -> Vec<Vec<i64>> {
         .iter()
         .map(onnx_proto::vi_shape)
         .collect()
+}
+
+fn get_model_output_names(graph: &GraphProto) -> Vec<String> {
+    graph.output.iter().map(|o| o.name.clone()).collect()
 }
 
 fn get_parameter_details(
@@ -363,6 +370,7 @@ mod tests {
             initializer_count: 1,
             input_shape: vec![],
             output_shapes: vec![],
+            output_names: vec![],
             opset_version: Some(13),
             nodes,
             initializer_names: HashSet::from(["w".into()]),

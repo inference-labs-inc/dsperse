@@ -1835,7 +1835,7 @@ dependencies = [
 [[package]]
 name = "jstprove-direct-builder"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=60ef552#60ef552173cf0480c0799531e60971729cbdd424"
 dependencies = [
  "arith",
  "ethnum",
@@ -1845,7 +1845,7 @@ dependencies = [
 [[package]]
 name = "jstprove-io"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=60ef552#60ef552173cf0480c0799531e60971729cbdd424"
 dependencies = [
  "anyhow",
  "crc32c",
@@ -1857,7 +1857,7 @@ dependencies = [
 [[package]]
 name = "jstprove-onnx"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=60ef552#60ef552173cf0480c0799531e60971729cbdd424"
 dependencies = [
  "anyhow",
  "prost 0.13.5",
@@ -1868,7 +1868,7 @@ dependencies = [
 [[package]]
 name = "jstprove_circuits"
 version = "0.1.0"
-source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=ba2d483#ba2d4835ea1d84dcb8c517e0dd92f836138ca313"
+source = "git+https://github.com/inference-labs-inc/JSTprove.git?rev=60ef552#60ef552173cf0480c0799531e60971729cbdd424"
 dependencies = [
  "anyhow",
  "arith",
@@ -1895,8 +1895,10 @@ dependencies = [
  "serde_bytes",
  "strum",
  "strum_macros",
+ "tempfile",
  "thiserror 2.0.18",
  "tiny-keccak",
+ "tracing",
  "zstd",
 ]
 
@@ -2693,7 +2695,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "multimap",
  "once_cell",
@@ -2726,7 +2728,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

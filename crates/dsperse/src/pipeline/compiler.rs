@@ -20,7 +20,7 @@ pub fn compile_slices(
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!("no {} found in slices directory", crate::utils::paths::METADATA_FILE))
     })?;
-    let metadata = ModelMetadata::load(&meta_path)?;
+    let mut metadata = ModelMetadata::load(&meta_path)?;
 
     if metadata.original_model_path.is_some() {
         crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &metadata)?;
@@ -39,27 +39,45 @@ pub fn compile_slices(
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-    let errors: Vec<_> = pool.install(|| {
+    let results: Vec<(usize, Result<bool>)> = pool.install(|| {
         slices
             .par_iter()
-            .filter_map(|slice| {
-                match compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops) {
-                    Ok(true) => {
-                        tracing::info!(slice = slice.index, "compiled");
-                        None
-                    }
-                    Ok(false) => {
-                        tracing::info!(slice = slice.index, "skipped (unsupported ops)");
-                        None
-                    }
-                    Err(e) => {
-                        tracing::error!(slice = slice.index, error = %e, "compilation failed");
-                        Some((slice.index, e))
-                    }
+            .map(|slice| {
+                let r = compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops);
+                match &r {
+                    Ok(true) => tracing::info!(slice = slice.index, "compiled"),
+                    Ok(false) => tracing::info!(slice = slice.index, "skipped (unsupported ops)"),
+                    Err(e) => tracing::error!(slice = slice.index, error = %e, "compilation failed"),
                 }
+                (slice.index, r)
             })
             .collect()
     });
+
+    let mut compiled_indices: Vec<usize> = Vec::new();
+    let mut errors: Vec<(usize, DsperseError)> = Vec::new();
+    for (idx, result) in results {
+        match result {
+            Ok(true) => compiled_indices.push(idx),
+            Ok(false) => {}
+            Err(e) => errors.push((idx, e)),
+        }
+    }
+
+    if !compiled_indices.is_empty() {
+        drop(slices);
+        let compiled_set: std::collections::HashSet<usize> =
+            compiled_indices.iter().copied().collect();
+        for slice in &mut metadata.slices {
+            if compiled_set.contains(&slice.index) {
+                slice.compilation.jstprove.compiled = true;
+                slice.compilation.jstprove.files.compiled =
+                    Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
+            }
+        }
+        metadata.save(&meta_path)?;
+        tracing::info!(count = compiled_indices.len(), "persisted compiled flags to metadata");
+    }
 
     if errors.is_empty() {
         tracing::info!("all slices compiled");

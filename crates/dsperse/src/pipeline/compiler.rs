@@ -158,7 +158,15 @@ fn compile_single_slice(
     let (params, architecture, wandb) =
         converter::prepare_jstprove_artifacts(&onnx_path, weights_as_inputs)?;
 
-    backend.compile(&circuit_path, params, architecture, wandb)?;
+    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
+        .map_err(|p| {
+            let msg = p
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            DsperseError::Backend(format!("jstprove panicked: {msg}"))
+        })??;
 
     Ok(true)
 }

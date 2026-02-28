@@ -66,8 +66,9 @@ pub fn compile_slices(
 
     if !compiled_indices.is_empty() {
         drop(slices);
-        let compiled_set: std::collections::HashSet<usize> =
-            compiled_indices.iter().copied().collect();
+        let mut compiled_set =
+            std::collections::HashSet::with_capacity(compiled_indices.len());
+        compiled_set.extend(compiled_indices.iter().copied());
         for slice in &mut metadata.slices {
             if compiled_set.contains(&slice.index) {
                 slice.compilation.jstprove.compiled = true;

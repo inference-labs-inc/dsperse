@@ -283,7 +283,15 @@ pub fn run_inference(
         } else if let Some(arr) = tiling_arr {
             vec![arr]
         } else if !model_meta.output_names.is_empty() {
-            model_meta.output_names.iter().filter_map(|n| tensor_cache.get(n)).collect()
+            let found: Vec<_> = model_meta.output_names.iter().filter_map(|n| tensor_cache.get(n)).collect();
+            if found.is_empty() {
+                tracing::warn!(
+                    expected = ?model_meta.output_names,
+                    available = ?tensor_cache.keys().collect::<Vec<_>>(),
+                    "none of the declared output_names found in tensor cache"
+                );
+            }
+            found
         } else {
             last_slice.dependencies.output.iter().find_map(|n| tensor_cache.get(n))
                 .into_iter().collect()

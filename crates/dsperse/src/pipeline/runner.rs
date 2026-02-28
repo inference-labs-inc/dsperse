@@ -274,19 +274,23 @@ pub fn run_inference(
             tensor_cache.get(&cs.output_name)
         } else if let Some(ref tiling) = meta.tiling {
             tensor_cache.get(&tiling.output_name)
+        } else if !model_meta.output_names.is_empty() {
+            model_meta.output_names.iter().find_map(|n| tensor_cache.get(n))
         } else {
             last_slice
                 .dependencies
                 .output
-                .first()
-                .and_then(|n| tensor_cache.get(n))
+                .iter()
+                .find_map(|n| tensor_cache.get(n))
         }
+    } else if !model_meta.output_names.is_empty() {
+        model_meta.output_names.iter().find_map(|n| tensor_cache.get(n))
     } else {
         last_slice
             .dependencies
             .output
-            .first()
-            .and_then(|n| tensor_cache.get(n))
+            .iter()
+            .find_map(|n| tensor_cache.get(n))
     };
     let output_arr = output_arr.ok_or_else(|| {
         let first_error = final_meta

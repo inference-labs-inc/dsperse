@@ -22,6 +22,7 @@ use crate::utils::io::{
 };
 use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
+use rmpv::Value;
 
 pub struct RunConfig {
     pub parallel: usize,
@@ -269,30 +270,26 @@ pub fn run_inference(
         .last()
         .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let last_slice_id = format!("slice_{}", last_slice.index);
-    let output_arr = if let Some(meta) = final_meta.slices.get(&last_slice_id) {
-        if let Some(ref cs) = meta.channel_split {
-            tensor_cache.get(&cs.output_name)
-        } else if let Some(ref tiling) = meta.tiling {
-            tensor_cache.get(&tiling.output_name)
+    let slice_run_meta = final_meta.slices.get(&last_slice_id);
+    let output_arrs: Vec<&ArrayD<f64>> = {
+        let cs_arr = slice_run_meta
+            .and_then(|m| m.channel_split.as_ref())
+            .and_then(|cs| tensor_cache.get(&cs.output_name));
+        let tiling_arr = slice_run_meta
+            .and_then(|m| m.tiling.as_ref())
+            .and_then(|t| tensor_cache.get(&t.output_name));
+        if let Some(arr) = cs_arr {
+            vec![arr]
+        } else if let Some(arr) = tiling_arr {
+            vec![arr]
         } else if !model_meta.output_names.is_empty() {
-            model_meta.output_names.iter().find_map(|n| tensor_cache.get(n))
+            model_meta.output_names.iter().filter_map(|n| tensor_cache.get(n)).collect()
         } else {
-            last_slice
-                .dependencies
-                .output
-                .iter()
-                .find_map(|n| tensor_cache.get(n))
+            last_slice.dependencies.output.iter().find_map(|n| tensor_cache.get(n))
+                .into_iter().collect()
         }
-    } else if !model_meta.output_names.is_empty() {
-        model_meta.output_names.iter().find_map(|n| tensor_cache.get(n))
-    } else {
-        last_slice
-            .dependencies
-            .output
-            .iter()
-            .find_map(|n| tensor_cache.get(n))
     };
-    let output_arr = output_arr.ok_or_else(|| {
+    if output_arrs.is_empty() {
         let first_error = final_meta
             .execution_chain
             .execution_results
@@ -304,15 +301,15 @@ pub fn run_inference(
                     .map(|err| format!("{}: {err}", r.slice_id))
             })
             .next();
-        match first_error {
+        return Err(match first_error {
             Some(err) => DsperseError::Pipeline(format!("pipeline failed at {err}")),
             None => DsperseError::Pipeline(format!(
                 "no output tensor found for last slice {last_slice_id}"
             )),
-        }
-    })?;
+        });
+    }
     let output_path = run_dir.join(crate::utils::paths::OUTPUT_FILE);
-    let output_val = arrayd_to_value(output_arr);
+    let output_val = Value::Array(output_arrs.iter().map(|arr| arrayd_to_value(arr)).collect());
     write_msgpack(
         &output_path,
         &build_msgpack_map(vec![("output_data", output_val)]),

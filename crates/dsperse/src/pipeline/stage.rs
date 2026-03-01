@@ -268,115 +268,116 @@ fn execute_tiled_stage(
 
     let start = std::time::Instant::now();
     let method = stage.execution_method();
-    let mut tile_results: Vec<TileResult> = Vec::with_capacity(tiling.num_tiles);
 
-    for tile_idx in 0..tiling.num_tiles {
-        let tile_start = std::time::Instant::now();
-        let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+    let tile_results: Vec<TileResult> = (0..tiling.num_tiles)
+        .into_par_iter()
+        .map(|tile_idx| {
+            let tile_start = std::time::Instant::now();
+            let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
 
-        let tile_circuit_path = tiling
-            .tiles
-            .as_deref()
-            .and_then(|ts| ts.get(tile_idx))
-            .or(tiling.tile.as_ref())
-            .and_then(|ti| ti.jstprove_circuit_path.as_deref())
-            .map(|p| resolve_relative_path(slices_dir, p))
-            .unwrap_or_else(|| default_circuit_path.to_path_buf());
+            let tile_circuit_path = tiling
+                .tiles
+                .as_deref()
+                .and_then(|ts| ts.get(tile_idx))
+                .or(tiling.tile.as_ref())
+                .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+                .map(|p| resolve_relative_path(slices_dir, p))
+                .unwrap_or_else(|| default_circuit_path.to_path_buf());
 
-        let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
-        let witness_bytes = match std::fs::read(&witness_path) {
-            Ok(b) => b,
-            Err(e) => {
-                tile_results.push(TileResult {
-                    tile_idx,
-                    success: false,
-                    error: Some(format!("witness read error: {}: {e}", witness_path.display())),
-                    method: Some(method.to_string()),
-                    time_sec: tile_start.elapsed().as_secs_f64(),
-                    proof_path: None,
-                });
-                continue;
-            }
-        };
-
-        match stage {
-            PipelineStage::Prove => {
-                let proof_bytes = match backend.prove(&tile_circuit_path, &witness_bytes) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tile_results.push(TileResult {
-                            tile_idx,
-                            success: false,
-                            error: Some(e.to_string()),
-                            method: Some(method.to_string()),
-                            time_sec: tile_start.elapsed().as_secs_f64(),
-                            proof_path: None,
-                        });
-                        continue;
-                    }
-                };
-                let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
-                    tile_results.push(TileResult {
+            let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
+            let witness_bytes = match std::fs::read(&witness_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    return TileResult {
                         tile_idx,
                         success: false,
-                        error: Some(format!("write proof: {}: {e}", proof_path.display())),
+                        error: Some(format!("witness read error: {}: {e}", witness_path.display())),
                         method: Some(method.to_string()),
                         time_sec: tile_start.elapsed().as_secs_f64(),
                         proof_path: None,
-                    });
-                    continue;
+                    };
                 }
-                tile_results.push(TileResult {
-                    tile_idx,
-                    success: true,
-                    error: None,
-                    method: Some(method.to_string()),
-                    time_sec: tile_start.elapsed().as_secs_f64(),
-                    proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                });
-            }
-            PipelineStage::Verify => {
-                let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                let proof_bytes = match std::fs::read(&proof_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tile_results.push(TileResult {
+            };
+
+            match stage {
+                PipelineStage::Prove => {
+                    let proof_bytes = match backend.prove(&tile_circuit_path, &witness_bytes) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return TileResult {
+                                tile_idx,
+                                success: false,
+                                error: Some(e.to_string()),
+                                method: Some(method.to_string()),
+                                time_sec: tile_start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            };
+                        }
+                    };
+                    let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
+                    if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
+                        return TileResult {
                             tile_idx,
                             success: false,
-                            error: Some(format!("proof read error: {}: {e}", proof_path.display())),
+                            error: Some(format!("write proof: {}: {e}", proof_path.display())),
                             method: Some(method.to_string()),
                             time_sec: tile_start.elapsed().as_secs_f64(),
                             proof_path: None,
-                        });
-                        continue;
+                        };
                     }
-                };
-                let valid = match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tile_results.push(TileResult {
-                            tile_idx,
-                            success: false,
-                            error: Some(e.to_string()),
-                            method: Some(method.to_string()),
-                            time_sec: tile_start.elapsed().as_secs_f64(),
-                            proof_path: None,
-                        });
-                        continue;
+                    TileResult {
+                        tile_idx,
+                        success: true,
+                        error: None,
+                        method: Some(method.to_string()),
+                        time_sec: tile_start.elapsed().as_secs_f64(),
+                        proof_path: Some(proof_path.to_string_lossy().into_owned()),
                     }
-                };
-                tile_results.push(TileResult {
-                    tile_idx,
-                    success: valid,
-                    error: if valid { None } else { Some("proof verification failed".into()) },
-                    method: Some(method.to_string()),
-                    time_sec: tile_start.elapsed().as_secs_f64(),
-                    proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                });
+                }
+                PipelineStage::Verify => {
+                    let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
+                    let proof_bytes = match std::fs::read(&proof_path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return TileResult {
+                                tile_idx,
+                                success: false,
+                                error: Some(format!(
+                                    "proof read error: {}: {e}",
+                                    proof_path.display()
+                                )),
+                                method: Some(method.to_string()),
+                                time_sec: tile_start.elapsed().as_secs_f64(),
+                                proof_path: None,
+                            };
+                        }
+                    };
+                    let valid =
+                        match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                return TileResult {
+                                    tile_idx,
+                                    success: false,
+                                    error: Some(e.to_string()),
+                                    method: Some(method.to_string()),
+                                    time_sec: tile_start.elapsed().as_secs_f64(),
+                                    proof_path: None,
+                                };
+                            }
+                        };
+                    TileResult {
+                        tile_idx,
+                        success: valid,
+                        error: if valid { None } else { Some("proof verification failed".into()) },
+                        method: Some(method.to_string()),
+                        time_sec: tile_start.elapsed().as_secs_f64(),
+                        proof_path: Some(proof_path.to_string_lossy().into_owned()),
+                    }
+                }
             }
-        }
-    }
+        })
+        .collect();
 
     let failed = tile_results.iter().filter(|t| !t.success).count();
     let all_success = failed == 0;

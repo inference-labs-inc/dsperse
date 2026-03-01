@@ -179,8 +179,6 @@ fn execute_single_slice(
             slice_run_dir,
             tiling,
             slices_dir,
-            start,
-            method,
             backend,
         );
     }
@@ -254,7 +252,6 @@ fn execute_single_slice(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn execute_tiled_stage(
     stage: PipelineStage,
     slice_id: &str,
@@ -262,10 +259,10 @@ fn execute_tiled_stage(
     slice_run_dir: &Path,
     tiling: &TilingInfo,
     slices_dir: &Path,
-    start: std::time::Instant,
-    method: ExecutionMethod,
     backend: &JstproveBackend,
 ) -> Result<SliceResult> {
+    let start = std::time::Instant::now();
+    let method = stage.execution_method();
     let mut tile_results: Vec<TileResult> = Vec::with_capacity(tiling.num_tiles);
 
     for tile_idx in 0..tiling.num_tiles {

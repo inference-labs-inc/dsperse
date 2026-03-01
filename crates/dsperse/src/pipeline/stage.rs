@@ -162,9 +162,6 @@ fn execute_single_slice(
     meta: &RunSliceMetadata,
     backend: &JstproveBackend,
 ) -> Result<SliceResult> {
-    let start = std::time::Instant::now();
-    let method = stage.execution_method();
-
     let circuit_path = meta
         .jstprove_circuit_path
         .as_deref()
@@ -183,6 +180,8 @@ fn execute_single_slice(
         );
     }
 
+    let start = std::time::Instant::now();
+    let method = stage.execution_method();
     let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
     let witness_bytes = match std::fs::read(&witness_path) {
         Ok(b) => b,
@@ -261,6 +260,12 @@ fn execute_tiled_stage(
     slices_dir: &Path,
     backend: &JstproveBackend,
 ) -> Result<SliceResult> {
+    if tiling.num_tiles == 0 {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: tiling.num_tiles is 0"
+        )));
+    }
+
     let start = std::time::Instant::now();
     let method = stage.execution_method();
     let mut tile_results: Vec<TileResult> = Vec::with_capacity(tiling.num_tiles);

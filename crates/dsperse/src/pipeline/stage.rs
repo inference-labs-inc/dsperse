@@ -162,23 +162,27 @@ fn execute_single_slice(
     meta: &RunSliceMetadata,
     backend: &JstproveBackend,
 ) -> Result<SliceResult> {
-    let circuit_path = meta
-        .jstprove_circuit_path
-        .as_deref()
-        .map(|p| resolve_relative_path(slices_dir, p))
-        .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
-
     if let Some(ref tiling) = meta.tiling {
+        let default_circuit_path = meta
+            .jstprove_circuit_path
+            .as_deref()
+            .map(|p| resolve_relative_path(slices_dir, p));
         return execute_tiled_stage(
             stage,
             slice_id,
-            &circuit_path,
+            default_circuit_path.as_deref(),
             slice_run_dir,
             tiling,
             slices_dir,
             backend,
         );
     }
+
+    let circuit_path = meta
+        .jstprove_circuit_path
+        .as_deref()
+        .map(|p| resolve_relative_path(slices_dir, p))
+        .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
     let start = std::time::Instant::now();
     let method = stage.execution_method();
@@ -254,7 +258,7 @@ fn execute_single_slice(
 fn execute_tiled_stage(
     stage: PipelineStage,
     slice_id: &str,
-    default_circuit_path: &Path,
+    default_circuit_path: Option<&Path>,
     slice_run_dir: &Path,
     tiling: &TilingInfo,
     slices_dir: &Path,
@@ -278,11 +282,23 @@ fn execute_tiled_stage(
             let tile_circuit_path = tiling
                 .tiles
                 .as_deref()
-                .and_then(|ts| ts.get(tile_idx))
-                .or(tiling.tile.as_ref())
-                .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+                .and_then(|ts| ts.get(tile_idx).and_then(|ti| ti.jstprove_circuit_path.as_deref()))
+                .or_else(|| tiling.tile.as_ref().and_then(|ti| ti.jstprove_circuit_path.as_deref()))
                 .map(|p| resolve_relative_path(slices_dir, p))
-                .unwrap_or_else(|| default_circuit_path.to_path_buf());
+                .or_else(|| default_circuit_path.map(|p| p.to_path_buf()));
+            let tile_circuit_path = match tile_circuit_path {
+                Some(p) => p,
+                None => {
+                    return TileResult {
+                        tile_idx,
+                        success: false,
+                        error: Some(format!("no circuit path for tile {tile_idx}")),
+                        method: Some(method.to_string()),
+                        time_sec: tile_start.elapsed().as_secs_f64(),
+                        proof_path: None,
+                    };
+                }
+            };
 
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
             let witness_bytes = match std::fs::read(&witness_path) {

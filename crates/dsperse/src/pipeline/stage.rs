@@ -277,6 +277,14 @@ fn execute_tiled_stage(
         .into_par_iter()
         .map(|tile_idx| {
             let tile_start = std::time::Instant::now();
+            let fail = |error: String| TileResult {
+                tile_idx,
+                success: false,
+                error: Some(error),
+                method: Some(method.to_string()),
+                time_sec: tile_start.elapsed().as_secs_f64(),
+                proof_path: None,
+            };
             let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
 
             let tile_circuit_path = tiling
@@ -288,58 +296,24 @@ fn execute_tiled_stage(
                 .or_else(|| default_circuit_path.map(|p| p.to_path_buf()));
             let tile_circuit_path = match tile_circuit_path {
                 Some(p) => p,
-                None => {
-                    return TileResult {
-                        tile_idx,
-                        success: false,
-                        error: Some(format!("no circuit path for tile {tile_idx}")),
-                        method: Some(method.to_string()),
-                        time_sec: tile_start.elapsed().as_secs_f64(),
-                        proof_path: None,
-                    };
-                }
+                None => return fail(format!("no circuit path for tile {tile_idx}")),
             };
 
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
             let witness_bytes = match std::fs::read(&witness_path) {
                 Ok(b) => b,
-                Err(e) => {
-                    return TileResult {
-                        tile_idx,
-                        success: false,
-                        error: Some(format!("witness read error: {}: {e}", witness_path.display())),
-                        method: Some(method.to_string()),
-                        time_sec: tile_start.elapsed().as_secs_f64(),
-                        proof_path: None,
-                    };
-                }
+                Err(e) => return fail(format!("witness read error: {}: {e}", witness_path.display())),
             };
 
             match stage {
                 PipelineStage::Prove => {
                     let proof_bytes = match backend.prove(&tile_circuit_path, &witness_bytes) {
                         Ok(b) => b,
-                        Err(e) => {
-                            return TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some(e.to_string()),
-                                method: Some(method.to_string()),
-                                time_sec: tile_start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            };
-                        }
+                        Err(e) => return fail(e.to_string()),
                     };
                     let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
                     if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
-                        return TileResult {
-                            tile_idx,
-                            success: false,
-                            error: Some(format!("write proof: {}: {e}", proof_path.display())),
-                            method: Some(method.to_string()),
-                            time_sec: tile_start.elapsed().as_secs_f64(),
-                            proof_path: None,
-                        };
+                        return fail(format!("write proof: {}: {e}", proof_path.display()));
                     }
                     TileResult {
                         tile_idx,
@@ -354,33 +328,12 @@ fn execute_tiled_stage(
                     let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
                     let proof_bytes = match std::fs::read(&proof_path) {
                         Ok(b) => b,
-                        Err(e) => {
-                            return TileResult {
-                                tile_idx,
-                                success: false,
-                                error: Some(format!(
-                                    "proof read error: {}: {e}",
-                                    proof_path.display()
-                                )),
-                                method: Some(method.to_string()),
-                                time_sec: tile_start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            };
-                        }
+                        Err(e) => return fail(format!("proof read error: {}: {e}", proof_path.display())),
                     };
                     let valid =
                         match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
                             Ok(v) => v,
-                            Err(e) => {
-                                return TileResult {
-                                    tile_idx,
-                                    success: false,
-                                    error: Some(e.to_string()),
-                                    method: Some(method.to_string()),
-                                    time_sec: tile_start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                };
-                            }
+                            Err(e) => return fail(e.to_string()),
                         };
                     TileResult {
                         tile_idx,

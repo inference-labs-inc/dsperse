@@ -196,7 +196,7 @@ fn execute_single_slice(
                 method: Some(method.to_string()),
                 error: Some(format!("witness file read error: {}: {e}", witness_path.display())),
                 proof_path: None,
-                time_sec: 0.0,
+                time_sec: start.elapsed().as_secs_f64(),
                 tiles: Vec::new(),
             });
         }
@@ -230,7 +230,7 @@ fn execute_single_slice(
                         method: Some(method.to_string()),
                         error: Some(format!("proof file read error: {}: {e}", proof_path.display())),
                         proof_path: None,
-                        time_sec: 0.0,
+                        time_sec: start.elapsed().as_secs_f64(),
                         tiles: Vec::new(),
                     });
                 }

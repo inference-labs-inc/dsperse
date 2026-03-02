@@ -1033,7 +1033,7 @@ fn execute_channel_group(
     }
 }
 
-fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {
+pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {
     if tiling.halo[0] < 0 || tiling.halo[1] < 0 {
         return Err(DsperseError::Pipeline(format!(
             "negative halo values not supported: halo=[{}, {}]",
@@ -1076,7 +1076,7 @@ fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Arra
     Ok(tiles)
 }
 
-fn reconstruct_from_tiles(
+pub fn reconstruct_from_tiles(
     tile_outputs: &[ArrayD<f64>],
     tiling: &TilingInfo,
 ) -> Result<ArrayD<f64>> {

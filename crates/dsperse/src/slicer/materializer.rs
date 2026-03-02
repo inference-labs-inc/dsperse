@@ -443,6 +443,9 @@ fn get_segment_details(
     let mut sorted_outputs: Vec<_> = query.seg_outputs.iter().collect();
     sorted_outputs.sort();
     for out_name in sorted_outputs {
+        if ctx.constant_producers.contains_key(out_name) {
+            continue;
+        }
         let consumed_internally = query.nodes.iter().any(|n| n.input.contains(out_name));
         let needed_externally =
             query.future_inputs.contains(out_name) || model_output_names.contains(out_name);

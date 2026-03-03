@@ -9,6 +9,7 @@ on:
 
 env:
   UV_VERSION: "0.10.8"
+  MATURIN_VERSION: "1.12.6"
 
 jobs:
   build-linux:
@@ -69,7 +70,7 @@ jobs:
             manylinux-2-28-cargo-
 
       - name: Build wheel
-        run: uvx maturin==1.12.6 build --release --manylinux 2_28 -i /opt/python/cp312-cp312/bin/python3
+        run: uvx maturin==${{ env.MATURIN_VERSION }} build --release --manylinux 2_28 -i /opt/python/cp312-cp312/bin/python3
 
       - name: Test wheel installation
         run: |
@@ -142,7 +143,7 @@ jobs:
             macos-cargo-
 
       - name: Build wheel
-        run: uvx maturin==1.12.6 build --release --target aarch64-apple-darwin
+        run: uvx maturin==${{ env.MATURIN_VERSION }} build --release --target aarch64-apple-darwin
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
 

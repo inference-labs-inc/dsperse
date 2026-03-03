@@ -442,13 +442,13 @@ fn trace_shapes_tract(
                     .chain(graph.value_info.iter())
                 {
                     let shape = onnx_proto::vi_shape(vi);
-                    if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
+                    if !shape.is_empty() {
                         tract_names_to_shapes.push((vi.name.clone(), shape.clone()));
                         shapes.insert(vi.name.clone(), shape);
                     }
                 }
                 for init in &graph.initializer {
-                    let shape: Vec<i64> = init.dims.iter().copied().collect();
+                    let shape: Vec<i64> = init.dims.to_vec();
                     tract_names_to_shapes.push((init.name.clone(), shape.clone()));
                     shapes.insert(init.name.clone(), shape);
                 }

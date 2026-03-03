@@ -68,7 +68,7 @@ jobs:
       - name: Build wheel
         run: uvx maturin==1.12.6 build --release --manylinux 2_28 -i /opt/python/cp312-cp312/bin/python3
         env:
-          LIBRARY_PATH: /opt/python/cp312-cp312/lib
+          RUSTFLAGS: "-L native=/opt/python/cp312-cp312/lib"
 
       - name: Test wheel installation
         run: |

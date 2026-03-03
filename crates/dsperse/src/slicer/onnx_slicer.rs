@@ -423,26 +423,53 @@ fn trace_shapes_tract(
         }
     }
 
-    let typed = model
-        .into_typed()
-        .map_err(|e| DsperseError::Slicer(format!("tract type inference: {e}")))?;
+    let typed_result = model.into_typed();
 
     let mut shapes = HashMap::new();
     let mut tract_names_to_shapes: Vec<(String, Vec<i64>)> = Vec::new();
 
-    for node_id in 0..typed.nodes().len() {
-        let node_obj = typed.node(node_id);
-        for (ix, outlet) in node_obj.outputs.iter().enumerate() {
-            let fact = &outlet.fact;
-            if let Some(shape) = fact.shape.as_concrete() {
-                let shape_vec: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
-                let name = if ix == 0 && !node_obj.name.is_empty() {
-                    node_obj.name.clone()
-                } else {
-                    format!("{}:{}", node_obj.name, ix)
-                };
-                tract_names_to_shapes.push((name.clone(), shape_vec.clone()));
-                shapes.insert(name, shape_vec);
+    match typed_result {
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "tract type inference failed; falling back to value_info shapes"
+            );
+            if let Some(graph) = &proto_model.graph {
+                for vi in graph
+                    .input
+                    .iter()
+                    .chain(graph.output.iter())
+                    .chain(graph.value_info.iter())
+                {
+                    let shape = onnx_proto::vi_shape(vi);
+                    if !shape.is_empty() {
+                        tract_names_to_shapes.push((vi.name.clone(), shape.clone()));
+                        shapes.insert(vi.name.clone(), shape);
+                    }
+                }
+                for init in &graph.initializer {
+                    let shape: Vec<i64> = init.dims.to_vec();
+                    tract_names_to_shapes.push((init.name.clone(), shape.clone()));
+                    shapes.insert(init.name.clone(), shape);
+                }
+            }
+        }
+        Ok(typed) => {
+            for node_id in 0..typed.nodes().len() {
+                let node_obj = typed.node(node_id);
+                for (ix, outlet) in node_obj.outputs.iter().enumerate() {
+                    let fact = &outlet.fact;
+                    if let Some(shape) = fact.shape.as_concrete() {
+                        let shape_vec: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+                        let name = if ix == 0 && !node_obj.name.is_empty() {
+                            node_obj.name.clone()
+                        } else {
+                            format!("{}:{}", node_obj.name, ix)
+                        };
+                        tract_names_to_shapes.push((name.clone(), shape_vec.clone()));
+                        shapes.insert(name, shape_vec);
+                    }
+                }
             }
         }
     }
@@ -510,7 +537,7 @@ fn trace_shapes_tract(
                     .input
                     .iter()
                     .filter_map(|inp| shapes.get(inp))
-                    .max_by_key(|s| s.len())
+                    .max_by_key(|s: &&Vec<i64>| s.len())
                     .cloned();
                 if let Some(s) = best {
                     for out in &node.output {

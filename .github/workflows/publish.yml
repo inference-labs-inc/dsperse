@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  UV_VERSION: "0.10.8"
+  MATURIN_VERSION: "1.12.6"
+
 jobs:
   build-linux:
     if: >-
@@ -21,6 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up Python
+        run: echo "/opt/python/cp312-cp312/bin" >> $GITHUB_PATH
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Install system dependencies
         run: |
           dnf install -y protobuf-compiler protobuf-devel pkgconf-pkg-config perl-IPC-Cmd perl-Time-Piece clang-devel
@@ -29,9 +41,6 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly-2025-03-27
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Install maturin
-        run: pip3 install maturin
 
       - name: Extract version
         id: get_version
@@ -49,9 +58,6 @@ jobs:
           sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/}' pyproject.toml
           sed -i '0,/^version = ".*"/{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/}' crates/dsperse/Cargo.toml
 
-      - name: Install Rust target
-        run: rustup target add x86_64-unknown-linux-gnu
-
       - name: Cache Rust dependencies
         uses: actions/cache@v5
         with:
@@ -64,15 +70,15 @@ jobs:
             manylinux-2-28-cargo-
 
       - name: Build wheel
-        run: maturin build --release --target x86_64-unknown-linux-gnu --manylinux 2_28
+        run: uvx maturin==${{ env.MATURIN_VERSION }} build --release --manylinux 2_28 -i /opt/python/cp312-cp312/bin/python3
 
       - name: Test wheel installation
         run: |
-          pip3 install target/wheels/*.whl
+          uv pip install --system --python python3 target/wheels/*.whl
           python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-ubuntu-x86_64
           path: ./target/wheels/*.whl
@@ -93,11 +99,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Install system dependencies
         run: brew install protobuf llvm
-
-      - name: Install maturin
-        run: pip3 install maturin
 
       - name: Extract version
         id: get_version
@@ -135,17 +143,17 @@ jobs:
             macos-cargo-
 
       - name: Build wheel
-        run: maturin build --release --target aarch64-apple-darwin
+        run: uvx maturin==${{ env.MATURIN_VERSION }} build --release --target aarch64-apple-darwin
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
 
       - name: Test wheel installation
         run: |
-          pip3 install target/wheels/*.whl
+          uv pip install --system --python python3 target/wheels/*.whl
           python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-macos-aarch64
           path: ./target/wheels/*.whl
@@ -160,7 +168,7 @@ jobs:
       id-token: write
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-*
           merge-multiple: true
@@ -180,7 +188,9 @@ jobs:
           files: ./dist/*.whl
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
+        with:
+          version: ${{ env.UV_VERSION }}
 
       - name: Publish to PyPI
         run: uv publish ./dist/*

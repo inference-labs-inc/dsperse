@@ -66,7 +66,9 @@ jobs:
             manylinux-2-28-cargo-
 
       - name: Build wheel
-        run: uvx maturin build --release --manylinux 2_28
+        run: uvx maturin build --release --manylinux 2_28 -i python3
+        env:
+          LIBRARY_PATH: /opt/python/cp312-cp312/lib
 
       - name: Test wheel installation
         run: |

@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-python = ["dep:pyo3", "dep:serde_json"]
+python = ["dep:pyo3", "dep:serde_json", "pyo3/extension-module"]
 
 [dependencies]
 serde.workspace = true

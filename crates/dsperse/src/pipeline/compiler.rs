@@ -108,25 +108,12 @@ fn is_jstprove_compatible(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<boo
         .all(|n| jstprove_ops.contains(&n.op_type.as_str())))
 }
 
-fn promote_initializers_to_inputs(path: &Path) -> Result<tempfile::NamedTempFile> {
-    let mut model = onnx_proto::load_model(path)?;
-    if let Some(graph) = model.graph.as_mut() {
-        let existing: std::collections::HashSet<String> =
-            graph.input.iter().map(|i| i.name.clone()).collect();
-        let to_add: Vec<onnx_proto::ValueInfoProto> = graph
-            .initializer
-            .iter()
-            .filter(|init| !existing.contains(&init.name))
-            .map(|init| {
-                onnx_proto::make_tensor_value_info(&init.name, init.data_type, &init.dims)
-            })
-            .collect();
-        graph.input.extend(to_add);
-    }
-    let tmp = tempfile::NamedTempFile::with_suffix(".onnx")
-        .map_err(|e| DsperseError::Pipeline(format!("create temp file: {e}")))?;
-    onnx_proto::save_model(&model, tmp.path())?;
-    Ok(tmp)
+fn has_initializers(path: &Path) -> Result<bool> {
+    let model = onnx_proto::load_model(path)?;
+    Ok(model
+        .graph
+        .as_ref()
+        .is_some_and(|g| !g.initializer.is_empty()))
 }
 
 fn compile_single_slice(
@@ -176,16 +163,18 @@ fn compile_single_slice(
         }
     }
 
-    let _promoted_tmp;
-    let effective_onnx = if weights_as_inputs {
-        _promoted_tmp = promote_initializers_to_inputs(&onnx_path)?;
-        _promoted_tmp.path()
+    let effective_wai = if weights_as_inputs && has_initializers(&onnx_path)? {
+        tracing::debug!(
+            slice = slice.index,
+            "slice has embedded initializers; compiling with weights_as_inputs=false"
+        );
+        false
     } else {
-        onnx_path.as_path()
+        weights_as_inputs
     };
 
     let (params, architecture, wandb) =
-        converter::prepare_jstprove_artifacts(effective_onnx, weights_as_inputs)?;
+        converter::prepare_jstprove_artifacts(&onnx_path, effective_wai)?;
 
     std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
         .map_err(|p| {

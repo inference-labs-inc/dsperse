@@ -96,24 +96,24 @@ pub fn compile_slices(
     }
 }
 
-fn is_jstprove_compatible(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<bool> {
+struct SliceAnalysis {
+    compatible: bool,
+    has_initializers: bool,
+}
+
+fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAnalysis> {
     let model = onnx_proto::load_model(onnx_path)?;
     let graph = model
         .graph
         .as_ref()
         .ok_or_else(|| DsperseError::Slicer(format!("no graph in {}", onnx_path.display())))?;
-    Ok(graph
-        .node
-        .iter()
-        .all(|n| jstprove_ops.contains(&n.op_type.as_str())))
-}
-
-fn has_initializers(path: &Path) -> Result<bool> {
-    let model = onnx_proto::load_model(path)?;
-    Ok(model
-        .graph
-        .as_ref()
-        .is_some_and(|g| !g.initializer.is_empty()))
+    Ok(SliceAnalysis {
+        compatible: graph
+            .node
+            .iter()
+            .all(|n| jstprove_ops.contains(&n.op_type.as_str())),
+        has_initializers: !graph.initializer.is_empty(),
+    })
 }
 
 fn compile_single_slice(
@@ -140,7 +140,8 @@ fn compile_single_slice(
         )));
     }
 
-    if !is_jstprove_compatible(&onnx_path, jstprove_ops)? {
+    let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
+    if !analysis.compatible {
         return Ok(false);
     }
 
@@ -163,8 +164,8 @@ fn compile_single_slice(
         }
     }
 
-    let effective_wai = if weights_as_inputs && has_initializers(&onnx_path)? {
-        tracing::debug!(
+    let effective_wai = if weights_as_inputs && analysis.has_initializers {
+        tracing::info!(
             slice = slice.index,
             "slice has embedded initializers; compiling with weights_as_inputs=false"
         );
@@ -247,17 +248,53 @@ mod tests {
     const TEST_OPS: &[&str] = &["Conv", "Gemm", "MatMul"];
 
     #[test]
-    fn is_jstprove_compatible_nonexistent() {
-        let result = is_jstprove_compatible(Path::new("/nonexistent.onnx"), TEST_OPS);
+    fn analyze_slice_onnx_nonexistent() {
+        let result = analyze_slice_onnx(Path::new("/nonexistent.onnx"), TEST_OPS);
         assert!(result.is_err());
     }
 
     #[test]
-    fn is_jstprove_compatible_test_model() {
+    fn analyze_slice_onnx_test_model() {
         let model_path = test_models_dir().join("net/model.onnx");
         assert!(model_path.exists(), "fixture missing: {}", model_path.display());
-        let result = is_jstprove_compatible(&model_path, TEST_OPS).unwrap();
-        assert!(!result);
+        let analysis = analyze_slice_onnx(&model_path, TEST_OPS).unwrap();
+        assert!(!analysis.compatible);
+    }
+
+    #[test]
+    fn analyze_slice_onnx_with_initializers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("with_init.onnx");
+        let model = onnx_proto::ModelProto {
+            graph: Some(onnx_proto::GraphProto {
+                node: vec![onnx_proto::make_node("Conv", vec![], vec![], vec![])],
+                initializer: vec![onnx_proto::make_tensor("weight", 1, &[3, 3, 3, 3], vec![0.0; 81])],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        onnx_proto::save_model(&model, &path).unwrap();
+        let analysis = analyze_slice_onnx(&path, &["Conv"]).unwrap();
+        assert!(analysis.compatible);
+        assert!(analysis.has_initializers);
+    }
+
+    #[test]
+    fn analyze_slice_onnx_without_initializers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("no_init.onnx");
+        let model = onnx_proto::ModelProto {
+            graph: Some(onnx_proto::GraphProto {
+                node: vec![onnx_proto::make_node("Relu", vec![], vec![], vec![])],
+                initializer: vec![],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        onnx_proto::save_model(&model, &path).unwrap();
+        let analysis = analyze_slice_onnx(&path, &["Relu"]).unwrap();
+        assert!(analysis.compatible);
+        assert!(!analysis.has_initializers);
     }
 
     #[test]

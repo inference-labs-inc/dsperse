@@ -21,6 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Set up Python
+        run: echo "/opt/python/cp312-cp312/bin" >> $GITHUB_PATH
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh && echo "$HOME/.local/bin" >> $GITHUB_PATH
+
       - name: Install system dependencies
         run: |
           dnf install -y protobuf-compiler protobuf-devel pkgconf-pkg-config perl-IPC-Cmd perl-Time-Piece clang-devel
@@ -31,7 +37,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Install maturin
-        run: pip3 install maturin
+        run: uv tool install maturin
 
       - name: Extract version
         id: get_version
@@ -68,11 +74,11 @@ jobs:
 
       - name: Test wheel installation
         run: |
-          pip3 install target/wheels/*.whl
+          uv pip install --system target/wheels/*.whl
           python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-ubuntu-x86_64
           path: ./target/wheels/*.whl
@@ -93,11 +99,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
       - name: Install system dependencies
         run: brew install protobuf llvm
 
       - name: Install maturin
-        run: pip3 install maturin
+        run: uv tool install maturin
 
       - name: Extract version
         id: get_version
@@ -141,11 +150,11 @@ jobs:
 
       - name: Test wheel installation
         run: |
-          pip3 install target/wheels/*.whl
+          uv pip install --system target/wheels/*.whl
           python3 -c "from dsperse import slice_model; print('PyO3 bindings OK')"
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheel-macos-aarch64
           path: ./target/wheels/*.whl
@@ -160,7 +169,7 @@ jobs:
       id-token: write
     steps:
       - name: Download all wheels
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: wheel-*
           merge-multiple: true

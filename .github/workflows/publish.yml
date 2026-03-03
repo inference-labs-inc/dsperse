@@ -25,7 +25,7 @@ jobs:
         run: echo "/opt/python/cp312-cp312/bin" >> $GITHUB_PATH
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
           version: "0.10.8"
 
@@ -66,7 +66,7 @@ jobs:
             manylinux-2-28-cargo-
 
       - name: Build wheel
-        run: uvx maturin build --release --manylinux 2_28 -i python3
+        run: uvx maturin==1.12.6 build --release --manylinux 2_28 -i python3
         env:
           LIBRARY_PATH: /opt/python/cp312-cp312/lib
 
@@ -98,7 +98,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
           version: "0.10.8"
 
@@ -141,7 +141,7 @@ jobs:
             macos-cargo-
 
       - name: Build wheel
-        run: uvx maturin build --release --target aarch64-apple-darwin
+        run: uvx maturin==1.12.6 build --release --target aarch64-apple-darwin
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -186,7 +186,7 @@ jobs:
           files: ./dist/*.whl
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
           version: "0.10.8"
 

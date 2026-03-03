@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  UV_VERSION: "0.10.8"
+
 jobs:
   build-linux:
     if: >-
@@ -27,7 +30,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
-          version: "0.10.8"
+          version: ${{ env.UV_VERSION }}
 
       - name: Install system dependencies
         run: |
@@ -98,7 +101,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
-          version: "0.10.8"
+          version: ${{ env.UV_VERSION }}
 
       - name: Install system dependencies
         run: brew install protobuf llvm
@@ -186,7 +189,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@5a095e7a2014a4212f075830d4f7277575a9d098 # v7
         with:
-          version: "0.10.8"
+          version: ${{ env.UV_VERSION }}
 
       - name: Publish to PyPI
         run: uv publish ./dist/*

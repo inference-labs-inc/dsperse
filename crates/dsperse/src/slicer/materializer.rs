@@ -8,7 +8,7 @@ use crate::schema::metadata::ModelMetadata;
 
 pub fn materialize_slice_model(
     model: &ModelProto,
-    metadata: &ModelMetadata,
+    slice_points: &[usize],
     traced_shapes: &HashMap<String, Vec<i64>>,
     slice_idx: usize,
 ) -> Result<ModelProto> {
@@ -18,7 +18,7 @@ pub fn materialize_slice_model(
         .ok_or_else(|| DsperseError::Slicer("model.graph is None".into()))?;
 
     let total_nodes = graph.node.len();
-    let segment_ranges = super::build_segment_ranges(&metadata.slice_points, Some(total_nodes));
+    let segment_ranges = super::build_segment_ranges(slice_points, Some(total_nodes));
     let &(start, end) = segment_ranges.get(slice_idx).ok_or_else(|| {
         DsperseError::Slicer(format!(
             "slice index {slice_idx} out of range (have {} segments)",
@@ -108,12 +108,12 @@ pub fn materialize_slice_model(
 
 pub fn materialize_slice_to_disk(
     model: &ModelProto,
-    metadata: &ModelMetadata,
+    slice_points: &[usize],
     traced_shapes: &HashMap<String, Vec<i64>>,
     slice_idx: usize,
     output_path: &Path,
 ) -> Result<PathBuf> {
-    let slice_model = materialize_slice_model(model, metadata, traced_shapes, slice_idx)?;
+    let slice_model = materialize_slice_model(model, slice_points, traced_shapes, slice_idx)?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }
@@ -160,7 +160,7 @@ pub fn ensure_slice_materialized(
     std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;
     materialize_slice_to_disk(
         &model_with_shapes,
-        metadata,
+        &metadata.slice_points,
         traced_shapes,
         slice_idx,
         &onnx_path,
@@ -386,6 +386,16 @@ struct ShapeContext<'a> {
     constant_producers: &'a HashMap<String, &'a TensorProto>,
 }
 
+impl ShapeContext<'_> {
+    fn resolve_elem_type(&self, name: &str) -> i32 {
+        self.init_types
+            .get(name)
+            .copied()
+            .or_else(|| self.node_output_types.get(name).copied())
+            .unwrap_or(TensorProto::FLOAT)
+    }
+}
+
 fn get_segment_details(
     query: &SegmentQuery<'_>,
     ctx: &ShapeContext<'_>,
@@ -419,14 +429,10 @@ fn get_segment_details(
                         "no traced shape for segment input tensor '{inp_name}'"
                     ))
                 })?;
-                let elem_type = ctx
-                    .init_types
-                    .get(inp_name.as_str())
-                    .copied()
-                    .or_else(|| ctx.node_output_types.get(inp_name).copied())
-                    .unwrap_or(TensorProto::FLOAT);
                 inputs.push(onnx_proto::make_tensor_value_info(
-                    inp_name, elem_type, &shape,
+                    inp_name,
+                    ctx.resolve_elem_type(inp_name),
+                    &shape,
                 ));
             }
             added_inputs.insert(inp_name.clone());
@@ -452,14 +458,10 @@ fn get_segment_details(
                         "no traced shape for segment output tensor '{out_name}'"
                     ))
                 })?;
-                let elem_type = ctx
-                    .init_types
-                    .get(out_name.as_str())
-                    .copied()
-                    .or_else(|| ctx.node_output_types.get(out_name).copied())
-                    .unwrap_or(TensorProto::FLOAT);
                 outputs.push(onnx_proto::make_tensor_value_info(
-                    out_name, elem_type, &shape,
+                    out_name,
+                    ctx.resolve_elem_type(out_name),
+                    &shape,
                 ));
             }
         }

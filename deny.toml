@@ -5,12 +5,6 @@ all-features = false
 [advisories]
 yanked = "warn"
 
-[licenses]
-unlicensed = "allow"
-allow-osi-fsf-free = "either"
-default = "allow"
-confidence-threshold = 0.8
-
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"

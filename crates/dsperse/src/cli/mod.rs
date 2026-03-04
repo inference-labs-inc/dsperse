@@ -577,6 +577,18 @@ mod tests {
     }
 
     #[test]
+    fn resolve_circuit_ops_empty_spec_rejected() {
+        let result = resolve_circuit_ops("expander", Some(""));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_whitespace_only_spec_rejected() {
+        let result = resolve_circuit_ops("expander", Some(" ,  , "));
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn resolve_circuit_ops_valid_specific_ops() {
         let supported = ProofSystem::Expander.supported_ops();
         assert!(!supported.is_empty());

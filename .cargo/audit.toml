@@ -1,0 +1,4 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0009", # time crate DoS via RFC 2822 parsing — transitive dep, not user-facing
+]

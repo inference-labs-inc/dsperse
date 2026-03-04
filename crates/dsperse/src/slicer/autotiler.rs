@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use super::ELEMENTWISE_OPS;
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
@@ -780,7 +780,15 @@ pub fn apply_channel_splitting(
     output_name: &str,
     output_dir: &Path,
 ) -> Result<Option<ChannelSplitInfo>> {
-    let &ChannelSplitParams { c_in, c_out, num_groups, channels_per_group, h, w, slice_idx } = cfg;
+    let &ChannelSplitParams {
+        c_in,
+        c_out,
+        num_groups,
+        channels_per_group,
+        h,
+        w,
+        slice_idx,
+    } = cfg;
     if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
         return Ok(None);
     }

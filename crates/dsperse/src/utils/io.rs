@@ -7,7 +7,7 @@ use rmpv::Value;
 use crate::error::{DsperseError, Result};
 
 pub fn read_msgpack(path: &Path) -> Result<Value> {
-    let data = std::fs::read(path).map_err(|e| DsperseError::io(e, path))?;
+    let data = crate::utils::limits::read_checked(path)?;
     rmp_serde::from_slice(&data).map_err(Into::into)
 }
 

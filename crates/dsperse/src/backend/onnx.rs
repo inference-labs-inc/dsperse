@@ -173,8 +173,11 @@ pub fn run_inference_multi_named(
 
     let output_names = collect_output_names(&model);
 
-    let input_by_name: HashMap<&str, usize> =
-        inputs.iter().enumerate().map(|(idx, entry)| (entry.0, idx)).collect();
+    let input_by_name: HashMap<&str, usize> = inputs
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| (entry.0, idx))
+        .collect();
 
     let model_input_count = model.inputs.len();
     let model_input_names: Vec<(usize, String)> = model
@@ -301,14 +304,14 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     Ok((data, shape))
 }
 
-fn zip_named_outputs(
-    names: &[String],
-    result: &[TValue],
-) -> Result<NamedOutputs> {
+fn zip_named_outputs(names: &[String], result: &[TValue]) -> Result<NamedOutputs> {
     let mut map = HashMap::new();
     for (i, tv) in result.iter().enumerate() {
         let (data, shape) = tvalue_to_f64(tv, &format!("output {i}"))?;
-        let name = names.get(i).cloned().unwrap_or_else(|| format!("output_{i}"));
+        let name = names
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("output_{i}"));
         map.insert(name, (data, shape));
     }
     Ok(map)
@@ -329,10 +332,16 @@ mod tests {
 
     #[test]
     fn run_inference_on_sliced_model() {
-        let models_dir =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models/net"));
+        let models_dir = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/models/net"
+        ));
         let model_path = models_dir.join("model.onnx");
-        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        assert!(
+            model_path.exists(),
+            "fixture missing: {}",
+            model_path.display()
+        );
         let tmp = tempfile::tempdir().unwrap();
         let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
             .expect("slice_model failed");
@@ -343,9 +352,16 @@ mod tests {
         let onnx_path = tmp
             .path()
             .join(format!("slice_0/payload/{}", first_slice.filename));
-        assert!(onnx_path.exists(), "sliced ONNX missing: {}", onnx_path.display());
+        assert!(
+            onnx_path.exists(),
+            "sliced ONNX missing: {}",
+            onnx_path.display()
+        );
         let input_shape = &first_slice.shape.tensor_shape.input;
-        assert!(!input_shape.is_empty() && !input_shape[0].is_empty(), "empty input shape");
+        assert!(
+            !input_shape.is_empty() && !input_shape[0].is_empty(),
+            "empty input shape"
+        );
         let shape: Vec<usize> = input_shape[0].iter().map(|&d| d.max(1) as usize).collect();
         let elem_count: usize = shape.iter().product();
         let input_data = vec![0.0f64; elem_count];
@@ -358,11 +374,7 @@ mod tests {
 
     #[test]
     fn run_inference_nonexistent_model() {
-        let result = run_inference(
-            Path::new("/nonexistent/model.onnx"),
-            &[1.0],
-            &[1],
-        );
+        let result = run_inference(Path::new("/nonexistent/model.onnx"), &[1.0], &[1]);
         assert!(result.is_err());
     }
 
@@ -374,10 +386,16 @@ mod tests {
 
     #[test]
     fn warm_model_load_and_run_on_slice() {
-        let models_dir =
-            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/models/net"));
+        let models_dir = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/models/net"
+        ));
         let model_path = models_dir.join("model.onnx");
-        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        assert!(
+            model_path.exists(),
+            "fixture missing: {}",
+            model_path.display()
+        );
         let tmp = tempfile::tempdir().unwrap();
         let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
             .expect("slice_model failed");
@@ -388,9 +406,16 @@ mod tests {
         let onnx_path = tmp
             .path()
             .join(format!("slice_0/payload/{}", first_slice.filename));
-        assert!(onnx_path.exists(), "sliced ONNX missing: {}", onnx_path.display());
+        assert!(
+            onnx_path.exists(),
+            "sliced ONNX missing: {}",
+            onnx_path.display()
+        );
         let input_shape = &first_slice.shape.tensor_shape.input;
-        assert!(!input_shape.is_empty() && !input_shape[0].is_empty(), "empty input shape");
+        assert!(
+            !input_shape.is_empty() && !input_shape[0].is_empty(),
+            "empty input shape"
+        );
         let shape: Vec<usize> = input_shape[0].iter().map(|&d| d.max(1) as usize).collect();
         let elem_count: usize = shape.iter().product();
 

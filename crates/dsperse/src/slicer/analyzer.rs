@@ -124,11 +124,7 @@ fn get_model_input_shapes(
 }
 
 fn get_model_output_shapes(graph: &GraphProto) -> Vec<Vec<i64>> {
-    graph
-        .output
-        .iter()
-        .map(onnx_proto::vi_shape)
-        .collect()
+    graph.output.iter().map(onnx_proto::vi_shape).collect()
 }
 
 fn get_model_output_names(graph: &GraphProto) -> Vec<String> {
@@ -216,7 +212,12 @@ pub fn get_segment_dependencies(
 mod tests {
     use super::*;
 
-    fn make_node(op: &str, idx: usize, inputs: Vec<&str>, outputs: Vec<&str>) -> onnx_proto::NodeProto {
+    fn make_node(
+        op: &str,
+        idx: usize,
+        inputs: Vec<&str>,
+        outputs: Vec<&str>,
+    ) -> onnx_proto::NodeProto {
         onnx_proto::NodeProto {
             op_type: op.into(),
             name: format!("{}_{}", op, idx),
@@ -290,12 +291,8 @@ mod tests {
     #[test]
     fn analyze_non_param_op_has_no_details() {
         let weight_data: Vec<f32> = vec![1.0; 27];
-        let weight_tensor = onnx_proto::make_tensor(
-            "add_weight",
-            TensorProto::FLOAT,
-            &[1, 3, 3, 3],
-            weight_data,
-        );
+        let weight_tensor =
+            onnx_proto::make_tensor("add_weight", TensorProto::FLOAT, &[1, 3, 3, 3], weight_data);
         let add = make_node("Add", 0, vec!["x", "add_weight"], vec!["y"]);
         let model = make_model_with_initializers(vec![add], vec![weight_tensor]);
         let result = analyze(&model, None).unwrap();
@@ -320,7 +317,11 @@ mod tests {
         let result = analyze(&model, None).unwrap();
         assert_eq!(result.node_count, 2);
 
-        let relu_node = result.nodes.values().find(|n| n.node_type == "Relu").unwrap();
+        let relu_node = result
+            .nodes
+            .values()
+            .find(|n| n.node_type == "Relu")
+            .unwrap();
         assert_eq!(relu_node.dependencies.input, vec!["conv_out"]);
         assert_eq!(relu_node.dependencies.output, vec!["y"]);
     }

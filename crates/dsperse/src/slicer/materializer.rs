@@ -130,9 +130,7 @@ pub fn ensure_slice_materialized(
         .slices
         .iter()
         .find(|s| s.index == slice_idx)
-        .ok_or_else(|| {
-            DsperseError::Slicer(format!("no slice metadata for index {slice_idx}"))
-        })?;
+        .ok_or_else(|| DsperseError::Slicer(format!("no slice metadata for index {slice_idx}")))?;
 
     let slice_dir = slices_dir.join(format!("slice_{slice_idx}"));
     let payload_dir = slice_dir.join("payload");
@@ -160,7 +158,13 @@ pub fn ensure_slice_materialized(
     let model_with_shapes = apply_traced_shapes(model, traced_shapes);
 
     std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;
-    materialize_slice_to_disk(&model_with_shapes, metadata, traced_shapes, slice_idx, &onnx_path)?;
+    materialize_slice_to_disk(
+        &model_with_shapes,
+        metadata,
+        traced_shapes,
+        slice_idx,
+        &onnx_path,
+    )?;
 
     tracing::info!(slice = slice_idx, path = %onnx_path.display(), "materialized slice");
 
@@ -206,13 +210,8 @@ fn materialize_tiling_artifacts(
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
 
-            let tile_elements = cs.c_in
-                .checked_mul(cs.h)
-                .and_then(|v| v.checked_mul(cs.w));
-            let detection = autotiler::detect_tiling_needs(
-                &slice_model,
-                tile_elements,
-            );
+            let tile_elements = cs.c_in.checked_mul(cs.h).and_then(|v| v.checked_mul(cs.w));
+            let detection = autotiler::detect_tiling_needs(&slice_model, tile_elements);
 
             if let Some(TilingDetection::ChannelSplit {
                 input_name,
@@ -241,7 +240,11 @@ fn materialize_tiling_artifacts(
                     &output_name,
                     &payload_dir,
                 )?;
-                tracing::info!(slice = slice_idx, groups = num_groups, "materialized channel groups");
+                tracing::info!(
+                    slice = slice_idx,
+                    groups = num_groups,
+                    "materialized channel groups"
+                );
             }
         }
     }
@@ -249,18 +252,12 @@ fn materialize_tiling_artifacts(
     Ok(())
 }
 
-pub fn ensure_all_slices_materialized(
-    slices_dir: &Path,
-    metadata: &ModelMetadata,
-) -> Result<()> {
+pub fn ensure_all_slices_materialized(slices_dir: &Path, metadata: &ModelMetadata) -> Result<()> {
     use rayon::prelude::*;
 
-    metadata
-        .slices
-        .par_iter()
-        .try_for_each(|slice| {
-            ensure_slice_materialized(slices_dir, metadata, slice.index).map(|_| ())
-        })
+    metadata.slices.par_iter().try_for_each(|slice| {
+        ensure_slice_materialized(slices_dir, metadata, slice.index).map(|_| ())
+    })
 }
 
 fn apply_traced_shapes(mut model: ModelProto, shapes: &HashMap<String, Vec<i64>>) -> ModelProto {
@@ -417,15 +414,11 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(inp_name) {
                 inputs.push((*vi).clone());
             } else {
-                let shape = ctx
-                    .traced_shapes
-                    .get(inp_name)
-                    .cloned()
-                    .ok_or_else(|| {
-                        DsperseError::Slicer(format!(
-                            "no traced shape for segment input tensor '{inp_name}'"
-                        ))
-                    })?;
+                let shape = ctx.traced_shapes.get(inp_name).cloned().ok_or_else(|| {
+                    DsperseError::Slicer(format!(
+                        "no traced shape for segment input tensor '{inp_name}'"
+                    ))
+                })?;
                 let elem_type = ctx
                     .init_types
                     .get(inp_name.as_str())
@@ -454,15 +447,11 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(out_name) {
                 outputs.push((*vi).clone());
             } else {
-                let shape = ctx
-                    .traced_shapes
-                    .get(out_name)
-                    .cloned()
-                    .ok_or_else(|| {
-                        DsperseError::Slicer(format!(
-                            "no traced shape for segment output tensor '{out_name}'"
-                        ))
-                    })?;
+                let shape = ctx.traced_shapes.get(out_name).cloned().ok_or_else(|| {
+                    DsperseError::Slicer(format!(
+                        "no traced shape for segment output tensor '{out_name}'"
+                    ))
+                })?;
                 let elem_type = ctx
                     .init_types
                     .get(out_name.as_str())

@@ -119,11 +119,14 @@ impl SliceMetadata {
         &self.dependencies.output
     }
 
-    pub fn resolve_onnx(&self, slices_dir: &std::path::Path) -> std::path::PathBuf {
+    pub fn resolve_onnx(
+        &self,
+        slices_dir: &std::path::Path,
+    ) -> crate::error::Result<std::path::PathBuf> {
         if self.relative_path.is_empty() {
-            slices_dir.join("model.onnx")
+            Ok(slices_dir.join("model.onnx"))
         } else {
-            slices_dir.join(&self.relative_path)
+            crate::utils::paths::resolve_relative_path(slices_dir, &self.relative_path)
         }
     }
 }
@@ -158,7 +161,6 @@ pub struct RunSliceMetadata {
     pub jstprove_settings_path: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     #[serde(default)]
@@ -191,8 +193,7 @@ pub struct ModelMetadata {
 
 impl ModelMetadata {
     pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
-        let data =
-            std::fs::read(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
+        let data = crate::utils::limits::read_checked(path)?;
         rmp_serde::from_slice(&data).map_err(Into::into)
     }
 

@@ -1,0 +1,17 @@
+[graph]
+targets = []
+all-features = false
+
+[advisories]
+yanked = "warn"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-git = [
+    "https://github.com/inference-labs-inc/JSTprove.git",
+]

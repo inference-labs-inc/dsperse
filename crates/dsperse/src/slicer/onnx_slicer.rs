@@ -48,8 +48,12 @@ pub fn slice_model(
     if tile_size.is_some() {
         let temp_metadata = build_temp_metadata(&analysis, &slice_points);
         for (seg_idx, _) in segment_ranges.iter().enumerate() {
-            let slice_model =
-                materializer::materialize_slice_model(&model, &temp_metadata, &traced_shapes, seg_idx)?;
+            let slice_model = materializer::materialize_slice_model(
+                &model,
+                &temp_metadata,
+                &traced_shapes,
+                seg_idx,
+            )?;
             if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
                 tiled_info.insert(seg_idx, detection);
             }
@@ -239,7 +243,11 @@ fn build_shape_from_traced(
     }
 }
 
-fn determine_slice_points(analysis: &AnalysisResult, tile_size: Option<usize>, jstprove_ops: &[&str]) -> Vec<usize> {
+fn determine_slice_points(
+    analysis: &AnalysisResult,
+    tile_size: Option<usize>,
+    jstprove_ops: &[&str],
+) -> Vec<usize> {
     let mut points: HashSet<usize> = HashSet::new();
 
     for node in analysis.nodes.values() {
@@ -275,8 +283,12 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     for (pos, node) in sorted_nodes.iter().enumerate() {
         if node.node_type == "Conv" {
             updated.insert(node.index);
-            let mut produced: HashSet<&str> =
-                node.dependencies.output.iter().map(|s| s.as_str()).collect();
+            let mut produced: HashSet<&str> = node
+                .dependencies
+                .output
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
             let mut end = pos + 1;
             while end < sorted_nodes.len() {
                 let candidate = sorted_nodes[end];
@@ -304,7 +316,11 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     v
 }
 
-fn optimize_jstprove_slices(points: &[usize], analysis: &AnalysisResult, jstprove_ops: &[&str]) -> Vec<usize> {
+fn optimize_jstprove_slices(
+    points: &[usize],
+    analysis: &AnalysisResult,
+    jstprove_ops: &[&str],
+) -> Vec<usize> {
     let mut updated: HashSet<usize> = points.iter().copied().collect();
     let mut sorted_nodes: Vec<&NodeAnalysis> = analysis.nodes.values().collect();
     sorted_nodes.sort_by_key(|n| n.index);
@@ -500,7 +516,9 @@ fn trace_shapes_tract(
             if matched_shape.is_none() {
                 let prefix = format!("{onnx_name}.");
                 for (tract_name, shape) in &tract_names_to_shapes {
-                    if tract_name.starts_with(&prefix) && matched_shape.is_none_or(|s| shape.len() > s.len()) {
+                    if tract_name.starts_with(&prefix)
+                        && matched_shape.is_none_or(|s| shape.len() > s.len())
+                    {
                         matched_shape = Some(shape);
                     }
                 }
@@ -615,7 +633,6 @@ fn trace_shapes_tract(
     Ok(shapes)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,9 +669,7 @@ mod tests {
         }
     }
 
-    fn make_analysis_with_params(
-        nodes: Vec<(&str, usize, &str, bool)>,
-    ) -> AnalysisResult {
+    fn make_analysis_with_params(nodes: Vec<(&str, usize, &str, bool)>) -> AnalysisResult {
         let mut node_map = HashMap::new();
         for (name, index, op_type, has_params) in &nodes {
             let mut parameter_details = HashMap::new();
@@ -699,11 +714,7 @@ mod tests {
 
     #[test]
     fn complete_slice_points_adds_boundaries() {
-        let analysis = make_analysis(vec![
-            ("a", 0, "Conv"),
-            ("b", 1, "Relu"),
-            ("c", 2, "Conv"),
-        ]);
+        let analysis = make_analysis(vec![("a", 0, "Conv"), ("b", 1, "Relu"), ("c", 2, "Conv")]);
         let mut points = vec![1];
         complete_slice_points(&mut points, &analysis);
         assert!(points.contains(&0));
@@ -754,11 +765,7 @@ mod tests {
 
     #[test]
     fn optimize_jstprove_slices_splits_at_boundary() {
-        let analysis = make_analysis(vec![
-            ("a", 0, "Conv"),
-            ("b", 1, "Relu"),
-            ("c", 2, "Conv"),
-        ]);
+        let analysis = make_analysis(vec![("a", 0, "Conv"), ("b", 1, "Relu"), ("c", 2, "Conv")]);
         let points = vec![0];
         let result = optimize_jstprove_slices(&points, &analysis, TEST_OPS);
         assert!(result.contains(&1));
@@ -767,10 +774,7 @@ mod tests {
 
     #[test]
     fn optimize_jstprove_slices_all_supported() {
-        let analysis = make_analysis(vec![
-            ("a", 0, "Conv"),
-            ("b", 1, "Conv"),
-        ]);
+        let analysis = make_analysis(vec![("a", 0, "Conv"), ("b", 1, "Conv")]);
         let points = vec![0, 1];
         let result = optimize_jstprove_slices(&points, &analysis, TEST_OPS);
         assert_eq!(result, vec![0, 1]);
@@ -817,10 +821,7 @@ mod tests {
 
     #[test]
     fn filter_constant_only_slices_keeps_non_constant() {
-        let analysis = make_analysis(vec![
-            ("a", 0, "Conv"),
-            ("b", 1, "Relu"),
-        ]);
+        let analysis = make_analysis(vec![("a", 0, "Conv"), ("b", 1, "Relu")]);
         let points = vec![1, 2];
         let result = filter_constant_only_slices(&points, &analysis);
         assert_eq!(result, vec![1, 2]);

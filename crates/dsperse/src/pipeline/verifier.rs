@@ -12,5 +12,11 @@ pub fn verify_run(
     backend: &JstproveBackend,
     parallel: usize,
 ) -> Result<RunMetadata> {
-    run_pipeline_stage(PipelineStage::Verify, run_dir, slices_dir, backend, parallel)
+    run_pipeline_stage(
+        PipelineStage::Verify,
+        run_dir,
+        slices_dir,
+        backend,
+        parallel,
+    )
 }

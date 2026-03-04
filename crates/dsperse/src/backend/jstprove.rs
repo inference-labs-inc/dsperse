@@ -19,7 +19,10 @@ pub struct JstproveBackend {
 
 impl Default for JstproveBackend {
     fn default() -> Self {
-        Self { compress: true, fast_compile: false }
+        Self {
+            compress: true,
+            fast_compile: false,
+        }
     }
 }
 
@@ -57,8 +60,13 @@ impl JstproveBackend {
             .to_str()
             .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
 
-        compile_bn254(circuit_path_str, self.compress, Some(params), self.fast_compile)
-            .map_err(|e| DsperseError::Backend(format!("compile: {e}")))
+        compile_bn254(
+            circuit_path_str,
+            self.compress,
+            Some(params),
+            self.fast_compile,
+        )
+        .map_err(|e| DsperseError::Backend(format!("compile: {e}")))
     }
 
     pub fn witness(
@@ -95,7 +103,9 @@ impl JstproveBackend {
     ) -> Result<Vec<u8>> {
         let bundle = load_bundle(circuit_path)?;
         let params = bundle.metadata.as_ref().ok_or_else(|| {
-            DsperseError::Backend("circuit bundle missing metadata (required for quantization)".into())
+            DsperseError::Backend(
+                "circuit bundle missing metadata (required for quantization)".into(),
+            )
         })?;
 
         let result = witness_bn254_from_f64(

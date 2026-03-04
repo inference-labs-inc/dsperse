@@ -16,7 +16,7 @@ pub use onnx::{
 };
 
 pub fn load_model(path: &Path) -> Result<ModelProto> {
-    let bytes = std::fs::read(path).map_err(|e| DsperseError::io(e, path))?;
+    let bytes = crate::utils::limits::read_checked(path)?;
     ModelProto::decode(bytes.as_slice())
         .map_err(|e| DsperseError::Slicer(format!("decode {}: {e}", path.display())))
 }

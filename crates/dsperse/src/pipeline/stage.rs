@@ -53,7 +53,7 @@ pub fn run_pipeline_stage(
     parallel: usize,
 ) -> Result<RunMetadata> {
     let meta_path = run_dir.join(crate::utils::paths::METADATA_FILE);
-    let data = std::fs::read(&meta_path).map_err(|e| DsperseError::io(e, &meta_path))?;
+    let data = crate::utils::limits::read_checked(&meta_path)?;
     let mut run_meta: RunMetadata = rmp_serde::from_slice(&data)?;
 
     let circuit_slices: Vec<(String, _)> = run_meta
@@ -61,7 +61,11 @@ pub fn run_pipeline_stage(
         .map(|(id, meta)| (id.to_string(), meta.clone()))
         .collect();
 
-    tracing::info!(total = circuit_slices.len(), "{} circuit slices", stage.action_label());
+    tracing::info!(
+        total = circuit_slices.len(),
+        "{} circuit slices",
+        stage.action_label()
+    );
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(parallel)
@@ -150,7 +154,12 @@ pub fn run_pipeline_stage(
     let meta_bytes = rmp_serde::to_vec_named(&run_meta)?;
     std::fs::write(&meta_path, meta_bytes).map_err(|e| DsperseError::io(e, &meta_path))?;
 
-    tracing::info!(succeeded, total = circuit_slices.len(), "{} complete", stage.action_label());
+    tracing::info!(
+        succeeded,
+        total = circuit_slices.len(),
+        "{} complete",
+        stage.action_label()
+    );
     Ok(run_meta)
 }
 
@@ -166,7 +175,8 @@ fn execute_single_slice(
         let default_circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
-            .map(|p| resolve_relative_path(slices_dir, p));
+            .map(|p| resolve_relative_path(slices_dir, p))
+            .transpose()?;
         return execute_tiled_stage(
             stage,
             slice_id,
@@ -182,19 +192,20 @@ fn execute_single_slice(
         .jstprove_circuit_path
         .as_deref()
         .map(|p| resolve_relative_path(slices_dir, p))
+        .transpose()?
         .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
     let start = std::time::Instant::now();
     let method = stage.execution_method();
     let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
-    let witness_bytes = match std::fs::read(&witness_path) {
+    let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
         Ok(b) => b,
         Err(e) => {
             return Ok(SliceResult {
                 slice_id: slice_id.into(),
                 success: false,
                 method: Some(method.to_string()),
-                error: Some(format!("witness file read error: {}: {e}", witness_path.display())),
+                error: Some(format!("witness file read error: {e}")),
                 proof_path: None,
                 time_sec: start.elapsed().as_secs_f64(),
                 tiles: Vec::new(),
@@ -221,14 +232,14 @@ fn execute_single_slice(
         }
         PipelineStage::Verify => {
             let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
-            let proof_bytes = match std::fs::read(&proof_path) {
+            let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                 Ok(b) => b,
                 Err(e) => {
                     return Ok(SliceResult {
                         slice_id: slice_id.into(),
                         success: false,
                         method: Some(method.to_string()),
-                        error: Some(format!("proof file read error: {}: {e}", proof_path.display())),
+                        error: Some(format!("proof file read error: {e}")),
                         proof_path: None,
                         time_sec: start.elapsed().as_secs_f64(),
                         tiles: Vec::new(),
@@ -287,22 +298,36 @@ fn execute_tiled_stage(
             };
             let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
 
-            let tile_circuit_path = tiling
+            let tile_circuit_str = tiling
                 .tiles
                 .as_deref()
-                .and_then(|ts| ts.get(tile_idx).and_then(|ti| ti.jstprove_circuit_path.as_deref()))
-                .or_else(|| tiling.tile.as_ref().and_then(|ti| ti.jstprove_circuit_path.as_deref()))
-                .map(|p| resolve_relative_path(slices_dir, p))
-                .or_else(|| default_circuit_path.map(|p| p.to_path_buf()));
+                .and_then(|ts| {
+                    ts.get(tile_idx)
+                        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+                })
+                .or_else(|| {
+                    tiling
+                        .tile
+                        .as_ref()
+                        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+                });
+            let tile_circuit_path = match tile_circuit_str {
+                Some(p) => match resolve_relative_path(slices_dir, p) {
+                    Ok(resolved) => Some(resolved),
+                    Err(e) => return fail(e.to_string()),
+                },
+                None => None,
+            }
+            .or_else(|| default_circuit_path.map(|p| p.to_path_buf()));
             let tile_circuit_path = match tile_circuit_path {
                 Some(p) => p,
                 None => return fail(format!("no circuit path for tile {tile_idx}")),
             };
 
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
-            let witness_bytes = match std::fs::read(&witness_path) {
+            let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
                 Ok(b) => b,
-                Err(e) => return fail(format!("witness read error: {}: {e}", witness_path.display())),
+                Err(e) => return fail(format!("witness read error: {e}")),
             };
 
             match stage {
@@ -326,9 +351,9 @@ fn execute_tiled_stage(
                 }
                 PipelineStage::Verify => {
                     let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                    let proof_bytes = match std::fs::read(&proof_path) {
+                    let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                         Ok(b) => b,
-                        Err(e) => return fail(format!("proof read error: {}: {e}", proof_path.display())),
+                        Err(e) => return fail(format!("proof read error: {e}")),
                     };
                     let valid =
                         match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
@@ -338,7 +363,11 @@ fn execute_tiled_stage(
                     TileResult {
                         tile_idx,
                         success: valid,
-                        error: if valid { None } else { Some("proof verification failed".into()) },
+                        error: if valid {
+                            None
+                        } else {
+                            Some("proof verification failed".into())
+                        },
                         method: Some(method.to_string()),
                         time_sec: tile_start.elapsed().as_secs_f64(),
                         proof_path: Some(proof_path.to_string_lossy().into_owned()),

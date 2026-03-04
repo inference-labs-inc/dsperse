@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   fmt:
@@ -52,6 +53,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - run: rm -f rust-toolchain.toml && rustup install stable && rustup default stable

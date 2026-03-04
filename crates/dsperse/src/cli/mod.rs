@@ -48,9 +48,16 @@ pub struct SliceArgs {
     pub output_dir: Option<PathBuf>,
     #[arg(long)]
     pub tile_size: Option<usize>,
-    #[arg(long, default_value = "expander", help = "Proof system backend (expander or remainder)")]
+    #[arg(
+        long,
+        default_value = "expander",
+        help = "Proof system backend (expander or remainder)"
+    )]
     pub proof_system: String,
-    #[arg(long, help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)")]
+    #[arg(
+        long,
+        help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
+    )]
     pub circuit_ops: Option<String>,
 }
 
@@ -66,11 +73,21 @@ pub struct CompileArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub weights_as_inputs: bool,
-    #[arg(long, default_value = "expander", help = "Proof system backend (expander or remainder)")]
+    #[arg(
+        long,
+        default_value = "expander",
+        help = "Proof system backend (expander or remainder)"
+    )]
     pub proof_system: String,
-    #[arg(long, help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)")]
+    #[arg(
+        long,
+        help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
+    )]
     pub circuit_ops: Option<String>,
-    #[arg(long, help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify")]
+    #[arg(
+        long,
+        help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify"
+    )]
     pub fast_compile: bool,
 }
 
@@ -88,7 +105,10 @@ pub struct RunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
-    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
+    #[arg(
+        long,
+        help = "Path to consumer ONNX with fine-tuned weights to inject at inference time"
+    )]
     pub weights: Option<PathBuf>,
 }
 
@@ -132,27 +152,47 @@ pub struct FullRunArgs {
     pub parallel: NonZeroUsize,
     #[arg(long)]
     pub batch: bool,
-    #[arg(long, help = "Path to consumer ONNX with fine-tuned weights to inject at inference time")]
+    #[arg(
+        long,
+        help = "Path to consumer ONNX with fine-tuned weights to inject at inference time"
+    )]
     pub weights: Option<PathBuf>,
-    #[arg(long, default_value = "expander", help = "Proof system backend (expander or remainder)")]
+    #[arg(
+        long,
+        default_value = "expander",
+        help = "Proof system backend (expander or remainder)"
+    )]
     pub proof_system: String,
-    #[arg(long, help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)")]
+    #[arg(
+        long,
+        help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
+    )]
     pub circuit_ops: Option<String>,
-    #[arg(long, help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify")]
+    #[arg(
+        long,
+        help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify"
+    )]
     pub fast_compile: bool,
 }
 
 fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<Vec<String>> {
-    let ps: ProofSystem = proof_system_str
-        .parse()
-        .map_err(|e: jstprove_circuits::ProofSystemParseError| DsperseError::Other(e.to_string()))?;
+    let ps: ProofSystem =
+        proof_system_str
+            .parse()
+            .map_err(|e: jstprove_circuits::ProofSystemParseError| {
+                DsperseError::Other(e.to_string())
+            })?;
 
     let supported = ps.supported_ops();
 
     match circuit_ops {
         None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),
         Some(spec) => {
-            let requested: Vec<String> = spec.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let requested: Vec<String> = spec
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             for op in &requested {
                 if !supported.contains(&op.as_str()) {
                     return Err(DsperseError::Other(format!(
@@ -175,8 +215,12 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
     }
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
-    let metadata =
-        crate::slicer::slice_model(&model_path, args.output_dir.as_deref(), args.tile_size, &ops_refs)?;
+    let metadata = crate::slicer::slice_model(
+        &model_path,
+        args.output_dir.as_deref(),
+        args.tile_size,
+        &ops_refs,
+    )?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
     Ok(())
 }
@@ -239,12 +283,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
         .slices_dir
         .unwrap_or_else(|| args.model_dir.join("slices"));
 
-    pipeline::prove_run(
-        &args.run_dir,
-        &slices_dir,
-        &backend,
-        args.parallel.get(),
-    )?;
+    pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
 }
 

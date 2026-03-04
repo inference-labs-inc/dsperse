@@ -9,13 +9,22 @@ fn test_models_dir() -> &'static Path {
 #[test]
 fn slice_net_model() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
     assert_eq!(metadata.model_type, "ONNX");
@@ -26,7 +35,10 @@ fn slice_net_model() {
     assert!(meta_path.exists(), "metadata.msgpack must be written");
 
     let model_onnx = output_dir.join("model.onnx");
-    assert!(model_onnx.exists(), "model.onnx must be copied to output dir");
+    assert!(
+        model_onnx.exists(),
+        "model.onnx must be copied to output dir"
+    );
 
     let loaded = ModelMetadata::load(&meta_path).expect("load metadata");
     assert_eq!(loaded.slices.len(), metadata.slices.len());
@@ -39,13 +51,22 @@ fn slice_net_model() {
 #[test]
 fn slice_doom_model() {
     let model_path = test_models_dir().join("doom/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -59,13 +80,22 @@ fn slice_doom_model() {
 #[test]
 fn slice_net_model_remainder() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Remainder.supported_ops()).expect("slice_model with Remainder");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Remainder.supported_ops(),
+    )
+    .expect("slice_model with Remainder");
 
     assert!(!metadata.slices.is_empty());
     assert_eq!(metadata.model_type, "ONNX");
@@ -74,13 +104,22 @@ fn slice_net_model_remainder() {
 #[test]
 fn slice_with_tile_size() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), Some(8), jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        Some(8),
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     assert!(!metadata.slices.is_empty());
 
@@ -91,13 +130,22 @@ fn slice_with_tile_size() {
 #[test]
 fn slice_metadata_roundtrip_from_disk() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let original =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let original = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     let meta_path = output_dir.join("metadata.msgpack");
     let deserialized = ModelMetadata::load(&meta_path).expect("load metadata");
@@ -112,39 +160,65 @@ fn slice_metadata_roundtrip_from_disk() {
 #[test]
 fn materialize_from_manifest() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     dsperse::slicer::materializer::ensure_all_slices_materialized(&output_dir, &metadata)
         .expect("materialize all slices");
 
     for slice in &metadata.slices {
         let slice_dir = output_dir.join(format!("slice_{}", slice.index));
-        assert!(slice_dir.exists(), "slice dir must exist after materialization: {}", slice_dir.display());
+        assert!(
+            slice_dir.exists(),
+            "slice dir must exist after materialization: {}",
+            slice_dir.display()
+        );
 
         let payload_dir = slice_dir.join("payload");
         assert!(payload_dir.exists(), "payload dir must exist");
 
         let onnx_file = payload_dir.join(&slice.filename);
-        assert!(onnx_file.exists(), "onnx file must exist: {}", onnx_file.display());
+        assert!(
+            onnx_file.exists(),
+            "onnx file must exist: {}",
+            onnx_file.display()
+        );
     }
 }
 
 #[test]
 fn resolve_onnx_points_to_existing_file_after_materialize() {
     let model_path = test_models_dir().join("net/model.onnx");
-    assert!(model_path.exists(), "test model not found at {}", model_path.display());
+    assert!(
+        model_path.exists(),
+        "test model not found at {}",
+        model_path.display()
+    );
 
     let tmp = tempfile::tempdir().expect("create temp dir");
     let output_dir = tmp.path().join("slices");
 
-    let metadata =
-        dsperse::slicer::slice_model(&model_path, Some(&output_dir), None, jstprove_circuits::ProofSystem::Expander.supported_ops()).expect("slice_model");
+    let metadata = dsperse::slicer::slice_model(
+        &model_path,
+        Some(&output_dir),
+        None,
+        jstprove_circuits::ProofSystem::Expander.supported_ops(),
+    )
+    .expect("slice_model");
 
     dsperse::slicer::materializer::ensure_all_slices_materialized(&output_dir, &metadata)
         .expect("materialize all slices");
@@ -160,10 +234,16 @@ fn resolve_onnx_points_to_existing_file_after_materialize() {
             slice.index,
             resolved.display()
         );
-        assert!(resolved.starts_with(&output_dir), "resolved path must start with output_dir");
+        assert!(
+            resolved.starts_with(&output_dir),
+            "resolved path must start with output_dir"
+        );
         let resolved_path = resolved.to_string_lossy();
         let output_str = output_dir.to_string_lossy();
         let count = resolved_path.matches(output_str.as_ref()).count();
-        assert_eq!(count, 1, "output_dir must appear exactly once in resolved path, got {count}");
+        assert_eq!(
+            count, 1,
+            "output_dir must appear exactly once in resolved path, got {count}"
+        );
     }
 }

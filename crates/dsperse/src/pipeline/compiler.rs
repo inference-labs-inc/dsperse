@@ -18,7 +18,10 @@ pub fn compile_slices(
     jstprove_ops: &[&str],
 ) -> Result<()> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
-        DsperseError::Metadata(format!("no {} found in slices directory", crate::utils::paths::METADATA_FILE))
+        DsperseError::Metadata(format!(
+            "no {} found in slices directory",
+            crate::utils::paths::METADATA_FILE
+        ))
     })?;
     let mut metadata = ModelMetadata::load(&meta_path)?;
 
@@ -43,11 +46,19 @@ pub fn compile_slices(
         slices
             .par_iter()
             .map(|slice| {
-                let r = compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops);
+                let r = compile_single_slice(
+                    slices_dir,
+                    slice,
+                    backend,
+                    weights_as_inputs,
+                    jstprove_ops,
+                );
                 match &r {
                     Ok(true) => tracing::info!(slice = slice.index, "compiled"),
                     Ok(false) => tracing::info!(slice = slice.index, "skipped (unsupported ops)"),
-                    Err(e) => tracing::error!(slice = slice.index, error = %e, "compilation failed"),
+                    Err(e) => {
+                        tracing::error!(slice = slice.index, error = %e, "compilation failed")
+                    }
                 }
                 (slice.index, r)
             })
@@ -66,8 +77,7 @@ pub fn compile_slices(
 
     if !compiled_indices.is_empty() {
         drop(slices);
-        let mut compiled_set =
-            std::collections::HashSet::with_capacity(compiled_indices.len());
+        let mut compiled_set = std::collections::HashSet::with_capacity(compiled_indices.len());
         compiled_set.extend(compiled_indices.iter().copied());
         for slice in &mut metadata.slices {
             if compiled_set.contains(&slice.index) {
@@ -77,7 +87,10 @@ pub fn compile_slices(
             }
         }
         metadata.save(&meta_path)?;
-        tracing::info!(count = compiled_indices.len(), "persisted compiled flags to metadata");
+        tracing::info!(
+            count = compiled_indices.len(),
+            "persisted compiled flags to metadata"
+        );
     }
 
     if errors.is_empty() {
@@ -256,7 +269,11 @@ mod tests {
     #[test]
     fn analyze_slice_onnx_test_model() {
         let model_path = test_models_dir().join("net/model.onnx");
-        assert!(model_path.exists(), "fixture missing: {}", model_path.display());
+        assert!(
+            model_path.exists(),
+            "fixture missing: {}",
+            model_path.display()
+        );
         let analysis = analyze_slice_onnx(&model_path, TEST_OPS).unwrap();
         assert!(!analysis.compatible);
     }
@@ -268,7 +285,12 @@ mod tests {
         let model = onnx_proto::ModelProto {
             graph: Some(onnx_proto::GraphProto {
                 node: vec![onnx_proto::make_node("Conv", vec![], vec![], vec![])],
-                initializer: vec![onnx_proto::make_tensor("weight", 1, &[3, 3, 3, 3], vec![0.0; 81])],
+                initializer: vec![onnx_proto::make_tensor(
+                    "weight",
+                    1,
+                    &[3, 3, 3, 3],
+                    vec![0.0; 81],
+                )],
                 ..Default::default()
             }),
             ..Default::default()

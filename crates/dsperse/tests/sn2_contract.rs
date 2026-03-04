@@ -45,10 +45,7 @@ fn value_arrayd_roundtrip_2d() {
 
 #[test]
 fn value_arrayd_roundtrip_3d() {
-    let input = make_value_3d(&[
-        &[&[1.0, 2.0], &[3.0, 4.0]],
-        &[&[5.0, 6.0], &[7.0, 8.0]],
-    ]);
+    let input = make_value_3d(&[&[&[1.0, 2.0], &[3.0, 4.0]], &[&[5.0, 6.0], &[7.0, 8.0]]]);
     let arr = dsperse::utils::io::value_to_arrayd(&input).unwrap();
     assert_eq!(arr.shape(), &[2, 2, 2]);
     assert_eq!(arr[IxDyn(&[0, 0, 0])], 1.0);
@@ -60,10 +57,7 @@ fn value_arrayd_roundtrip_3d() {
 
 #[test]
 fn value_arrayd_roundtrip_4d() {
-    let input = make_value_4d(&[&[
-        &[&[0.5, 1.5], &[2.5, 3.5]],
-        &[&[4.5, 5.5], &[6.5, 7.5]],
-    ]]);
+    let input = make_value_4d(&[&[&[&[0.5, 1.5], &[2.5, 3.5]], &[&[4.5, 5.5], &[6.5, 7.5]]]]);
     let arr = dsperse::utils::io::value_to_arrayd(&input).unwrap();
     assert_eq!(arr.shape(), &[1, 2, 2, 2]);
     assert_eq!(arr[IxDyn(&[0, 0, 0, 0])], 0.5);
@@ -120,9 +114,10 @@ fn extract_input_data_fallback_to_data() {
 
 #[test]
 fn extract_input_data_fallback_to_inputs() {
-    let val = Value::Map(vec![
-        (Value::String("inputs".into()), make_value_array(&[4.0])),
-    ]);
+    let val = Value::Map(vec![(
+        Value::String("inputs".into()),
+        make_value_array(&[4.0]),
+    )]);
     let extracted = dsperse::utils::io::extract_input_data(&val).unwrap();
     assert_eq!(extracted, &make_value_array(&[4.0]));
 }
@@ -157,9 +152,7 @@ fn slice_dir_path_formats_correctly() {
 fn arrayd_to_value_then_extract_input_data_integration() {
     let arr = ArrayD::from_shape_vec(IxDyn(&[1, 3]), vec![1.0, 2.0, 3.0]).unwrap();
     let tensor_val = dsperse::utils::io::arrayd_to_value(&arr);
-    let wrapped = Value::Map(vec![
-        (Value::String("input_data".into()), tensor_val),
-    ]);
+    let wrapped = Value::Map(vec![(Value::String("input_data".into()), tensor_val)]);
 
     let extracted = dsperse::utils::io::extract_input_data(&wrapped).unwrap();
     let roundtripped = dsperse::utils::io::value_to_arrayd(extracted).unwrap();

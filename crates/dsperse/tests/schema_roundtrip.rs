@@ -221,7 +221,10 @@ fn channel_split_roundtrip() {
     assert_eq!(info.num_groups, 4);
     assert_eq!(info.groups.len(), 2);
     assert_eq!(info.groups[0].c_end, 16);
-    assert_eq!(info.bias_path.as_deref(), Some("channel_groups/bias.msgpack"));
+    assert_eq!(
+        info.bias_path.as_deref(),
+        Some("channel_groups/bias.msgpack")
+    );
 
     let msgpack_bytes = rmp_serde::to_vec_named(&info).unwrap();
     let info2: ChannelSplitInfo = rmp_serde::from_slice(&msgpack_bytes).unwrap();

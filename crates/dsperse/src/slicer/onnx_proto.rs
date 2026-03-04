@@ -245,21 +245,16 @@ pub fn replace_initializers(
         .graph
         .as_mut()
         .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
+    let matched: Vec<TensorProto> = graph
+        .initializer
+        .iter()
+        .filter(|i| donor_init_map.contains_key(&i.name))
+        .cloned()
+        .collect();
+    validate_initializer_compatibility(&matched, donor_init_map, "replace_initializers")?;
     let mut replaced = 0;
     for init in &mut graph.initializer {
         if let Some(donor) = donor_init_map.get(&init.name) {
-            if init.data_type != donor.data_type {
-                return Err(DsperseError::Pipeline(format!(
-                    "dtype mismatch for initializer '{}': slice has dtype {}, consumer has dtype {}",
-                    init.name, init.data_type, donor.data_type
-                )));
-            }
-            if init.dims != donor.dims {
-                return Err(DsperseError::Pipeline(format!(
-                    "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",
-                    init.name, init.dims, donor.dims
-                )));
-            }
             init.float_data = donor.float_data.clone();
             init.raw_data = donor.raw_data.clone();
             init.double_data = donor.double_data.clone();

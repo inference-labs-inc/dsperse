@@ -123,11 +123,14 @@ pub fn run_inference_multi_named(
 
     let output_names = collect_output_names(&model);
 
-    let input_by_name: HashMap<&str, usize> = inputs
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.0, idx))
-        .collect();
+    let mut input_by_name: HashMap<&str, usize> = HashMap::with_capacity(inputs.len());
+    for (idx, (name, _, _)) in inputs.iter().enumerate() {
+        if input_by_name.insert(*name, idx).is_some() {
+            return Err(DsperseError::Onnx(format!(
+                "duplicate provided input name '{name}'"
+            )));
+        }
+    }
 
     let model_input_count = model.inputs.len();
     let model_input_names: Vec<(usize, String)> = model

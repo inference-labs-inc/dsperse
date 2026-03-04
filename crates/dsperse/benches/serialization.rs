@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use dsperse::schema::execution::{
-    ExecutionChain, ExecutionInfo, ExecutionNode, ExecutionResultEntry, RunMetadata, SliceResult,
-    TileResult,
+    ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
+    RunMetadata, SliceResult, TileResult,
 };
 use dsperse::schema::metadata::{
-    Compilation, Dependencies, ModelMetadata, RunSliceMetadata, SliceMetadata, SliceShapeWrapper,
-    TensorShape,
+    Backend, Compilation, Dependencies, ModelMetadata, RunSliceMetadata, SliceMetadata,
+    SliceShapeWrapper, TensorShape,
 };
 use serde::{Deserialize, Serialize};
 
@@ -76,7 +76,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                 },
                 tiling: None,
                 channel_split: None,
-                backend: "jstprove".into(),
+                backend: Backend::Jstprove,
                 jstprove_circuit_path: Some(format!("slice_{i}/jstprove/circuit.bin")),
                 jstprove_settings_path: None,
             },
@@ -95,13 +95,13 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                 },
                 circuit_path: Some(format!("slice_{i}/jstprove/circuit.bin")),
                 onnx_path: Some(format!("slice_{i}/payload/slice_{i}.onnx")),
-                backend: "jstprove".into(),
+                backend: Backend::Jstprove,
             },
         );
         execution_results.push(ExecutionResultEntry {
             slice_id: slice_id.clone(),
             witness_execution: Some(ExecutionInfo {
-                method: "jstprove_gen_witness".into(),
+                method: ExecutionMethod::JstproveGenWitness,
                 success: true,
                 error: None,
                 witness_file: Some(format!("runs/run_0/{slice_id}/witness.bin")),
@@ -109,7 +109,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                     tile_idx: 0,
                     success: true,
                     error: None,
-                    method: Some("jstprove_gen_witness".into()),
+                    method: Some(ExecutionMethod::JstproveGenWitness),
                     time_sec: 1.23,
                     proof_path: None,
                 }],
@@ -117,7 +117,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
             proof_execution: Some(SliceResult {
                 slice_id: slice_id.clone(),
                 success: true,
-                method: Some("jstprove_prove".into()),
+                method: Some(ExecutionMethod::JstproveProve),
                 error: None,
                 proof_path: Some(format!("runs/run_0/{slice_id}/proof.bin")),
                 time_sec: 45.67,

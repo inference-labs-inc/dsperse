@@ -114,15 +114,7 @@ pub fn run_pipeline_stage(
                 }
                 r
             }
-            Err(e) => SliceResult {
-                slice_id: slice_id.clone(),
-                success: false,
-                method: Some(method.to_string()),
-                error: Some(e.to_string()),
-                proof_path: None,
-                time_sec: 0.0,
-                tiles: Vec::new(),
-            },
+            Err(e) => SliceResult::failure(slice_id.clone(), method, e.to_string(), 0.0),
         };
 
         if let Some(entry) = run_meta
@@ -201,15 +193,12 @@ fn execute_single_slice(
     let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
         Ok(b) => b,
         Err(e) => {
-            return Ok(SliceResult {
-                slice_id: slice_id.into(),
-                success: false,
-                method: Some(method.to_string()),
-                error: Some(format!("witness file read error: {e}")),
-                proof_path: None,
-                time_sec: start.elapsed().as_secs_f64(),
-                tiles: Vec::new(),
-            });
+            return Ok(SliceResult::failure(
+                slice_id,
+                method,
+                format!("witness file read error: {}: {e}", witness_path.display()),
+                start.elapsed().as_secs_f64(),
+            ));
         }
     };
 
@@ -220,48 +209,39 @@ fn execute_single_slice(
             std::fs::write(&proof_path, &proof_bytes)
                 .map_err(|e| DsperseError::io(e, &proof_path))?;
 
-            Ok(SliceResult {
-                slice_id: slice_id.into(),
-                success: true,
-                method: Some(method.to_string()),
-                error: None,
-                proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                time_sec: start.elapsed().as_secs_f64(),
-                tiles: Vec::new(),
-            })
+            let mut result = SliceResult::success(slice_id, method, start.elapsed().as_secs_f64());
+            result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+            Ok(result)
         }
         PipelineStage::Verify => {
             let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
             let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                 Ok(b) => b,
                 Err(e) => {
-                    return Ok(SliceResult {
-                        slice_id: slice_id.into(),
-                        success: false,
-                        method: Some(method.to_string()),
-                        error: Some(format!("proof file read error: {e}")),
-                        proof_path: None,
-                        time_sec: start.elapsed().as_secs_f64(),
-                        tiles: Vec::new(),
-                    });
+                    return Ok(SliceResult::failure(
+                        slice_id,
+                        method,
+                        format!("proof file read error: {}: {e}", proof_path.display()),
+                        start.elapsed().as_secs_f64(),
+                    ));
                 }
             };
 
             let valid = backend.verify(&circuit_path, &witness_bytes, &proof_bytes)?;
 
-            Ok(SliceResult {
-                slice_id: slice_id.into(),
-                success: valid,
-                method: Some(method.to_string()),
-                error: if valid {
-                    None
-                } else {
-                    Some("proof verification failed".into())
-                },
-                proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                time_sec: start.elapsed().as_secs_f64(),
-                tiles: Vec::new(),
-            })
+            let elapsed = start.elapsed().as_secs_f64();
+            let mut result = if valid {
+                SliceResult::success(slice_id, method, elapsed)
+            } else {
+                SliceResult::failure(
+                    slice_id,
+                    method,
+                    "proof verification failed".into(),
+                    elapsed,
+                )
+            };
+            result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+            Ok(result)
         }
     }
 }
@@ -288,13 +268,13 @@ fn execute_tiled_stage(
         .into_par_iter()
         .map(|tile_idx| {
             let tile_start = std::time::Instant::now();
-            let fail = |error: String| TileResult {
-                tile_idx,
-                success: false,
-                error: Some(error),
-                method: Some(method.to_string()),
-                time_sec: tile_start.elapsed().as_secs_f64(),
-                proof_path: None,
+            let fail = |error: String| {
+                TileResult::failure(
+                    tile_idx,
+                    error,
+                    Some(method),
+                    tile_start.elapsed().as_secs_f64(),
+                )
             };
             let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
 
@@ -327,7 +307,12 @@ fn execute_tiled_stage(
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
             let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
                 Ok(b) => b,
-                Err(e) => return fail(format!("witness read error: {e}")),
+                Err(e) => {
+                    return fail(format!(
+                        "witness read error: {}: {e}",
+                        witness_path.display()
+                    ));
+                }
             };
 
             match stage {
@@ -340,38 +325,40 @@ fn execute_tiled_stage(
                     if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
                         return fail(format!("write proof: {}: {e}", proof_path.display()));
                     }
-                    TileResult {
+                    let mut result = TileResult::success(
                         tile_idx,
-                        success: true,
-                        error: None,
-                        method: Some(method.to_string()),
-                        time_sec: tile_start.elapsed().as_secs_f64(),
-                        proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                    }
+                        Some(method),
+                        tile_start.elapsed().as_secs_f64(),
+                    );
+                    result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+                    result
                 }
                 PipelineStage::Verify => {
                     let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
                     let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                         Ok(b) => b,
-                        Err(e) => return fail(format!("proof read error: {e}")),
+                        Err(e) => {
+                            return fail(format!("proof read error: {}: {e}", proof_path.display()));
+                        }
                     };
                     let valid =
                         match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
                             Ok(v) => v,
                             Err(e) => return fail(e.to_string()),
                         };
-                    TileResult {
-                        tile_idx,
-                        success: valid,
-                        error: if valid {
-                            None
-                        } else {
-                            Some("proof verification failed".into())
-                        },
-                        method: Some(method.to_string()),
-                        time_sec: tile_start.elapsed().as_secs_f64(),
-                        proof_path: Some(proof_path.to_string_lossy().into_owned()),
-                    }
+                    let elapsed = tile_start.elapsed().as_secs_f64();
+                    let mut result = if valid {
+                        TileResult::success(tile_idx, Some(method), elapsed)
+                    } else {
+                        TileResult::failure(
+                            tile_idx,
+                            "proof verification failed".into(),
+                            Some(method),
+                            elapsed,
+                        )
+                    };
+                    result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+                    result
                 }
             }
         })
@@ -380,17 +367,17 @@ fn execute_tiled_stage(
     let failed = tile_results.iter().filter(|t| !t.success).count();
     let all_success = failed == 0;
 
-    Ok(SliceResult {
-        slice_id: slice_id.into(),
-        success: all_success,
-        method: Some(method.to_string()),
-        error: if all_success {
-            None
-        } else {
-            Some(format!("{failed} of {} tiles failed", tiling.num_tiles))
-        },
-        proof_path: None,
-        time_sec: start.elapsed().as_secs_f64(),
-        tiles: tile_results,
-    })
+    let elapsed = start.elapsed().as_secs_f64();
+    let mut result = if all_success {
+        SliceResult::success(slice_id, method, elapsed)
+    } else {
+        SliceResult::failure(
+            slice_id,
+            method,
+            format!("{failed} of {} tiles failed", tiling.num_tiles),
+            elapsed,
+        )
+    };
+    result.tiles = tile_results;
+    Ok(result)
 }

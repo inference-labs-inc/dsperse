@@ -662,9 +662,6 @@ pub fn create_channel_group_slice(
         c_end: c_end as usize,
         path: format!("slice_{slice_idx}/payload/channel_groups/group_{group_idx}.onnx"),
         jstprove_circuit_path: None,
-        settings_path: None,
-        vk_path: None,
-        pk_path: None,
         jstprove_settings_path: None,
     }))
 }

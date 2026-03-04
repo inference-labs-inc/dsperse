@@ -5,7 +5,7 @@ use ndarray::ArrayD;
 
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{ExecutionChain, ExecutionInfo, ExecutionResultEntry, RunMetadata};
-use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
+use crate::schema::metadata::{Backend, ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
 use crate::utils::io::gather_inputs_from_cache;
 
@@ -14,7 +14,7 @@ use super::runner::{build_execution_chain, build_run_metadata, load_model_metada
 pub struct SliceWork {
     pub slice_id: String,
     pub input: ArrayD<f64>,
-    pub backend: String,
+    pub backend: Backend,
     pub use_circuit: bool,
     pub tiling: Option<TilingInfo>,
     pub channel_split: Option<ChannelSplitInfo>,

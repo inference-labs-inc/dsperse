@@ -146,7 +146,7 @@ pub struct RunSliceMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_split: Option<ChannelSplitInfo>,
     #[serde(default)]
-    pub backend: String,
+    pub backend: Backend,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

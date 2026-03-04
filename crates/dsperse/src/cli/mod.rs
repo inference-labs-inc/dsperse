@@ -583,11 +583,7 @@ mod tests {
     #[test]
     fn resolve_circuit_ops_none_returns_all() {
         let ops = resolve_circuit_ops("expander", None).unwrap();
-        let expected: Vec<&str> = ProofSystem::Expander
-            .supported_ops()
-            .iter()
-            .copied()
-            .collect();
+        let expected: Vec<&str> = ProofSystem::Expander.supported_ops().to_vec();
         assert_eq!(ops.as_refs(), expected);
     }
 

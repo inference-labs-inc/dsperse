@@ -8,6 +8,73 @@ use crate::error::{DsperseError, Result};
 
 pub type NamedOutputs = HashMap<String, (Vec<f64>, Vec<usize>)>;
 
+fn load_onnx_model(onnx_path: &Path) -> Result<InferenceModel> {
+    tract_onnx::onnx()
+        .model_for_path(onnx_path)
+        .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))
+}
+
+fn resolve_concrete_shape(model: &InferenceModel, input_shape: &[usize]) -> Result<Vec<usize>> {
+    if input_shape.is_empty() {
+        let input_fact = model
+            .input_fact(0)
+            .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
+        input_fact
+            .shape
+            .as_concrete_finite()
+            .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
+            .ok_or_else(|| {
+                DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
+            })
+            .map(|s| s.to_vec())
+    } else {
+        Ok(input_shape.to_vec())
+    }
+}
+
+fn optimize_to_runnable(
+    model: InferenceModel,
+    concrete_shape: &[usize],
+) -> Result<TypedRunnableModel<TypedModel>> {
+    model
+        .with_input_fact(
+            0,
+            InferenceFact::dt_shape(f32::datum_type(), concrete_shape),
+        )
+        .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
+        .into_optimized()
+        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+        .into_runnable()
+        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))
+}
+
+fn load_runnable(
+    onnx_path: &Path,
+    input_shape: &[usize],
+) -> Result<(TypedRunnableModel<TypedModel>, Vec<usize>)> {
+    let model = load_onnx_model(onnx_path)?;
+    let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
+    let plan = optimize_to_runnable(model, &concrete_shape)?;
+    Ok((plan, concrete_shape))
+}
+
+fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {
+    let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
+    let tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), input_f32)
+        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
+    Ok(tensor.into_tvalue())
+}
+
+fn run_single(
+    plan: &TypedRunnableModel<TypedModel>,
+    input_data: &[f64],
+    shape: &[usize],
+) -> Result<TVec<TValue>> {
+    let tv = build_input_tvalue(input_data, shape)?;
+    plan.run(tvec!(tv))
+        .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))
+}
+
 pub struct WarmModel {
     plan: TypedRunnableModel<TypedModel>,
     input_shape: Vec<usize>,
@@ -15,54 +82,12 @@ pub struct WarmModel {
 
 impl WarmModel {
     pub fn load(onnx_path: &Path, input_shape: &[usize]) -> Result<Self> {
-        let model = tract_onnx::onnx()
-            .model_for_path(onnx_path)
-            .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
-
-        let concrete_shape: Vec<usize> = if input_shape.is_empty() {
-            let input_fact = model
-                .input_fact(0)
-                .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
-            input_fact
-                .shape
-                .as_concrete_finite()
-                .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
-                .ok_or_else(|| {
-                    DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
-                })?
-                .to_vec()
-        } else {
-            input_shape.to_vec()
-        };
-
-        let plan = model
-            .with_input_fact(
-                0,
-                InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
-            )
-            .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
-            .into_optimized()
-            .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
-            .into_runnable()
-            .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
-
-        Ok(Self {
-            plan,
-            input_shape: concrete_shape,
-        })
+        let (plan, input_shape) = load_runnable(onnx_path, input_shape)?;
+        Ok(Self { plan, input_shape })
     }
 
     pub fn run(&self, input_data: &[f64]) -> Result<(Vec<f64>, Vec<usize>)> {
-        let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
-        let input_tensor =
-            tract_ndarray::ArrayD::from_shape_vec(IxDyn(&self.input_shape), input_f32)
-                .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
-
-        let result = self
-            .plan
-            .run(tvec!(input_tensor.into_tvalue()))
-            .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
-
+        let result = run_single(&self.plan, input_data, &self.input_shape)?;
         extract_first_output(&result)
     }
 }
@@ -72,45 +97,8 @@ pub fn run_inference(
     input_data: &[f64],
     input_shape: &[usize],
 ) -> Result<(Vec<f64>, Vec<usize>)> {
-    let model = tract_onnx::onnx()
-        .model_for_path(onnx_path)
-        .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
-
-    let concrete_shape: Vec<usize> = if input_shape.is_empty() {
-        let input_fact = model
-            .input_fact(0)
-            .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
-        input_fact
-            .shape
-            .as_concrete_finite()
-            .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
-            .ok_or_else(|| {
-                DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
-            })?
-            .to_vec()
-    } else {
-        input_shape.to_vec()
-    };
-
-    let model = model
-        .with_input_fact(
-            0,
-            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
-        )
-        .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
-        .into_optimized()
-        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
-        .into_runnable()
-        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
-
-    let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
-    let input_tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(&concrete_shape), input_f32)
-        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
-
-    let result = model
-        .run(tvec!(input_tensor.into_tvalue()))
-        .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
-
+    let (plan, concrete_shape) = load_runnable(onnx_path, input_shape)?;
+    let result = run_single(&plan, input_data, &concrete_shape)?;
     extract_first_output(&result)
 }
 
@@ -119,47 +107,11 @@ pub fn run_inference_named(
     input_data: &[f64],
     input_shape: &[usize],
 ) -> Result<NamedOutputs> {
-    let model = tract_onnx::onnx()
-        .model_for_path(onnx_path)
-        .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
-
+    let model = load_onnx_model(onnx_path)?;
     let output_names = collect_output_names(&model);
-
-    let concrete_shape: Vec<usize> = if input_shape.is_empty() {
-        let input_fact = model
-            .input_fact(0)
-            .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
-        input_fact
-            .shape
-            .as_concrete_finite()
-            .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
-            .ok_or_else(|| {
-                DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
-            })?
-            .to_vec()
-    } else {
-        input_shape.to_vec()
-    };
-
-    let model = model
-        .with_input_fact(
-            0,
-            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
-        )
-        .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
-        .into_optimized()
-        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
-        .into_runnable()
-        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
-
-    let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
-    let input_tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(&concrete_shape), input_f32)
-        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
-
-    let result = model
-        .run(tvec!(input_tensor.into_tvalue()))
-        .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
-
+    let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
+    let plan = optimize_to_runnable(model, &concrete_shape)?;
+    let result = run_single(&plan, input_data, &concrete_shape)?;
     zip_named_outputs(&output_names, &result)
 }
 
@@ -167,17 +119,18 @@ pub fn run_inference_multi_named(
     onnx_path: &Path,
     inputs: &[(&str, Vec<f64>, Vec<usize>)],
 ) -> Result<NamedOutputs> {
-    let mut model = tract_onnx::onnx()
-        .model_for_path(onnx_path)
-        .map_err(|e| DsperseError::Onnx(format!("load {}: {e}", onnx_path.display())))?;
+    let mut model = load_onnx_model(onnx_path)?;
 
     let output_names = collect_output_names(&model);
 
-    let input_by_name: HashMap<&str, usize> = inputs
-        .iter()
-        .enumerate()
-        .map(|(idx, entry)| (entry.0, idx))
-        .collect();
+    let mut input_by_name: HashMap<&str, usize> = HashMap::with_capacity(inputs.len());
+    for (idx, (name, _, _)) in inputs.iter().enumerate() {
+        if input_by_name.insert(*name, idx).is_some() {
+            return Err(DsperseError::Onnx(format!(
+                "duplicate provided input name '{name}'"
+            )));
+        }
+    }
 
     let model_input_count = model.inputs.len();
     let model_input_names: Vec<(usize, String)> = model
@@ -198,6 +151,17 @@ pub fn run_inference_multi_named(
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
             input_order[*i] = Some(provided_idx);
         }
+    }
+
+    let unknown_inputs: Vec<&str> = input_by_name
+        .keys()
+        .copied()
+        .filter(|name| !model_input_names.iter().any(|(_, n)| n == *name))
+        .collect();
+    if !unknown_inputs.is_empty() {
+        return Err(DsperseError::Onnx(format!(
+            "provided inputs not present in model: {unknown_inputs:?}"
+        )));
     }
 
     let model = model
@@ -222,10 +186,7 @@ pub fn run_inference_multi_named(
             DsperseError::Onnx("model input not matched to provided tensors".into())
         })?;
         let (_, ref data, ref shape) = inputs[provided_idx];
-        let f32_data: Vec<f32> = data.iter().map(|&v| v as f32).collect();
-        let tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), f32_data)
-            .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
-        input_tvs.push(tensor.into_tvalue());
+        input_tvs.push(build_input_tvalue(data, shape)?);
     }
 
     let result = model
@@ -312,7 +273,11 @@ fn zip_named_outputs(names: &[String], result: &[TValue]) -> Result<NamedOutputs
             .get(i)
             .cloned()
             .unwrap_or_else(|| format!("output_{i}"));
-        map.insert(name, (data, shape));
+        if map.insert(name.clone(), (data, shape)).is_some() {
+            return Err(DsperseError::Onnx(format!(
+                "duplicate output name '{name}'"
+            )));
+        }
     }
     Ok(map)
 }

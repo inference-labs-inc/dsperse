@@ -227,7 +227,7 @@ fn resolve_onnx_points_to_existing_file_after_materialize() {
     assert!(!loaded.slices.is_empty());
 
     for slice in &loaded.slices {
-        let resolved = slice.resolve_onnx(&output_dir);
+        let resolved = slice.resolve_onnx(&output_dir).unwrap();
         assert!(
             resolved.is_file(),
             "resolve_onnx for slice {} must point to a regular file, got: {}",

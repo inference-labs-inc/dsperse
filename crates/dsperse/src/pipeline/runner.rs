@@ -68,7 +68,7 @@ fn validate_weights_onnx(
     slices_dir: &Path,
 ) -> Result<()> {
     for slice in &model_meta.slices {
-        let onnx_path = slice.resolve_onnx(slices_dir);
+        let onnx_path = slice.resolve_onnx(slices_dir)?;
         if !onnx_path.exists() {
             return Err(DsperseError::Pipeline(format!(
                 "slice_{} ONNX not found at {}",
@@ -154,8 +154,8 @@ pub fn run_inference(
 
     let input_data = read_msgpack(input_path)?;
 
-    let chain = build_execution_chain(&model_meta, slices_dir);
-    let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
+    let chain = build_execution_chain(&model_meta, slices_dir)?;
+    let run_meta = build_run_metadata(&model_meta, slices_dir, &chain)?;
 
     let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
 
@@ -1240,7 +1240,7 @@ fn run_onnx_inference_multi_named(
 pub(crate) fn build_execution_chain(
     model_meta: &ModelMetadata,
     slices_dir: &Path,
-) -> ExecutionChain {
+) -> Result<ExecutionChain> {
     let mut nodes = HashMap::new();
     let mut head = None;
 
@@ -1253,13 +1253,14 @@ pub(crate) fn build_execution_chain(
         }
 
         let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
-            let path = slice
-                .compilation
-                .jstprove
-                .files
-                .compiled
-                .as_ref()
-                .map(|p| slices_dir.join(p).to_string_lossy().into_owned());
+            let path = match slice.compilation.jstprove.files.compiled.as_ref() {
+                Some(p) => Some(
+                    resolve_relative_path(slices_dir, p)?
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                None => None,
+            };
             (true, path)
         } else {
             let bundle = slice_dir.join("jstprove/circuit.bundle");
@@ -1277,7 +1278,7 @@ pub(crate) fn build_execution_chain(
 
         let onnx_path = Some(
             slice
-                .resolve_onnx(slices_dir)
+                .resolve_onnx(slices_dir)?
                 .to_string_lossy()
                 .into_owned(),
         );
@@ -1307,21 +1308,21 @@ pub(crate) fn build_execution_chain(
         );
     }
 
-    ExecutionChain {
+    Ok(ExecutionChain {
         head,
         nodes,
         fallback_map: HashMap::new(),
         execution_results: Vec::new(),
         jstprove_proved_slices: 0,
         jstprove_verified_slices: 0,
-    }
+    })
 }
 
 pub(crate) fn build_run_metadata(
     model_meta: &ModelMetadata,
     slices_dir: &Path,
     chain: &ExecutionChain,
-) -> RunMetadata {
+) -> Result<RunMetadata> {
     let mut slices = HashMap::new();
 
     for slice in &model_meta.slices {
@@ -1331,7 +1332,7 @@ pub(crate) fn build_run_metadata(
 
         let run_slice = RunSliceMetadata {
             path: slice
-                .resolve_onnx(slices_dir)
+                .resolve_onnx(slices_dir)?
                 .to_string_lossy()
                 .into_owned(),
             input_shape: slice.shape.tensor_shape.input.clone(),
@@ -1351,7 +1352,7 @@ pub(crate) fn build_run_metadata(
         slices.insert(slice_id, run_slice);
     }
 
-    RunMetadata {
+    Ok(RunMetadata {
         slices,
         execution_chain: chain.clone(),
         overall_security: 0.0,
@@ -1359,7 +1360,7 @@ pub(crate) fn build_run_metadata(
         source_path: Some(slices_dir.to_string_lossy().into_owned()),
         run_directory: None,
         model_path: None,
-    }
+    })
 }
 
 fn extract_initializers_from_map(

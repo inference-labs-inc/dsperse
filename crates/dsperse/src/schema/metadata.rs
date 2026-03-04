@@ -119,11 +119,11 @@ impl SliceMetadata {
         &self.dependencies.output
     }
 
-    pub fn resolve_onnx(&self, slices_dir: &std::path::Path) -> std::path::PathBuf {
+    pub fn resolve_onnx(&self, slices_dir: &std::path::Path) -> crate::error::Result<std::path::PathBuf> {
         if self.relative_path.is_empty() {
-            slices_dir.join("model.onnx")
+            Ok(slices_dir.join("model.onnx"))
         } else {
-            slices_dir.join(&self.relative_path)
+            crate::utils::paths::resolve_relative_path(slices_dir, &self.relative_path)
         }
     }
 }

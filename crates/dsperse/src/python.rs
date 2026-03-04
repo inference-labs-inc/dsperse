@@ -19,7 +19,11 @@ fn to_py_err(e: DsperseError) -> PyErr {
         DsperseError::Archive(_) | DsperseError::Metadata(_) => {
             pyo3::exceptions::PyValueError::new_err(msg)
         }
-        _ => PyRuntimeError::new_err(msg),
+        DsperseError::Onnx(_)
+        | DsperseError::Backend(_)
+        | DsperseError::Slicer(_)
+        | DsperseError::Pipeline(_)
+        | DsperseError::Other(_) => PyRuntimeError::new_err(msg),
     }
 }
 

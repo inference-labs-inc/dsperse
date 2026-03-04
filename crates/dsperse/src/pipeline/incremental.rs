@@ -47,8 +47,8 @@ impl IncrementalRun {
             crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
         }
 
-        let chain = build_execution_chain(&model_meta, slices_dir);
-        let run_meta = build_run_metadata(&model_meta, slices_dir, &chain);
+        let chain = build_execution_chain(&model_meta, slices_dir)?;
+        let run_meta = build_run_metadata(&model_meta, slices_dir, &chain)?;
 
         let first_slice = model_meta
             .slices

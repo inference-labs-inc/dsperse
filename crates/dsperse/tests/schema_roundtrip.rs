@@ -323,7 +323,7 @@ fn resolve_onnx_uses_relative_path_not_absolute() {
 
     let slice: SliceMetadata = serde_json::from_str(json).unwrap();
     let slices_dir = Path::new("/relocated/slices");
-    let resolved = slice.resolve_onnx(slices_dir);
+    let resolved = slice.resolve_onnx(slices_dir).unwrap();
 
     assert_eq!(
         resolved,

@@ -221,7 +221,7 @@ fn resolve_compile_onnx(
         }
     }
 
-    Ok(slice.resolve_onnx(slices_dir))
+    slice.resolve_onnx(slices_dir)
 }
 
 #[cfg(test)]

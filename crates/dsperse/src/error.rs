@@ -4,7 +4,7 @@ pub type Result<T> = std::result::Result<T, DsperseError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DsperseError {
-    #[error("I/O error at {path}: {source}")]
+    #[error("I/O error at {}: {source}", .path.file_name().and_then(|n| n.to_str()).unwrap_or("<unknown>"))]
     Io {
         source: std::io::Error,
         path: PathBuf,

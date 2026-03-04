@@ -16,11 +16,11 @@ use crate::schema::execution::{
 };
 use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
+use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::io::{
     arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache, map_get_ref,
     read_msgpack, value_to_arrayd, write_msgpack,
 };
-use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 use rmpv::Value;
 
@@ -41,8 +41,12 @@ impl Default for RunConfig {
 }
 
 pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
-    let meta_path = find_metadata_path(slices_dir)
-        .ok_or_else(|| DsperseError::Metadata(format!("no {} in slices", crate::utils::paths::METADATA_FILE)))?;
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata(format!(
+            "no {} in slices",
+            crate::utils::paths::METADATA_FILE
+        ))
+    })?;
     let mut model_meta = ModelMetadata::load(&meta_path)?;
 
     if model_meta.slices.is_empty() {
@@ -172,9 +176,8 @@ pub fn run_inference(
     }
     if input_val.is_map() {
         for name in declared_inputs {
-            let v = map_get_ref(input_val, name).ok_or_else(|| {
-                DsperseError::Pipeline(format!("input map missing key {name:?}"))
-            })?;
+            let v = map_get_ref(input_val, name)
+                .ok_or_else(|| DsperseError::Pipeline(format!("input map missing key {name:?}")))?;
             tensor_cache.insert(name.clone(), value_to_arrayd(v)?);
         }
     } else if declared_inputs.len() == 1 {
@@ -283,7 +286,11 @@ pub fn run_inference(
         } else if let Some(arr) = tiling_arr {
             vec![arr]
         } else if !model_meta.output_names.is_empty() {
-            let found: Vec<_> = model_meta.output_names.iter().filter_map(|n| tensor_cache.get(n)).collect();
+            let found: Vec<_> = model_meta
+                .output_names
+                .iter()
+                .filter_map(|n| tensor_cache.get(n))
+                .collect();
             if found.is_empty() {
                 tracing::warn!(
                     expected = ?model_meta.output_names,
@@ -293,8 +300,13 @@ pub fn run_inference(
             }
             found
         } else {
-            last_slice.dependencies.output.iter().find_map(|n| tensor_cache.get(n))
-                .into_iter().collect()
+            last_slice
+                .dependencies
+                .output
+                .iter()
+                .find_map(|n| tensor_cache.get(n))
+                .into_iter()
+                .collect()
         }
     };
     if output_arrs.is_empty() {
@@ -400,11 +412,15 @@ fn execute_single(
     let onnx_path = PathBuf::from(&meta.path);
 
     let patched_onnx = if let Some(map) = donor_init_map {
-        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
+        Some(crate::slicer::onnx_proto::build_patched_onnx(
+            &onnx_path, map,
+        )?)
     } else {
         None
     };
-    let effective_onnx: &Path = patched_onnx.as_ref().map_or(onnx_path.as_path(), |t| t.path());
+    let effective_onnx: &Path = patched_onnx
+        .as_ref()
+        .map_or(onnx_path.as_path(), |t| t.path());
 
     if node.use_circuit {
         let circuit_path = meta
@@ -533,12 +549,14 @@ fn execute_tiled(
     }
 
     let first_tile_info = tile_infos.first().or(single_tile);
-    let tile_onnx = first_tile_info.map(|ti| resolve_relative_path(slices_dir, &ti.path));
+    let tile_onnx = first_tile_info
+        .map(|ti| resolve_relative_path(slices_dir, &ti.path))
+        .transpose()?;
 
     let patched_tile_onnx = match (&tile_onnx, donor_init_map) {
-        (Some(onnx_path), Some(map)) => {
-            Some(crate::slicer::onnx_proto::build_patched_onnx(onnx_path, map)?)
-        }
+        (Some(onnx_path), Some(map)) => Some(crate::slicer::onnx_proto::build_patched_onnx(
+            onnx_path, map,
+        )?),
         _ => None,
     };
     let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
@@ -554,13 +572,11 @@ fn execute_tiled(
         _ => None,
     };
 
-    let circuit_path = first_tile_info
-        .and_then(|ti| {
-            ti.jstprove_circuit_path
-                .as_deref()
-                .map(|p| resolve_relative_path(slices_dir, p))
-        })
-        .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
+    let circuit_path = match first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()) {
+        Some(p) => Some(resolve_relative_path(slices_dir, p)?),
+        None => None,
+    }
+    .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
 
     let warm_circuit = match (&circuit_path, &tile_onnx) {
         (Some(cp), Some(onnx_path)) => {
@@ -582,7 +598,8 @@ fn execute_tiled(
             } else {
                 vec![]
             };
-            let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
+            let wc =
+                crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend.compress())?;
             tracing::info!(slice = %slice_id, wai = is_wai, "loaded circuit bundle");
             Some(wc)
         }
@@ -689,7 +706,9 @@ fn execute_tiled(
                     wc.witness_f64(&flat)
                 } else {
                     let flat: Vec<f64> = tile_dyn.iter().copied().collect();
-                    let cp = circuit_path.as_ref().expect("circuit_path is Some: guarded by early return");
+                    let cp = circuit_path
+                        .as_ref()
+                        .expect("circuit_path is Some: guarded by early return");
                     backend.witness_f64(cp, &flat, &[])
                 };
 
@@ -873,8 +892,14 @@ fn execute_channel_split(
         let group_dir = slice_run_dir.join(format!("group_{}", group.group_idx));
         std::fs::create_dir_all(&group_dir).map_err(|e| DsperseError::io(e, &group_dir))?;
 
-        let group_output =
-            execute_channel_group(slices_dir, &group_dir, group, &group_input_dyn, backend, donor_init_map)?;
+        let group_output = execute_channel_group(
+            slices_dir,
+            &group_dir,
+            group,
+            &group_input_dyn,
+            backend,
+            donor_init_map,
+        )?;
 
         let group_4d = if group_output.ndim() == 4 {
             let s = group_output.shape();
@@ -933,7 +958,7 @@ fn execute_channel_split(
     }
 
     if let Some(ref bias_path_str) = cs.bias_path {
-        let bias_file = resolve_relative_path(slices_dir, bias_path_str);
+        let bias_file = resolve_relative_path(slices_dir, bias_path_str)?;
         if !bias_file.exists() {
             return Err(DsperseError::Pipeline(format!(
                 "configured bias file not found: {} (bias_path={bias_path_str})",
@@ -985,17 +1010,21 @@ fn execute_channel_group(
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ArrayD<f64>> {
-    let onnx_path = resolve_relative_path(slices_dir, &group.path);
+    let onnx_path = resolve_relative_path(slices_dir, &group.path)?;
 
     let patched_onnx = if let Some(map) = donor_init_map {
-        Some(crate::slicer::onnx_proto::build_patched_onnx(&onnx_path, map)?)
+        Some(crate::slicer::onnx_proto::build_patched_onnx(
+            &onnx_path, map,
+        )?)
     } else {
         None
     };
-    let effective_onnx = patched_onnx.as_ref().map_or(onnx_path.as_path(), |t| t.path());
+    let effective_onnx = patched_onnx
+        .as_ref()
+        .map_or(onnx_path.as_path(), |t| t.path());
 
     if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
-        let circuit_path = resolve_relative_path(slices_dir, circuit_path_str);
+        let circuit_path = resolve_relative_path(slices_dir, circuit_path_str)?;
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -1084,7 +1113,10 @@ pub fn reconstruct_from_tiles(
     if tile_outputs.len() != expected_tiles {
         return Err(DsperseError::Pipeline(format!(
             "reconstruct: expected {} tiles ({}x{}), got {}",
-            expected_tiles, tiling.tiles_y, tiling.tiles_x, tile_outputs.len()
+            expected_tiles,
+            tiling.tiles_y,
+            tiling.tiles_x,
+            tile_outputs.len()
         )));
     }
 
@@ -1178,10 +1210,7 @@ fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f6
         .map_err(|e| DsperseError::Pipeline(format!("output reshape: {e}")))
 }
 
-fn run_onnx_inference_named(
-    onnx_path: &Path,
-    input: &ArrayD<f64>,
-) -> Result<NamedOutputs> {
+fn run_onnx_inference_named(onnx_path: &Path, input: &ArrayD<f64>) -> Result<NamedOutputs> {
     let input_flat: Vec<f64> = input.iter().copied().collect();
     let input_shape = input.shape();
     crate::backend::onnx::run_inference_named(onnx_path, &input_flat, input_shape)
@@ -1224,9 +1253,13 @@ pub(crate) fn build_execution_chain(
         }
 
         let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
-            let path = slice.compilation.jstprove.files.compiled.as_ref().map(|p| {
-                slices_dir.join(p).to_string_lossy().into_owned()
-            });
+            let path = slice
+                .compilation
+                .jstprove
+                .files
+                .compiled
+                .as_ref()
+                .map(|p| slices_dir.join(p).to_string_lossy().into_owned());
             (true, path)
         } else {
             let bundle = slice_dir.join("jstprove/circuit.bundle");
@@ -1242,7 +1275,12 @@ pub(crate) fn build_execution_chain(
             .get(i + 1)
             .map(|s| format!("slice_{}", s.index));
 
-        let onnx_path = Some(slice.resolve_onnx(slices_dir).to_string_lossy().into_owned());
+        let onnx_path = Some(
+            slice
+                .resolve_onnx(slices_dir)
+                .to_string_lossy()
+                .into_owned(),
+        );
 
         let backend = if has_circuit { "jstprove" } else { "onnx" };
 
@@ -1292,7 +1330,10 @@ pub(crate) fn build_run_metadata(
         let has_circuit = node.is_some_and(|n| n.use_circuit);
 
         let run_slice = RunSliceMetadata {
-            path: slice.resolve_onnx(slices_dir).to_string_lossy().into_owned(),
+            path: slice
+                .resolve_onnx(slices_dir)
+                .to_string_lossy()
+                .into_owned(),
             input_shape: slice.shape.tensor_shape.input.clone(),
             output_shape: slice.shape.tensor_shape.output.clone(),
             dependencies: slice.dependencies.clone(),
@@ -1427,11 +1468,8 @@ mod tests {
 
     #[test]
     fn split_into_tiles_2x2_no_halo() {
-        let input = Array4::from_shape_vec(
-            (1, 1, 4, 4),
-            (0..16).map(|i| i as f64).collect(),
-        )
-        .unwrap();
+        let input =
+            Array4::from_shape_vec((1, 1, 4, 4), (0..16).map(|i| i as f64).collect()).unwrap();
         let tiling = make_tiling(2, 2, 2, [0, 0], [2, 2], 1);
         let tiles = split_into_tiles(&input, &tiling).unwrap();
         assert_eq!(tiles.len(), 4);
@@ -1442,11 +1480,8 @@ mod tests {
 
     #[test]
     fn split_into_tiles_with_halo() {
-        let input = Array4::from_shape_vec(
-            (1, 1, 4, 4),
-            (0..16).map(|i| i as f64).collect(),
-        )
-        .unwrap();
+        let input =
+            Array4::from_shape_vec((1, 1, 4, 4), (0..16).map(|i| i as f64).collect()).unwrap();
         let tiling = make_tiling(2, 2, 2, [1, 1], [2, 2], 1);
         let tiles = split_into_tiles(&input, &tiling).unwrap();
         assert_eq!(tiles.len(), 4);

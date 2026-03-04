@@ -8,7 +8,20 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: rustup show
+      - run: cargo fmt --check
+
   test:
     name: Rust Tests
     runs-on: ubuntu-latest
@@ -34,3 +47,20 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml --all-targets --features python -- -D warnings
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cargo-audit
+      - run: cargo audit
+
+  deny:
+    name: Cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

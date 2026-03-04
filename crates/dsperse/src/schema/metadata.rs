@@ -158,7 +158,6 @@ pub struct RunSliceMetadata {
     pub jstprove_settings_path: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     #[serde(default)]
@@ -191,8 +190,10 @@ pub struct ModelMetadata {
 
 impl ModelMetadata {
     pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
-        let data =
-            std::fs::read(path).map_err(|e| crate::error::DsperseError::io(e, path))?;
+        let data = crate::utils::limits::read_limited(
+            path,
+            crate::utils::limits::MAX_METADATA_JSON_BYTES,
+        )?;
         rmp_serde::from_slice(&data).map_err(Into::into)
     }
 

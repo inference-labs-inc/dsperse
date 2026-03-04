@@ -1,5 +1,5 @@
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -175,7 +175,15 @@ pub struct FullRunArgs {
     pub fast_compile: bool,
 }
 
-fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<Vec<String>> {
+struct CircuitOps(Vec<String>);
+
+impl CircuitOps {
+    fn as_refs(&self) -> Vec<&str> {
+        self.0.iter().map(String::as_str).collect()
+    }
+}
+
+fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<CircuitOps> {
     let ps: ProofSystem =
         proof_system_str
             .parse()
@@ -185,8 +193,8 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
 
     let supported = ps.supported_ops();
 
-    match circuit_ops {
-        None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),
+    let ops = match circuit_ops {
+        None => supported.iter().map(|s| (*s).to_string()).collect(),
         Some(spec) => {
             let requested: Vec<String> = spec
                 .split(',')
@@ -200,9 +208,14 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
                     )));
                 }
             }
-            Ok(requested)
+            requested
         }
-    }
+    };
+    Ok(CircuitOps(ops))
+}
+
+fn resolve_slices_dir(slices_dir: Option<PathBuf>, model_dir: &Path) -> PathBuf {
+    slices_dir.unwrap_or_else(|| model_dir.join("slices"))
 }
 
 pub fn cmd_slice(args: SliceArgs) -> Result<()> {
@@ -214,12 +227,11 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
         )));
     }
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     let metadata = crate::slicer::slice_model(
         &model_path,
         args.output_dir.as_deref(),
         args.tile_size,
-        &ops_refs,
+        &ops.as_refs(),
     )?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
     Ok(())
@@ -227,9 +239,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
         .layers
@@ -238,7 +248,6 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         .transpose()?;
 
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
 
     pipeline::compile_slices(
         &slices_dir,
@@ -246,7 +255,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
-        &ops_refs,
+        &ops.as_refs(),
     )
 }
 
@@ -259,9 +268,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let run_dir = args
         .run_dir
@@ -279,9 +286,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
@@ -289,9 +294,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
@@ -300,9 +303,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
 
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let input_file = args
         .input_file
@@ -328,7 +329,6 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         .transpose()?;
 
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
 
     tracing::info!("compiling slices");
     pipeline::compile_slices(
@@ -337,7 +337,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
-        &ops_refs,
+        &ops.as_refs(),
     )?;
 
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));

@@ -558,4 +558,49 @@ mod tests {
             panic!("expected Slice");
         }
     }
+
+    #[test]
+    fn resolve_circuit_ops_invalid_proof_system() {
+        let result = resolve_circuit_ops("nonexistent", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_unsupported_op() {
+        let result = resolve_circuit_ops("expander", Some("FakeOp"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_valid_specific_ops() {
+        let supported = ProofSystem::Expander.supported_ops();
+        assert!(!supported.is_empty());
+        let first_op = supported[0];
+        let ops = resolve_circuit_ops("expander", Some(first_op)).unwrap();
+        assert_eq!(ops.as_refs(), vec![first_op]);
+    }
+
+    #[test]
+    fn resolve_circuit_ops_none_returns_all() {
+        let ops = resolve_circuit_ops("expander", None).unwrap();
+        let expected: Vec<&str> = ProofSystem::Expander
+            .supported_ops()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(ops.as_refs(), expected);
+    }
+
+    #[test]
+    fn resolve_slices_dir_custom_path() {
+        let result = resolve_slices_dir(Some(PathBuf::from("/custom")), Path::new("/model"));
+        assert_eq!(result, PathBuf::from("/custom"));
+    }
+
+    #[test]
+    fn resolve_slices_dir_default_fallback() {
+        let model_dir = Path::new("/model");
+        let result = resolve_slices_dir(None, model_dir);
+        assert_eq!(result, model_dir.join("slices"));
+    }
 }

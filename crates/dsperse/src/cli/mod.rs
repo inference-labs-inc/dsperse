@@ -201,6 +201,11 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+            if requested.is_empty() {
+                return Err(DsperseError::Other(
+                    "empty --circuit-ops; provide at least one op or omit the flag to use all supported ops".into(),
+                ));
+            }
             for op in &requested {
                 if !supported.contains(&op.as_str()) {
                     return Err(DsperseError::Other(format!(

@@ -7,7 +7,7 @@ use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
 fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
-    if v.len() >= 2 {
+    if v.len() == 2 {
         Some([v[0], v[1]])
     } else {
         None
@@ -15,7 +15,7 @@ fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
 }
 
 fn try_quad(v: &[i64]) -> Option<[i64; 4]> {
-    if v.len() >= 4 {
+    if v.len() == 4 {
         Some([v[0], v[1], v[2], v[3]])
     } else {
         None
@@ -569,27 +569,24 @@ fn integrate_extra_ops(
     Ok(())
 }
 
-pub fn create_channel_group_slice(
+fn create_channel_group_slice(
     model: &ModelProto,
+    prologue: &SlicePrologue<'_>,
     group_idx: usize,
     c_start: i64,
     c_end: i64,
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelGroupInfo>> {
-    let SlicePrologue {
-        graph, cp, weights, ..
-    } = match extract_slice_prologue(model) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+    let graph = prologue.graph;
+    let cp = &prologue.cp;
     if c_start < 0 || c_end < 0 || c_start >= c_end {
         return Ok(None);
     }
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
         return Ok(None);
     }
-    let weights = match weights {
+    let weights = match &prologue.weights {
         Some(w) => w,
         None => return Ok(None),
     };
@@ -626,7 +623,7 @@ pub fn create_channel_group_slice(
         &[1, c_out, h_out, w_out],
     );
 
-    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize)?;
+    let sliced_weights = slice_weights(weights, c_start as usize, c_end as usize)?;
 
     let w_tensor = onnx_proto::make_tensor(
         "W",
@@ -747,16 +744,12 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
     })
 }
 
-pub fn save_conv_bias(
-    model: &ModelProto,
+fn save_conv_bias(
+    prologue: &SlicePrologue<'_>,
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<String>> {
-    let SlicePrologue { bias, .. } = match extract_slice_prologue(model) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
-    let Some(bias_data) = bias else {
+    let Some(bias_data) = &prologue.bias else {
         return Ok(None);
     };
 
@@ -794,20 +787,18 @@ pub fn apply_channel_splitting(
     if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
         return Ok(None);
     }
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
+    let prologue = match extract_slice_prologue(model) {
+        Some(p) => p,
         None => return Ok(None),
     };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
+    if prologue.cp.stride[0] == 0 || prologue.cp.stride[1] == 0 {
         return Ok(None);
     }
-    let eff = effective_kernel(cp.kernel, cp.dilation);
-    let out_h = (h + cp.pads[0] + cp.pads[2] - eff[0]) / cp.stride[0] + 1;
-    let out_w = (w + cp.pads[1] + cp.pads[3] - eff[1]) / cp.stride[1] + 1;
+    let eff = effective_kernel(prologue.cp.kernel, prologue.cp.dilation);
+    let out_h =
+        (h + prologue.cp.pads[0] + prologue.cp.pads[2] - eff[0]) / prologue.cp.stride[0] + 1;
+    let out_w =
+        (w + prologue.cp.pads[1] + prologue.cp.pads[3] - eff[1]) / prologue.cp.stride[1] + 1;
     if out_h <= 0 || out_w <= 0 {
         return Ok(None);
     }
@@ -825,7 +816,7 @@ pub fn apply_channel_splitting(
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
         let group_info = match create_channel_group_slice(
-            model, g as usize, c_start, c_end, slice_idx, output_dir,
+            model, &prologue, g as usize, c_start, c_end, slice_idx, output_dir,
         ) {
             Ok(info) => info,
             Err(e) => {
@@ -843,7 +834,7 @@ pub fn apply_channel_splitting(
         }
     }
 
-    let bias_path = match save_conv_bias(model, slice_idx, output_dir) {
+    let bias_path = match save_conv_bias(&prologue, slice_idx, output_dir) {
         Ok(p) => p,
         Err(e) => {
             cleanup();

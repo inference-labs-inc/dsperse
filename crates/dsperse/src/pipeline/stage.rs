@@ -338,7 +338,10 @@ fn execute_tiled_stage(
                     let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                         Ok(b) => b,
                         Err(e) => {
-                            return fail(format!("proof read error: {}: {e}", proof_path.display()));
+                            return fail(format!(
+                                "proof read error: {}: {e}",
+                                proof_path.display()
+                            ));
                         }
                     };
                     let valid =

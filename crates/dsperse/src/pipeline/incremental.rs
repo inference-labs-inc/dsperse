@@ -117,7 +117,7 @@ impl IncrementalRun {
         Ok(Some(SliceWork {
             slice_id: slice_id.clone(),
             input,
-            backend: node.backend.clone(),
+            backend: node.backend,
             use_circuit: node.use_circuit,
             tiling: meta.tiling.clone(),
             channel_split: meta.channel_split.clone(),

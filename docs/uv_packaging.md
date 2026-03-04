@@ -2,85 +2,40 @@
 
 This document provides a guide for developers who contribute to the project.
 
-## Managing Dependencies
+## Build System
 
-We use [uv](https://github.com/astral-sh/uv) to manage dependencies.
+The project uses [maturin](https://www.maturin.rs/) as its build backend. The native Rust extension is compiled via PyO3 and exposed as `dsperse._native`. There are no Python-level dependencies beyond the compiled extension itself.
 
-Also the project required to [MCL](https://github.com/herumi/mcl) native package to be installed.
+The build configuration in `pyproject.toml`:
 
-### Local Development
+```toml
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
-For starting local development create a virtual environment by running:
+[tool.maturin]
+features = ["python"]
+module-name = "dsperse._native"
+python-source = "python"
+manifest-path = "crates/dsperse/Cargo.toml"
+```
+
+## Local Development
+
+Create a virtual environment and build the extension in development mode:
 
 ```sh
 uv venv
-```
-
-Activate it:
-
-```sh
 source .venv/bin/activate
+maturin develop --features python
 ```
 
-And then sync dependencies:
+This compiles the Rust crate and installs the resulting native extension into the active virtualenv. Re-run `maturin develop` after any Rust code changes.
+
+## Building a Wheel
 
 ```sh
-uv sync
+maturin build --release --features python
 ```
 
-This will create and activate a virtual environment in `.venv`
-
-### Adding Dependencies
-
-To add new dependencies, follow the steps below:
-
-1. Add the package to `pyproject.toml`:
-
-```sh
-uv add <package-name>
-```
-
-The `--dev`, `--group`, or `--optional` flags can be used to add a dependencies to an alternative table.
-Or in case you need to install a package from a specific source:
-
-```sh
-uv add "httpx @ git+https://github.com/encode/httpx"
-```
-
-2. Lock dependencies and generate `requirements.txt`:
-
-```sh
-uv lock
-uv export -o requirements.txt
-```
-
-3. Sync dependencies:
-
-```sh
-uv sync --locked
-```
-
-### Updating Dependencies
-
-To force uv to update all packages in an existing `pyproject.toml`, run `uv sync --upgrade`.
-
-```sh
-# only update the web3 package
-$ uv sync --upgrade-package web3
-
-# update both the web3 and requests packages
-$ uv sync --upgrade-package web3 --upgrade-package requests
-
-# update the web3 package to the latest, and requests to v2.0.0
-$ uv sync --upgrade-package web3 --upgrade-package requests==2.0.0
-```
-
-### Removing a dependency:
-
-```sh
-uv remove <package-name>
-# and then sync
-uv lock
-uv export -o requirements.txt
-uv sync --locked
-```
+The output wheel is self-contained with no additional Python dependencies.

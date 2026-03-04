@@ -10,21 +10,27 @@ on:
 
 jobs:
   test:
-    name: Run Integration Tests
+    name: Rust Tests
     runs-on: ubuntu-latest
-
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v4
         with:
-          enable-cache: true
-          python-version: '3.13'
+          submodules: true
 
-      - name: Install OpenMPI
-        run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
+      - name: Install Rust toolchain
+        run: rustup show
 
-      - name: Run Integration Tests
-        run: uv run pytest tests/integration/test_slice.py tests/integration/test_compile.py tests/integration/test_pipeline.py tests/integration/test_full_run.py -m "not slow"
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked --manifest-path crates/dsperse/Cargo.toml
+
+      - name: Test (with python feature)
+        run: cargo test --locked --manifest-path crates/dsperse/Cargo.toml --features python
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path crates/dsperse/Cargo.toml --all-targets --features python -- -D warnings

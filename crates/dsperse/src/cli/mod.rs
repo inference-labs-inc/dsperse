@@ -1,5 +1,5 @@
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -175,7 +175,15 @@ pub struct FullRunArgs {
     pub fast_compile: bool,
 }
 
-fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<Vec<String>> {
+struct CircuitOps(Vec<String>);
+
+impl CircuitOps {
+    fn as_refs(&self) -> Vec<&str> {
+        self.0.iter().map(String::as_str).collect()
+    }
+}
+
+fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Result<CircuitOps> {
     let ps: ProofSystem =
         proof_system_str
             .parse()
@@ -185,14 +193,19 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
 
     let supported = ps.supported_ops();
 
-    match circuit_ops {
-        None => Ok(supported.iter().map(|s| (*s).to_string()).collect()),
+    let ops = match circuit_ops {
+        None => supported.iter().map(|s| (*s).to_string()).collect(),
         Some(spec) => {
             let requested: Vec<String> = spec
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+            if requested.is_empty() {
+                return Err(DsperseError::Other(
+                    "empty --circuit-ops; provide at least one op or omit the flag to use all supported ops".into(),
+                ));
+            }
             for op in &requested {
                 if !supported.contains(&op.as_str()) {
                     return Err(DsperseError::Other(format!(
@@ -200,9 +213,14 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
                     )));
                 }
             }
-            Ok(requested)
+            requested
         }
-    }
+    };
+    Ok(CircuitOps(ops))
+}
+
+fn resolve_slices_dir(slices_dir: Option<PathBuf>, model_dir: &Path) -> PathBuf {
+    slices_dir.unwrap_or_else(|| model_dir.join("slices"))
 }
 
 pub fn cmd_slice(args: SliceArgs) -> Result<()> {
@@ -214,12 +232,11 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
         )));
     }
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     let metadata = crate::slicer::slice_model(
         &model_path,
         args.output_dir.as_deref(),
         args.tile_size,
-        &ops_refs,
+        &ops.as_refs(),
     )?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
     Ok(())
@@ -227,9 +244,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
         .layers
@@ -238,7 +253,6 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         .transpose()?;
 
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
 
     pipeline::compile_slices(
         &slices_dir,
@@ -246,7 +260,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
-        &ops_refs,
+        &ops.as_refs(),
     )
 }
 
@@ -259,9 +273,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
     }
 
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let run_dir = args
         .run_dir
@@ -279,9 +291,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
@@ -289,9 +299,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let backend = JstproveBackend::default();
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
     Ok(())
@@ -300,9 +308,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
 
-    let slices_dir = args
-        .slices_dir
-        .unwrap_or_else(|| args.model_dir.join("slices"));
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let input_file = args
         .input_file
@@ -328,7 +334,6 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         .transpose()?;
 
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
-    let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
 
     tracing::info!("compiling slices");
     pipeline::compile_slices(
@@ -337,7 +342,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
-        &ops_refs,
+        &ops.as_refs(),
     )?;
 
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));
@@ -557,5 +562,58 @@ mod tests {
         } else {
             panic!("expected Slice");
         }
+    }
+
+    #[test]
+    fn resolve_circuit_ops_invalid_proof_system() {
+        let result = resolve_circuit_ops("nonexistent", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_unsupported_op() {
+        let result = resolve_circuit_ops("expander", Some("FakeOp"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_empty_spec_rejected() {
+        let result = resolve_circuit_ops("expander", Some(""));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_whitespace_only_spec_rejected() {
+        let result = resolve_circuit_ops("expander", Some(" ,  , "));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_circuit_ops_valid_specific_ops() {
+        let supported = ProofSystem::Expander.supported_ops();
+        assert!(!supported.is_empty());
+        let first_op = supported[0];
+        let ops = resolve_circuit_ops("expander", Some(first_op)).unwrap();
+        assert_eq!(ops.as_refs(), vec![first_op]);
+    }
+
+    #[test]
+    fn resolve_circuit_ops_none_returns_all() {
+        let ops = resolve_circuit_ops("expander", None).unwrap();
+        let expected: Vec<&str> = ProofSystem::Expander.supported_ops().to_vec();
+        assert_eq!(ops.as_refs(), expected);
+    }
+
+    #[test]
+    fn resolve_slices_dir_custom_path() {
+        let result = resolve_slices_dir(Some(PathBuf::from("/custom")), Path::new("/model"));
+        assert_eq!(result, PathBuf::from("/custom"));
+    }
+
+    #[test]
+    fn resolve_slices_dir_default_fallback() {
+        let model_dir = Path::new("/model");
+        let result = resolve_slices_dir(None, model_dir);
+        assert_eq!(result, model_dir.join("slices"));
     }
 }

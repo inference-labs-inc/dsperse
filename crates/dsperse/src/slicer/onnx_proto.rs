@@ -209,7 +209,7 @@ impl TensorProto {
 }
 
 pub fn validate_initializer_compatibility(
-    initializers: &[TensorProto],
+    initializers: &[&TensorProto],
     donor_init_map: &HashMap<String, &TensorProto>,
     context: &str,
 ) -> Result<()> {
@@ -245,11 +245,10 @@ pub fn replace_initializers(
         .graph
         .as_mut()
         .ok_or_else(|| DsperseError::Pipeline("ONNX model missing graph".into()))?;
-    let matched: Vec<TensorProto> = graph
+    let matched: Vec<&TensorProto> = graph
         .initializer
         .iter()
         .filter(|i| donor_init_map.contains_key(&i.name))
-        .cloned()
         .collect();
     validate_initializer_compatibility(&matched, donor_init_map, "replace_initializers")?;
     let mut replaced = 0;

@@ -86,7 +86,7 @@ fn validate_weights_onnx(
         })?;
         let context = format!("slice_{}", slice.index);
         crate::slicer::onnx_proto::validate_initializer_compatibility(
-            &slice_graph.initializer,
+            &slice_graph.initializer.iter().collect::<Vec<_>>(),
             donor_init_map,
             &context,
         )?;

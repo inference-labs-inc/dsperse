@@ -59,18 +59,22 @@ struct ConvParams {
 fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
         if node.op_type == "Conv" {
-            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape")
-                .and_then(|v| try_pair(&v))
-                .unwrap_or([3, 3]);
-            let stride = onnx_proto::get_attribute_ints(node, "strides")
-                .and_then(|v| try_pair(&v))
-                .unwrap_or([1, 1]);
-            let dilation = onnx_proto::get_attribute_ints(node, "dilations")
-                .and_then(|v| try_pair(&v))
-                .unwrap_or([1, 1]);
-            let pads = onnx_proto::get_attribute_ints(node, "pads")
-                .and_then(|v| try_quad(&v))
-                .unwrap_or([0, 0, 0, 0]);
+            let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
+                None => [3, 3],
+                Some(v) => try_pair(&v)?,
+            };
+            let stride = match onnx_proto::get_attribute_ints(node, "strides") {
+                None => [1, 1],
+                Some(v) => try_pair(&v)?,
+            };
+            let dilation = match onnx_proto::get_attribute_ints(node, "dilations") {
+                None => [1, 1],
+                Some(v) => try_pair(&v)?,
+            };
+            let pads = match onnx_proto::get_attribute_ints(node, "pads") {
+                None => [0, 0, 0, 0],
+                Some(v) => try_quad(&v)?,
+            };
             let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
 
             return Some(ConvParams {

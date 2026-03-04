@@ -6,6 +6,22 @@ use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
+fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
+    if v.len() >= 2 {
+        Some([v[0], v[1]])
+    } else {
+        None
+    }
+}
+
+fn try_quad(v: &[i64]) -> Option<[i64; 4]> {
+    if v.len() >= 4 {
+        Some([v[0], v[1], v[2], v[3]])
+    } else {
+        None
+    }
+}
+
 fn model_opset(model: &ModelProto) -> i64 {
     model
         .opset_import
@@ -44,40 +60,16 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
         if node.op_type == "Conv" {
             let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
+                .and_then(|v| try_pair(&v))
                 .unwrap_or([3, 3]);
             let stride = onnx_proto::get_attribute_ints(node, "strides")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
+                .and_then(|v| try_pair(&v))
                 .unwrap_or([1, 1]);
             let dilation = onnx_proto::get_attribute_ints(node, "dilations")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
+                .and_then(|v| try_pair(&v))
                 .unwrap_or([1, 1]);
             let pads = onnx_proto::get_attribute_ints(node, "pads")
-                .and_then(|v| {
-                    if v.len() >= 4 {
-                        Some([v[0], v[1], v[2], v[3]])
-                    } else {
-                        None
-                    }
-                })
+                .and_then(|v| try_quad(&v))
                 .unwrap_or([0, 0, 0, 0]);
             let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
 
@@ -94,16 +86,21 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     None
 }
 
+fn effective_kernel(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
+    [
+        (kernel[0] - 1) * dilation[0] + 1,
+        (kernel[1] - 1) * dilation[1] + 1,
+    ]
+}
+
 fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
-    let eff_kh = (kernel[0] - 1) * dilation[0] + 1;
-    let eff_kw = (kernel[1] - 1) * dilation[1] + 1;
-    [eff_kh / 2, eff_kw / 2]
+    let eff = effective_kernel(kernel, dilation);
+    [eff[0] / 2, eff[1] / 2]
 }
 
 fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> i64 {
-    let eff_kh = (kernel[0] - 1) * dilation[0] + 1;
-    let eff_kw = (kernel[1] - 1) * dilation[1] + 1;
-    eff_kh.max(eff_kw) + 1
+    let eff = effective_kernel(kernel, dilation);
+    eff[0].max(eff[1]) + 1
 }
 
 fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
@@ -185,6 +182,26 @@ fn find_weights_and_bias(
 struct WeightInfo {
     data: Vec<f32>,
     dims: Vec<i64>,
+}
+
+struct SlicePrologue<'a> {
+    graph: &'a GraphProto,
+    cp: ConvParams,
+    weights: Option<WeightInfo>,
+    bias: Option<Vec<f32>>,
+}
+
+fn extract_slice_prologue(model: &ModelProto) -> Option<SlicePrologue<'_>> {
+    let graph = model.graph.as_ref()?;
+    let cp = get_conv_params(graph)?;
+    let conv_node = &graph.node[cp.node_idx];
+    let (weights, bias) = find_weights_and_bias(graph, conv_node);
+    Some(SlicePrologue {
+        graph,
+        cp,
+        weights,
+        bias,
+    })
 }
 
 fn find_optimal_tile_size(
@@ -359,20 +376,20 @@ pub fn create_tile_slice(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<TileSliceResult>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
+    let SlicePrologue {
+        graph,
+        cp,
+        weights,
+        bias,
+    } = match extract_slice_prologue(model) {
+        Some(p) => p,
         None => return Ok(None),
     };
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
         return Ok(None);
     }
     let conv_node = &graph.node[cp.node_idx];
-    let (wi, bias) = find_weights_and_bias(graph, conv_node);
-    let weights = match wi {
+    let weights = match weights {
         Some(w) => w,
         None => return Ok(None),
     };
@@ -381,12 +398,11 @@ pub fn create_tile_slice(
     }
 
     let halo = compute_halo_size(cp.kernel, cp.dilation);
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
+    let eff = effective_kernel(cp.kernel, cp.dilation);
     let tile_h = tile_size + 2 * halo[0];
     let tile_w = tile_size + 2 * halo[1];
-    let out_h = (tile_h - eff_kh) / cp.stride[0] + 1;
-    let out_w = (tile_w - eff_kw) / cp.stride[1] + 1;
+    let out_h = (tile_h - eff[0]) / cp.stride[0] + 1;
+    let out_w = (tile_w - eff[1]) / cp.stride[1] + 1;
     if out_h <= 0 || out_w <= 0 {
         return Ok(None);
     }
@@ -561,12 +577,10 @@ pub fn create_channel_group_slice(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelGroupInfo>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
+    let SlicePrologue {
+        graph, cp, weights, ..
+    } = match extract_slice_prologue(model) {
+        Some(p) => p,
         None => return Ok(None),
     };
     if c_start < 0 || c_end < 0 || c_start >= c_end {
@@ -575,9 +589,7 @@ pub fn create_channel_group_slice(
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
         return Ok(None);
     }
-    let conv_node = &graph.node[cp.node_idx];
-    let (wi, _) = find_weights_and_bias(graph, conv_node);
-    let weights = match wi {
+    let weights = match weights {
         Some(w) => w,
         None => return Ok(None),
     };
@@ -592,10 +604,9 @@ pub fn create_channel_group_slice(
     let (_inp_name, _out_name, _c_in, h_in, w_in) = dims;
 
     let c_group = c_end - c_start;
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
-    let h_out = (h_in + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
-    let w_out = (w_in + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
+    let eff = effective_kernel(cp.kernel, cp.dilation);
+    let h_out = (h_in + cp.pads[0] + cp.pads[2] - eff[0]) / cp.stride[0] + 1;
+    let w_out = (w_in + cp.pads[1] + cp.pads[3] - eff[1]) / cp.stride[1] + 1;
     if h_out <= 0 || w_out <= 0 {
         return Ok(None);
     }
@@ -741,16 +752,10 @@ pub fn save_conv_bias(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<String>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
+    let SlicePrologue { bias, .. } = match extract_slice_prologue(model) {
+        Some(p) => p,
         None => return Ok(None),
     };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-    let conv_node = &graph.node[cp.node_idx];
-    let (_, bias) = find_weights_and_bias(graph, conv_node);
     let Some(bias_data) = bias else {
         return Ok(None);
     };
@@ -800,10 +805,9 @@ pub fn apply_channel_splitting(
     if cp.stride[0] == 0 || cp.stride[1] == 0 {
         return Ok(None);
     }
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
-    let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
-    let out_w = (w + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
+    let eff = effective_kernel(cp.kernel, cp.dilation);
+    let out_h = (h + cp.pads[0] + cp.pads[2] - eff[0]) / cp.stride[0] + 1;
+    let out_w = (w + cp.pads[1] + cp.pads[3] - eff[1]) / cp.stride[1] + 1;
     if out_h <= 0 || out_w <= 0 {
         return Ok(None);
     }

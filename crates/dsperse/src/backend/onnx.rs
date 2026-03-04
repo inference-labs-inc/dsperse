@@ -150,6 +150,12 @@ pub fn run_inference_multi_named(
         }
     }
 
+    for (name, _) in &input_by_name {
+        if !model_input_names.iter().any(|(_, n)| n == name) {
+            tracing::warn!("provided input '{name}' does not match any model input");
+        }
+    }
+
     let model = model
         .into_typed()
         .map_err(|e| {

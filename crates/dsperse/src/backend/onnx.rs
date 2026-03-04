@@ -153,10 +153,15 @@ pub fn run_inference_multi_named(
         }
     }
 
-    for name in input_by_name.keys() {
-        if !model_input_names.iter().any(|(_, n)| n == *name) {
-            tracing::warn!("provided input '{name}' does not match any model input");
-        }
+    let unknown_inputs: Vec<&str> = input_by_name
+        .keys()
+        .copied()
+        .filter(|name| !model_input_names.iter().any(|(_, n)| n == *name))
+        .collect();
+    if !unknown_inputs.is_empty() {
+        return Err(DsperseError::Onnx(format!(
+            "provided inputs not present in model: {unknown_inputs:?}"
+        )));
     }
 
     let model = model
@@ -268,7 +273,11 @@ fn zip_named_outputs(names: &[String], result: &[TValue]) -> Result<NamedOutputs
             .get(i)
             .cloned()
             .unwrap_or_else(|| format!("output_{i}"));
-        map.insert(name, (data, shape));
+        if map.insert(name.clone(), (data, shape)).is_some() {
+            return Err(DsperseError::Onnx(format!(
+                "duplicate output name '{name}'"
+            )));
+        }
     }
     Ok(map)
 }

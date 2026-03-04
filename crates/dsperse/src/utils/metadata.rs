@@ -4,8 +4,7 @@ use crate::error::{DsperseError, Result};
 use crate::schema::RunMetadata;
 
 pub fn load_run_metadata(path: &Path) -> Result<RunMetadata> {
-    let data =
-        crate::utils::limits::read_limited(path, crate::utils::limits::MAX_METADATA_JSON_BYTES)?;
+    let data = crate::utils::limits::read_checked(path)?;
     rmp_serde::from_slice(&data).map_err(Into::into)
 }
 

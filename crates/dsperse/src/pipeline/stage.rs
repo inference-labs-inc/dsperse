@@ -53,10 +53,7 @@ pub fn run_pipeline_stage(
     parallel: usize,
 ) -> Result<RunMetadata> {
     let meta_path = run_dir.join(crate::utils::paths::METADATA_FILE);
-    let data = crate::utils::limits::read_limited(
-        &meta_path,
-        crate::utils::limits::MAX_METADATA_JSON_BYTES,
-    )?;
+    let data = crate::utils::limits::read_checked(&meta_path)?;
     let mut run_meta: RunMetadata = rmp_serde::from_slice(&data)?;
 
     let circuit_slices: Vec<(String, _)> = run_meta
@@ -201,10 +198,7 @@ fn execute_single_slice(
     let start = std::time::Instant::now();
     let method = stage.execution_method();
     let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
-    let witness_bytes = match crate::utils::limits::read_limited(
-        &witness_path,
-        crate::utils::limits::MAX_WITNESS_BYTES,
-    ) {
+    let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
         Ok(b) => b,
         Err(e) => {
             return Ok(SliceResult {
@@ -238,10 +232,7 @@ fn execute_single_slice(
         }
         PipelineStage::Verify => {
             let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
-            let proof_bytes = match crate::utils::limits::read_limited(
-                &proof_path,
-                crate::utils::limits::MAX_PROOF_BYTES,
-            ) {
+            let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                 Ok(b) => b,
                 Err(e) => {
                     return Ok(SliceResult {
@@ -334,10 +325,7 @@ fn execute_tiled_stage(
             };
 
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
-            let witness_bytes = match crate::utils::limits::read_limited(
-                &witness_path,
-                crate::utils::limits::MAX_WITNESS_BYTES,
-            ) {
+            let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
                 Ok(b) => b,
                 Err(e) => return fail(format!("witness read error: {e}")),
             };
@@ -363,10 +351,7 @@ fn execute_tiled_stage(
                 }
                 PipelineStage::Verify => {
                     let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                    let proof_bytes = match crate::utils::limits::read_limited(
-                        &proof_path,
-                        crate::utils::limits::MAX_PROOF_BYTES,
-                    ) {
+                    let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                         Ok(b) => b,
                         Err(e) => return fail(format!("proof read error: {e}")),
                     };

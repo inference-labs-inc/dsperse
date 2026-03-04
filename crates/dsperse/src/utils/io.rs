@@ -7,8 +7,7 @@ use rmpv::Value;
 use crate::error::{DsperseError, Result};
 
 pub fn read_msgpack(path: &Path) -> Result<Value> {
-    let data =
-        crate::utils::limits::read_limited(path, crate::utils::limits::MAX_INPUT_JSON_BYTES)?;
+    let data = crate::utils::limits::read_checked(path)?;
     rmp_serde::from_slice(&data).map_err(Into::into)
 }
 

@@ -892,6 +892,7 @@ dependencies = [
  "clap",
  "criterion",
  "jstprove_circuits",
+ "libc",
  "ndarray",
  "prost 0.13.5",
  "prost-build",

@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::Path;
 
 use crate::error::{DsperseError, Result};
@@ -15,14 +16,48 @@ pub fn reject_symlink(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn open_nofollow(path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|e| {
+                if e.raw_os_error() == Some(libc::ELOOP) {
+                    DsperseError::Archive(format!(
+                        "symlink not permitted: {}",
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("<unknown>")
+                    ))
+                } else {
+                    DsperseError::io(e, path)
+                }
+            })
+    }
+    #[cfg(not(unix))]
+    {
+        reject_symlink(path)?;
+        std::fs::File::open(path).map_err(|e| DsperseError::io(e, path))
+    }
+}
+
 pub fn read_checked(path: &Path) -> Result<Vec<u8>> {
-    reject_symlink(path)?;
-    std::fs::read(path).map_err(|e| DsperseError::io(e, path))
+    let mut file = open_nofollow(path)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .map_err(|e| DsperseError::io(e, path))?;
+    Ok(buf)
 }
 
 pub fn read_to_string_checked(path: &Path) -> Result<String> {
-    reject_symlink(path)?;
-    std::fs::read_to_string(path).map_err(|e| DsperseError::io(e, path))
+    let mut file = open_nofollow(path)?;
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)
+        .map_err(|e| DsperseError::io(e, path))?;
+    Ok(buf)
 }
 
 #[cfg(test)]

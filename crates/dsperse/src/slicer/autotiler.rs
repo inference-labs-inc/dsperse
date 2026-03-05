@@ -97,6 +97,23 @@ fn effective_kernel(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
     ]
 }
 
+fn conv_output_hw(
+    h_in: i64,
+    w_in: i64,
+    pads: [i64; 4],
+    kernel: [i64; 2],
+    dilation: [i64; 2],
+    stride: [i64; 2],
+) -> Option<(i64, i64)> {
+    let eff = effective_kernel(kernel, dilation);
+    let out_h = (h_in + pads[0] + pads[2] - eff[0]) / stride[0] + 1;
+    let out_w = (w_in + pads[1] + pads[3] - eff[1]) / stride[1] + 1;
+    if out_h <= 0 || out_w <= 0 {
+        return None;
+    }
+    Some((out_h, out_w))
+}
+
 fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
     let eff = effective_kernel(kernel, dilation);
     [eff[0] / 2, eff[1] / 2]
@@ -402,14 +419,19 @@ pub fn create_tile_slice(
     }
 
     let halo = compute_halo_size(cp.kernel, cp.dilation);
-    let eff = effective_kernel(cp.kernel, cp.dilation);
     let tile_h = tile_size + 2 * halo[0];
     let tile_w = tile_size + 2 * halo[1];
-    let out_h = (tile_h - eff[0]) / cp.stride[0] + 1;
-    let out_w = (tile_w - eff[1]) / cp.stride[1] + 1;
-    if out_h <= 0 || out_w <= 0 {
-        return Ok(None);
-    }
+    let (out_h, out_w) = match conv_output_hw(
+        tile_h,
+        tile_w,
+        [0, 0, 0, 0],
+        cp.kernel,
+        cp.dilation,
+        cp.stride,
+    ) {
+        Some(hw) => hw,
+        None => return Ok(None),
+    };
 
     let c_in = graph
         .input
@@ -605,12 +627,11 @@ fn create_channel_group_slice(
     let (_inp_name, _out_name, _c_in, h_in, w_in) = dims;
 
     let c_group = c_end - c_start;
-    let eff = effective_kernel(cp.kernel, cp.dilation);
-    let h_out = (h_in + cp.pads[0] + cp.pads[2] - eff[0]) / cp.stride[0] + 1;
-    let w_out = (w_in + cp.pads[1] + cp.pads[3] - eff[1]) / cp.stride[1] + 1;
-    if h_out <= 0 || w_out <= 0 {
-        return Ok(None);
-    }
+    let (h_out, w_out) =
+        match conv_output_hw(h_in, w_in, cp.pads, cp.kernel, cp.dilation, cp.stride) {
+            Some(hw) => hw,
+            None => return Ok(None),
+        };
     let c_out = weights.dims[0];
 
     let input_name = format!("group_{group_idx}_in");
@@ -798,14 +819,17 @@ pub fn apply_channel_splitting(
     if prologue.cp.stride[0] == 0 || prologue.cp.stride[1] == 0 {
         return Ok(None);
     }
-    let eff = effective_kernel(prologue.cp.kernel, prologue.cp.dilation);
-    let out_h =
-        (h + prologue.cp.pads[0] + prologue.cp.pads[2] - eff[0]) / prologue.cp.stride[0] + 1;
-    let out_w =
-        (w + prologue.cp.pads[1] + prologue.cp.pads[3] - eff[1]) / prologue.cp.stride[1] + 1;
-    if out_h <= 0 || out_w <= 0 {
-        return Ok(None);
-    }
+    let (out_h, out_w) = match conv_output_hw(
+        h,
+        w,
+        prologue.cp.pads,
+        prologue.cp.kernel,
+        prologue.cp.dilation,
+        prologue.cp.stride,
+    ) {
+        Some(hw) => hw,
+        None => return Ok(None),
+    };
 
     let groups_dir = output_dir.join("channel_groups");
     let cleanup = || {

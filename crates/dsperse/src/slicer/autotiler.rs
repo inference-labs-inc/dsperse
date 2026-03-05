@@ -71,9 +71,16 @@ impl ConvParams {
         let c_out = w.dims[0];
         let c_in = w.dims[1];
 
+        let inferred_kernel = [w.dims[2], w.dims[3]];
         let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
-            Some(v) => try_pair(&v)?,
-            None => [w.dims[2], w.dims[3]],
+            Some(v) => {
+                let k = try_pair(&v)?;
+                if k != inferred_kernel {
+                    return None;
+                }
+                k
+            }
+            None => inferred_kernel,
         };
         let stride = match onnx_proto::get_attribute_ints(node, "strides") {
             None => [1, 1],
@@ -832,6 +839,12 @@ pub fn apply_channel_splitting(
     if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
         return Ok(None);
     }
+    if num_groups * channels_per_group < c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg covers only {} input channels, expected at least {c_in}",
+            num_groups * channels_per_group
+        )));
+    }
     let prologue = match extract_slice_prologue(model) {
         Some(p) => p,
         None => return Ok(None),
@@ -843,9 +856,10 @@ pub fn apply_channel_splitting(
                 "apply_channel_splitting: unable to determine model dimensions".to_string(),
             )
         })?;
-    if model_c_in != c_in || model_h != h || model_w != w {
+    let model_c_out = prologue.cp.c_out;
+    if model_c_in != c_in || model_c_out != c_out || model_h != h || model_w != w {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "apply_channel_splitting: cfg dims (c_in={c_in}, h={h}, w={w}) mismatch model dims (c_in={model_c_in}, h={model_h}, w={model_w})"
+            "apply_channel_splitting: cfg dims (c_in={c_in}, c_out={c_out}, h={h}, w={w}) mismatch model dims (c_in={model_c_in}, c_out={model_c_out}, h={model_h}, w={model_w})"
         )));
     }
 

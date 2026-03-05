@@ -815,7 +815,7 @@ pub fn apply_channel_splitting(
         Some(p) => p,
         None => return Ok(None),
     };
-    if prologue.cp.stride[0] == 0 || prologue.cp.stride[1] == 0 {
+    if prologue.cp.stride[0] <= 0 || prologue.cp.stride[1] <= 0 {
         return Ok(None);
     }
 

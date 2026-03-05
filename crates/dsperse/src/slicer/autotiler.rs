@@ -979,8 +979,11 @@ pub fn apply_channel_splitting(
         let c_start = g * channels_per_group;
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
+        let g_uz = i64_to_usize(g, "apply_channel_splitting", "group_idx").inspect_err(|_| {
+            cleanup();
+        })?;
         let group_info = match create_channel_group_slice(
-            model, &prologue, g as usize, c_start, c_end, h, w, slice_idx, output_dir,
+            model, &prologue, g_uz, c_start, c_end, h, w, slice_idx, output_dir,
         ) {
             Ok(info) => info,
             Err(e) => {

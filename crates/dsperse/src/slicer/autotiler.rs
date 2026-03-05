@@ -837,7 +837,9 @@ pub fn apply_channel_splitting(
         slice_idx,
     } = cfg;
     if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
-        return Ok(None);
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: invalid ChannelSplitParams (c_in={c_in}, c_out={c_out}, num_groups={num_groups}, channels_per_group={channels_per_group}, h={h}, w={w})"
+        )));
     }
     if num_groups * channels_per_group < c_in {
         return Err(crate::error::DsperseError::Slicer(format!(
@@ -845,10 +847,11 @@ pub fn apply_channel_splitting(
             num_groups * channels_per_group
         )));
     }
-    let prologue = match extract_slice_prologue(model) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+    let prologue = extract_slice_prologue(model).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "apply_channel_splitting: failed to extract slice prologue from model".to_string(),
+        )
+    })?;
 
     let (_, _, model_c_in, model_h, model_w) =
         get_model_dimensions(prologue.graph).ok_or_else(|| {
@@ -863,17 +866,20 @@ pub fn apply_channel_splitting(
         )));
     }
 
-    let (out_h, out_w) = match conv_output_hw(
+    let (out_h, out_w) = conv_output_hw(
         h,
         w,
         prologue.cp.pads,
         prologue.cp.kernel,
         prologue.cp.dilation,
         prologue.cp.stride,
-    ) {
-        Some(hw) => hw,
-        None => return Ok(None),
-    };
+    )
+    .ok_or_else(|| {
+        crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: invalid conv output dimensions for h={h}, w={w}, stride={:?}, kernel={:?}",
+            prologue.cp.stride, prologue.cp.kernel
+        ))
+    })?;
 
     let groups_dir = output_dir.join("channel_groups");
     let cleanup = || {

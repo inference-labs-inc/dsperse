@@ -1017,18 +1017,27 @@ pub fn apply_channel_splitting(
     };
 
     let ctx = "apply_channel_splitting";
+    let c_in_uz = i64_to_usize(c_in, ctx, "c_in").inspect_err(|_| cleanup())?;
+    let c_out_uz = i64_to_usize(c_out, ctx, "c_out").inspect_err(|_| cleanup())?;
+    let num_groups_uz = i64_to_usize(num_groups, ctx, "num_groups").inspect_err(|_| cleanup())?;
+    let cpg_uz =
+        i64_to_usize(channels_per_group, ctx, "channels_per_group").inspect_err(|_| cleanup())?;
+    let h_uz = i64_to_usize(h, ctx, "h").inspect_err(|_| cleanup())?;
+    let w_uz = i64_to_usize(w, ctx, "w").inspect_err(|_| cleanup())?;
+    let out_h_uz = i64_to_usize(out_h, ctx, "out_h").inspect_err(|_| cleanup())?;
+    let out_w_uz = i64_to_usize(out_w, ctx, "out_w").inspect_err(|_| cleanup())?;
     Ok(ChannelSplitInfo {
         slice_idx,
-        c_in: i64_to_usize(c_in, ctx, "c_in")?,
-        c_out: i64_to_usize(c_out, ctx, "c_out")?,
-        num_groups: i64_to_usize(num_groups, ctx, "num_groups")?,
-        channels_per_group: i64_to_usize(channels_per_group, ctx, "channels_per_group")?,
+        c_in: c_in_uz,
+        c_out: c_out_uz,
+        num_groups: num_groups_uz,
+        channels_per_group: cpg_uz,
         input_name: input_name.to_string(),
         output_name: output_name.to_string(),
-        h: i64_to_usize(h, ctx, "h")?,
-        w: i64_to_usize(w, ctx, "w")?,
-        out_h: i64_to_usize(out_h, ctx, "out_h")?,
-        out_w: i64_to_usize(out_w, ctx, "out_w")?,
+        h: h_uz,
+        w: w_uz,
+        out_h: out_h_uz,
+        out_w: out_w_uz,
         groups,
         bias_path,
     })

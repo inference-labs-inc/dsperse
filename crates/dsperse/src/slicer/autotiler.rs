@@ -93,6 +93,14 @@ impl ConvParams {
             None => [1, 1],
             Some(v) => try_pair(&v)?,
         };
+        let auto_pad = node
+            .attribute
+            .iter()
+            .find(|a| a.name == "auto_pad")
+            .map(|a| a.s.as_slice());
+        if matches!(auto_pad, Some(v) if !v.is_empty() && v != b"NOTSET") {
+            return None;
+        }
         let pads = match onnx_proto::get_attribute_ints(node, "pads") {
             None => [0, 0, 0, 0],
             Some(v) => try_quad(&v)?,
@@ -510,18 +518,24 @@ pub fn create_tile_slice(
         ))
     })?;
 
-    let c_in = graph
+    let graph_c_in = graph
         .input
         .first()
         .map(onnx_proto::vi_shape)
-        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]))
-        .or_else(|| cp.c_in.checked_mul(cp.group))
-        .filter(|&v| v > 0)
-        .ok_or_else(|| {
-            crate::error::DsperseError::Slicer(
-                "create_tile_slice: unable to determine input channels".to_string(),
-            )
-        })?;
+        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]));
+    let cfg_c_in = cp.c_in.checked_mul(cp.group).filter(|&v| v > 0);
+    if let (Some(g), Some(c)) = (graph_c_in, cfg_c_in) {
+        if g != c {
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: graph c_in ({g}) != weight c_in*group ({c})"
+            )));
+        }
+    }
+    let c_in = graph_c_in.or(cfg_c_in).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: unable to determine input channels".to_string(),
+        )
+    })?;
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",

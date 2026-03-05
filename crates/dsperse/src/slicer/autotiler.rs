@@ -70,6 +70,9 @@ impl ConvParams {
         }
         let c_out = w.dims[0];
         let c_in = w.dims[1];
+        if c_out <= 0 || c_in <= 0 {
+            return None;
+        }
 
         let inferred_kernel = [w.dims[2], w.dims[3]];
         let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {

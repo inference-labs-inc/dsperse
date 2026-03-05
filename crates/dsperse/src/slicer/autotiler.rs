@@ -475,7 +475,7 @@ pub fn create_tile_slice(
         .first()
         .map(onnx_proto::vi_shape)
         .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
-        .unwrap_or(cp.c_in);
+        .unwrap_or(cp.c_in * cp.group);
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",
@@ -876,6 +876,12 @@ pub fn apply_channel_splitting(
             )
         })?;
     let model_c_out = prologue.cp.c_out;
+    if prologue.cp.group == 1 && prologue.cp.c_in != model_c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: weight/model c_in mismatch (weights c_in={}, model c_in={})",
+            prologue.cp.c_in, model_c_in
+        )));
+    }
     if model_c_in != c_in || model_c_out != c_out || model_h != h || model_w != w {
         return Err(crate::error::DsperseError::Slicer(format!(
             "apply_channel_splitting: cfg dims (c_in={c_in}, c_out={c_out}, h={h}, w={w}) mismatch model dims (c_in={model_c_in}, c_out={model_c_out}, h={model_h}, w={model_w})"

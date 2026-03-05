@@ -598,16 +598,18 @@ fn integrate_extra_ops(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_channel_group_slice(
     model: &ModelProto,
     prologue: &SlicePrologue<'_>,
     group_idx: usize,
     c_start: i64,
     c_end: i64,
+    h_in: i64,
+    w_in: i64,
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<ChannelGroupInfo>> {
-    let graph = prologue.graph;
     let cp = &prologue.cp;
     if c_start < 0 || c_end < 0 || c_start >= c_end {
         return Ok(None);
@@ -622,12 +624,6 @@ fn create_channel_group_slice(
     if weights.dims.len() < 4 {
         return Ok(None);
     }
-
-    let dims = match get_model_dimensions(graph) {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-    let (_inp_name, _out_name, _c_in, h_in, w_in) = dims;
 
     let c_group = c_end - c_start;
     let (h_out, w_out) =
@@ -868,7 +864,7 @@ pub fn apply_channel_splitting(
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
         let group_info = match create_channel_group_slice(
-            model, &prologue, g as usize, c_start, c_end, slice_idx, output_dir,
+            model, &prologue, g as usize, c_start, c_end, h, w, slice_idx, output_dir,
         ) {
             Ok(info) => info,
             Err(e) => {

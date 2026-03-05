@@ -54,56 +54,73 @@ struct ConvParams {
     dilation: [i64; 2],
     pads: [i64; 4],
     group: i64,
+    c_out: i64,
+    c_in: i64,
+}
+
+impl ConvParams {
+    fn from_node(node: &NodeProto, node_idx: usize, graph: &GraphProto) -> Option<ConvParams> {
+        if node.op_type != "Conv" {
+            return None;
+        }
+        let w_name = node.input.get(1)?;
+        let w = graph.initializer.iter().find(|t| &t.name == w_name)?;
+        if w.dims.len() != 4 {
+            return None;
+        }
+        let c_out = w.dims[0];
+        let c_in = w.dims[1];
+
+        let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
+            Some(v) => try_pair(&v)?,
+            None => [w.dims[2], w.dims[3]],
+        };
+        let stride = match onnx_proto::get_attribute_ints(node, "strides") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let dilation = match onnx_proto::get_attribute_ints(node, "dilations") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let pads = match onnx_proto::get_attribute_ints(node, "pads") {
+            None => [0, 0, 0, 0],
+            Some(v) => try_quad(&v)?,
+        };
+        if kernel.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if stride.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if dilation.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if pads.iter().any(|&v| v < 0) {
+            return None;
+        }
+        let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
+        if group <= 0 {
+            return None;
+        }
+
+        Some(ConvParams {
+            node_idx,
+            kernel,
+            stride,
+            dilation,
+            pads,
+            group,
+            c_out,
+            c_in,
+        })
+    }
 }
 
 fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
-        if node.op_type == "Conv" {
-            let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
-                Some(v) => try_pair(&v)?,
-                None => {
-                    let w_name = node.input.get(1)?;
-                    let w = graph.initializer.iter().find(|t| &t.name == w_name)?;
-                    if w.dims.len() != 4 {
-                        return None;
-                    }
-                    [w.dims[2], w.dims[3]]
-                }
-            };
-            let stride = match onnx_proto::get_attribute_ints(node, "strides") {
-                None => [1, 1],
-                Some(v) => try_pair(&v)?,
-            };
-            let dilation = match onnx_proto::get_attribute_ints(node, "dilations") {
-                None => [1, 1],
-                Some(v) => try_pair(&v)?,
-            };
-            let pads = match onnx_proto::get_attribute_ints(node, "pads") {
-                None => [0, 0, 0, 0],
-                Some(v) => try_quad(&v)?,
-            };
-            if kernel.iter().any(|&v| v <= 0) {
-                return None;
-            }
-            if stride.iter().any(|&v| v <= 0) {
-                return None;
-            }
-            if dilation.iter().any(|&v| v <= 0) {
-                return None;
-            }
-            if pads.iter().any(|&v| v < 0) {
-                return None;
-            }
-            let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
-
-            return Some(ConvParams {
-                node_idx: idx,
-                kernel,
-                stride,
-                dilation,
-                pads,
-                group,
-            });
+        if let Some(cp) = ConvParams::from_node(node, idx, graph) {
+            return Some(cp);
         }
     }
     None
@@ -239,6 +256,11 @@ fn extract_slice_prologue(model: &ModelProto) -> Option<SlicePrologue<'_>> {
     let cp = get_conv_params(graph)?;
     let conv_node = &graph.node[cp.node_idx];
     let (weights, bias) = find_weights_and_bias(graph, conv_node);
+    if let Some(ref w) = weights {
+        if w.dims.len() != 4 {
+            return None;
+        }
+    }
     Some(SlicePrologue {
         graph,
         cp,
@@ -323,15 +345,7 @@ pub fn detect_tiling_needs(
     }
     let (inp_name, out_name, c_in, h, w) = get_model_dimensions(graph)?;
     let cp = get_conv_params(graph)?;
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return None;
-    }
-    let (wi, _) = find_weights_and_bias(graph, &graph.node[cp.node_idx]);
-    let weights = wi?;
-    if weights.dims.is_empty() {
-        return None;
-    }
-    let c_out = weights.dims[0];
+    let c_out = cp.c_out;
     let tile_size = tile_size? as i64;
     let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation);
 
@@ -428,17 +442,11 @@ pub fn create_tile_slice(
         Some(p) => p,
         None => return Ok(None),
     };
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return Ok(None);
-    }
     let conv_node = &graph.node[cp.node_idx];
     let weights = match weights {
         Some(w) => w,
         None => return Ok(None),
     };
-    if weights.dims.len() < 4 {
-        return Ok(None);
-    }
 
     let halo = compute_halo_size(cp.kernel, cp.dilation);
     let tile_h = tile_size + 2 * halo[0];
@@ -460,7 +468,7 @@ pub fn create_tile_slice(
         .first()
         .map(onnx_proto::vi_shape)
         .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
-        .unwrap_or(weights.dims.get(1).copied().unwrap_or(1));
+        .unwrap_or(cp.c_in);
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",
@@ -633,16 +641,10 @@ fn create_channel_group_slice(
     if c_start < 0 || c_end < 0 || c_start >= c_end {
         return Ok(None);
     }
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return Ok(None);
-    }
     let weights = match &prologue.weights {
         Some(w) => w,
         None => return Ok(None),
     };
-    if weights.dims.len() < 4 {
-        return Ok(None);
-    }
 
     let c_group = c_end - c_start;
     let (h_out, w_out) =
@@ -650,7 +652,7 @@ fn create_channel_group_slice(
             Some(hw) => hw,
             None => return Ok(None),
         };
-    let c_out = weights.dims[0];
+    let c_out = cp.c_out;
 
     let input_name = format!("group_{group_idx}_in");
     let output_name = format!("group_{group_idx}_out");
@@ -834,25 +836,7 @@ pub fn apply_channel_splitting(
         Some(p) => p,
         None => return Ok(None),
     };
-    if prologue.cp.stride[0] <= 0 || prologue.cp.stride[1] <= 0 {
-        return Ok(None);
-    }
 
-    if let Some(ref wt) = prologue.weights {
-        if wt.dims.len() != 4 {
-            return Err(crate::error::DsperseError::Slicer(format!(
-                "apply_channel_splitting: malformed Conv weights rank {}, expected 4, dims {:?}",
-                wt.dims.len(),
-                wt.dims
-            )));
-        }
-        if wt.dims[1] != c_in || wt.dims[0] != c_out {
-            return Err(crate::error::DsperseError::Slicer(format!(
-                "apply_channel_splitting: cfg (c_in={c_in}, c_out={c_out}) mismatches weights dims {:?}",
-                wt.dims
-            )));
-        }
-    }
     let (_, _, model_c_in, model_h, model_w) =
         get_model_dimensions(prologue.graph).ok_or_else(|| {
             crate::error::DsperseError::Slicer(

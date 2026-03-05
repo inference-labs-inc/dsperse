@@ -1253,11 +1253,7 @@ pub(crate) fn build_execution_chain(
             slice_id.clone(),
             ExecutionNode {
                 slice_id: slice_id.clone(),
-                primary: if has_circuit {
-                    Some("jstprove".into())
-                } else {
-                    Some("onnx".into())
-                },
+                primary: Some(backend.to_string()),
                 fallbacks: if has_circuit {
                     vec!["onnx".into()]
                 } else {

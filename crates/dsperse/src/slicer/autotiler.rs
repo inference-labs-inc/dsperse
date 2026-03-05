@@ -820,9 +820,9 @@ pub fn apply_channel_splitting(
     }
 
     if let Some(ref wt) = prologue.weights {
-        if wt.dims.len() < 2 {
+        if wt.dims.len() < 4 {
             return Err(crate::error::DsperseError::Slicer(format!(
-                "apply_channel_splitting: malformed weights rank {}, dims {:?}",
+                "apply_channel_splitting: malformed Conv weights rank {}, expected >= 4, dims {:?}",
                 wt.dims.len(),
                 wt.dims
             )));

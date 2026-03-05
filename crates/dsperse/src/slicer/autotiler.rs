@@ -136,11 +136,16 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     None
 }
 
-fn effective_kernel(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
-    [
-        (kernel[0] - 1) * dilation[0] + 1,
-        (kernel[1] - 1) * dilation[1] + 1,
-    ]
+fn effective_kernel(kernel: [i64; 2], dilation: [i64; 2]) -> Option<[i64; 2]> {
+    let ek0 = kernel[0]
+        .checked_sub(1)?
+        .checked_mul(dilation[0])?
+        .checked_add(1)?;
+    let ek1 = kernel[1]
+        .checked_sub(1)?
+        .checked_mul(dilation[1])?
+        .checked_add(1)?;
+    Some([ek0, ek1])
 }
 
 fn conv_output_hw(
@@ -154,23 +159,31 @@ fn conv_output_hw(
     if stride[0] <= 0 || stride[1] <= 0 {
         return None;
     }
-    let eff = effective_kernel(kernel, dilation);
-    let out_h = (h_in + pads[0] + pads[2] - eff[0]).div_euclid(stride[0]) + 1;
-    let out_w = (w_in + pads[1] + pads[3] - eff[1]).div_euclid(stride[1]) + 1;
+    let eff = effective_kernel(kernel, dilation)?;
+    let num_h = h_in
+        .checked_add(pads[0])?
+        .checked_add(pads[2])?
+        .checked_sub(eff[0])?;
+    let num_w = w_in
+        .checked_add(pads[1])?
+        .checked_add(pads[3])?
+        .checked_sub(eff[1])?;
+    let out_h = num_h.div_euclid(stride[0]).checked_add(1)?;
+    let out_w = num_w.div_euclid(stride[1]).checked_add(1)?;
     if out_h <= 0 || out_w <= 0 {
         return None;
     }
     Some((out_h, out_w))
 }
 
-fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
-    let eff = effective_kernel(kernel, dilation);
-    [eff[0] / 2, eff[1] / 2]
+fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> Option<[i64; 2]> {
+    let eff = effective_kernel(kernel, dilation)?;
+    Some([eff[0] / 2, eff[1] / 2])
 }
 
-fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> i64 {
-    let eff = effective_kernel(kernel, dilation);
-    eff[0].max(eff[1]) + 1
+fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> Option<i64> {
+    let eff = effective_kernel(kernel, dilation)?;
+    eff[0].max(eff[1]).checked_add(1)
 }
 
 fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
@@ -200,7 +213,9 @@ fn is_tileable(graph: &GraphProto) -> bool {
     if cp.kernel[0] % 2 == 0 || cp.kernel[1] % 2 == 0 {
         return false;
     }
-    let halo = compute_halo_size(cp.kernel, cp.dilation);
+    let Some(halo) = compute_halo_size(cp.kernel, cp.dilation) else {
+        return false;
+    };
     cp.pads == [halo[0], halo[1], halo[0], halo[1]]
 }
 
@@ -370,7 +385,7 @@ pub fn detect_tiling_needs(
     let cp = get_conv_params(graph)?;
     let c_out = cp.c_out;
     let tile_size = tile_size? as i64;
-    let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation);
+    let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
 
     let (actual_tile, skip_reason) =
         calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
@@ -384,7 +399,7 @@ pub fn detect_tiling_needs(
         if tiles_y * tiles_x < 2 {
             return None;
         }
-        let halo = compute_halo_size(cp.kernel, cp.dilation);
+        let halo = compute_halo_size(cp.kernel, cp.dilation)?;
         return Some(TilingDetection::Spatial {
             input_name: inp_name,
             output_name: out_name,
@@ -473,7 +488,11 @@ pub fn create_tile_slice(
         )
     })?;
 
-    let halo = compute_halo_size(cp.kernel, cp.dilation);
+    let halo = compute_halo_size(cp.kernel, cp.dilation).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: effective kernel computation overflow".to_string(),
+        )
+    })?;
     let tile_h = tile_size + 2 * halo[0];
     let tile_w = tile_size + 2 * halo[1];
     let (out_h, out_w) = conv_output_hw(
@@ -673,19 +692,23 @@ fn create_channel_group_slice(
 ) -> Result<Option<ChannelGroupInfo>> {
     let cp = &prologue.cp;
     if c_start < 0 || c_end < 0 || c_start >= c_end {
-        return Ok(None);
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_channel_group_slice: invalid channel range c_start={c_start}, c_end={c_end}"
+        )));
     }
-    let weights = match &prologue.weights {
-        Some(w) => w,
-        None => return Ok(None),
-    };
+    let weights = prologue.weights.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_channel_group_slice: conv weights not found".to_string(),
+        )
+    })?;
 
     let c_group = c_end - c_start;
-    let (h_out, w_out) =
-        match conv_output_hw(h_in, w_in, cp.pads, cp.kernel, cp.dilation, cp.stride) {
-            Some(hw) => hw,
-            None => return Ok(None),
-        };
+    let (h_out, w_out) = conv_output_hw(h_in, w_in, cp.pads, cp.kernel, cp.dilation, cp.stride)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_channel_group_slice: invalid output dims for h_in={h_in}, w_in={w_in}"
+            ))
+        })?;
     let c_out = cp.c_out;
 
     let input_name = format!("group_{group_idx}_in");
@@ -1006,48 +1029,48 @@ mod tests {
 
     #[test]
     fn halo_3x3_no_dilation() {
-        assert_eq!(compute_halo_size([3, 3], [1, 1]), [1, 1]);
+        assert_eq!(compute_halo_size([3, 3], [1, 1]), Some([1, 1]));
     }
 
     #[test]
     fn halo_5x5_no_dilation() {
-        assert_eq!(compute_halo_size([5, 5], [1, 1]), [2, 2]);
+        assert_eq!(compute_halo_size([5, 5], [1, 1]), Some([2, 2]));
     }
 
     #[test]
     fn halo_3x3_dilation_2() {
-        assert_eq!(compute_halo_size([3, 3], [2, 2]), [2, 2]);
+        assert_eq!(compute_halo_size([3, 3], [2, 2]), Some([2, 2]));
     }
 
     #[test]
     fn halo_1x1_kernel() {
-        assert_eq!(compute_halo_size([1, 1], [1, 1]), [0, 0]);
+        assert_eq!(compute_halo_size([1, 1], [1, 1]), Some([0, 0]));
     }
 
     #[test]
     fn halo_asymmetric_kernel() {
-        assert_eq!(compute_halo_size([3, 5], [1, 1]), [1, 2]);
+        assert_eq!(compute_halo_size([3, 5], [1, 1]), Some([1, 2]));
     }
 
     #[test]
     fn min_tile_3x3_no_dilation() {
-        assert_eq!(compute_min_spatial_tile([3, 3], [1, 1]), 4);
+        assert_eq!(compute_min_spatial_tile([3, 3], [1, 1]), Some(4));
     }
 
     #[test]
     fn min_tile_5x5_no_dilation() {
-        assert_eq!(compute_min_spatial_tile([5, 5], [1, 1]), 6);
+        assert_eq!(compute_min_spatial_tile([5, 5], [1, 1]), Some(6));
     }
 
     #[test]
     fn min_tile_3x3_dilation_2() {
         let eff = (3 - 1) * 2 + 1;
-        assert_eq!(compute_min_spatial_tile([3, 3], [2, 2]), eff + 1);
+        assert_eq!(compute_min_spatial_tile([3, 3], [2, 2]), Some(eff + 1));
     }
 
     #[test]
     fn min_tile_1x1() {
-        assert_eq!(compute_min_spatial_tile([1, 1], [1, 1]), 2);
+        assert_eq!(compute_min_spatial_tile([1, 1], [1, 1]), Some(2));
     }
 
     #[test]

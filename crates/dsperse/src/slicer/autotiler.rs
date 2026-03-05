@@ -60,8 +60,15 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
         if node.op_type == "Conv" {
             let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
-                None => [3, 3],
                 Some(v) => try_pair(&v)?,
+                None => {
+                    let w_name = node.input.get(1)?;
+                    let w = graph.initializer.iter().find(|t| &t.name == w_name)?;
+                    if w.dims.len() < 4 {
+                        return None;
+                    }
+                    [w.dims[2], w.dims[3]]
+                }
             };
             let stride = match onnx_proto::get_attribute_ints(node, "strides") {
                 None => [1, 1],

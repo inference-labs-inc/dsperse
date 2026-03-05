@@ -479,6 +479,11 @@ pub fn create_tile_slice(
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<TileSliceResult> {
+    if tile_size <= 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_tile_slice: tile_size must be > 0, got {tile_size}"
+        )));
+    }
     let SlicePrologue {
         graph,
         cp,
@@ -501,8 +506,24 @@ pub fn create_tile_slice(
             "create_tile_slice: effective kernel computation overflow".to_string(),
         )
     })?;
-    let tile_h = tile_size + 2 * halo[0];
-    let tile_w = tile_size + 2 * halo[1];
+    let tile_h = halo[0]
+        .checked_mul(2)
+        .and_then(|h2| tile_size.checked_add(h2))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: tile_h overflow (tile_size={tile_size}, halo_h={})",
+                halo[0]
+            ))
+        })?;
+    let tile_w = halo[1]
+        .checked_mul(2)
+        .and_then(|w2| tile_size.checked_add(w2))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: tile_w overflow (tile_size={tile_size}, halo_w={})",
+                halo[1]
+            ))
+        })?;
     let (out_h, out_w) = conv_output_hw(
         tile_h,
         tile_w,

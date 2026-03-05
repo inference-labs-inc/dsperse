@@ -470,7 +470,7 @@ pub fn create_tile_slice(
     tile_size: i64,
     slice_idx: usize,
     output_dir: &Path,
-) -> Result<Option<TileSliceResult>> {
+) -> Result<TileSliceResult> {
     let SlicePrologue {
         graph,
         cp,
@@ -587,10 +587,10 @@ pub fn create_tile_slice(
     let onnx_path = tiles_dir.join("tile.onnx");
     onnx_proto::save_model(&tile_model, &onnx_path)?;
 
-    Ok(Some(TileSliceResult {
+    Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
         conv_out: [out_h, out_w],
-    }))
+    })
 }
 
 fn integrate_extra_ops(
@@ -689,7 +689,7 @@ fn create_channel_group_slice(
     w_in: i64,
     slice_idx: usize,
     output_dir: &Path,
-) -> Result<Option<ChannelGroupInfo>> {
+) -> Result<ChannelGroupInfo> {
     let cp = &prologue.cp;
     if c_start < 0 || c_end < 0 || c_start >= c_end {
         return Err(crate::error::DsperseError::Slicer(format!(
@@ -766,14 +766,14 @@ fn create_channel_group_slice(
     let onnx_path = groups_dir.join(format!("group_{group_idx}.onnx"));
     onnx_proto::save_model(&group_model, &onnx_path)?;
 
-    Ok(Some(ChannelGroupInfo {
+    Ok(ChannelGroupInfo {
         group_idx,
         c_start: c_start as usize,
         c_end: c_end as usize,
         path: format!("slice_{slice_idx}/payload/channel_groups/group_{group_idx}.onnx"),
         jstprove_circuit_path: None,
         jstprove_settings_path: None,
-    }))
+    })
 }
 
 fn checked_dim_product(factors: &[usize]) -> Result<usize> {
@@ -876,7 +876,7 @@ pub fn apply_channel_splitting(
     input_name: &str,
     output_name: &str,
     output_dir: &Path,
-) -> Result<Option<ChannelSplitInfo>> {
+) -> Result<ChannelSplitInfo> {
     let &ChannelSplitParams {
         c_in,
         c_out,
@@ -980,16 +980,7 @@ pub fn apply_channel_splitting(
                 return Err(e);
             }
         };
-
-        match group_info {
-            Some(gi) => groups.push(gi),
-            None => {
-                cleanup();
-                return Err(crate::error::DsperseError::Slicer(format!(
-                    "apply_channel_splitting: failed to create channel group slice for group {g}"
-                )));
-            }
-        }
+        groups.push(group_info);
     }
 
     let bias_path = match save_conv_bias(&prologue, slice_idx, output_dir) {
@@ -1000,7 +991,7 @@ pub fn apply_channel_splitting(
         }
     };
 
-    Ok(Some(ChannelSplitInfo {
+    Ok(ChannelSplitInfo {
         slice_idx,
         c_in: c_in as usize,
         c_out: c_out as usize,
@@ -1014,7 +1005,7 @@ pub fn apply_channel_splitting(
         out_w: out_w as usize,
         groups,
         bias_path,
-    }))
+    })
 }
 
 #[derive(Debug)]
@@ -1263,6 +1254,74 @@ mod tests {
             13,
         );
         assert!(detect_tiling_needs(&model, Some(1024)).is_none());
+    }
+
+    #[test]
+    fn effective_kernel_overflow() {
+        assert_eq!(effective_kernel([i64::MAX, 1], [2, 1]), None);
+        assert_eq!(effective_kernel([1, i64::MAX], [1, 2]), None);
+    }
+
+    #[test]
+    fn effective_kernel_sub_underflow() {
+        assert_eq!(effective_kernel([i64::MIN, 3], [1, 1]), None);
+    }
+
+    #[test]
+    fn effective_kernel_valid() {
+        assert_eq!(effective_kernel([3, 3], [1, 1]), Some([3, 3]));
+        assert_eq!(effective_kernel([3, 3], [2, 2]), Some([5, 5]));
+        assert_eq!(effective_kernel([1, 1], [1, 1]), Some([1, 1]));
+    }
+
+    #[test]
+    fn conv_output_hw_zero_stride() {
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [0, 1]),
+            None
+        );
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [1, 0]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_kernel_exceeds_input() {
+        assert_eq!(
+            conv_output_hw(2, 2, [0, 0, 0, 0], [5, 5], [1, 1], [1, 1]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_overflow_pads() {
+        assert_eq!(
+            conv_output_hw(i64::MAX, 8, [1, 0, 0, 0], [3, 3], [1, 1], [1, 1]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_valid() {
+        assert_eq!(
+            conv_output_hw(8, 8, [1, 1, 1, 1], [3, 3], [1, 1], [1, 1]),
+            Some((8, 8))
+        );
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [2, 2]),
+            Some((3, 3))
+        );
+    }
+
+    #[test]
+    fn compute_halo_size_overflow() {
+        assert_eq!(compute_halo_size([i64::MAX, 1], [2, 1]), None);
+    }
+
+    #[test]
+    fn compute_min_spatial_tile_overflow() {
+        assert_eq!(compute_min_spatial_tile([i64::MAX, 1], [2, 1]), None);
     }
 
     #[test]

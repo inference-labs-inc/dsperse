@@ -14,7 +14,7 @@ use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
     RunMetadata, TileResult,
 };
-use crate::schema::metadata::{ModelMetadata, RunSliceMetadata};
+use crate::schema::metadata::{Backend, ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::io::{
@@ -84,27 +84,12 @@ fn validate_weights_onnx(
                 onnx_path.display()
             ))
         })?;
-        for init in &slice_graph.initializer {
-            if let Some(donor_init) = donor_init_map.get(&init.name) {
-                if init.data_type != donor_init.data_type {
-                    return Err(DsperseError::Pipeline(format!(
-                        "dtype mismatch for initializer '{}' in slice_{}: slice has dtype {}, consumer has dtype {}",
-                        init.name, slice.index, init.data_type, donor_init.data_type
-                    )));
-                }
-                if init.dims != donor_init.dims {
-                    return Err(DsperseError::Pipeline(format!(
-                        "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",
-                        init.name, init.dims, donor_init.dims
-                    )));
-                }
-            } else {
-                return Err(DsperseError::Pipeline(format!(
-                    "consumer weights ONNX missing initializer '{}' required by slice_{}",
-                    init.name, slice.index
-                )));
-            }
-        }
+        let context = format!("slice_{}", slice.index);
+        crate::slicer::onnx_proto::validate_initializer_compatibility(
+            &slice_graph.initializer,
+            donor_init_map,
+            &context,
+        )?;
     }
     Ok(())
 }
@@ -227,13 +212,13 @@ pub fn run_inference(
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
                 let method = if slice_meta.channel_split.is_some() {
-                    ExecutionMethod::ChannelSplit.to_string()
+                    ExecutionMethod::ChannelSplit
                 } else if slice_meta.tiling.is_some() {
-                    ExecutionMethod::Tiled.to_string()
+                    ExecutionMethod::Tiled
                 } else if node.use_circuit {
-                    ExecutionMethod::JstproveGenWitness.to_string()
+                    ExecutionMethod::JstproveGenWitness
                 } else {
-                    ExecutionMethod::OnnxOnly.to_string()
+                    ExecutionMethod::OnnxOnly
                 };
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
@@ -468,7 +453,7 @@ fn execute_single(
         store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
 
         Ok(ExecutionInfo {
-            method: ExecutionMethod::JstproveGenWitness.to_string(),
+            method: ExecutionMethod::JstproveGenWitness,
             success: true,
             error: None,
             witness_file: Some(witness_path.to_string_lossy().into_owned()),
@@ -484,7 +469,7 @@ fn execute_single(
         store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
 
         Ok(ExecutionInfo {
-            method: ExecutionMethod::OnnxOnly.to_string(),
+            method: ExecutionMethod::OnnxOnly,
             success: true,
             error: None,
             witness_file: None,
@@ -624,14 +609,12 @@ fn execute_tiled(
                 let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
                 if let Err(e) = std::fs::create_dir_all(&tile_dir) {
                     return (
-                        TileResult {
+                        TileResult::failure(
                             tile_idx,
-                            success: false,
-                            error: Some(format!("mkdir: {e}")),
-                            method: None,
-                            time_sec: 0.0,
-                            proof_path: None,
-                        },
+                            format!("mkdir: {e}"),
+                            None,
+                            start.elapsed().as_secs_f64(),
+                        ),
                         None,
                     );
                 }
@@ -641,14 +624,12 @@ fn execute_tiled(
 
                 if tile_info.is_none() {
                     return (
-                        TileResult {
+                        TileResult::failure(
                             tile_idx,
-                            success: false,
-                            error: Some("no tile circuit info".into()),
-                            method: None,
-                            time_sec: 0.0,
-                            proof_path: None,
-                        },
+                            "no tile circuit info".into(),
+                            None,
+                            start.elapsed().as_secs_f64(),
+                        ),
                         None,
                     );
                 }
@@ -674,14 +655,12 @@ fn execute_tiled(
                     Ok(t) => t,
                     Err(e) => {
                         return (
-                            TileResult {
+                            TileResult::failure(
                                 tile_idx,
-                                success: false,
-                                error: Some(format!("onnx inference: {e}")),
-                                method: Some("onnx".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
+                                format!("onnx inference: {e}"),
+                                Some(ExecutionMethod::OnnxOnly),
+                                start.elapsed().as_secs_f64(),
+                            ),
                             None,
                         );
                     }
@@ -689,14 +668,11 @@ fn execute_tiled(
 
                 if circuit_path.is_none() {
                     return (
-                        TileResult {
+                        TileResult::success(
                             tile_idx,
-                            success: true,
-                            error: None,
-                            method: Some("onnx".into()),
-                            time_sec: start.elapsed().as_secs_f64(),
-                            proof_path: None,
-                        },
+                            Some(ExecutionMethod::OnnxOnly),
+                            start.elapsed().as_secs_f64(),
+                        ),
                         Some(output_tensor),
                     );
                 }
@@ -717,38 +693,31 @@ fn execute_tiled(
                         let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
                         if let Err(e) = std::fs::write(&witness_path, &witness_bytes) {
                             return (
-                                TileResult {
+                                TileResult::failure(
                                     tile_idx,
-                                    success: false,
-                                    error: Some(format!("write witness: {e}")),
-                                    method: Some("jstprove".into()),
-                                    time_sec: start.elapsed().as_secs_f64(),
-                                    proof_path: None,
-                                },
+                                    format!("write witness: {e}"),
+                                    Some(ExecutionMethod::JstproveGenWitness),
+                                    start.elapsed().as_secs_f64(),
+                                ),
                                 None,
                             );
                         }
                         (
-                            TileResult {
+                            TileResult::success(
                                 tile_idx,
-                                success: true,
-                                error: None,
-                                method: Some("jstprove".into()),
-                                time_sec: start.elapsed().as_secs_f64(),
-                                proof_path: None,
-                            },
+                                Some(ExecutionMethod::JstproveGenWitness),
+                                start.elapsed().as_secs_f64(),
+                            ),
                             Some(output_tensor),
                         )
                     }
                     Err(e) => (
-                        TileResult {
+                        TileResult::failure(
                             tile_idx,
-                            success: false,
-                            error: Some(e.to_string()),
-                            method: Some("jstprove".into()),
-                            time_sec: start.elapsed().as_secs_f64(),
-                            proof_path: None,
-                        },
+                            e.to_string(),
+                            Some(ExecutionMethod::JstproveGenWitness),
+                            start.elapsed().as_secs_f64(),
+                        ),
                         None,
                     ),
                 }
@@ -796,7 +765,7 @@ fn execute_tiled(
     tensor_cache.insert(tiling.output_name.clone(), reconstructed);
 
     Ok(ExecutionInfo {
-        method: ExecutionMethod::Tiled.to_string(),
+        method: ExecutionMethod::Tiled,
         success: true,
         error: None,
         witness_file: None,
@@ -994,7 +963,7 @@ fn execute_channel_split(
     }
 
     Ok(ExecutionInfo {
-        method: ExecutionMethod::ChannelSplit.to_string(),
+        method: ExecutionMethod::ChannelSplit,
         success: true,
         error: None,
         witness_file: None,
@@ -1253,14 +1222,15 @@ pub(crate) fn build_execution_chain(
         }
 
         let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
-            let path = match slice.compilation.jstprove.files.compiled.as_ref() {
-                Some(p) => Some(
-                    resolve_relative_path(slices_dir, p)?
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                None => None,
-            };
+            let path = slice
+                .compilation
+                .jstprove
+                .files
+                .compiled
+                .as_ref()
+                .map(|p| resolve_relative_path(slices_dir, p))
+                .transpose()?
+                .map(|p| p.to_string_lossy().into_owned());
             (true, path)
         } else {
             let bundle = slice_dir.join("jstprove/circuit.bundle");
@@ -1283,17 +1253,17 @@ pub(crate) fn build_execution_chain(
                 .into_owned(),
         );
 
-        let backend = if has_circuit { "jstprove" } else { "onnx" };
+        let backend = if has_circuit {
+            Backend::Jstprove
+        } else {
+            Backend::Onnx
+        };
 
         nodes.insert(
             slice_id.clone(),
             ExecutionNode {
                 slice_id: slice_id.clone(),
-                primary: if has_circuit {
-                    Some("jstprove".into())
-                } else {
-                    Some("onnx".into())
-                },
+                primary: Some(backend.to_string()),
                 fallbacks: if has_circuit {
                     vec!["onnx".into()]
                 } else {
@@ -1303,7 +1273,7 @@ pub(crate) fn build_execution_chain(
                 next,
                 circuit_path,
                 onnx_path,
-                backend: backend.into(),
+                backend,
             },
         );
     }
@@ -1341,9 +1311,9 @@ pub(crate) fn build_run_metadata(
             tiling: slice.tiling.clone(),
             channel_split: slice.channel_split.clone(),
             backend: if has_circuit {
-                "jstprove".into()
+                Backend::Jstprove
             } else {
-                "onnx".into()
+                Backend::Onnx
             },
             jstprove_circuit_path: node.and_then(|n| n.circuit_path.clone()),
             jstprove_settings_path: None,

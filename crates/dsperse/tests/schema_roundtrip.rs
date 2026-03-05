@@ -160,7 +160,7 @@ fn run_metadata_roundtrip() {
     assert_eq!(meta.overall_security, 100.0);
 
     let slice = meta.get_slice("slice_0").unwrap();
-    assert_eq!(slice.backend, "jstprove");
+    assert_eq!(slice.backend, Backend::Jstprove);
     assert_eq!(
         slice.jstprove_circuit_path.as_deref(),
         Some("slice_0/payload/jstprove/circuit.txt")

@@ -208,6 +208,35 @@ impl TensorProto {
     pub const BOOL: i32 = 9;
 }
 
+pub fn validate_initializer_compatibility(
+    initializers: &[TensorProto],
+    donor_init_map: &HashMap<String, &TensorProto>,
+    context: &str,
+) -> Result<()> {
+    for init in initializers {
+        if let Some(donor) = donor_init_map.get(&init.name) {
+            if init.data_type != donor.data_type {
+                return Err(DsperseError::Pipeline(format!(
+                    "dtype mismatch for initializer '{}' in {context}: slice has dtype {}, consumer has dtype {}",
+                    init.name, init.data_type, donor.data_type
+                )));
+            }
+            if init.dims != donor.dims {
+                return Err(DsperseError::Pipeline(format!(
+                    "shape mismatch for initializer '{}' in {context}: slice expects {:?}, consumer provides {:?}",
+                    init.name, init.dims, donor.dims
+                )));
+            }
+        } else {
+            return Err(DsperseError::Pipeline(format!(
+                "consumer weights missing initializer '{}' required by {context}",
+                init.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn replace_initializers(
     model: &mut ModelProto,
     donor_init_map: &HashMap<String, &TensorProto>,
@@ -221,13 +250,13 @@ pub fn replace_initializers(
         if let Some(donor) = donor_init_map.get(&init.name) {
             if init.data_type != donor.data_type {
                 return Err(DsperseError::Pipeline(format!(
-                    "dtype mismatch for initializer '{}': slice has dtype {}, consumer has dtype {}",
+                    "dtype mismatch for initializer '{}' in replace_initializers: slice has dtype {}, consumer has dtype {}",
                     init.name, init.data_type, donor.data_type
                 )));
             }
             if init.dims != donor.dims {
                 return Err(DsperseError::Pipeline(format!(
-                    "shape mismatch for initializer '{}': slice expects {:?}, consumer provides {:?}",
+                    "shape mismatch for initializer '{}' in replace_initializers: slice expects {:?}, consumer provides {:?}",
                     init.name, init.dims, donor.dims
                 )));
             }

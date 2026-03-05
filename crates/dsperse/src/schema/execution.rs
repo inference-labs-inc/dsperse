@@ -35,16 +35,45 @@ pub struct TileResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
+    pub method: Option<ExecutionMethod>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub time_sec: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proof_path: Option<String>,
 }
 
+impl TileResult {
+    pub fn failure(
+        tile_idx: usize,
+        error: String,
+        method: Option<ExecutionMethod>,
+        time_sec: f64,
+    ) -> Self {
+        Self {
+            tile_idx,
+            success: false,
+            error: Some(error),
+            method,
+            time_sec,
+            proof_path: None,
+        }
+    }
+
+    pub fn success(tile_idx: usize, method: Option<ExecutionMethod>, time_sec: f64) -> Self {
+        Self {
+            tile_idx,
+            success: true,
+            error: None,
+            method,
+            time_sec,
+            proof_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionInfo {
-    pub method: String,
+    pub method: ExecutionMethod,
     #[serde(default)]
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,7 +89,7 @@ pub struct SliceResult {
     pub slice_id: String,
     pub success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
+    pub method: Option<ExecutionMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,6 +98,37 @@ pub struct SliceResult {
     pub time_sec: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiles: Vec<TileResult>,
+}
+
+impl SliceResult {
+    pub fn failure(
+        slice_id: impl Into<String>,
+        method: ExecutionMethod,
+        error: String,
+        time_sec: f64,
+    ) -> Self {
+        Self {
+            slice_id: slice_id.into(),
+            success: false,
+            method: Some(method),
+            error: Some(error),
+            proof_path: None,
+            time_sec,
+            tiles: Vec::new(),
+        }
+    }
+
+    pub fn success(slice_id: impl Into<String>, method: ExecutionMethod, time_sec: f64) -> Self {
+        Self {
+            slice_id: slice_id.into(),
+            success: true,
+            method: Some(method),
+            error: None,
+            proof_path: None,
+            time_sec,
+            tiles: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,8 +146,8 @@ pub struct ExecutionNode {
     pub circuit_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onnx_path: Option<String>,
-    #[serde(default = "default_backend")]
-    pub backend: String,
+    #[serde(default)]
+    pub backend: Backend,
 }
 
 impl Default for ExecutionNode {
@@ -100,7 +160,7 @@ impl Default for ExecutionNode {
             next: None,
             circuit_path: None,
             onnx_path: None,
-            backend: Backend::Onnx.to_string(),
+            backend: Backend::Onnx,
         }
     }
 }
@@ -174,10 +234,6 @@ impl RunMetadata {
                     .map(|meta| (slice_id.as_str(), meta))
             })
     }
-}
-
-fn default_backend() -> String {
-    Backend::Onnx.to_string()
 }
 
 fn is_zero(v: &f64) -> bool {

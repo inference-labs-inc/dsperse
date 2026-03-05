@@ -270,6 +270,19 @@ fn extract_slice_prologue(model: &ModelProto) -> Option<SlicePrologue<'_>> {
         if w.dims.len() != 4 {
             return None;
         }
+        let c_out = usize::try_from(w.dims[0]).ok()?;
+        let c_in = usize::try_from(w.dims[1]).ok()?;
+        let kh = usize::try_from(w.dims[2]).ok()?;
+        let kw = usize::try_from(w.dims[3]).ok()?;
+        let expected = c_out.checked_mul(c_in)?.checked_mul(kh)?.checked_mul(kw)?;
+        if w.data.len() != expected {
+            return None;
+        }
+        if let Some(ref b) = bias {
+            if b.len() != c_out {
+                return None;
+            }
+        }
     }
     Some(SlicePrologue {
         graph,
@@ -890,7 +903,13 @@ pub fn apply_channel_splitting(
             )
         })?;
     let model_c_out = prologue.cp.c_out;
-    if prologue.cp.group == 1 && prologue.cp.c_in != model_c_in {
+    if prologue.cp.group != 1 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: unsupported Conv group={}, expected 1",
+            prologue.cp.group
+        )));
+    }
+    if prologue.cp.c_in != model_c_in {
         return Err(crate::error::DsperseError::Slicer(format!(
             "apply_channel_splitting: weight/model c_in mismatch (weights c_in={}, model c_in={})",
             prologue.cp.c_in, model_c_in

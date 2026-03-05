@@ -820,7 +820,14 @@ pub fn apply_channel_splitting(
     }
 
     if let Some(ref wt) = prologue.weights {
-        if wt.dims.len() >= 2 && (wt.dims[1] != c_in || wt.dims[0] != c_out) {
+        if wt.dims.len() < 2 {
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "apply_channel_splitting: malformed weights rank {}, dims {:?}",
+                wt.dims.len(),
+                wt.dims
+            )));
+        }
+        if wt.dims[1] != c_in || wt.dims[0] != c_out {
             return Err(crate::error::DsperseError::Slicer(format!(
                 "apply_channel_splitting: cfg (c_in={c_in}, c_out={c_out}) mismatches weights dims {:?}",
                 wt.dims

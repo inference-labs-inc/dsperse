@@ -448,30 +448,35 @@ pub fn create_tile_slice(
         cp,
         weights,
         bias,
-    } = match extract_slice_prologue(model) {
-        Some(p) => p,
-        None => return Ok(None),
-    };
+    } = extract_slice_prologue(model).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: failed to extract slice prologue from model".to_string(),
+        )
+    })?;
     let conv_node = &graph.node[cp.node_idx];
-    let weights = match weights {
-        Some(w) => w,
-        None => return Ok(None),
-    };
+    let weights = weights.ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: conv weights not found in model initializers".to_string(),
+        )
+    })?;
 
     let halo = compute_halo_size(cp.kernel, cp.dilation);
     let tile_h = tile_size + 2 * halo[0];
     let tile_w = tile_size + 2 * halo[1];
-    let (out_h, out_w) = match conv_output_hw(
+    let (out_h, out_w) = conv_output_hw(
         tile_h,
         tile_w,
         [0, 0, 0, 0],
         cp.kernel,
         cp.dilation,
         cp.stride,
-    ) {
-        Some(hw) => hw,
-        None => return Ok(None),
-    };
+    )
+    .ok_or_else(|| {
+        crate::error::DsperseError::Slicer(format!(
+            "create_tile_slice: invalid conv output dimensions for tile_h={tile_h}, tile_w={tile_w}, stride={:?}, kernel={:?}",
+            cp.stride, cp.kernel
+        ))
+    })?;
 
     let c_in = graph
         .input
@@ -479,10 +484,12 @@ pub fn create_tile_slice(
         .map(onnx_proto::vi_shape)
         .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]))
         .or_else(|| cp.c_in.checked_mul(cp.group))
-        .filter(|&v| v > 0);
-    let Some(c_in) = c_in else {
-        return Ok(None);
-    };
+        .filter(|&v| v > 0)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "create_tile_slice: unable to determine input channels".to_string(),
+            )
+        })?;
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",

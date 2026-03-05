@@ -725,7 +725,9 @@ fn create_channel_group_slice(
         &[1, c_out, h_out, w_out],
     );
 
-    let sliced_weights = slice_weights(weights, c_start as usize, c_end as usize)?;
+    let c_start_uz = i64_to_usize(c_start, "create_channel_group_slice", "c_start")?;
+    let c_end_uz = i64_to_usize(c_end, "create_channel_group_slice", "c_end")?;
+    let sliced_weights = slice_weights(weights, c_start_uz, c_end_uz)?;
 
     let w_tensor = onnx_proto::make_tensor(
         "W",
@@ -768,11 +770,17 @@ fn create_channel_group_slice(
 
     Ok(ChannelGroupInfo {
         group_idx,
-        c_start: c_start as usize,
-        c_end: c_end as usize,
+        c_start: c_start_uz,
+        c_end: c_end_uz,
         path: format!("slice_{slice_idx}/payload/channel_groups/group_{group_idx}.onnx"),
         jstprove_circuit_path: None,
         jstprove_settings_path: None,
+    })
+}
+
+fn i64_to_usize(val: i64, ctx: &str, name: &str) -> Result<usize> {
+    usize::try_from(val).map_err(|_| {
+        crate::error::DsperseError::Slicer(format!("{ctx}: {name} ({val}) out of range for usize"))
     })
 }
 
@@ -991,18 +999,19 @@ pub fn apply_channel_splitting(
         }
     };
 
+    let ctx = "apply_channel_splitting";
     Ok(ChannelSplitInfo {
         slice_idx,
-        c_in: c_in as usize,
-        c_out: c_out as usize,
-        num_groups: num_groups as usize,
-        channels_per_group: channels_per_group as usize,
+        c_in: i64_to_usize(c_in, ctx, "c_in")?,
+        c_out: i64_to_usize(c_out, ctx, "c_out")?,
+        num_groups: i64_to_usize(num_groups, ctx, "num_groups")?,
+        channels_per_group: i64_to_usize(channels_per_group, ctx, "channels_per_group")?,
         input_name: input_name.to_string(),
         output_name: output_name.to_string(),
-        h: h as usize,
-        w: w as usize,
-        out_h: out_h as usize,
-        out_w: out_w as usize,
+        h: i64_to_usize(h, ctx, "h")?,
+        w: i64_to_usize(w, ctx, "w")?,
+        out_h: i64_to_usize(out_h, ctx, "out_h")?,
+        out_w: i64_to_usize(out_w, ctx, "out_w")?,
         groups,
         bias_path,
     })

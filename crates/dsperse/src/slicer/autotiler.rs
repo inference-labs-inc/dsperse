@@ -474,8 +474,12 @@ pub fn create_tile_slice(
         .input
         .first()
         .map(onnx_proto::vi_shape)
-        .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
-        .unwrap_or(cp.c_in * cp.group);
+        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]))
+        .or_else(|| cp.c_in.checked_mul(cp.group))
+        .filter(|&v| v > 0);
+    let Some(c_in) = c_in else {
+        return Ok(None);
+    };
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",

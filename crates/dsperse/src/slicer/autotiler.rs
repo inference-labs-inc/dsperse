@@ -841,10 +841,26 @@ pub fn apply_channel_splitting(
             "apply_channel_splitting: invalid ChannelSplitParams (c_in={c_in}, c_out={c_out}, num_groups={num_groups}, channels_per_group={channels_per_group}, h={h}, w={w})"
         )));
     }
-    if num_groups * channels_per_group < c_in {
+    let covered = num_groups.checked_mul(channels_per_group).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "apply_channel_splitting: num_groups * channels_per_group overflow".to_string(),
+        )
+    })?;
+    if covered < c_in {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "apply_channel_splitting: cfg covers only {} input channels, expected at least {c_in}",
-            num_groups * channels_per_group
+            "apply_channel_splitting: cfg covers only {covered} input channels, expected at least {c_in}",
+        )));
+    }
+    let last_group_start = (num_groups - 1)
+        .checked_mul(channels_per_group)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "apply_channel_splitting: group start computation overflow".to_string(),
+            )
+        })?;
+    if last_group_start >= c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg creates empty trailing groups (last_start={last_group_start}, c_in={c_in})"
         )));
     }
     let prologue = extract_slice_prologue(model).ok_or_else(|| {
@@ -907,7 +923,9 @@ pub fn apply_channel_splitting(
             Some(gi) => groups.push(gi),
             None => {
                 cleanup();
-                return Ok(None);
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "apply_channel_splitting: failed to create channel group slice for group {g}"
+                )));
             }
         }
     }

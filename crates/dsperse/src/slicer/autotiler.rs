@@ -822,6 +822,18 @@ pub fn apply_channel_splitting(
     if prologue.cp.stride[0] == 0 || prologue.cp.stride[1] == 0 {
         return Ok(None);
     }
+
+    if let Some(ref wt) = prologue.weights {
+        if wt.dims.len() >= 2 && (wt.dims[1] != c_in || wt.dims[0] != c_out) {
+            return Ok(None);
+        }
+    }
+    if let Some((_, _, model_c_in, model_h, model_w)) = get_model_dimensions(prologue.graph) {
+        if model_c_in != c_in || model_h != h || model_w != w {
+            return Ok(None);
+        }
+    }
+
     let (out_h, out_w) = match conv_output_hw(
         h,
         w,

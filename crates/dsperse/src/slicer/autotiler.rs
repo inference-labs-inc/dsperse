@@ -105,9 +105,12 @@ fn conv_output_hw(
     dilation: [i64; 2],
     stride: [i64; 2],
 ) -> Option<(i64, i64)> {
+    if stride[0] <= 0 || stride[1] <= 0 {
+        return None;
+    }
     let eff = effective_kernel(kernel, dilation);
-    let out_h = (h_in + pads[0] + pads[2] - eff[0]) / stride[0] + 1;
-    let out_w = (w_in + pads[1] + pads[3] - eff[1]) / stride[1] + 1;
+    let out_h = (h_in + pads[0] + pads[2] - eff[0]).div_euclid(stride[0]) + 1;
+    let out_w = (w_in + pads[1] + pads[3] - eff[1]).div_euclid(stride[1]) + 1;
     if out_h <= 0 || out_w <= 0 {
         return None;
     }

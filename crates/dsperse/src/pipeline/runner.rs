@@ -609,7 +609,12 @@ fn execute_tiled(
                 let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
                 if let Err(e) = std::fs::create_dir_all(&tile_dir) {
                     return (
-                        TileResult::failure(tile_idx, format!("mkdir: {e}"), None, 0.0),
+                        TileResult::failure(
+                            tile_idx,
+                            format!("mkdir: {e}"),
+                            None,
+                            start.elapsed().as_secs_f64(),
+                        ),
                         None,
                     );
                 }
@@ -619,7 +624,12 @@ fn execute_tiled(
 
                 if tile_info.is_none() {
                     return (
-                        TileResult::failure(tile_idx, "no tile circuit info".into(), None, 0.0),
+                        TileResult::failure(
+                            tile_idx,
+                            "no tile circuit info".into(),
+                            None,
+                            start.elapsed().as_secs_f64(),
+                        ),
                         None,
                     );
                 }

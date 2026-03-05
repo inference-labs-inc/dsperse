@@ -64,7 +64,7 @@ fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
                 None => {
                     let w_name = node.input.get(1)?;
                     let w = graph.initializer.iter().find(|t| &t.name == w_name)?;
-                    if w.dims.len() < 4 {
+                    if w.dims.len() != 4 {
                         return None;
                     }
                     [w.dims[2], w.dims[3]]

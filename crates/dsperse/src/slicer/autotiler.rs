@@ -825,13 +825,22 @@ pub fn apply_channel_splitting(
 
     if let Some(ref wt) = prologue.weights {
         if wt.dims.len() >= 2 && (wt.dims[1] != c_in || wt.dims[0] != c_out) {
-            return Ok(None);
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "apply_channel_splitting: cfg (c_in={c_in}, c_out={c_out}) mismatches weights dims {:?}",
+                wt.dims
+            )));
         }
     }
-    if let Some((_, _, model_c_in, model_h, model_w)) = get_model_dimensions(prologue.graph) {
-        if model_c_in != c_in || model_h != h || model_w != w {
-            return Ok(None);
-        }
+    let (_, _, model_c_in, model_h, model_w) =
+        get_model_dimensions(prologue.graph).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "apply_channel_splitting: unable to determine model dimensions".to_string(),
+            )
+        })?;
+    if model_c_in != c_in || model_h != h || model_w != w {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg dims (c_in={c_in}, h={h}, w={w}) mismatch model dims (c_in={model_c_in}, h={model_h}, w={model_w})"
+        )));
     }
 
     let (out_h, out_w) = match conv_output_hw(

@@ -84,11 +84,6 @@ pub struct CompileArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
-    #[arg(
-        long,
-        help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify"
-    )]
-    pub fast_compile: bool,
 }
 
 #[derive(Args)]
@@ -168,11 +163,6 @@ pub struct FullRunArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
-    #[arg(
-        long,
-        help = "Bypass ECC IR pipeline; faster compile at the cost of slower prove/verify"
-    )]
-    pub fast_compile: bool,
 }
 
 struct CircuitOps(Vec<String>);
@@ -243,7 +233,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
+    let backend = JstproveBackend::default();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
@@ -306,7 +296,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = JstproveBackend::default().with_fast_compile(args.fast_compile);
+    let backend = JstproveBackend::default();
 
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 

@@ -197,9 +197,12 @@ fn run_multi_inner(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 
     let mut input_tvs = TVec::new();
-    for idx in &input_order {
+    for (model_idx, idx) in input_order.iter().enumerate() {
         let provided_idx = idx.ok_or_else(|| {
-            DsperseError::Onnx("model input not matched to provided tensors".into())
+            let name = &model_input_names[model_idx].1;
+            DsperseError::Onnx(format!(
+                "model input {model_idx} ('{name}') not matched to provided tensors"
+            ))
         })?;
         let (_, ref data, ref shape) = inputs[provided_idx];
         input_tvs.push(build_input_tvalue(data, shape)?);

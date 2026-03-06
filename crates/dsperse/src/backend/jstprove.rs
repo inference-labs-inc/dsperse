@@ -68,14 +68,24 @@ impl JstproveBackend {
             .bundle_cache
             .lock()
             .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
+        if let Some(existing) = cache.get(&key) {
+            return Ok(Arc::clone(existing));
+        }
         cache.insert(key, Arc::clone(&bundle));
 
         Ok(bundle)
     }
 
     pub fn clear_cache(&self) {
-        if let Ok(mut cache) = self.bundle_cache.lock() {
-            cache.clear();
+        match self.bundle_cache.lock() {
+            Ok(mut cache) => {
+                let count = cache.len();
+                cache.clear();
+                tracing::debug!(cleared = count, "bundle cache cleared");
+            }
+            Err(e) => {
+                tracing::warn!("bundle cache lock poisoned on clear: {e}");
+            }
         }
     }
 
@@ -274,5 +284,47 @@ mod tests {
             .with_fast_compile(true);
         assert!(!backend.compress());
         assert!(backend.fast_compile);
+    }
+
+    #[test]
+    fn bundle_cache_starts_empty() {
+        let backend = JstproveBackend::default();
+        let cache = backend.bundle_cache.lock().unwrap();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn clear_cache_on_empty_succeeds() {
+        let backend = JstproveBackend::default();
+        backend.clear_cache();
+        let cache = backend.bundle_cache.lock().unwrap();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn clear_cache_removes_entries() {
+        let backend = JstproveBackend::default();
+        let dummy = Arc::new(CompiledCircuit {
+            circuit: vec![1, 2, 3],
+            witness_solver: vec![],
+            metadata: None,
+            version: None,
+        });
+        backend
+            .bundle_cache
+            .lock()
+            .unwrap()
+            .insert(PathBuf::from("/tmp/test-circuit"), dummy);
+        assert_eq!(backend.bundle_cache.lock().unwrap().len(), 1);
+        backend.clear_cache();
+        assert!(backend.bundle_cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn load_bundle_cached_returns_error_for_missing_path() {
+        let backend = JstproveBackend::default();
+        let result = backend.load_bundle_cached(Path::new("/nonexistent/circuit/path"));
+        assert!(result.is_err());
+        assert!(backend.bundle_cache.lock().unwrap().is_empty());
     }
 }

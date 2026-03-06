@@ -52,41 +52,30 @@ impl JstproveBackend {
     pub fn load_bundle_cached(&self, path: &Path) -> Result<Arc<CompiledCircuit>> {
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-        {
-            let cache = self
-                .bundle_cache
-                .lock()
-                .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
-            if let Some(bundle) = cache.get(&key) {
-                return Ok(Arc::clone(bundle));
-            }
-        }
-
-        let bundle = Arc::new(load_bundle(path)?);
-
         let mut cache = self
             .bundle_cache
             .lock()
             .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
-        if let Some(existing) = cache.get(&key) {
-            return Ok(Arc::clone(existing));
+        if let Some(bundle) = cache.get(&key) {
+            return Ok(Arc::clone(bundle));
         }
+        let bundle = Arc::new(load_bundle(path)?);
         cache.insert(key, Arc::clone(&bundle));
 
         Ok(bundle)
     }
 
     pub fn clear_cache(&self) {
-        match self.bundle_cache.lock() {
-            Ok(mut cache) => {
-                let count = cache.len();
-                cache.clear();
-                tracing::debug!(cleared = count, "bundle cache cleared");
-            }
+        let mut cache = match self.bundle_cache.lock() {
+            Ok(cache) => cache,
             Err(e) => {
                 tracing::warn!("bundle cache lock poisoned on clear: {e}");
+                e.into_inner()
             }
-        }
+        };
+        let count = cache.len();
+        cache.clear();
+        tracing::debug!(cleared = count, "bundle cache cleared");
     }
 
     pub fn compile(

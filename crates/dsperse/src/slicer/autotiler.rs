@@ -402,6 +402,9 @@ pub fn detect_tiling_needs(
         if h % actual_tile != 0 || w % actual_tile != 0 {
             return None;
         }
+        if actual_tile % cp.stride[0] != 0 || actual_tile % cp.stride[1] != 0 {
+            return None;
+        }
         let tiles_y = h / actual_tile;
         let tiles_x = w / actual_tile;
         if tiles_y * tiles_x < 2 {

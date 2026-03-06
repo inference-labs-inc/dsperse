@@ -14,6 +14,7 @@ use super::runner::{build_execution_chain, build_run_metadata, load_model_metada
 pub struct SliceWork {
     pub slice_id: String,
     pub input: ArrayD<f64>,
+    pub named_inputs: Vec<(String, ArrayD<f64>)>,
     pub backend: Backend,
     pub use_circuit: bool,
     pub tiling: Option<TilingInfo>,
@@ -90,8 +91,9 @@ impl IncrementalRun {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
 
-        let input = if let Some(ref cs) = meta.channel_split {
-            self.tensor_cache
+        let (input, named_inputs) = if let Some(ref cs) = meta.channel_split {
+            let t = self
+                .tensor_cache
                 .get(&cs.input_name)
                 .ok_or_else(|| {
                     DsperseError::Pipeline(format!(
@@ -99,9 +101,11 @@ impl IncrementalRun {
                         cs.input_name
                     ))
                 })?
-                .clone()
+                .clone();
+            (t, Vec::new())
         } else if let Some(ref tiling) = meta.tiling {
-            self.tensor_cache
+            let t = self
+                .tensor_cache
                 .get(&tiling.input_name)
                 .ok_or_else(|| {
                     DsperseError::Pipeline(format!(
@@ -109,14 +113,25 @@ impl IncrementalRun {
                         tiling.input_name
                     ))
                 })?
-                .clone()
+                .clone();
+            (t, Vec::new())
         } else {
-            gather_inputs_from_cache(&self.tensor_cache, &meta.dependencies.filtered_inputs)?
+            let filtered = &meta.dependencies.filtered_inputs;
+            let mut named = Vec::with_capacity(filtered.len());
+            for name in filtered {
+                let arr = self.tensor_cache.get(name).ok_or_else(|| {
+                    DsperseError::Pipeline(format!("input '{name}' not in cache for {slice_id}"))
+                })?;
+                named.push((name.clone(), arr.clone()));
+            }
+            let concatenated = gather_inputs_from_cache(&self.tensor_cache, filtered)?;
+            (concatenated, named)
         };
 
         Ok(Some(SliceWork {
             slice_id: slice_id.clone(),
             input,
+            named_inputs,
             backend: node.backend,
             use_circuit: node.use_circuit,
             tiling: meta.tiling.clone(),

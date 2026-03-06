@@ -115,10 +115,26 @@ pub fn run_inference_named(
     zip_named_outputs(&output_names, &result)
 }
 
+pub fn run_inference_multi(
+    onnx_path: &Path,
+    inputs: &[(&str, Vec<f64>, Vec<usize>)],
+) -> Result<(Vec<f64>, Vec<usize>)> {
+    let (result, _) = run_multi_inner(onnx_path, inputs)?;
+    extract_first_output(&result)
+}
+
 pub fn run_inference_multi_named(
     onnx_path: &Path,
     inputs: &[(&str, Vec<f64>, Vec<usize>)],
 ) -> Result<NamedOutputs> {
+    let (result, output_names) = run_multi_inner(onnx_path, inputs)?;
+    zip_named_outputs(&output_names, &result)
+}
+
+fn run_multi_inner(
+    onnx_path: &Path,
+    inputs: &[(&str, Vec<f64>, Vec<usize>)],
+) -> Result<(TVec<TValue>, Vec<String>)> {
     let mut model = load_onnx_model(onnx_path)?;
 
     let output_names = collect_output_names(&model);
@@ -181,9 +197,12 @@ pub fn run_inference_multi_named(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
 
     let mut input_tvs = TVec::new();
-    for idx in &input_order {
+    for (model_idx, idx) in input_order.iter().enumerate() {
         let provided_idx = idx.ok_or_else(|| {
-            DsperseError::Onnx("model input not matched to provided tensors".into())
+            let name = &model_input_names[model_idx].1;
+            DsperseError::Onnx(format!(
+                "model input {model_idx} ('{name}') not matched to provided tensors"
+            ))
         })?;
         let (_, ref data, ref shape) = inputs[provided_idx];
         input_tvs.push(build_input_tvalue(data, shape)?);
@@ -193,7 +212,7 @@ pub fn run_inference_multi_named(
         .run(input_tvs)
         .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))?;
 
-    zip_named_outputs(&output_names, &result)
+    Ok((result, output_names))
 }
 
 fn collect_output_names(model: &InferenceModel) -> Vec<String> {

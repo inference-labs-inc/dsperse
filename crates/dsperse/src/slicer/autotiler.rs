@@ -6,6 +6,22 @@ use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
 
+fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
+    if v.len() == 2 {
+        Some([v[0], v[1]])
+    } else {
+        None
+    }
+}
+
+fn try_quad(v: &[i64]) -> Option<[i64; 4]> {
+    if v.len() == 4 {
+        Some([v[0], v[1], v[2], v[3]])
+    } else {
+        None
+    }
+}
+
 fn model_opset(model: &ModelProto) -> i64 {
     model
         .opset_import
@@ -38,72 +54,144 @@ struct ConvParams {
     dilation: [i64; 2],
     pads: [i64; 4],
     group: i64,
+    c_out: i64,
+    c_in: i64,
+}
+
+impl ConvParams {
+    fn from_node(node: &NodeProto, node_idx: usize, graph: &GraphProto) -> Option<ConvParams> {
+        if node.op_type != "Conv" {
+            return None;
+        }
+        let w_name = node.input.get(1)?;
+        let w = graph.initializer.iter().find(|t| &t.name == w_name)?;
+        if w.dims.len() != 4 {
+            return None;
+        }
+        let c_out = w.dims[0];
+        let c_in = w.dims[1];
+        if c_out <= 0 || c_in <= 0 {
+            return None;
+        }
+
+        let inferred_kernel = [w.dims[2], w.dims[3]];
+        let kernel = match onnx_proto::get_attribute_ints(node, "kernel_shape") {
+            Some(v) => {
+                let k = try_pair(&v)?;
+                if k != inferred_kernel {
+                    return None;
+                }
+                k
+            }
+            None => inferred_kernel,
+        };
+        let stride = match onnx_proto::get_attribute_ints(node, "strides") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let dilation = match onnx_proto::get_attribute_ints(node, "dilations") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let auto_pad = node
+            .attribute
+            .iter()
+            .find(|a| a.name == "auto_pad")
+            .map(|a| a.s.as_slice());
+        if matches!(auto_pad, Some(v) if !v.is_empty() && v != b"NOTSET") {
+            return None;
+        }
+        let pads = match onnx_proto::get_attribute_ints(node, "pads") {
+            None => [0, 0, 0, 0],
+            Some(v) => try_quad(&v)?,
+        };
+        if kernel.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if stride.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if dilation.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if pads.iter().any(|&v| v < 0) {
+            return None;
+        }
+        let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
+        if group <= 0 {
+            return None;
+        }
+
+        Some(ConvParams {
+            node_idx,
+            kernel,
+            stride,
+            dilation,
+            pads,
+            group,
+            c_out,
+            c_in,
+        })
+    }
 }
 
 fn get_conv_params(graph: &GraphProto) -> Option<ConvParams> {
     for (idx, node) in graph.node.iter().enumerate() {
-        if node.op_type == "Conv" {
-            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or([3, 3]);
-            let stride = onnx_proto::get_attribute_ints(node, "strides")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or([1, 1]);
-            let dilation = onnx_proto::get_attribute_ints(node, "dilations")
-                .and_then(|v| {
-                    if v.len() >= 2 {
-                        Some([v[0], v[1]])
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or([1, 1]);
-            let pads = onnx_proto::get_attribute_ints(node, "pads")
-                .and_then(|v| {
-                    if v.len() >= 4 {
-                        Some([v[0], v[1], v[2], v[3]])
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or([0, 0, 0, 0]);
-            let group = onnx_proto::get_attribute_int(node, "group").unwrap_or(1);
-
-            return Some(ConvParams {
-                node_idx: idx,
-                kernel,
-                stride,
-                dilation,
-                pads,
-                group,
-            });
+        if let Some(cp) = ConvParams::from_node(node, idx, graph) {
+            return Some(cp);
         }
     }
     None
 }
 
-fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> [i64; 2] {
-    let eff_kh = (kernel[0] - 1) * dilation[0] + 1;
-    let eff_kw = (kernel[1] - 1) * dilation[1] + 1;
-    [eff_kh / 2, eff_kw / 2]
+fn effective_kernel(kernel: [i64; 2], dilation: [i64; 2]) -> Option<[i64; 2]> {
+    let ek0 = kernel[0]
+        .checked_sub(1)?
+        .checked_mul(dilation[0])?
+        .checked_add(1)?;
+    let ek1 = kernel[1]
+        .checked_sub(1)?
+        .checked_mul(dilation[1])?
+        .checked_add(1)?;
+    Some([ek0, ek1])
 }
 
-fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> i64 {
-    let eff_kh = (kernel[0] - 1) * dilation[0] + 1;
-    let eff_kw = (kernel[1] - 1) * dilation[1] + 1;
-    eff_kh.max(eff_kw) + 1
+fn conv_output_hw(
+    h_in: i64,
+    w_in: i64,
+    pads: [i64; 4],
+    kernel: [i64; 2],
+    dilation: [i64; 2],
+    stride: [i64; 2],
+) -> Option<(i64, i64)> {
+    if stride[0] <= 0 || stride[1] <= 0 {
+        return None;
+    }
+    let eff = effective_kernel(kernel, dilation)?;
+    let num_h = h_in
+        .checked_add(pads[0])?
+        .checked_add(pads[2])?
+        .checked_sub(eff[0])?;
+    let num_w = w_in
+        .checked_add(pads[1])?
+        .checked_add(pads[3])?
+        .checked_sub(eff[1])?;
+    let out_h = num_h.div_euclid(stride[0]).checked_add(1)?;
+    let out_w = num_w.div_euclid(stride[1]).checked_add(1)?;
+    if out_h <= 0 || out_w <= 0 {
+        return None;
+    }
+    Some((out_h, out_w))
+}
+
+fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> Option<[i64; 2]> {
+    let eff = effective_kernel(kernel, dilation)?;
+    Some([eff[0] / 2, eff[1] / 2])
+}
+
+fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> Option<i64> {
+    let eff = effective_kernel(kernel, dilation)?;
+    eff[0].max(eff[1]).checked_add(1)
 }
 
 fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
@@ -133,7 +221,9 @@ fn is_tileable(graph: &GraphProto) -> bool {
     if cp.kernel[0] % 2 == 0 || cp.kernel[1] % 2 == 0 {
         return false;
     }
-    let halo = compute_halo_size(cp.kernel, cp.dilation);
+    let Some(halo) = compute_halo_size(cp.kernel, cp.dilation) else {
+        return false;
+    };
     cp.pads == [halo[0], halo[1], halo[0], halo[1]]
 }
 
@@ -185,6 +275,44 @@ fn find_weights_and_bias(
 struct WeightInfo {
     data: Vec<f32>,
     dims: Vec<i64>,
+}
+
+struct SlicePrologue<'a> {
+    graph: &'a GraphProto,
+    cp: ConvParams,
+    weights: Option<WeightInfo>,
+    bias: Option<Vec<f32>>,
+}
+
+fn extract_slice_prologue(model: &ModelProto) -> Option<SlicePrologue<'_>> {
+    let graph = model.graph.as_ref()?;
+    let cp = get_conv_params(graph)?;
+    let conv_node = &graph.node[cp.node_idx];
+    let (weights, bias) = find_weights_and_bias(graph, conv_node);
+    if let Some(ref w) = weights {
+        if w.dims.len() != 4 {
+            return None;
+        }
+        let c_out = usize::try_from(w.dims[0]).ok()?;
+        let c_in = usize::try_from(w.dims[1]).ok()?;
+        let kh = usize::try_from(w.dims[2]).ok()?;
+        let kw = usize::try_from(w.dims[3]).ok()?;
+        let expected = c_out.checked_mul(c_in)?.checked_mul(kh)?.checked_mul(kw)?;
+        if w.data.len() != expected {
+            return None;
+        }
+        if let Some(ref b) = bias {
+            if b.len() != c_out {
+                return None;
+            }
+        }
+    }
+    Some(SlicePrologue {
+        graph,
+        cp,
+        weights,
+        bias,
+    })
 }
 
 fn find_optimal_tile_size(
@@ -263,17 +391,9 @@ pub fn detect_tiling_needs(
     }
     let (inp_name, out_name, c_in, h, w) = get_model_dimensions(graph)?;
     let cp = get_conv_params(graph)?;
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return None;
-    }
-    let (wi, _) = find_weights_and_bias(graph, &graph.node[cp.node_idx]);
-    let weights = wi?;
-    if weights.dims.is_empty() {
-        return None;
-    }
-    let c_out = weights.dims[0];
+    let c_out = cp.c_out;
     let tile_size = tile_size? as i64;
-    let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation);
+    let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
 
     let (actual_tile, skip_reason) =
         calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
@@ -282,12 +402,15 @@ pub fn detect_tiling_needs(
         if h % actual_tile != 0 || w % actual_tile != 0 {
             return None;
         }
+        if actual_tile % cp.stride[0] != 0 || actual_tile % cp.stride[1] != 0 {
+            return None;
+        }
         let tiles_y = h / actual_tile;
         let tiles_x = w / actual_tile;
         if tiles_y * tiles_x < 2 {
             return None;
         }
-        let halo = compute_halo_size(cp.kernel, cp.dilation);
+        let halo = compute_halo_size(cp.kernel, cp.dilation)?;
         return Some(TilingDetection::Spatial {
             input_name: inp_name,
             output_name: out_name,
@@ -358,45 +481,85 @@ pub fn create_tile_slice(
     tile_size: i64,
     slice_idx: usize,
     output_dir: &Path,
-) -> Result<Option<TileSliceResult>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return Ok(None);
+) -> Result<TileSliceResult> {
+    if tile_size <= 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_tile_slice: tile_size must be > 0, got {tile_size}"
+        )));
     }
+    let SlicePrologue {
+        graph,
+        cp,
+        weights,
+        bias,
+    } = extract_slice_prologue(model).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: failed to extract slice prologue from model".to_string(),
+        )
+    })?;
     let conv_node = &graph.node[cp.node_idx];
-    let (wi, bias) = find_weights_and_bias(graph, conv_node);
-    let weights = match wi {
-        Some(w) => w,
-        None => return Ok(None),
-    };
-    if weights.dims.len() < 4 {
-        return Ok(None);
-    }
+    let weights = weights.ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: conv weights not found in model initializers".to_string(),
+        )
+    })?;
 
-    let halo = compute_halo_size(cp.kernel, cp.dilation);
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
-    let tile_h = tile_size + 2 * halo[0];
-    let tile_w = tile_size + 2 * halo[1];
-    let out_h = (tile_h - eff_kh) / cp.stride[0] + 1;
-    let out_w = (tile_w - eff_kw) / cp.stride[1] + 1;
-    if out_h <= 0 || out_w <= 0 {
-        return Ok(None);
-    }
+    let halo = compute_halo_size(cp.kernel, cp.dilation).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: effective kernel computation overflow".to_string(),
+        )
+    })?;
+    let tile_h = halo[0]
+        .checked_mul(2)
+        .and_then(|h2| tile_size.checked_add(h2))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: tile_h overflow (tile_size={tile_size}, halo_h={})",
+                halo[0]
+            ))
+        })?;
+    let tile_w = halo[1]
+        .checked_mul(2)
+        .and_then(|w2| tile_size.checked_add(w2))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: tile_w overflow (tile_size={tile_size}, halo_w={})",
+                halo[1]
+            ))
+        })?;
+    let (out_h, out_w) = conv_output_hw(
+        tile_h,
+        tile_w,
+        [0, 0, 0, 0],
+        cp.kernel,
+        cp.dilation,
+        cp.stride,
+    )
+    .ok_or_else(|| {
+        crate::error::DsperseError::Slicer(format!(
+            "create_tile_slice: invalid conv output dimensions for tile_h={tile_h}, tile_w={tile_w}, stride={:?}, kernel={:?}",
+            cp.stride, cp.kernel
+        ))
+    })?;
 
-    let c_in = graph
+    let graph_c_in = graph
         .input
         .first()
         .map(onnx_proto::vi_shape)
-        .and_then(|s| if s.len() == 4 { Some(s[1]) } else { None })
-        .unwrap_or(weights.dims.get(1).copied().unwrap_or(1));
+        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]));
+    let cfg_c_in = cp.c_in.checked_mul(cp.group).filter(|&v| v > 0);
+    if let (Some(g), Some(c)) = (graph_c_in, cfg_c_in) {
+        if g != c {
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "create_tile_slice: graph c_in ({g}) != weight c_in*group ({c})"
+            )));
+        }
+    }
+    let c_in = graph_c_in.or(cfg_c_in).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_tile_slice: unable to determine input channels".to_string(),
+        )
+    })?;
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",
@@ -462,10 +625,10 @@ pub fn create_tile_slice(
     let onnx_path = tiles_dir.join("tile.onnx");
     onnx_proto::save_model(&tile_model, &onnx_path)?;
 
-    Ok(Some(TileSliceResult {
+    Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
         conv_out: [out_h, out_w],
-    }))
+    })
 }
 
 fn integrate_extra_ops(
@@ -553,53 +716,38 @@ fn integrate_extra_ops(
     Ok(())
 }
 
-pub fn create_channel_group_slice(
+#[allow(clippy::too_many_arguments)]
+fn create_channel_group_slice(
     model: &ModelProto,
+    prologue: &SlicePrologue<'_>,
     group_idx: usize,
     c_start: i64,
     c_end: i64,
+    h_in: i64,
+    w_in: i64,
     slice_idx: usize,
     output_dir: &Path,
-) -> Result<Option<ChannelGroupInfo>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
+) -> Result<ChannelGroupInfo> {
+    let cp = &prologue.cp;
     if c_start < 0 || c_end < 0 || c_start >= c_end {
-        return Ok(None);
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_channel_group_slice: invalid channel range c_start={c_start}, c_end={c_end}"
+        )));
     }
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return Ok(None);
-    }
-    let conv_node = &graph.node[cp.node_idx];
-    let (wi, _) = find_weights_and_bias(graph, conv_node);
-    let weights = match wi {
-        Some(w) => w,
-        None => return Ok(None),
-    };
-    if weights.dims.len() < 4 {
-        return Ok(None);
-    }
-
-    let dims = match get_model_dimensions(graph) {
-        Some(d) => d,
-        None => return Ok(None),
-    };
-    let (_inp_name, _out_name, _c_in, h_in, w_in) = dims;
+    let weights = prologue.weights.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_channel_group_slice: conv weights not found".to_string(),
+        )
+    })?;
 
     let c_group = c_end - c_start;
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
-    let h_out = (h_in + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
-    let w_out = (w_in + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
-    if h_out <= 0 || w_out <= 0 {
-        return Ok(None);
-    }
-    let c_out = weights.dims[0];
+    let (h_out, w_out) = conv_output_hw(h_in, w_in, cp.pads, cp.kernel, cp.dilation, cp.stride)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_channel_group_slice: invalid output dims for h_in={h_in}, w_in={w_in}"
+            ))
+        })?;
+    let c_out = cp.c_out;
 
     let input_name = format!("group_{group_idx}_in");
     let output_name = format!("group_{group_idx}_out");
@@ -615,7 +763,9 @@ pub fn create_channel_group_slice(
         &[1, c_out, h_out, w_out],
     );
 
-    let sliced_weights = slice_weights(&weights, c_start as usize, c_end as usize)?;
+    let c_start_uz = i64_to_usize(c_start, "create_channel_group_slice", "c_start")?;
+    let c_end_uz = i64_to_usize(c_end, "create_channel_group_slice", "c_end")?;
+    let sliced_weights = slice_weights(weights, c_start_uz, c_end_uz)?;
 
     let w_tensor = onnx_proto::make_tensor(
         "W",
@@ -656,14 +806,20 @@ pub fn create_channel_group_slice(
     let onnx_path = groups_dir.join(format!("group_{group_idx}.onnx"));
     onnx_proto::save_model(&group_model, &onnx_path)?;
 
-    Ok(Some(ChannelGroupInfo {
+    Ok(ChannelGroupInfo {
         group_idx,
-        c_start: c_start as usize,
-        c_end: c_end as usize,
+        c_start: c_start_uz,
+        c_end: c_end_uz,
         path: format!("slice_{slice_idx}/payload/channel_groups/group_{group_idx}.onnx"),
         jstprove_circuit_path: None,
         jstprove_settings_path: None,
-    }))
+    })
+}
+
+fn i64_to_usize(val: i64, ctx: &str, name: &str) -> Result<usize> {
+    usize::try_from(val).map_err(|_| {
+        crate::error::DsperseError::Slicer(format!("{ctx}: {name} ({val}) out of range for usize"))
+    })
 }
 
 fn checked_dim_product(factors: &[usize]) -> Result<usize> {
@@ -736,22 +892,12 @@ fn slice_weights(weights: &WeightInfo, c_start: usize, c_end: usize) -> Result<W
     })
 }
 
-pub fn save_conv_bias(
-    model: &ModelProto,
+fn save_conv_bias(
+    prologue: &SlicePrologue<'_>,
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<Option<String>> {
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-    let conv_node = &graph.node[cp.node_idx];
-    let (_, bias) = find_weights_and_bias(graph, conv_node);
-    let Some(bias_data) = bias else {
+    let Some(bias_data) = &prologue.bias else {
         return Ok(None);
     };
 
@@ -776,7 +922,7 @@ pub fn apply_channel_splitting(
     input_name: &str,
     output_name: &str,
     output_dir: &Path,
-) -> Result<Option<ChannelSplitInfo>> {
+) -> Result<ChannelSplitInfo> {
     let &ChannelSplitParams {
         c_in,
         c_out,
@@ -787,26 +933,77 @@ pub fn apply_channel_splitting(
         slice_idx,
     } = cfg;
     if c_in <= 0 || c_out <= 0 || num_groups <= 0 || channels_per_group <= 0 || h <= 0 || w <= 0 {
-        return Ok(None);
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: invalid ChannelSplitParams (c_in={c_in}, c_out={c_out}, num_groups={num_groups}, channels_per_group={channels_per_group}, h={h}, w={w})"
+        )));
     }
-    let graph = match model.graph.as_ref() {
-        Some(g) => g,
-        None => return Ok(None),
-    };
-    let cp = match get_conv_params(graph) {
-        Some(c) => c,
-        None => return Ok(None),
-    };
-    if cp.stride[0] == 0 || cp.stride[1] == 0 {
-        return Ok(None);
+    let covered = num_groups.checked_mul(channels_per_group).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "apply_channel_splitting: num_groups * channels_per_group overflow".to_string(),
+        )
+    })?;
+    if covered < c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg covers only {covered} input channels, expected at least {c_in}",
+        )));
     }
-    let eff_kh = (cp.kernel[0] - 1) * cp.dilation[0] + 1;
-    let eff_kw = (cp.kernel[1] - 1) * cp.dilation[1] + 1;
-    let out_h = (h + cp.pads[0] + cp.pads[2] - eff_kh) / cp.stride[0] + 1;
-    let out_w = (w + cp.pads[1] + cp.pads[3] - eff_kw) / cp.stride[1] + 1;
-    if out_h <= 0 || out_w <= 0 {
-        return Ok(None);
+    let last_group_start = (num_groups - 1)
+        .checked_mul(channels_per_group)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "apply_channel_splitting: group start computation overflow".to_string(),
+            )
+        })?;
+    if last_group_start >= c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg creates empty trailing groups (last_start={last_group_start}, c_in={c_in})"
+        )));
     }
+    let prologue = extract_slice_prologue(model).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "apply_channel_splitting: failed to extract slice prologue from model".to_string(),
+        )
+    })?;
+
+    let (_, _, model_c_in, model_h, model_w) =
+        get_model_dimensions(prologue.graph).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "apply_channel_splitting: unable to determine model dimensions".to_string(),
+            )
+        })?;
+    let model_c_out = prologue.cp.c_out;
+    if prologue.cp.group != 1 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: unsupported Conv group={}, expected 1",
+            prologue.cp.group
+        )));
+    }
+    if prologue.cp.c_in != model_c_in {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: weight/model c_in mismatch (weights c_in={}, model c_in={})",
+            prologue.cp.c_in, model_c_in
+        )));
+    }
+    if model_c_in != c_in || model_c_out != c_out || model_h != h || model_w != w {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: cfg dims (c_in={c_in}, c_out={c_out}, h={h}, w={w}) mismatch model dims (c_in={model_c_in}, c_out={model_c_out}, h={model_h}, w={model_w})"
+        )));
+    }
+
+    let (out_h, out_w) = conv_output_hw(
+        h,
+        w,
+        prologue.cp.pads,
+        prologue.cp.kernel,
+        prologue.cp.dilation,
+        prologue.cp.stride,
+    )
+    .ok_or_else(|| {
+        crate::error::DsperseError::Slicer(format!(
+            "apply_channel_splitting: invalid conv output dimensions for h={h}, w={w}, stride={:?}, kernel={:?}",
+            prologue.cp.stride, prologue.cp.kernel
+        ))
+    })?;
 
     let groups_dir = output_dir.join("channel_groups");
     let cleanup = || {
@@ -820,8 +1017,11 @@ pub fn apply_channel_splitting(
         let c_start = g * channels_per_group;
         let c_end = ((g + 1) * channels_per_group).min(c_in);
 
+        let g_uz = i64_to_usize(g, "apply_channel_splitting", "group_idx").inspect_err(|_| {
+            cleanup();
+        })?;
         let group_info = match create_channel_group_slice(
-            model, g as usize, c_start, c_end, slice_idx, output_dir,
+            model, &prologue, g_uz, c_start, c_end, h, w, slice_idx, output_dir,
         ) {
             Ok(info) => info,
             Err(e) => {
@@ -829,17 +1029,10 @@ pub fn apply_channel_splitting(
                 return Err(e);
             }
         };
-
-        match group_info {
-            Some(gi) => groups.push(gi),
-            None => {
-                cleanup();
-                return Ok(None);
-            }
-        }
+        groups.push(group_info);
     }
 
-    let bias_path = match save_conv_bias(model, slice_idx, output_dir) {
+    let bias_path = match save_conv_bias(&prologue, slice_idx, output_dir) {
         Ok(p) => p,
         Err(e) => {
             cleanup();
@@ -847,21 +1040,31 @@ pub fn apply_channel_splitting(
         }
     };
 
-    Ok(Some(ChannelSplitInfo {
+    let ctx = "apply_channel_splitting";
+    let c_in_uz = i64_to_usize(c_in, ctx, "c_in").inspect_err(|_| cleanup())?;
+    let c_out_uz = i64_to_usize(c_out, ctx, "c_out").inspect_err(|_| cleanup())?;
+    let num_groups_uz = i64_to_usize(num_groups, ctx, "num_groups").inspect_err(|_| cleanup())?;
+    let cpg_uz =
+        i64_to_usize(channels_per_group, ctx, "channels_per_group").inspect_err(|_| cleanup())?;
+    let h_uz = i64_to_usize(h, ctx, "h").inspect_err(|_| cleanup())?;
+    let w_uz = i64_to_usize(w, ctx, "w").inspect_err(|_| cleanup())?;
+    let out_h_uz = i64_to_usize(out_h, ctx, "out_h").inspect_err(|_| cleanup())?;
+    let out_w_uz = i64_to_usize(out_w, ctx, "out_w").inspect_err(|_| cleanup())?;
+    Ok(ChannelSplitInfo {
         slice_idx,
-        c_in: c_in as usize,
-        c_out: c_out as usize,
-        num_groups: num_groups as usize,
-        channels_per_group: channels_per_group as usize,
+        c_in: c_in_uz,
+        c_out: c_out_uz,
+        num_groups: num_groups_uz,
+        channels_per_group: cpg_uz,
         input_name: input_name.to_string(),
         output_name: output_name.to_string(),
-        h: h as usize,
-        w: w as usize,
-        out_h: out_h as usize,
-        out_w: out_w as usize,
+        h: h_uz,
+        w: w_uz,
+        out_h: out_h_uz,
+        out_w: out_w_uz,
         groups,
         bias_path,
-    }))
+    })
 }
 
 #[derive(Debug)]
@@ -876,48 +1079,48 @@ mod tests {
 
     #[test]
     fn halo_3x3_no_dilation() {
-        assert_eq!(compute_halo_size([3, 3], [1, 1]), [1, 1]);
+        assert_eq!(compute_halo_size([3, 3], [1, 1]), Some([1, 1]));
     }
 
     #[test]
     fn halo_5x5_no_dilation() {
-        assert_eq!(compute_halo_size([5, 5], [1, 1]), [2, 2]);
+        assert_eq!(compute_halo_size([5, 5], [1, 1]), Some([2, 2]));
     }
 
     #[test]
     fn halo_3x3_dilation_2() {
-        assert_eq!(compute_halo_size([3, 3], [2, 2]), [2, 2]);
+        assert_eq!(compute_halo_size([3, 3], [2, 2]), Some([2, 2]));
     }
 
     #[test]
     fn halo_1x1_kernel() {
-        assert_eq!(compute_halo_size([1, 1], [1, 1]), [0, 0]);
+        assert_eq!(compute_halo_size([1, 1], [1, 1]), Some([0, 0]));
     }
 
     #[test]
     fn halo_asymmetric_kernel() {
-        assert_eq!(compute_halo_size([3, 5], [1, 1]), [1, 2]);
+        assert_eq!(compute_halo_size([3, 5], [1, 1]), Some([1, 2]));
     }
 
     #[test]
     fn min_tile_3x3_no_dilation() {
-        assert_eq!(compute_min_spatial_tile([3, 3], [1, 1]), 4);
+        assert_eq!(compute_min_spatial_tile([3, 3], [1, 1]), Some(4));
     }
 
     #[test]
     fn min_tile_5x5_no_dilation() {
-        assert_eq!(compute_min_spatial_tile([5, 5], [1, 1]), 6);
+        assert_eq!(compute_min_spatial_tile([5, 5], [1, 1]), Some(6));
     }
 
     #[test]
     fn min_tile_3x3_dilation_2() {
         let eff = (3 - 1) * 2 + 1;
-        assert_eq!(compute_min_spatial_tile([3, 3], [2, 2]), eff + 1);
+        assert_eq!(compute_min_spatial_tile([3, 3], [2, 2]), Some(eff + 1));
     }
 
     #[test]
     fn min_tile_1x1() {
-        assert_eq!(compute_min_spatial_tile([1, 1], [1, 1]), 2);
+        assert_eq!(compute_min_spatial_tile([1, 1], [1, 1]), Some(2));
     }
 
     #[test]
@@ -1110,6 +1313,74 @@ mod tests {
             13,
         );
         assert!(detect_tiling_needs(&model, Some(1024)).is_none());
+    }
+
+    #[test]
+    fn effective_kernel_overflow() {
+        assert_eq!(effective_kernel([i64::MAX, 1], [2, 1]), None);
+        assert_eq!(effective_kernel([1, i64::MAX], [1, 2]), None);
+    }
+
+    #[test]
+    fn effective_kernel_sub_underflow() {
+        assert_eq!(effective_kernel([i64::MIN, 3], [1, 1]), None);
+    }
+
+    #[test]
+    fn effective_kernel_valid() {
+        assert_eq!(effective_kernel([3, 3], [1, 1]), Some([3, 3]));
+        assert_eq!(effective_kernel([3, 3], [2, 2]), Some([5, 5]));
+        assert_eq!(effective_kernel([1, 1], [1, 1]), Some([1, 1]));
+    }
+
+    #[test]
+    fn conv_output_hw_zero_stride() {
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [0, 1]),
+            None
+        );
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [1, 0]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_kernel_exceeds_input() {
+        assert_eq!(
+            conv_output_hw(2, 2, [0, 0, 0, 0], [5, 5], [1, 1], [1, 1]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_overflow_pads() {
+        assert_eq!(
+            conv_output_hw(i64::MAX, 8, [1, 0, 0, 0], [3, 3], [1, 1], [1, 1]),
+            None
+        );
+    }
+
+    #[test]
+    fn conv_output_hw_valid() {
+        assert_eq!(
+            conv_output_hw(8, 8, [1, 1, 1, 1], [3, 3], [1, 1], [1, 1]),
+            Some((8, 8))
+        );
+        assert_eq!(
+            conv_output_hw(8, 8, [0, 0, 0, 0], [3, 3], [1, 1], [2, 2]),
+            Some((3, 3))
+        );
+    }
+
+    #[test]
+    fn compute_halo_size_overflow() {
+        assert_eq!(compute_halo_size([i64::MAX, 1], [2, 1]), None);
+    }
+
+    #[test]
+    fn compute_min_spatial_tile_overflow() {
+        assert_eq!(compute_min_spatial_tile([i64::MAX, 1], [2, 1]), None);
     }
 
     #[test]

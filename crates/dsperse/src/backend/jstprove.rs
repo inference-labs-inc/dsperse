@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
@@ -15,6 +17,7 @@ use crate::error::{DsperseError, Result};
 pub struct JstproveBackend {
     compress: bool,
     fast_compile: bool,
+    bundle_cache: Mutex<HashMap<PathBuf, Arc<CompiledCircuit>>>,
 }
 
 impl Default for JstproveBackend {
@@ -22,6 +25,7 @@ impl Default for JstproveBackend {
         Self {
             compress: true,
             fast_compile: false,
+            bundle_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -43,6 +47,36 @@ impl JstproveBackend {
 
     pub fn compress(&self) -> bool {
         self.compress
+    }
+
+    pub fn load_bundle_cached(&self, path: &Path) -> Result<Arc<CompiledCircuit>> {
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+        {
+            let cache = self
+                .bundle_cache
+                .lock()
+                .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
+            if let Some(bundle) = cache.get(&key) {
+                return Ok(Arc::clone(bundle));
+            }
+        }
+
+        let bundle = Arc::new(load_bundle(path)?);
+
+        let mut cache = self
+            .bundle_cache
+            .lock()
+            .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
+        cache.insert(key, Arc::clone(&bundle));
+
+        Ok(bundle)
+    }
+
+    pub fn clear_cache(&self) {
+        if let Ok(mut cache) = self.bundle_cache.lock() {
+            cache.clear();
+        }
     }
 
     pub fn compile(
@@ -75,15 +109,15 @@ impl JstproveBackend {
         input_json: &[u8],
         output_json: &[u8],
     ) -> Result<Vec<u8>> {
-        let bundle = load_bundle(circuit_path)?;
+        let bundle = self.load_bundle_cached(circuit_path)?;
 
         if let Some(ref params) = bundle.metadata {
             OnnxContext::set_params(params.clone());
         }
 
         let req = WitnessRequest {
-            circuit: bundle.circuit,
-            witness_solver: bundle.witness_solver,
+            circuit: bundle.circuit.clone(),
+            witness_solver: bundle.witness_solver.clone(),
             inputs: input_json.to_vec(),
             outputs: output_json.to_vec(),
             metadata: bundle.metadata.clone(),
@@ -101,7 +135,7 @@ impl JstproveBackend {
         activations: &[f64],
         initializers: &[(Vec<f64>, Vec<usize>)],
     ) -> Result<Vec<u8>> {
-        let bundle = load_bundle(circuit_path)?;
+        let bundle = self.load_bundle_cached(circuit_path)?;
         let params = bundle.metadata.as_ref().ok_or_else(|| {
             DsperseError::Backend(
                 "circuit bundle missing metadata (required for quantization)".into(),
@@ -122,12 +156,12 @@ impl JstproveBackend {
     }
 
     pub fn load_params(&self, circuit_path: &Path) -> Result<Option<CircuitParams>> {
-        let bundle = load_bundle(circuit_path)?;
-        Ok(bundle.metadata)
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        Ok(bundle.metadata.clone())
     }
 
     pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
-        let bundle = load_bundle(circuit_path)?;
+        let bundle = self.load_bundle_cached(circuit_path)?;
 
         prove_bn254(&bundle.circuit, witness_bytes, self.compress)
             .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
@@ -154,7 +188,7 @@ impl JstproveBackend {
         witness_bytes: &[u8],
         proof_bytes: &[u8],
     ) -> Result<bool> {
-        let bundle = load_bundle(circuit_path)?;
+        let bundle = self.load_bundle_cached(circuit_path)?;
 
         verify_bn254(&bundle.circuit, witness_bytes, proof_bytes)
             .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
@@ -171,7 +205,7 @@ fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {
 }
 
 pub struct WarmCircuit {
-    bundle: CompiledCircuit,
+    bundle: Arc<CompiledCircuit>,
     pub params: CircuitParams,
     initializers: Vec<(Vec<f64>, Vec<usize>)>,
     compress: bool,
@@ -181,9 +215,9 @@ impl WarmCircuit {
     pub fn load(
         circuit_path: &Path,
         initializers: Vec<(Vec<f64>, Vec<usize>)>,
-        compress: bool,
+        backend: &JstproveBackend,
     ) -> Result<Self> {
-        let bundle = load_bundle(circuit_path)?;
+        let bundle = backend.load_bundle_cached(circuit_path)?;
         let params = bundle
             .metadata
             .clone()
@@ -192,7 +226,7 @@ impl WarmCircuit {
             bundle,
             params,
             initializers,
-            compress,
+            compress: backend.compress(),
         })
     }
 

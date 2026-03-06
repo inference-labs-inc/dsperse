@@ -110,7 +110,17 @@ impl JstproveBackend {
             Some(params),
             self.fast_compile,
         )
-        .map_err(|e| DsperseError::Backend(format!("compile: {e}")))
+        .map_err(|e| DsperseError::Backend(format!("compile: {e}")))?;
+
+        let key = circuit_path
+            .canonicalize()
+            .unwrap_or_else(|_| circuit_path.to_path_buf());
+        self.bundle_cache
+            .lock()
+            .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?
+            .remove(&key);
+
+        Ok(())
     }
 
     pub fn witness(

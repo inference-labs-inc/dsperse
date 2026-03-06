@@ -583,8 +583,7 @@ fn execute_tiled(
             } else {
                 vec![]
             };
-            let wc =
-                crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend)?;
+            let wc = crate::backend::jstprove::WarmCircuit::load(cp, initializers, backend)?;
             tracing::info!(slice = %slice_id, wai = is_wai, "loaded circuit bundle");
             Some(wc)
         }

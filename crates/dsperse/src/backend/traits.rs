@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
-
 use crate::error::Result;
 
 pub trait ProofBackend: Send + Sync {
@@ -16,6 +14,4 @@ pub trait ProofBackend: Send + Sync {
         activations: &[f64],
         initializers: &[(Vec<f64>, Vec<usize>)],
     ) -> Result<Vec<u8>>;
-
-    fn load_params(&self, circuit_path: &Path) -> Result<Option<CircuitParams>>;
 }

@@ -216,10 +216,6 @@ impl ProofBackend for JstproveBackend {
     ) -> Result<Vec<u8>> {
         self.witness_f64(circuit_path, activations, initializers)
     }
-
-    fn load_params(&self, circuit_path: &Path) -> Result<Option<CircuitParams>> {
-        self.load_params(circuit_path)
-    }
 }
 
 fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {

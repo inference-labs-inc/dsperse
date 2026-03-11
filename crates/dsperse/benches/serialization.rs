@@ -6,7 +6,7 @@ use dsperse::schema::execution::{
     RunMetadata, SliceResult, TileResult,
 };
 use dsperse::schema::metadata::{
-    Backend, Compilation, Dependencies, ModelMetadata, RunSliceMetadata, SliceMetadata,
+    BackendKind, Compilation, Dependencies, ModelMetadata, RunSliceMetadata, SliceMetadata,
     SliceShapeWrapper, TensorShape,
 };
 use serde::{Deserialize, Serialize};
@@ -76,7 +76,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                 },
                 tiling: None,
                 channel_split: None,
-                backend: Backend::Jstprove,
+                backend: BackendKind::Jstprove,
                 jstprove_circuit_path: Some(format!("slice_{i}/jstprove/circuit.bin")),
                 jstprove_settings_path: None,
             },
@@ -95,7 +95,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                 },
                 circuit_path: Some(format!("slice_{i}/jstprove/circuit.bin")),
                 onnx_path: Some(format!("slice_{i}/payload/slice_{i}.onnx")),
-                backend: Backend::Jstprove,
+                backend: BackendKind::Jstprove,
             },
         );
         execution_results.push(ExecutionResultEntry {

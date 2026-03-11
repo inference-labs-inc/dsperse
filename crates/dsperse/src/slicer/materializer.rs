@@ -484,8 +484,7 @@ fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
                 }
             }
             "MaxPool" => {
-                if node.output.len() > 1
-                    && let Some(idx_out) = node.output.get(1)
+                if let Some(idx_out) = node.output.get(1)
                     && !idx_out.is_empty()
                 {
                     types.insert(idx_out.clone(), TensorProto::INT64);

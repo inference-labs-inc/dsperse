@@ -213,7 +213,7 @@ pub fn run_inference(
             Ok(info) => info,
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
-                let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)
+                let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?
                     .execution_method();
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
@@ -254,14 +254,17 @@ pub fn run_inference(
         .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let last_slice_id = format!("slice_{}", last_slice.index);
     let slice_run_meta = final_meta.slices.get(&last_slice_id);
-    let last_strategy = slice_run_meta.map(|m| {
-        let use_circuit = final_meta
-            .execution_chain
-            .nodes
-            .get(&last_slice_id)
-            .is_some_and(|n| n.use_circuit);
-        ExecutionStrategy::from_metadata(m, use_circuit)
-    });
+    let last_strategy = match slice_run_meta {
+        Some(m) => {
+            let use_circuit = final_meta
+                .execution_chain
+                .nodes
+                .get(&last_slice_id)
+                .is_some_and(|n| n.use_circuit);
+            Some(ExecutionStrategy::from_metadata(m, use_circuit)?)
+        }
+        None => None,
+    };
     let output_arrs: Vec<&ArrayD<f64>> = {
         let strategy_output = last_strategy
             .as_ref()
@@ -334,7 +337,7 @@ fn execute_slice(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit);
+    let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
     match strategy {
         ExecutionStrategy::ChannelSplit(cs) => execute_channel_split(
             slices_dir,
@@ -391,6 +394,12 @@ fn execute_single(
         .cloned()
         .collect();
     let multi_input = inputs.len() > 1;
+
+    if inputs.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: no activation inputs declared"
+        )));
+    }
 
     let onnx_path = PathBuf::from(&meta.path);
 

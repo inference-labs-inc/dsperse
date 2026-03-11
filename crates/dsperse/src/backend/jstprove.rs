@@ -13,6 +13,8 @@ use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
 
 use crate::error::{DsperseError, Result};
 
+use super::traits::ProofBackend;
+
 #[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
@@ -189,6 +191,34 @@ impl JstproveBackend {
 
         verify_bn254(&bundle.circuit, witness_bytes, proof_bytes)
             .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
+    }
+}
+
+impl ProofBackend for JstproveBackend {
+    fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
+        self.prove(circuit_path, witness_bytes)
+    }
+
+    fn verify(
+        &self,
+        circuit_path: &Path,
+        witness_bytes: &[u8],
+        proof_bytes: &[u8],
+    ) -> Result<bool> {
+        self.verify(circuit_path, witness_bytes, proof_bytes)
+    }
+
+    fn witness_f64(
+        &self,
+        circuit_path: &Path,
+        activations: &[f64],
+        initializers: &[(Vec<f64>, Vec<usize>)],
+    ) -> Result<Vec<u8>> {
+        self.witness_f64(circuit_path, activations, initializers)
+    }
+
+    fn load_params(&self, circuit_path: &Path) -> Result<Option<CircuitParams>> {
+        self.load_params(circuit_path)
     }
 }
 

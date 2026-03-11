@@ -207,17 +207,17 @@ fn resolve_compile_onnx(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
 ) -> Result<std::path::PathBuf> {
-    if let Some(ref tiling) = slice.tiling {
-        if let Some(ref tile) = tiling.tile {
-            let tile_path = slices_dir.join(&tile.path);
-            if tile_path.exists() {
-                tracing::info!(
-                    slice = slice.index,
-                    path = %tile_path.display(),
-                    "using tile ONNX"
-                );
-                return Ok(tile_path);
-            }
+    if let Some(ref tiling) = slice.tiling
+        && let Some(ref tile) = tiling.tile
+    {
+        let tile_path = slices_dir.join(&tile.path);
+        if tile_path.exists() {
+            tracing::info!(
+                slice = slice.index,
+                path = %tile_path.display(),
+                "using tile ONNX"
+            );
+            return Ok(tile_path);
         }
     }
 

@@ -160,7 +160,7 @@ fn run_metadata_roundtrip() {
     assert_eq!(meta.overall_security, 100.0);
 
     let slice = meta.get_slice("slice_0").unwrap();
-    assert_eq!(slice.backend, Backend::Jstprove);
+    assert_eq!(slice.backend, BackendKind::Jstprove);
     assert_eq!(
         slice.jstprove_circuit_path.as_deref(),
         Some("slice_0/payload/jstprove/circuit.txt")
@@ -249,16 +249,19 @@ fn compilation_files_aliases() {
 #[test]
 fn backend_serde() {
     assert_eq!(
-        serde_json::to_string(&Backend::Jstprove).unwrap(),
+        serde_json::to_string(&BackendKind::Jstprove).unwrap(),
         r#""jstprove""#
     );
-    assert_eq!(serde_json::to_string(&Backend::Onnx).unwrap(), r#""onnx""#);
+    assert_eq!(
+        serde_json::to_string(&BackendKind::Onnx).unwrap(),
+        r#""onnx""#
+    );
 
-    let b: Backend = serde_json::from_str(r#""jstprove""#).unwrap();
-    assert_eq!(b, Backend::Jstprove);
+    let b: BackendKind = serde_json::from_str(r#""jstprove""#).unwrap();
+    assert_eq!(b, BackendKind::Jstprove);
 
-    let b: Backend = serde_json::from_str(r#""JSTPROVE""#).unwrap();
-    assert_eq!(b, Backend::Jstprove);
+    let b: BackendKind = serde_json::from_str(r#""JSTPROVE""#).unwrap();
+    assert_eq!(b, BackendKind::Jstprove);
 }
 
 #[test]

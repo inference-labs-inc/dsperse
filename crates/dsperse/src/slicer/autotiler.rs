@@ -301,10 +301,10 @@ fn extract_slice_prologue(model: &ModelProto) -> Option<SlicePrologue<'_>> {
         if w.data.len() != expected {
             return None;
         }
-        if let Some(ref b) = bias {
-            if b.len() != c_out {
-                return None;
-            }
+        if let Some(ref b) = bias
+            && b.len() != c_out
+        {
+            return None;
         }
     }
     Some(SlicePrologue {
@@ -429,21 +429,19 @@ pub fn detect_tiling_needs(
 
     if matches!(skip_reason, Some("min_tile_too_large" | "no_divisor"))
         && is_channel_splittable(graph)
-    {
-        if let Some((num_groups, cpg)) =
+        && let Some((num_groups, cpg)) =
             calculate_channel_split_config(c_in, c_out, h, w, tile_size)
-        {
-            return Some(TilingDetection::ChannelSplit {
-                input_name: inp_name,
-                output_name: out_name,
-                c_in,
-                c_out,
-                h,
-                w,
-                num_groups,
-                channels_per_group: cpg,
-            });
-        }
+    {
+        return Some(TilingDetection::ChannelSplit {
+            input_name: inp_name,
+            output_name: out_name,
+            c_in,
+            c_out,
+            h,
+            w,
+            num_groups,
+            channels_per_group: cpg,
+        });
     }
     None
 }
@@ -548,12 +546,12 @@ pub fn create_tile_slice(
         .map(onnx_proto::vi_shape)
         .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]));
     let cfg_c_in = cp.c_in.checked_mul(cp.group).filter(|&v| v > 0);
-    if let (Some(g), Some(c)) = (graph_c_in, cfg_c_in) {
-        if g != c {
-            return Err(crate::error::DsperseError::Slicer(format!(
-                "create_tile_slice: graph c_in ({g}) != weight c_in*group ({c})"
-            )));
-        }
+    if let (Some(g), Some(c)) = (graph_c_in, cfg_c_in)
+        && g != c
+    {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_tile_slice: graph c_in ({g}) != weight c_in*group ({c})"
+        )));
     }
     let c_in = graph_c_in.or(cfg_c_in).ok_or_else(|| {
         crate::error::DsperseError::Slicer(

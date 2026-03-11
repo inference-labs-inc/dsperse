@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::metadata::{Backend, RunSliceMetadata};
+use super::metadata::{BackendKind, RunSliceMetadata};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -147,7 +147,7 @@ pub struct ExecutionNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub onnx_path: Option<String>,
     #[serde(default)]
-    pub backend: Backend,
+    pub backend: BackendKind,
 }
 
 impl Default for ExecutionNode {
@@ -160,7 +160,7 @@ impl Default for ExecutionNode {
             next: None,
             circuit_path: None,
             onnx_path: None,
-            backend: Backend::Onnx,
+            backend: BackendKind::Onnx,
         }
     }
 }

@@ -51,10 +51,10 @@ pub(crate) fn build_segment_ranges(
     total_nodes: Option<usize>,
 ) -> Vec<(usize, usize)> {
     let mut points = slice_points.to_vec();
-    if let Some(total) = total_nodes {
-        if !points.contains(&total) {
-            points.push(total);
-        }
+    if let Some(total) = total_nodes
+        && !points.contains(&total)
+    {
+        points.push(total);
     }
     points.sort();
     points.dedup();

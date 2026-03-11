@@ -7,6 +7,8 @@ use rayon::prelude::*;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
 
+use super::strategy::ExecutionStrategy;
+use super::tensor_store::TensorStore;
 use crate::backend::jstprove::JstproveBackend;
 use crate::backend::onnx::NamedOutputs;
 use crate::error::{DsperseError, Result};
@@ -14,12 +16,12 @@ use crate::schema::execution::{
     ExecutionChain, ExecutionInfo, ExecutionMethod, ExecutionNode, ExecutionResultEntry,
     RunMetadata, TileResult,
 };
-use crate::schema::metadata::{Backend, ModelMetadata, RunSliceMetadata};
+use crate::schema::metadata::{BackendKind, ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, TilingInfo};
 use crate::slicer::onnx_proto::TensorProto;
 use crate::utils::io::{
-    arrayd_to_value, build_msgpack_map, extract_input_data, gather_inputs_from_cache, map_get_ref,
-    read_msgpack, value_to_arrayd, write_msgpack,
+    arrayd_to_value, build_msgpack_map, extract_input_data, map_get_ref, read_msgpack,
+    value_to_arrayd, write_msgpack,
 };
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 use rmpv::Value;
@@ -142,7 +144,7 @@ pub fn run_inference(
     let chain = build_execution_chain(&model_meta, slices_dir)?;
     let run_meta = build_run_metadata(&model_meta, slices_dir, &chain)?;
 
-    let mut tensor_cache: HashMap<String, ArrayD<f64>> = HashMap::new();
+    let mut tensor_cache = TensorStore::new();
 
     let input_val = extract_input_data(&input_data).ok_or_else(|| {
         DsperseError::Pipeline(
@@ -163,10 +165,10 @@ pub fn run_inference(
         for name in declared_inputs {
             let v = map_get_ref(input_val, name)
                 .ok_or_else(|| DsperseError::Pipeline(format!("input map missing key {name:?}")))?;
-            tensor_cache.insert(name.clone(), value_to_arrayd(v)?);
+            tensor_cache.put(name.clone(), value_to_arrayd(v)?);
         }
     } else if declared_inputs.len() == 1 {
-        tensor_cache.insert(declared_inputs[0].clone(), value_to_arrayd(input_val)?);
+        tensor_cache.put(declared_inputs[0].clone(), value_to_arrayd(input_val)?);
     } else {
         return Err(DsperseError::Pipeline(format!(
             "model declares {} inputs but input is not a map",
@@ -211,15 +213,8 @@ pub fn run_inference(
             Ok(info) => info,
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
-                let method = if slice_meta.channel_split.is_some() {
-                    ExecutionMethod::ChannelSplit
-                } else if slice_meta.tiling.is_some() {
-                    ExecutionMethod::Tiled
-                } else if node.use_circuit {
-                    ExecutionMethod::JstproveGenWitness
-                } else {
-                    ExecutionMethod::OnnxOnly
-                };
+                let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)
+                    .execution_method();
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
                     witness_execution: Some(ExecutionInfo {
@@ -259,22 +254,26 @@ pub fn run_inference(
         .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let last_slice_id = format!("slice_{}", last_slice.index);
     let slice_run_meta = final_meta.slices.get(&last_slice_id);
+    let last_strategy = slice_run_meta.map(|m| {
+        let use_circuit = final_meta
+            .execution_chain
+            .nodes
+            .get(&last_slice_id)
+            .is_some_and(|n| n.use_circuit);
+        ExecutionStrategy::from_metadata(m, use_circuit)
+    });
     let output_arrs: Vec<&ArrayD<f64>> = {
-        let cs_arr = slice_run_meta
-            .and_then(|m| m.channel_split.as_ref())
-            .and_then(|cs| tensor_cache.get(&cs.output_name));
-        let tiling_arr = slice_run_meta
-            .and_then(|m| m.tiling.as_ref())
-            .and_then(|t| tensor_cache.get(&t.output_name));
-        if let Some(arr) = cs_arr {
-            vec![arr]
-        } else if let Some(arr) = tiling_arr {
+        let strategy_output = last_strategy
+            .as_ref()
+            .and_then(|s| s.output_name())
+            .and_then(|name| tensor_cache.try_get(name));
+        if let Some(arr) = strategy_output {
             vec![arr]
         } else if !model_meta.output_names.is_empty() {
             let found: Vec<_> = model_meta
                 .output_names
                 .iter()
-                .filter_map(|n| tensor_cache.get(n))
+                .filter_map(|n| tensor_cache.try_get(n))
                 .collect();
             if found.is_empty() {
                 tracing::warn!(
@@ -289,7 +288,7 @@ pub fn run_inference(
                 .dependencies
                 .output
                 .iter()
-                .find_map(|n| tensor_cache.get(n))
+                .find_map(|n| tensor_cache.try_get(n))
                 .into_iter()
                 .collect()
         }
@@ -330,13 +329,14 @@ fn execute_slice(
     slice_id: &str,
     node: &ExecutionNode,
     meta: &RunSliceMetadata,
-    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
+    tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    if let Some(ref cs) = meta.channel_split {
-        return execute_channel_split(
+    let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit);
+    match strategy {
+        ExecutionStrategy::ChannelSplit(cs) => execute_channel_split(
             slices_dir,
             slice_run_dir,
             slice_id,
@@ -344,36 +344,34 @@ fn execute_slice(
             tensor_cache,
             backend,
             donor_init_map,
-        );
-    }
-
-    if let Some(ref tiling) = meta.tiling {
-        let slice_circuit = meta
-            .jstprove_circuit_path
-            .as_deref()
-            .map(std::path::PathBuf::from);
-        return execute_tiled(
-            slices_dir,
+        ),
+        ExecutionStrategy::Tiled(tiling) => {
+            let slice_circuit = meta
+                .jstprove_circuit_path
+                .as_deref()
+                .map(std::path::PathBuf::from);
+            execute_tiled(
+                slices_dir,
+                slice_run_dir,
+                slice_id,
+                tiling,
+                slice_circuit.as_deref(),
+                tensor_cache,
+                backend,
+                config,
+                donor_init_map,
+            )
+        }
+        ExecutionStrategy::Single { .. } => execute_single(
             slice_run_dir,
             slice_id,
-            tiling,
-            slice_circuit.as_deref(),
+            node,
+            meta,
             tensor_cache,
             backend,
-            config,
             donor_init_map,
-        );
+        ),
     }
-
-    execute_single(
-        slice_run_dir,
-        slice_id,
-        node,
-        meta,
-        tensor_cache,
-        backend,
-        donor_init_map,
-    )
 }
 
 fn execute_single(
@@ -381,7 +379,7 @@ fn execute_single(
     slice_id: &str,
     node: &ExecutionNode,
     meta: &RunSliceMetadata,
-    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
+    tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
@@ -429,7 +427,7 @@ fn execute_single(
             )));
         }
 
-        let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs[..1])?;
+        let input_tensor = tensor_cache.gather(&inputs[..1])?;
         let named = run_onnx_inference_named(effective_onnx, &input_tensor)?;
 
         let witness_bytes = if is_wai {
@@ -463,7 +461,7 @@ fn execute_single(
         let named = if multi_input {
             run_onnx_inference_multi_named(effective_onnx, tensor_cache, &inputs)?
         } else {
-            let input_tensor = gather_inputs_from_cache(tensor_cache, &inputs)?;
+            let input_tensor = tensor_cache.gather(&inputs)?;
             run_onnx_inference_named(effective_onnx, &input_tensor)?
         };
         store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
@@ -485,20 +483,12 @@ fn execute_tiled(
     slice_id: &str,
     tiling: &TilingInfo,
     slice_circuit_path: Option<&Path>,
-    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
+    tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let input_arr = tensor_cache
-        .get(&tiling.input_name)
-        .ok_or_else(|| {
-            DsperseError::Pipeline(format!(
-                "tiling input '{}' not in cache for {slice_id}",
-                tiling.input_name
-            ))
-        })?
-        .clone();
+    let input_arr = tensor_cache.get(&tiling.input_name)?.clone();
 
     let input_4d = if input_arr.ndim() == 4 {
         let s = input_arr.shape();
@@ -761,7 +751,7 @@ fn execute_tiled(
         tiling.output_name
     );
     let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
-    tensor_cache.insert(tiling.output_name.clone(), reconstructed);
+    tensor_cache.put(tiling.output_name.clone(), reconstructed);
 
     Ok(ExecutionInfo {
         method: ExecutionMethod::Tiled,
@@ -778,19 +768,11 @@ fn execute_channel_split(
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
-    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
+    tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let input_arr = tensor_cache
-        .get(&cs.input_name)
-        .ok_or_else(|| {
-            DsperseError::Pipeline(format!(
-                "channel split input '{}' not in cache for {slice_id}",
-                cs.input_name
-            ))
-        })?
-        .clone();
+    let input_arr = tensor_cache.get(&cs.input_name)?.clone();
 
     let (input_4d, n, h) = if input_arr.ndim() == 4 {
         let s = input_arr.shape();
@@ -810,7 +792,7 @@ fn execute_channel_split(
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
         let total_elements = input_flat.len();
         let nc = n * cs.c_in;
-        if nc > 0 && total_elements % nc != 0 {
+        if nc > 0 && !total_elements.is_multiple_of(nc) {
             return Err(DsperseError::Pipeline(format!(
                 "channel split reshape: total_elements {total_elements} not divisible by n*c_in ({nc})"
             )));
@@ -882,7 +864,7 @@ fn execute_channel_split(
                 (cs.out_h, cs.out_w)
             } else if cs.c_out > 0 {
                 let out_spatial = group_flat.len() / (n * cs.c_out);
-                if h > 0 && out_spatial > 0 && out_spatial % h == 0 {
+                if h > 0 && out_spatial > 0 && out_spatial.is_multiple_of(h) {
                     (h, out_spatial / h)
                 } else {
                     return Err(DsperseError::Pipeline(format!(
@@ -951,7 +933,7 @@ fn execute_channel_split(
 
     match accumulated {
         Some(acc) => {
-            tensor_cache.insert(cs.output_name.clone(), acc.into_dyn());
+            tensor_cache.put(cs.output_name.clone(), acc.into_dyn());
         }
         None => {
             return Err(DsperseError::Pipeline(format!(
@@ -1154,7 +1136,7 @@ fn reshape_to_4d(flat: &[f64], c: usize, h: usize, w: usize) -> Result<Array4<f6
 }
 
 fn store_named_outputs(
-    tensor_cache: &mut HashMap<String, ArrayD<f64>>,
+    tensor_cache: &mut TensorStore,
     output_names: &[String],
     named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
 ) -> Result<()> {
@@ -1162,7 +1144,7 @@ fn store_named_outputs(
         if let Some((data, shape)) = named_outputs.get(name) {
             let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
                 .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
-            tensor_cache.insert(name.clone(), arr);
+            tensor_cache.put(name.clone(), arr);
         }
     }
     Ok(())
@@ -1186,15 +1168,13 @@ fn run_onnx_inference_named(onnx_path: &Path, input: &ArrayD<f64>) -> Result<Nam
 
 fn run_onnx_inference_multi_named(
     onnx_path: &Path,
-    tensor_cache: &HashMap<String, ArrayD<f64>>,
+    tensor_cache: &TensorStore,
     input_names: &[String],
 ) -> Result<NamedOutputs> {
     let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = input_names
         .iter()
         .map(|name| {
-            let arr = tensor_cache.get(name).ok_or_else(|| {
-                DsperseError::Pipeline(format!("missing tensor '{name}' in cache"))
-            })?;
+            let arr = tensor_cache.get(name)?;
             Ok((
                 name.as_str(),
                 arr.iter().copied().collect(),
@@ -1253,9 +1233,9 @@ pub(crate) fn build_execution_chain(
         );
 
         let backend = if has_circuit {
-            Backend::Jstprove
+            BackendKind::Jstprove
         } else {
-            Backend::Onnx
+            BackendKind::Onnx
         };
 
         nodes.insert(
@@ -1310,9 +1290,9 @@ pub(crate) fn build_run_metadata(
             tiling: slice.tiling.clone(),
             channel_split: slice.channel_split.clone(),
             backend: if has_circuit {
-                Backend::Jstprove
+                BackendKind::Jstprove
             } else {
-                Backend::Onnx
+                BackendKind::Onnx
             },
             jstprove_circuit_path: node.and_then(|n| n.circuit_path.clone()),
             jstprove_settings_path: None,
@@ -1551,25 +1531,24 @@ mod tests {
 
     #[test]
     fn store_named_outputs_basic() {
-        let mut cache: HashMap<String, ArrayD<f64>> = HashMap::new();
+        let mut cache = TensorStore::new();
         let names = vec!["out_a".to_string(), "out_b".to_string()];
         let mut named = HashMap::new();
         named.insert("out_a".to_string(), (vec![1.0, 2.0], vec![2]));
         named.insert("out_b".to_string(), (vec![3.0], vec![1]));
 
         store_named_outputs(&mut cache, &names, named).unwrap();
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache["out_a"].shape(), &[2]);
-        assert_eq!(cache["out_b"].shape(), &[1]);
+        assert_eq!(cache.get("out_a").unwrap().shape(), &[2]);
+        assert_eq!(cache.get("out_b").unwrap().shape(), &[1]);
     }
 
     #[test]
     fn store_named_outputs_missing_name_ignored() {
-        let mut cache: HashMap<String, ArrayD<f64>> = HashMap::new();
+        let mut cache = TensorStore::new();
         let names = vec!["missing".to_string()];
         let named = HashMap::new();
         store_named_outputs(&mut cache, &names, named).unwrap();
-        assert!(cache.is_empty());
+        assert!(!cache.contains("missing"));
     }
 
     #[test]

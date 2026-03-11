@@ -2,12 +2,14 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::backend::jstprove::JstproveBackend;
+use crate::backend::ProofBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{ExecutionMethod, RunMetadata, SliceResult, TileResult};
 use crate::schema::metadata::RunSliceMetadata;
 use crate::schema::tiling::TilingInfo;
 use crate::utils::paths::resolve_relative_path;
+
+use super::tile_executor::resolve_tile_circuit;
 
 #[derive(Debug, Clone, Copy)]
 pub enum PipelineStage {
@@ -49,7 +51,7 @@ pub fn run_pipeline_stage(
     stage: PipelineStage,
     run_dir: &Path,
     slices_dir: &Path,
-    backend: &JstproveBackend,
+    backend: &dyn ProofBackend,
     parallel: usize,
 ) -> Result<RunMetadata> {
     let meta_path = run_dir.join(crate::utils::paths::METADATA_FILE);
@@ -161,7 +163,7 @@ fn execute_single_slice(
     slice_run_dir: &Path,
     slice_id: &str,
     meta: &RunSliceMetadata,
-    backend: &JstproveBackend,
+    backend: &dyn ProofBackend,
 ) -> Result<SliceResult> {
     if let Some(ref tiling) = meta.tiling {
         let default_circuit_path = meta
@@ -202,10 +204,33 @@ fn execute_single_slice(
         }
     };
 
+    execute_stage_operation(
+        stage,
+        slice_id,
+        &circuit_path,
+        &witness_bytes,
+        slice_run_dir,
+        backend,
+        start,
+        method,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_stage_operation(
+    stage: PipelineStage,
+    slice_id: &str,
+    circuit_path: &Path,
+    witness_bytes: &[u8],
+    output_dir: &Path,
+    backend: &dyn ProofBackend,
+    start: std::time::Instant,
+    method: ExecutionMethod,
+) -> Result<SliceResult> {
     match stage {
         PipelineStage::Prove => {
-            let proof_bytes = backend.prove(&circuit_path, &witness_bytes)?;
-            let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
+            let proof_bytes = backend.prove(circuit_path, witness_bytes)?;
+            let proof_path = output_dir.join(crate::utils::paths::PROOF_FILE);
             std::fs::write(&proof_path, &proof_bytes)
                 .map_err(|e| DsperseError::io(e, &proof_path))?;
 
@@ -214,7 +239,7 @@ fn execute_single_slice(
             Ok(result)
         }
         PipelineStage::Verify => {
-            let proof_path = slice_run_dir.join(crate::utils::paths::PROOF_FILE);
+            let proof_path = output_dir.join(crate::utils::paths::PROOF_FILE);
             let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
                 Ok(b) => b,
                 Err(e) => {
@@ -227,7 +252,7 @@ fn execute_single_slice(
                 }
             };
 
-            let valid = backend.verify(&circuit_path, &witness_bytes, &proof_bytes)?;
+            let valid = backend.verify(circuit_path, witness_bytes, &proof_bytes)?;
 
             let elapsed = start.elapsed().as_secs_f64();
             let mut result = if valid {
@@ -253,7 +278,7 @@ fn execute_tiled_stage(
     slice_run_dir: &Path,
     tiling: &TilingInfo,
     slices_dir: &Path,
-    backend: &JstproveBackend,
+    backend: &dyn ProofBackend,
 ) -> Result<SliceResult> {
     if tiling.num_tiles == 0 {
         return Err(DsperseError::Pipeline(format!(
@@ -278,31 +303,12 @@ fn execute_tiled_stage(
             };
             let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
 
-            let tile_circuit_str = tiling
-                .tiles
-                .as_deref()
-                .and_then(|ts| {
-                    ts.get(tile_idx)
-                        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
-                })
-                .or_else(|| {
-                    tiling
-                        .tile
-                        .as_ref()
-                        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
-                });
-            let tile_circuit_path = match tile_circuit_str {
-                Some(p) => match resolve_relative_path(slices_dir, p) {
-                    Ok(resolved) => Some(resolved),
-                    Err(e) => return fail(e.to_string()),
-                },
-                None => None,
-            }
-            .or_else(|| default_circuit_path.map(|p| p.to_path_buf()));
-            let tile_circuit_path = match tile_circuit_path {
-                Some(p) => p,
-                None => return fail(format!("no circuit path for tile {tile_idx}")),
-            };
+            let tile_circuit_path =
+                match resolve_tile_circuit(tiling, tile_idx, slices_dir, default_circuit_path) {
+                    Ok(Some(p)) => p,
+                    Ok(None) => return fail(format!("no circuit path for tile {tile_idx}")),
+                    Err(e) => return fail(e),
+                };
 
             let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
             let witness_bytes = match crate::utils::limits::read_checked(&witness_path) {
@@ -315,55 +321,16 @@ fn execute_tiled_stage(
                 }
             };
 
-            match stage {
-                PipelineStage::Prove => {
-                    let proof_bytes = match backend.prove(&tile_circuit_path, &witness_bytes) {
-                        Ok(b) => b,
-                        Err(e) => return fail(e.to_string()),
-                    };
-                    let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                    if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
-                        return fail(format!("write proof: {}: {e}", proof_path.display()));
-                    }
-                    let mut result = TileResult::success(
-                        tile_idx,
-                        Some(method),
-                        tile_start.elapsed().as_secs_f64(),
-                    );
-                    result.proof_path = Some(proof_path.to_string_lossy().into_owned());
-                    result
-                }
-                PipelineStage::Verify => {
-                    let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
-                    let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            return fail(format!(
-                                "proof read error: {}: {e}",
-                                proof_path.display()
-                            ));
-                        }
-                    };
-                    let valid =
-                        match backend.verify(&tile_circuit_path, &witness_bytes, &proof_bytes) {
-                            Ok(v) => v,
-                            Err(e) => return fail(e.to_string()),
-                        };
-                    let elapsed = tile_start.elapsed().as_secs_f64();
-                    let mut result = if valid {
-                        TileResult::success(tile_idx, Some(method), elapsed)
-                    } else {
-                        TileResult::failure(
-                            tile_idx,
-                            "proof verification failed".into(),
-                            Some(method),
-                            elapsed,
-                        )
-                    };
-                    result.proof_path = Some(proof_path.to_string_lossy().into_owned());
-                    result
-                }
-            }
+            execute_tile_stage_operation(
+                stage,
+                tile_idx,
+                &tile_circuit_path,
+                &witness_bytes,
+                &tile_dir,
+                backend,
+                method,
+                tile_start,
+            )
         })
         .collect();
 
@@ -383,4 +350,68 @@ fn execute_tiled_stage(
     };
     result.tiles = tile_results;
     Ok(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_tile_stage_operation(
+    stage: PipelineStage,
+    tile_idx: usize,
+    circuit_path: &Path,
+    witness_bytes: &[u8],
+    tile_dir: &Path,
+    backend: &dyn ProofBackend,
+    method: ExecutionMethod,
+    tile_start: std::time::Instant,
+) -> TileResult {
+    let fail = |error: String| {
+        TileResult::failure(
+            tile_idx,
+            error,
+            Some(method),
+            tile_start.elapsed().as_secs_f64(),
+        )
+    };
+
+    match stage {
+        PipelineStage::Prove => {
+            let proof_bytes = match backend.prove(circuit_path, witness_bytes) {
+                Ok(b) => b,
+                Err(e) => return fail(e.to_string()),
+            };
+            let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
+            if let Err(e) = std::fs::write(&proof_path, &proof_bytes) {
+                return fail(format!("write proof: {}: {e}", proof_path.display()));
+            }
+            let mut result =
+                TileResult::success(tile_idx, Some(method), tile_start.elapsed().as_secs_f64());
+            result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+            result
+        }
+        PipelineStage::Verify => {
+            let proof_path = tile_dir.join(crate::utils::paths::PROOF_FILE);
+            let proof_bytes = match crate::utils::limits::read_checked(&proof_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    return fail(format!("proof read error: {}: {e}", proof_path.display()));
+                }
+            };
+            let valid = match backend.verify(circuit_path, witness_bytes, &proof_bytes) {
+                Ok(v) => v,
+                Err(e) => return fail(e.to_string()),
+            };
+            let elapsed = tile_start.elapsed().as_secs_f64();
+            let mut result = if valid {
+                TileResult::success(tile_idx, Some(method), elapsed)
+            } else {
+                TileResult::failure(
+                    tile_idx,
+                    "proof verification failed".into(),
+                    Some(method),
+                    elapsed,
+                )
+            };
+            result.proof_path = Some(proof_path.to_string_lossy().into_owned());
+            result
+        }
+    }
 }

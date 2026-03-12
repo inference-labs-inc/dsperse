@@ -441,10 +441,7 @@ fn run_combined_inference(
         .as_ref()
         .map_or(combined_path.as_path(), |t| t.path());
 
-    let named_outputs = if declared_inputs.len() == 1 {
-        let input_arr = value_to_arrayd(input_val)?;
-        run_onnx_inference_named(effective_path, &input_arr)?
-    } else if input_val.is_map() {
+    let named_outputs = if input_val.is_map() {
         let mut cache = TensorStore::new();
         for name in declared_inputs {
             let v = map_get_ref(input_val, name)
@@ -453,6 +450,9 @@ fn run_combined_inference(
         }
         let inputs: Vec<String> = declared_inputs.clone();
         run_onnx_inference_multi_named(effective_path, &cache, &inputs)?
+    } else if declared_inputs.len() == 1 {
+        let input_arr = value_to_arrayd(input_val)?;
+        run_onnx_inference_named(effective_path, &input_arr)?
     } else {
         return Err(DsperseError::Pipeline(format!(
             "model declares {} inputs but input is not a map",
@@ -506,6 +506,20 @@ fn run_combined_inference(
                 verification_execution: None,
             });
             continue;
+        }
+
+        match ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)? {
+            ExecutionStrategy::Single { .. } => {}
+            ExecutionStrategy::Tiled(_) => {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: combined mode does not support tiled circuit slices; use --combined false"
+                )));
+            }
+            ExecutionStrategy::ChannelSplit(_) => {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: combined mode does not support channel-split circuit slices; use --combined false"
+                )));
+            }
         }
 
         let circuit_path = slice_meta

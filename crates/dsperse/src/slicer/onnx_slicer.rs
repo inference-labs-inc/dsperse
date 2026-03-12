@@ -467,6 +467,13 @@ fn trace_shapes_tract(
     }
 
     if let Some(graph) = &proto_model.graph {
+        for init in &graph.initializer {
+            if !shapes.contains_key(&init.name) {
+                let shape: Vec<i64> = init.dims.to_vec();
+                shapes.insert(init.name.clone(), shape);
+            }
+        }
+
         let onnx_node_outputs: Vec<(String, Vec<String>)> = graph
             .node
             .iter()
@@ -508,67 +515,89 @@ fn trace_shapes_tract(
             }
         }
 
-        for node in &graph.node {
-            if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
-                && let Some(inp) = node.input.first()
-                && let Some(in_shape) = shapes.get(inp).cloned()
-            {
-                for out in &node.output {
-                    if !out.is_empty() {
-                        shapes.insert(out.clone(), in_shape.clone());
-                    }
-                }
-            }
-        }
-
         let binary_ops: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"]
             .into_iter()
             .collect();
-        for node in &graph.node {
-            if binary_ops.contains(node.op_type.as_str()) {
-                let best = node
-                    .input
-                    .iter()
-                    .filter_map(|inp| shapes.get(inp))
-                    .max_by_key(|s: &&Vec<i64>| s.len())
-                    .cloned();
-                if let Some(s) = best {
+
+        let mut prev_len = 0;
+        while shapes.len() != prev_len {
+            prev_len = shapes.len();
+
+            for node in &graph.node {
+                if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp).cloned()
+                {
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), s.clone());
+                            shapes.insert(out.clone(), in_shape.clone());
                         }
                     }
                 }
             }
-        }
 
-        for node in &graph.node {
-            if node.op_type == "MaxPool"
-                && let Some(inp) = node.input.first()
-                && let Some(in_shape) = shapes.get(inp).cloned()
-                && in_shape.len() == 4
-            {
-                let kernel =
-                    onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
-                let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
-                let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-                if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
-                    let pad_h = if pads.len() >= 4 {
-                        pads[0] + pads[2]
-                    } else {
-                        0
-                    };
-                    let pad_w = if pads.len() >= 4 {
-                        pads[1] + pads[3]
-                    } else {
-                        0
-                    };
-                    let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
-                    let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
-                    let out_shape = vec![in_shape[0], in_shape[1], h, w];
-                    for out in &node.output {
-                        if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), out_shape.clone());
+            for node in &graph.node {
+                if binary_ops.contains(node.op_type.as_str()) {
+                    let input_shapes: Vec<&Vec<i64>> = node
+                        .input
+                        .iter()
+                        .filter_map(|inp| shapes.get(inp))
+                        .collect();
+                    if let Some(broadcasted) = broadcast_shapes(&input_shapes) {
+                        for out in &node.output {
+                            if !out.is_empty() && !shapes.contains_key(out) {
+                                shapes.insert(out.clone(), broadcasted.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            for node in &graph.node {
+                if node.op_type == "MaxPool"
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp).cloned()
+                    && in_shape.len() == 4
+                {
+                    let kernel =
+                        onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
+                    let strides =
+                        onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
+                    let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+                    let dilations =
+                        onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
+                    let ceil_mode = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0);
+                    if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
+                        let pad_h = if pads.len() >= 4 {
+                            pads[0] + pads[2]
+                        } else {
+                            0
+                        };
+                        let pad_w = if pads.len() >= 4 {
+                            pads[1] + pads[3]
+                        } else {
+                            0
+                        };
+                        let dil_h = dilations.first().copied().unwrap_or(1);
+                        let dil_w = dilations.get(1).copied().unwrap_or(1);
+                        let eff_k_h = (kernel[0] - 1) * dil_h + 1;
+                        let eff_k_w = (kernel[1] - 1) * dil_w + 1;
+                        let (h, w) = if ceil_mode != 0 {
+                            (
+                                (in_shape[2] + pad_h - eff_k_h + strides[0] - 1) / strides[0] + 1,
+                                (in_shape[3] + pad_w - eff_k_w + strides[1] - 1) / strides[1] + 1,
+                            )
+                        } else {
+                            (
+                                (in_shape[2] + pad_h).saturating_sub(eff_k_h) / strides[0] + 1,
+                                (in_shape[3] + pad_w).saturating_sub(eff_k_w) / strides[1] + 1,
+                            )
+                        };
+                        let out_shape = vec![in_shape[0], in_shape[1], h, w];
+                        for out in &node.output {
+                            if !out.is_empty() && !shapes.contains_key(out) {
+                                shapes.insert(out.clone(), out_shape.clone());
+                            }
                         }
                     }
                 }
@@ -594,6 +623,26 @@ fn trace_shapes_tract(
 
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok(shapes)
+}
+
+fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {
+    if shapes.is_empty() {
+        return None;
+    }
+    let max_rank = shapes.iter().map(|s| s.len()).max().unwrap_or(0);
+    let mut result = vec![1i64; max_rank];
+    for shape in shapes {
+        let offset = max_rank - shape.len();
+        for (i, &dim) in shape.iter().enumerate() {
+            let ri = offset + i;
+            if result[ri] == 1 {
+                result[ri] = dim;
+            } else if dim != 1 && dim != result[ri] {
+                return None;
+            }
+        }
+    }
+    Some(result)
 }
 
 #[cfg(test)]

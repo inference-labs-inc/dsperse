@@ -1,5 +1,6 @@
 pub mod analyzer;
 pub mod autotiler;
+pub mod combiner;
 pub mod materializer;
 pub mod onnx_proto;
 pub mod onnx_slicer;

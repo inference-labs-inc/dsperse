@@ -115,7 +115,8 @@ fn compile_slices(
 }
 
 #[pyfunction]
-#[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false, weights_onnx=None))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false, weights_onnx=None, combined=true))]
 fn run_inference(
     py: Python<'_>,
     slices_dir: &str,
@@ -124,6 +125,7 @@ fn run_inference(
     parallel: usize,
     batch: bool,
     weights_onnx: Option<&str>,
+    combined: bool,
 ) -> PyResult<String> {
     require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
@@ -131,6 +133,7 @@ fn run_inference(
         parallel,
         batch,
         weights_onnx: weights_onnx.map(PathBuf::from),
+        combined,
     };
     let sd = PathBuf::from(slices_dir);
     let inf = PathBuf::from(input_file);

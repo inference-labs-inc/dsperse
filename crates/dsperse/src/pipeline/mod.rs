@@ -1,7 +1,7 @@
 mod compiler;
 mod incremental;
 mod prover;
-mod runner;
+pub mod runner;
 mod stage;
 pub mod strategy;
 pub mod tensor_store;

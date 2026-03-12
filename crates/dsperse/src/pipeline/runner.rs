@@ -30,6 +30,7 @@ pub struct RunConfig {
     pub parallel: usize,
     pub batch: bool,
     pub weights_onnx: Option<PathBuf>,
+    pub combined: bool,
 }
 
 impl Default for RunConfig {
@@ -38,11 +39,12 @@ impl Default for RunConfig {
             parallel: 1,
             batch: false,
             weights_onnx: None,
+            combined: true,
         }
     }
 }
 
-pub(crate) fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
+pub fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!(
             "no {} in slices",
@@ -96,6 +98,38 @@ fn validate_weights_onnx(
     Ok(())
 }
 
+fn load_donor_model(
+    weights_onnx: Option<&PathBuf>,
+) -> Result<Option<crate::slicer::onnx_proto::ModelProto>> {
+    let weights_path = match weights_onnx {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    if !weights_path.is_file() {
+        return Err(DsperseError::Other(format!(
+            "consumer weights ONNX not found: {}",
+            weights_path.display()
+        )));
+    }
+    Ok(Some(crate::slicer::onnx_proto::load_model(weights_path)?))
+}
+
+fn donor_init_map(
+    model: Option<&crate::slicer::onnx_proto::ModelProto>,
+) -> Result<Option<HashMap<String, &TensorProto>>> {
+    match model {
+        Some(m) => {
+            let graph = m.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
+            })?;
+            Ok(Some(crate::slicer::onnx_proto::build_initializer_map(
+                graph,
+            )))
+        }
+        None => Ok(None),
+    }
+}
+
 pub fn run_inference(
     slices_dir: &Path,
     input_path: &Path,
@@ -105,31 +139,31 @@ pub fn run_inference(
 ) -> Result<RunMetadata> {
     let model_meta = load_model_metadata(slices_dir)?;
 
+    if config.combined
+        && model_meta.original_model_path.is_some()
+        && model_meta.traced_shapes.is_some()
+    {
+        return run_combined_inference(
+            slices_dir,
+            input_path,
+            run_dir,
+            backend,
+            config,
+            &model_meta,
+        );
+    } else if config.combined {
+        tracing::warn!(
+            "combined mode requested but metadata missing original_model_path or traced_shapes, using per-slice execution"
+        );
+    }
+
     if model_meta.original_model_path.is_some() {
         crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
     }
 
-    let donor_model = if let Some(ref weights_path) = config.weights_onnx {
-        if !weights_path.is_file() {
-            return Err(DsperseError::Other(format!(
-                "consumer weights ONNX not found: {}",
-                weights_path.display()
-            )));
-        }
-        Some(crate::slicer::onnx_proto::load_model(weights_path)?)
-    } else {
-        None
-    };
-    let donor_init_map = match donor_model.as_ref() {
-        Some(model) => {
-            let graph = model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-            })?;
-            Some(crate::slicer::onnx_proto::build_initializer_map(graph))
-        }
-        None => None,
-    };
-    if let Some(ref map) = donor_init_map {
+    let donor_model = load_donor_model(config.weights_onnx.as_ref())?;
+    let donor_map = donor_init_map(donor_model.as_ref())?;
+    if let Some(ref map) = donor_map {
         validate_weights_onnx(map, &model_meta, slices_dir)?;
         tracing::info!(
             weights = %config.weights_onnx.as_ref().unwrap().display(),
@@ -206,7 +240,7 @@ pub fn run_inference(
             &mut tensor_cache,
             backend,
             config,
-            donor_init_map.as_ref(),
+            donor_map.as_ref(),
         );
 
         let exec_info = match exec_result {
@@ -339,6 +373,326 @@ pub fn run_inference(
         &output_path,
         &build_msgpack_map(vec![("output_data", output_val)]),
     )?;
+
+    Ok(final_meta)
+}
+
+fn run_combined_inference(
+    slices_dir: &Path,
+    input_path: &Path,
+    run_dir: &Path,
+    backend: &JstproveBackend,
+    config: &RunConfig,
+    model_meta: &ModelMetadata,
+) -> Result<RunMetadata> {
+    let combined_path =
+        crate::slicer::combiner::ensure_combined_materialized(slices_dir, model_meta)?;
+
+    let donor_model = load_donor_model(config.weights_onnx.as_ref())?;
+    let donor_map = donor_init_map(donor_model.as_ref())?;
+    if let Some(ref map) = donor_map {
+        let combined_model = crate::slicer::onnx_proto::load_model(&combined_path)?;
+        let combined_graph = combined_model
+            .graph
+            .as_ref()
+            .ok_or_else(|| DsperseError::Pipeline("combined ONNX missing graph".into()))?;
+        crate::slicer::onnx_proto::validate_initializer_compatibility(
+            &combined_graph.initializer,
+            map,
+            "combined",
+        )?;
+        tracing::info!(
+            weights = %config.weights_onnx.as_ref().unwrap().display(),
+            "validated consumer weights against combined ONNX"
+        );
+    }
+
+    std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
+
+    let input_data = read_msgpack(input_path)?;
+    let input_val = extract_input_data(&input_data).ok_or_else(|| {
+        DsperseError::Pipeline(
+            "input has no recognized input key (input_data, input, data, inputs)".into(),
+        )
+    })?;
+    let first_slice = model_meta
+        .slices
+        .first()
+        .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
+    let declared_inputs = &first_slice.dependencies.filtered_inputs;
+    if declared_inputs.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "first slice has no input dependency".into(),
+        ));
+    }
+
+    let input_copy = run_dir.join(crate::utils::paths::INPUT_FILE);
+    write_msgpack(&input_copy, &input_data)?;
+
+    let effective_combined = if let Some(ref map) = donor_map {
+        Some(crate::slicer::onnx_proto::build_patched_onnx(
+            &combined_path,
+            map,
+        )?)
+    } else {
+        None
+    };
+    let effective_path = effective_combined
+        .as_ref()
+        .map_or(combined_path.as_path(), |t| t.path());
+
+    let named_outputs = if input_val.is_map() {
+        let mut cache = TensorStore::new();
+        for name in declared_inputs {
+            let v = map_get_ref(input_val, name)
+                .ok_or_else(|| DsperseError::Pipeline(format!("input map missing key {name:?}")))?;
+            cache.put(name.clone(), value_to_arrayd(v)?);
+        }
+        let inputs: Vec<String> = declared_inputs.clone();
+        run_onnx_inference_multi_named(effective_path, &cache, &inputs)?
+    } else if declared_inputs.len() == 1 {
+        let input_arr = value_to_arrayd(input_val)?;
+        run_onnx_inference_named(effective_path, &input_arr)?
+    } else {
+        return Err(DsperseError::Pipeline(format!(
+            "model declares {} inputs but input is not a map",
+            declared_inputs.len()
+        )));
+    };
+
+    tracing::info!(
+        outputs = named_outputs.len(),
+        "combined model inference complete"
+    );
+
+    let mut tensor_cache = TensorStore::new();
+    for (name, (data, shape)) in &named_outputs {
+        let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
+            .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
+        tensor_cache.put(name.clone(), arr);
+    }
+
+    crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, model_meta)?;
+    let chain = build_execution_chain(model_meta, slices_dir)?;
+    let run_meta = build_run_metadata(model_meta, slices_dir, &chain)?;
+
+    let mut results: Vec<ExecutionResultEntry> = Vec::new();
+
+    for slice in &model_meta.slices {
+        let slice_id = format!("slice_{}", slice.index);
+        let node = chain
+            .nodes
+            .get(&slice_id)
+            .ok_or_else(|| DsperseError::Pipeline(format!("missing node {slice_id}")))?;
+
+        let slice_meta = run_meta.slices.get(&slice_id).ok_or_else(|| {
+            DsperseError::Pipeline(format!("missing run slice metadata {slice_id}"))
+        })?;
+
+        let slice_run_dir = run_dir.join(&slice_id);
+        std::fs::create_dir_all(&slice_run_dir).map_err(|e| DsperseError::io(e, &slice_run_dir))?;
+
+        if !node.use_circuit {
+            results.push(ExecutionResultEntry {
+                slice_id: slice_id.clone(),
+                witness_execution: Some(ExecutionInfo {
+                    method: ExecutionMethod::OnnxOnly,
+                    success: true,
+                    error: None,
+                    witness_file: None,
+                    tile_exec_infos: Vec::new(),
+                }),
+                proof_execution: None,
+                verification_execution: None,
+            });
+            continue;
+        }
+
+        match ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)? {
+            ExecutionStrategy::Single { .. } => {}
+            ExecutionStrategy::Tiled(_) => {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: combined mode does not support tiled circuit slices; use --combined false"
+                )));
+            }
+            ExecutionStrategy::ChannelSplit(_) => {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: combined mode does not support channel-split circuit slices; use --combined false"
+                )));
+            }
+        }
+
+        let circuit_path = slice_meta
+            .jstprove_circuit_path
+            .as_deref()
+            .map(PathBuf::from)
+            .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
+
+        let params = backend.load_params(&circuit_path)?;
+        let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
+
+        if donor_map.is_some() && !is_wai {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
+            )));
+        }
+
+        let activation_inputs: Vec<String> = slice
+            .dependencies
+            .filtered_inputs
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+
+        let witness_result = if activation_inputs.is_empty() {
+            Err(DsperseError::Pipeline(format!(
+                "{slice_id}: no activation inputs declared for circuit slice"
+            )))
+        } else if activation_inputs.len() == 1 {
+            let input_name = &activation_inputs[0];
+            let input_arr = tensor_cache.get(input_name).map_err(|_| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: activation input '{input_name}' not found in combined model outputs"
+                ))
+            })?;
+
+            if is_wai {
+                let onnx_path = slice.resolve_onnx(slices_dir)?;
+                generate_wai_witness(
+                    backend,
+                    &circuit_path,
+                    &onnx_path,
+                    donor_map.as_ref(),
+                    params.as_ref().unwrap(),
+                    input_arr,
+                )
+            } else {
+                let flat: Vec<f64> = input_arr.iter().copied().collect();
+                backend.witness_f64(&circuit_path, &flat, &[])
+            }
+        } else {
+            Err(DsperseError::Pipeline(format!(
+                "{slice_id}: combined mode does not support multi-input circuit slices; use --combined false for per-slice execution"
+            )))
+        };
+
+        match witness_result {
+            Ok(witness_bytes) => {
+                let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
+                std::fs::write(&witness_path, &witness_bytes)
+                    .map_err(|e| DsperseError::io(e, &witness_path))?;
+
+                tracing::info!(slice = %slice_id, "witness generated from combined outputs");
+
+                results.push(ExecutionResultEntry {
+                    slice_id: slice_id.clone(),
+                    witness_execution: Some(ExecutionInfo {
+                        method: ExecutionMethod::JstproveGenWitness,
+                        success: true,
+                        error: None,
+                        witness_file: Some(witness_path.to_string_lossy().into_owned()),
+                        tile_exec_infos: Vec::new(),
+                    }),
+                    proof_execution: None,
+                    verification_execution: None,
+                });
+            }
+            Err(e) => {
+                tracing::error!(slice = %slice_id, error = %e, "witness generation failed");
+                results.push(ExecutionResultEntry {
+                    slice_id: slice_id.clone(),
+                    witness_execution: Some(ExecutionInfo {
+                        method: ExecutionMethod::JstproveGenWitness,
+                        success: false,
+                        error: Some(e.to_string()),
+                        witness_file: None,
+                        tile_exec_infos: Vec::new(),
+                    }),
+                    proof_execution: None,
+                    verification_execution: None,
+                });
+                break;
+            }
+        }
+    }
+
+    let mut final_meta = run_meta;
+    final_meta.execution_chain.execution_results = results;
+    final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
+
+    let witness_failure = final_meta
+        .execution_chain
+        .execution_results
+        .iter()
+        .filter_map(|r| {
+            r.witness_execution
+                .as_ref()
+                .filter(|w| !w.success)
+                .and_then(|w| w.error.as_ref())
+                .map(|err| format!("{}: {err}", r.slice_id))
+        })
+        .next();
+    if let Some(err) = witness_failure {
+        let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
+        let _ = crate::utils::metadata::save_run_metadata(&meta_out, &final_meta);
+        return Err(DsperseError::Pipeline(format!(
+            "combined pipeline failed at {err}"
+        )));
+    }
+
+    let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
+    crate::utils::metadata::save_run_metadata(&meta_out, &final_meta)?;
+
+    let last_slice = model_meta
+        .slices
+        .last()
+        .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
+    let output_arrs: Vec<&ArrayD<f64>> = if !model_meta.output_names.is_empty() {
+        model_meta
+            .output_names
+            .iter()
+            .filter_map(|n| tensor_cache.try_get(n))
+            .collect()
+    } else {
+        last_slice
+            .dependencies
+            .output
+            .iter()
+            .find_map(|n| tensor_cache.try_get(n))
+            .into_iter()
+            .collect()
+    };
+
+    if output_arrs.is_empty() {
+        let expected: Vec<&str> = if !model_meta.output_names.is_empty() {
+            model_meta.output_names.iter().map(String::as_str).collect()
+        } else {
+            last_slice
+                .dependencies
+                .output
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+        let available: Vec<&String> = tensor_cache.keys().collect();
+        return Err(DsperseError::Pipeline(format!(
+            "no output tensor found in combined model outputs; expected {expected:?}, available {available:?}"
+        )));
+    }
+
+    let output_path = run_dir.join(crate::utils::paths::OUTPUT_FILE);
+    let output_val = Value::Array(output_arrs.iter().map(|arr| arrayd_to_value(arr)).collect());
+    write_msgpack(
+        &output_path,
+        &build_msgpack_map(vec![("output_data", output_val)]),
+    )?;
+
+    tracing::info!(
+        run_dir = %run_dir.display(),
+        slices = model_meta.slices.len(),
+        "combined inference complete"
+    );
 
     Ok(final_meta)
 }
@@ -1584,5 +1938,6 @@ mod tests {
         assert_eq!(config.parallel, 1);
         assert!(!config.batch);
         assert!(config.weights_onnx.is_none());
+        assert!(config.combined);
     }
 }

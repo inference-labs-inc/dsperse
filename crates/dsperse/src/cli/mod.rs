@@ -589,6 +589,68 @@ mod tests {
     }
 
     #[test]
+    fn cli_parse_combine_command() {
+        let cli = Cli::parse_from(["dsperse", "combine", "--model-dir", "/tmp/model"]);
+        assert!(matches!(cli.command, Commands::Combine(_)));
+    }
+
+    #[test]
+    fn cli_parse_combine_with_slices_dir() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "combine",
+            "--model-dir",
+            "/tmp/model",
+            "--slices-dir",
+            "/tmp/slices",
+        ]);
+        if let Commands::Combine(args) = cli.command {
+            assert_eq!(
+                args.slices_dir,
+                Some(std::path::PathBuf::from("/tmp/slices"))
+            );
+        } else {
+            panic!("expected Combine");
+        }
+    }
+
+    #[test]
+    fn cli_run_combined_default_true() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "run",
+            "--model-dir",
+            "/tmp",
+            "--input-file",
+            "/tmp/in.json",
+        ]);
+        if let Commands::Run(args) = cli.command {
+            assert!(args.combined);
+        } else {
+            panic!("expected Run");
+        }
+    }
+
+    #[test]
+    fn cli_run_combined_explicit_false() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "run",
+            "--model-dir",
+            "/tmp",
+            "--input-file",
+            "/tmp/in.json",
+            "--combined",
+            "false",
+        ]);
+        if let Commands::Run(args) = cli.command {
+            assert!(!args.combined);
+        } else {
+            panic!("expected Run");
+        }
+    }
+
+    #[test]
     fn resolve_circuit_ops_invalid_proof_system() {
         let result = resolve_circuit_ops("nonexistent", None);
         assert!(result.is_err());

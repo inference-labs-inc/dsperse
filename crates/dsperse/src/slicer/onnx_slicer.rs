@@ -565,6 +565,9 @@ fn trace_shapes_tract(
                     let strides =
                         onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
                     let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+                    let dilations =
+                        onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
+                    let ceil_mode = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0);
                     if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
                         let pad_h = if pads.len() >= 4 {
                             pads[0] + pads[2]
@@ -576,8 +579,21 @@ fn trace_shapes_tract(
                         } else {
                             0
                         };
-                        let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
-                        let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
+                        let dil_h = dilations.first().copied().unwrap_or(1);
+                        let dil_w = dilations.get(1).copied().unwrap_or(1);
+                        let eff_k_h = (kernel[0] - 1) * dil_h + 1;
+                        let eff_k_w = (kernel[1] - 1) * dil_w + 1;
+                        let (h, w) = if ceil_mode != 0 {
+                            (
+                                (in_shape[2] + pad_h - eff_k_h + strides[0] - 1) / strides[0] + 1,
+                                (in_shape[3] + pad_w - eff_k_w + strides[1] - 1) / strides[1] + 1,
+                            )
+                        } else {
+                            (
+                                (in_shape[2] + pad_h).saturating_sub(eff_k_h) / strides[0] + 1,
+                                (in_shape[3] + pad_w).saturating_sub(eff_k_w) / strides[1] + 1,
+                            )
+                        };
                         let out_shape = vec![in_shape[0], in_shape[1], h, w];
                         for out in &node.output {
                             if !out.is_empty() && !shapes.contains_key(out) {

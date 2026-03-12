@@ -116,6 +116,10 @@ pub fn run_inference(
             config,
             &model_meta,
         );
+    } else if config.combined {
+        tracing::info!(
+            "combined mode requested but original_model_path not available, using per-slice execution"
+        );
     }
 
     if model_meta.original_model_path.is_some() {

@@ -67,6 +67,11 @@ pub fn materialize_combined_model(
                     continue;
                 }
                 if !all_node_outputs.contains(input_name) {
+                    tracing::debug!(
+                        tensor = %input_name,
+                        slice = slice.index,
+                        "slice filtered_input not produced by any node in original graph, skipping"
+                    );
                     continue;
                 }
 

@@ -531,6 +531,12 @@ fn run_combined_inference(
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 
+        if donor_map.is_some() && !is_wai {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
+            )));
+        }
+
         let activation_inputs: Vec<String> = slice
             .dependencies
             .filtered_inputs

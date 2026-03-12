@@ -553,7 +553,7 @@ fn run_combined_inference(
             }
         } else {
             Err(DsperseError::Pipeline(format!(
-                "{slice_id}: combined mode does not support multi-input circuit slices"
+                "{slice_id}: combined mode does not support multi-input circuit slices; use --combined false for per-slice execution"
             )))
         };
 

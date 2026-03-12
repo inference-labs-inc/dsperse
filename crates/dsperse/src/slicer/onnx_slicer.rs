@@ -467,6 +467,13 @@ fn trace_shapes_tract(
     }
 
     if let Some(graph) = &proto_model.graph {
+        for init in &graph.initializer {
+            if !shapes.contains_key(&init.name) {
+                let shape: Vec<i64> = init.dims.to_vec();
+                shapes.insert(init.name.clone(), shape);
+            }
+        }
+
         let onnx_node_outputs: Vec<(String, Vec<String>)> = graph
             .node
             .iter()
@@ -508,67 +515,74 @@ fn trace_shapes_tract(
             }
         }
 
-        for node in &graph.node {
-            if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
-                && let Some(inp) = node.input.first()
-                && let Some(in_shape) = shapes.get(inp).cloned()
-            {
-                for out in &node.output {
-                    if !out.is_empty() {
-                        shapes.insert(out.clone(), in_shape.clone());
-                    }
-                }
-            }
-        }
-
         let binary_ops: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"]
             .into_iter()
             .collect();
-        for node in &graph.node {
-            if binary_ops.contains(node.op_type.as_str()) {
-                let best = node
-                    .input
-                    .iter()
-                    .filter_map(|inp| shapes.get(inp))
-                    .max_by_key(|s: &&Vec<i64>| s.len())
-                    .cloned();
-                if let Some(s) = best {
+
+        let mut prev_len = 0;
+        while shapes.len() != prev_len {
+            prev_len = shapes.len();
+
+            for node in &graph.node {
+                if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp).cloned()
+                {
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), s.clone());
+                            shapes.insert(out.clone(), in_shape.clone());
                         }
                     }
                 }
             }
-        }
 
-        for node in &graph.node {
-            if node.op_type == "MaxPool"
-                && let Some(inp) = node.input.first()
-                && let Some(in_shape) = shapes.get(inp).cloned()
-                && in_shape.len() == 4
-            {
-                let kernel =
-                    onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
-                let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
-                let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-                if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
-                    let pad_h = if pads.len() >= 4 {
-                        pads[0] + pads[2]
-                    } else {
-                        0
-                    };
-                    let pad_w = if pads.len() >= 4 {
-                        pads[1] + pads[3]
-                    } else {
-                        0
-                    };
-                    let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
-                    let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
-                    let out_shape = vec![in_shape[0], in_shape[1], h, w];
-                    for out in &node.output {
-                        if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), out_shape.clone());
+            for node in &graph.node {
+                if binary_ops.contains(node.op_type.as_str()) {
+                    let best = node
+                        .input
+                        .iter()
+                        .filter_map(|inp| shapes.get(inp))
+                        .max_by_key(|s: &&Vec<i64>| s.len())
+                        .cloned();
+                    if let Some(s) = best {
+                        for out in &node.output {
+                            if !out.is_empty() && !shapes.contains_key(out) {
+                                shapes.insert(out.clone(), s.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            for node in &graph.node {
+                if node.op_type == "MaxPool"
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp).cloned()
+                    && in_shape.len() == 4
+                {
+                    let kernel =
+                        onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
+                    let strides =
+                        onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
+                    let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+                    if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
+                        let pad_h = if pads.len() >= 4 {
+                            pads[0] + pads[2]
+                        } else {
+                            0
+                        };
+                        let pad_w = if pads.len() >= 4 {
+                            pads[1] + pads[3]
+                        } else {
+                            0
+                        };
+                        let h = ((in_shape[2] + pad_h).saturating_sub(kernel[0])) / strides[0] + 1;
+                        let w = ((in_shape[3] + pad_w).saturating_sub(kernel[1])) / strides[1] + 1;
+                        let out_shape = vec![in_shape[0], in_shape[1], h, w];
+                        for out in &node.output {
+                            if !out.is_empty() && !shapes.contains_key(out) {
+                                shapes.insert(out.clone(), out_shape.clone());
+                            }
                         }
                     }
                 }

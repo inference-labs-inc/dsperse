@@ -253,6 +253,27 @@ pub fn run_inference(
         .last()
         .ok_or_else(|| DsperseError::Pipeline("model has no slices".into()))?;
     let last_slice_id = format!("slice_{}", last_slice.index);
+    if let Some(failed) = final_meta
+        .execution_chain
+        .execution_results
+        .iter()
+        .find(|r| {
+            r.witness_execution
+                .as_ref()
+                .is_some_and(|w| !w.success)
+        })
+    {
+        let err_msg = failed
+            .witness_execution
+            .as_ref()
+            .and_then(|w| w.error.as_deref())
+            .unwrap_or("unknown");
+        return Err(DsperseError::Pipeline(format!(
+            "pipeline failed at {}: {err_msg}",
+            failed.slice_id
+        )));
+    }
+
     let slice_run_meta = final_meta.slices.get(&last_slice_id);
     let last_strategy = match slice_run_meta {
         Some(m) => {

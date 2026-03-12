@@ -117,7 +117,8 @@ pub struct RunArgs {
     pub weights: Option<PathBuf>,
     #[arg(
         long,
-        default_value = "true",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
@@ -181,7 +182,8 @@ pub struct FullRunArgs {
     pub circuit_ops: Option<String>,
     #[arg(
         long,
-        default_value = "true",
+        default_value_t = true,
+        action = clap::ArgAction::Set,
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,

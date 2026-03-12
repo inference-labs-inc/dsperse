@@ -98,6 +98,38 @@ fn validate_weights_onnx(
     Ok(())
 }
 
+fn load_donor_model(
+    weights_onnx: Option<&PathBuf>,
+) -> Result<Option<crate::slicer::onnx_proto::ModelProto>> {
+    let weights_path = match weights_onnx {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    if !weights_path.is_file() {
+        return Err(DsperseError::Other(format!(
+            "consumer weights ONNX not found: {}",
+            weights_path.display()
+        )));
+    }
+    Ok(Some(crate::slicer::onnx_proto::load_model(weights_path)?))
+}
+
+fn donor_init_map(
+    model: Option<&crate::slicer::onnx_proto::ModelProto>,
+) -> Result<Option<HashMap<String, &TensorProto>>> {
+    match model {
+        Some(m) => {
+            let graph = m.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
+            })?;
+            Ok(Some(crate::slicer::onnx_proto::build_initializer_map(
+                graph,
+            )))
+        }
+        None => Ok(None),
+    }
+}
+
 pub fn run_inference(
     slices_dir: &Path,
     input_path: &Path,
@@ -129,27 +161,9 @@ pub fn run_inference(
         crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
     }
 
-    let donor_model = if let Some(ref weights_path) = config.weights_onnx {
-        if !weights_path.is_file() {
-            return Err(DsperseError::Other(format!(
-                "consumer weights ONNX not found: {}",
-                weights_path.display()
-            )));
-        }
-        Some(crate::slicer::onnx_proto::load_model(weights_path)?)
-    } else {
-        None
-    };
-    let donor_init_map = match donor_model.as_ref() {
-        Some(model) => {
-            let graph = model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-            })?;
-            Some(crate::slicer::onnx_proto::build_initializer_map(graph))
-        }
-        None => None,
-    };
-    if let Some(ref map) = donor_init_map {
+    let donor_model = load_donor_model(config.weights_onnx.as_ref())?;
+    let donor_map = donor_init_map(donor_model.as_ref())?;
+    if let Some(ref map) = donor_map {
         validate_weights_onnx(map, &model_meta, slices_dir)?;
         tracing::info!(
             weights = %config.weights_onnx.as_ref().unwrap().display(),
@@ -226,7 +240,7 @@ pub fn run_inference(
             &mut tensor_cache,
             backend,
             config,
-            donor_init_map.as_ref(),
+            donor_map.as_ref(),
         );
 
         let exec_info = match exec_result {
@@ -374,26 +388,24 @@ fn run_combined_inference(
     let combined_path =
         crate::slicer::combiner::ensure_combined_materialized(slices_dir, model_meta)?;
 
-    let donor_model = if let Some(ref weights_path) = config.weights_onnx {
-        if !weights_path.is_file() {
-            return Err(DsperseError::Other(format!(
-                "consumer weights ONNX not found: {}",
-                weights_path.display()
-            )));
-        }
-        Some(crate::slicer::onnx_proto::load_model(weights_path)?)
-    } else {
-        None
-    };
-    let donor_init_map = match donor_model.as_ref() {
-        Some(m) => {
-            let graph = m.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline("consumer weights ONNX missing graph".into())
-            })?;
-            Some(crate::slicer::onnx_proto::build_initializer_map(graph))
-        }
-        None => None,
-    };
+    let donor_model = load_donor_model(config.weights_onnx.as_ref())?;
+    let donor_map = donor_init_map(donor_model.as_ref())?;
+    if let Some(ref map) = donor_map {
+        let combined_model = crate::slicer::onnx_proto::load_model(&combined_path)?;
+        let combined_graph = combined_model
+            .graph
+            .as_ref()
+            .ok_or_else(|| DsperseError::Pipeline("combined ONNX missing graph".into()))?;
+        crate::slicer::onnx_proto::validate_initializer_compatibility(
+            &combined_graph.initializer,
+            map,
+            "combined",
+        )?;
+        tracing::info!(
+            weights = %config.weights_onnx.as_ref().unwrap().display(),
+            "validated consumer weights against combined ONNX"
+        );
+    }
 
     std::fs::create_dir_all(run_dir).map_err(|e| DsperseError::io(e, run_dir))?;
 
@@ -417,7 +429,7 @@ fn run_combined_inference(
     let input_copy = run_dir.join(crate::utils::paths::INPUT_FILE);
     write_msgpack(&input_copy, &input_data)?;
 
-    let effective_combined = if let Some(ref map) = donor_init_map {
+    let effective_combined = if let Some(ref map) = donor_map {
         Some(crate::slicer::onnx_proto::build_patched_onnx(
             &combined_path,
             map,
@@ -527,7 +539,7 @@ fn run_combined_inference(
                     backend,
                     &circuit_path,
                     &onnx_path,
-                    donor_init_map.as_ref(),
+                    donor_map.as_ref(),
                     params.as_ref().unwrap(),
                     input_arr,
                 )
@@ -609,9 +621,20 @@ fn run_combined_inference(
     };
 
     if output_arrs.is_empty() {
-        return Err(DsperseError::Pipeline(
-            "no output tensor found in combined model outputs".into(),
-        ));
+        let expected: Vec<&str> = if !model_meta.output_names.is_empty() {
+            model_meta.output_names.iter().map(String::as_str).collect()
+        } else {
+            last_slice
+                .dependencies
+                .output
+                .iter()
+                .map(String::as_str)
+                .collect()
+        };
+        let available: Vec<&String> = tensor_cache.keys().collect();
+        return Err(DsperseError::Pipeline(format!(
+            "no output tensor found in combined model outputs; expected {expected:?}, available {available:?}"
+        )));
     }
 
     let output_path = run_dir.join(crate::utils::paths::OUTPUT_FILE);

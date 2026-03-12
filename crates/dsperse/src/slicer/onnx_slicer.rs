@@ -538,16 +538,15 @@ fn trace_shapes_tract(
 
             for node in &graph.node {
                 if binary_ops.contains(node.op_type.as_str()) {
-                    let best = node
+                    let input_shapes: Vec<&Vec<i64>> = node
                         .input
                         .iter()
                         .filter_map(|inp| shapes.get(inp))
-                        .max_by_key(|s: &&Vec<i64>| s.len())
-                        .cloned();
-                    if let Some(s) = best {
+                        .collect();
+                    if let Some(broadcasted) = broadcast_shapes(&input_shapes) {
                         for out in &node.output {
                             if !out.is_empty() && !shapes.contains_key(out) {
-                                shapes.insert(out.clone(), s.clone());
+                                shapes.insert(out.clone(), broadcasted.clone());
                             }
                         }
                     }
@@ -624,6 +623,26 @@ fn trace_shapes_tract(
 
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok(shapes)
+}
+
+fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {
+    if shapes.is_empty() {
+        return None;
+    }
+    let max_rank = shapes.iter().map(|s| s.len()).max().unwrap_or(0);
+    let mut result = vec![1i64; max_rank];
+    for shape in shapes {
+        let offset = max_rank - shape.len();
+        for (i, &dim) in shape.iter().enumerate() {
+            let ri = offset + i;
+            if result[ri] == 1 {
+                result[ri] = dim;
+            } else if dim != 1 && dim != result[ri] {
+                return None;
+            }
+        }
+    }
+    Some(result)
 }
 
 #[cfg(test)]

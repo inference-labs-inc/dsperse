@@ -107,7 +107,10 @@ pub fn run_inference(
 ) -> Result<RunMetadata> {
     let model_meta = load_model_metadata(slices_dir)?;
 
-    if config.combined && model_meta.original_model_path.is_some() {
+    if config.combined
+        && model_meta.original_model_path.is_some()
+        && model_meta.traced_shapes.is_some()
+    {
         return run_combined_inference(
             slices_dir,
             input_path,
@@ -118,7 +121,7 @@ pub fn run_inference(
         );
     } else if config.combined {
         tracing::info!(
-            "combined mode requested but original_model_path not available, using per-slice execution"
+            "combined mode requested but metadata missing original_model_path or traced_shapes, using per-slice execution"
         );
     }
 

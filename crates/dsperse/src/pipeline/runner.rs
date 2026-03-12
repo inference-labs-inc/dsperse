@@ -601,6 +601,26 @@ fn run_combined_inference(
     final_meta.execution_chain.execution_results = results;
     final_meta.run_directory = Some(run_dir.to_string_lossy().into_owned());
 
+    let witness_failure = final_meta
+        .execution_chain
+        .execution_results
+        .iter()
+        .filter_map(|r| {
+            r.witness_execution
+                .as_ref()
+                .filter(|w| !w.success)
+                .and_then(|w| w.error.as_ref())
+                .map(|err| format!("{}: {err}", r.slice_id))
+        })
+        .next();
+    if let Some(err) = witness_failure {
+        let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
+        let _ = crate::utils::metadata::save_run_metadata(&meta_out, &final_meta);
+        return Err(DsperseError::Pipeline(format!(
+            "combined pipeline failed at {err}"
+        )));
+    }
+
     let meta_out = run_dir.join(crate::utils::paths::METADATA_FILE);
     crate::utils::metadata::save_run_metadata(&meta_out, &final_meta)?;
 

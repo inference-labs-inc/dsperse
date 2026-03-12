@@ -152,7 +152,7 @@ pub fn run_inference(
             &model_meta,
         );
     } else if config.combined {
-        tracing::info!(
+        tracing::warn!(
             "combined mode requested but metadata missing original_model_path or traced_shapes, using per-slice execution"
         );
     }
@@ -525,7 +525,11 @@ fn run_combined_inference(
             .cloned()
             .collect();
 
-        let witness_result = if activation_inputs.len() == 1 {
+        let witness_result = if activation_inputs.is_empty() {
+            Err(DsperseError::Pipeline(format!(
+                "{slice_id}: no activation inputs declared for circuit slice"
+            )))
+        } else if activation_inputs.len() == 1 {
             let input_name = &activation_inputs[0];
             let input_arr = tensor_cache.get(input_name).map_err(|_| {
                 DsperseError::Pipeline(format!(

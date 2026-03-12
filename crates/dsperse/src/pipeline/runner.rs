@@ -213,8 +213,9 @@ pub fn run_inference(
             Ok(info) => info,
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
-                let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?
-                    .execution_method();
+                let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)
+                    .map(|s| s.execution_method())
+                    .unwrap_or(ExecutionMethod::OnnxOnly);
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
                     witness_execution: Some(ExecutionInfo {
@@ -257,11 +258,7 @@ pub fn run_inference(
         .execution_chain
         .execution_results
         .iter()
-        .find(|r| {
-            r.witness_execution
-                .as_ref()
-                .is_some_and(|w| !w.success)
-        })
+        .find(|r| r.witness_execution.as_ref().is_some_and(|w| !w.success))
     {
         let err_msg = failed
             .witness_execution

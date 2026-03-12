@@ -1,21 +1,21 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ndarray::ArrayD;
 
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{ExecutionChain, ExecutionInfo, ExecutionResultEntry, RunMetadata};
-use crate::schema::metadata::{Backend, ModelMetadata, RunSliceMetadata};
+use crate::schema::metadata::{BackendKind, ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
-use crate::utils::io::gather_inputs_from_cache;
 
 use super::runner::{build_execution_chain, build_run_metadata, load_model_metadata};
+use super::strategy::ExecutionStrategy;
+use super::tensor_store::TensorStore;
 
 pub struct SliceWork {
     pub slice_id: String,
     pub input: ArrayD<f64>,
     pub named_inputs: Vec<(String, ArrayD<f64>)>,
-    pub backend: Backend,
+    pub backend: BackendKind,
     pub use_circuit: bool,
     pub tiling: Option<TilingInfo>,
     pub channel_split: Option<ChannelSplitInfo>,
@@ -31,7 +31,7 @@ pub struct SliceExecutionResult {
 }
 
 pub struct IncrementalRun {
-    tensor_cache: HashMap<String, ArrayD<f64>>,
+    tensor_cache: TensorStore,
     execution_chain: ExecutionChain,
     model_meta: ModelMetadata,
     run_meta: RunMetadata,
@@ -63,8 +63,8 @@ impl IncrementalRun {
             )));
         }
         let input_name = filtered[0].clone();
-        let mut tensor_cache = HashMap::new();
-        tensor_cache.insert(input_name, input);
+        let mut tensor_cache = TensorStore::new();
+        tensor_cache.put(input_name, input);
 
         let current_slice = chain.head.clone();
 
@@ -91,41 +91,26 @@ impl IncrementalRun {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
 
-        let (input, named_inputs) = if let Some(ref cs) = meta.channel_split {
-            let t = self
-                .tensor_cache
-                .get(&cs.input_name)
-                .ok_or_else(|| {
-                    DsperseError::Pipeline(format!(
-                        "channel split input '{}' not in cache for {slice_id}",
-                        cs.input_name
-                    ))
-                })?
-                .clone();
-            (t, Vec::new())
-        } else if let Some(ref tiling) = meta.tiling {
-            let t = self
-                .tensor_cache
-                .get(&tiling.input_name)
-                .ok_or_else(|| {
-                    DsperseError::Pipeline(format!(
-                        "tiling input '{}' not in cache for {slice_id}",
-                        tiling.input_name
-                    ))
-                })?
-                .clone();
-            (t, Vec::new())
-        } else {
-            let filtered = &meta.dependencies.filtered_inputs;
-            let mut named = Vec::with_capacity(filtered.len());
-            for name in filtered {
-                let arr = self.tensor_cache.get(name).ok_or_else(|| {
-                    DsperseError::Pipeline(format!("input '{name}' not in cache for {slice_id}"))
-                })?;
-                named.push((name.clone(), arr.clone()));
+        let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
+        let (input, named_inputs) = match strategy {
+            ExecutionStrategy::ChannelSplit(cs) => {
+                let t = self.tensor_cache.get(&cs.input_name)?.clone();
+                (t, Vec::new())
             }
-            let concatenated = gather_inputs_from_cache(&self.tensor_cache, filtered)?;
-            (concatenated, named)
+            ExecutionStrategy::Tiled(tiling) => {
+                let t = self.tensor_cache.get(&tiling.input_name)?.clone();
+                (t, Vec::new())
+            }
+            ExecutionStrategy::Single { .. } => {
+                let filtered = &meta.dependencies.filtered_inputs;
+                let mut named = Vec::with_capacity(filtered.len());
+                for name in filtered {
+                    let arr = self.tensor_cache.get(name)?;
+                    named.push((name.clone(), arr.clone()));
+                }
+                let concatenated = self.tensor_cache.gather(filtered)?;
+                (concatenated, named)
+            }
         };
 
         Ok(Some(SliceWork {
@@ -165,21 +150,24 @@ impl IncrementalRun {
             .get(slice_id)
             .ok_or_else(|| DsperseError::Pipeline(format!("unknown slice {slice_id}")))?;
 
-        if let Some(ref cs) = meta.channel_split {
-            self.tensor_cache
-                .insert(cs.output_name.clone(), result.output);
-        } else if let Some(ref tiling) = meta.tiling {
-            self.tensor_cache
-                .insert(tiling.output_name.clone(), result.output);
-        } else {
-            if meta.dependencies.output.is_empty() {
-                return Err(DsperseError::Pipeline(format!(
-                    "slice {slice_id} has no output dependency names"
-                )));
+        let strategy = ExecutionStrategy::from_metadata(meta, false)?;
+        match strategy {
+            ExecutionStrategy::ChannelSplit(cs) => {
+                self.tensor_cache.put(cs.output_name.clone(), result.output);
             }
-            for name in &meta.dependencies.output {
+            ExecutionStrategy::Tiled(tiling) => {
                 self.tensor_cache
-                    .insert(name.clone(), result.output.clone());
+                    .put(tiling.output_name.clone(), result.output);
+            }
+            ExecutionStrategy::Single { .. } => {
+                if meta.dependencies.output.is_empty() {
+                    return Err(DsperseError::Pipeline(format!(
+                        "slice {slice_id} has no output dependency names"
+                    )));
+                }
+                for name in &meta.dependencies.output {
+                    self.tensor_cache.put(name.clone(), result.output.clone());
+                }
             }
         }
 
@@ -209,13 +197,13 @@ impl IncrementalRun {
         let slice_id = format!("slice_{}", last_slice.index);
         let meta = self.run_meta.slices.get(&slice_id)?;
 
-        if let Some(ref cs) = meta.channel_split {
-            self.tensor_cache.get(&cs.output_name)
-        } else if let Some(ref tiling) = meta.tiling {
-            self.tensor_cache.get(&tiling.output_name)
-        } else {
-            let output_name = meta.dependencies.output.first()?;
-            self.tensor_cache.get(output_name)
+        let strategy = ExecutionStrategy::from_metadata(meta, false).ok()?;
+        match strategy.output_name() {
+            Some(name) => self.tensor_cache.try_get(name),
+            None => {
+                let output_name = meta.dependencies.output.first()?;
+                self.tensor_cache.try_get(output_name)
+            }
         }
     }
 
@@ -238,7 +226,7 @@ impl IncrementalRun {
         &self.run_meta
     }
 
-    pub fn tensor_cache(&self) -> &HashMap<String, ArrayD<f64>> {
+    pub fn tensor_cache(&self) -> &TensorStore {
         &self.tensor_cache
     }
 }

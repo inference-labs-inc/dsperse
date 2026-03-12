@@ -4,21 +4,16 @@ use serde::{Deserialize, Serialize};
 
 use super::tiling::{ChannelSplitInfo, TilingInfo};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Backend {
+pub enum BackendKind {
     #[serde(alias = "JSTPROVE")]
     Jstprove,
+    #[default]
     Onnx,
 }
 
-impl Default for Backend {
-    fn default() -> Self {
-        Self::Onnx
-    }
-}
-
-impl std::fmt::Display for Backend {
+impl std::fmt::Display for BackendKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Jstprove => write!(f, "jstprove"),
@@ -146,7 +141,7 @@ pub struct RunSliceMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_split: Option<ChannelSplitInfo>,
     #[serde(default)]
-    pub backend: Backend,
+    pub backend: BackendKind,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

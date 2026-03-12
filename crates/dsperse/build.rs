@@ -3,22 +3,40 @@ fn main() {
         .compile_protos(&["proto/onnx.proto"], &["proto/"])
         .expect("Failed to compile ONNX proto");
 
-    if let Ok(output) = std::process::Command::new("git")
+    if let Some(output) = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .output()
+        .ok()
+        .filter(|o| o.status.success())
     {
-        if output.status.success() {
-            let rev = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("cargo:rustc-env=DSPERSE_GIT_REV={rev}");
-        }
+        let rev = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        println!("cargo:rustc-env=DSPERSE_GIT_REV={rev}");
     }
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["rev-parse", "--git-dir"])
+    if let Some(output) = std::process::Command::new("git")
+        .args(["rev-parse", "--git-path", "HEAD"])
         .output()
+        .ok()
+        .filter(|o| o.status.success())
     {
-        if output.status.success() {
-            let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            println!("cargo:rerun-if-changed={git_dir}/HEAD");
+        let head_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        println!("cargo:rerun-if-changed={head_path}");
+    }
+
+    if let Some(output) = std::process::Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    {
+        let head_ref = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(output) = std::process::Command::new("git")
+            .args(["rev-parse", "--git-path", &head_ref])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+        {
+            let ref_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            println!("cargo:rerun-if-changed={ref_path}");
         }
     }
 }

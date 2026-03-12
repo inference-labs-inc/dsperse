@@ -183,20 +183,20 @@ fn materialize_tiling_artifacts(
         .join(format!("slice_{slice_idx}"))
         .join("payload");
 
-    if let Some(ref tiling) = slice_meta.tiling {
-        if let Some(ref tile) = tiling.tile {
-            let tile_path = slices_dir.join(&tile.path);
-            if !tile_path.exists() {
-                let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
-                let slice_model = onnx_proto::load_model(&onnx_path)?;
-                autotiler::create_tile_slice(
-                    &slice_model,
-                    tiling.tile_size as i64,
-                    slice_idx,
-                    &payload_dir,
-                )?;
-                tracing::info!(slice = slice_idx, "materialized tile ONNX");
-            }
+    if let Some(ref tiling) = slice_meta.tiling
+        && let Some(ref tile) = tiling.tile
+    {
+        let tile_path = slices_dir.join(&tile.path);
+        if !tile_path.exists() {
+            let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
+            let slice_model = onnx_proto::load_model(&onnx_path)?;
+            autotiler::create_tile_slice(
+                &slice_model,
+                tiling.tile_size as i64,
+                slice_idx,
+                &payload_dir,
+            )?;
+            tracing::info!(slice = slice_idx, "materialized tile ONNX");
         }
     }
 
@@ -262,20 +262,20 @@ pub fn ensure_all_slices_materialized(slices_dir: &Path, metadata: &ModelMetadat
 
 fn apply_traced_shapes(mut model: ModelProto, shapes: &HashMap<String, Vec<i64>>) -> ModelProto {
     fn set_shape(vi: &mut ValueInfoProto, shape: &[i64]) {
-        if let Some(ref mut tp) = vi.r#type {
-            if let Some(onnx_proto::onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value {
-                tt.shape = Some(onnx_proto::onnx::TensorShapeProto {
-                    dim: shape
-                        .iter()
-                        .map(|&d| onnx_proto::onnx::tensor_shape_proto::Dimension {
-                            denotation: String::new(),
-                            value: Some(
-                                onnx_proto::onnx::tensor_shape_proto::dimension::Value::DimValue(d),
-                            ),
-                        })
-                        .collect(),
-                });
-            }
+        if let Some(ref mut tp) = vi.r#type
+            && let Some(onnx_proto::onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value
+        {
+            tt.shape = Some(onnx_proto::onnx::TensorShapeProto {
+                dim: shape
+                    .iter()
+                    .map(|&d| onnx_proto::onnx::tensor_shape_proto::Dimension {
+                        denotation: String::new(),
+                        value: Some(
+                            onnx_proto::onnx::tensor_shape_proto::dimension::Value::DimValue(d),
+                        ),
+                    })
+                    .collect(),
+            });
         }
     }
 
@@ -484,12 +484,10 @@ fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
                 }
             }
             "MaxPool" => {
-                if node.output.len() > 1 {
-                    if let Some(idx_out) = node.output.get(1) {
-                        if !idx_out.is_empty() {
-                            types.insert(idx_out.clone(), TensorProto::INT64);
-                        }
-                    }
+                if let Some(idx_out) = node.output.get(1)
+                    && !idx_out.is_empty()
+                {
+                    types.insert(idx_out.clone(), TensorProto::INT64);
                 }
             }
             "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {

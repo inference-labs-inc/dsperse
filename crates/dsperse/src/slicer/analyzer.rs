@@ -88,10 +88,10 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
         .find(|o| o.domain.is_empty() || o.domain == "ai.onnx")
         .map(|o| o.version);
 
-    if let Some(v) = opset_version {
-        if v < 18 {
-            tracing::warn!(opset = v, "opset < 18 detected; continuing anyway");
-        }
+    if let Some(v) = opset_version
+        && v < 18
+    {
+        tracing::warn!(opset = v, "opset < 18 detected; continuing anyway");
     }
 
     let initializer_names: HashSet<String> =

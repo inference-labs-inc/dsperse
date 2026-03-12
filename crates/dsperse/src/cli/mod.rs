@@ -21,6 +21,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Slice(SliceArgs),
+    Combine(CombineArgs),
     Compile(CompileArgs),
     Run(RunArgs),
     Prove(ProveArgs),
@@ -32,6 +33,7 @@ pub enum Commands {
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
         Commands::Slice(args) => cmd_slice(args),
+        Commands::Combine(args) => cmd_combine(args),
         Commands::Compile(args) => cmd_compile(args),
         Commands::Run(args) => cmd_run(args),
         Commands::Prove(args) => cmd_prove(args),
@@ -59,6 +61,14 @@ pub struct SliceArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
+}
+
+#[derive(Args)]
+pub struct CombineArgs {
+    #[arg(long)]
+    pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -105,6 +115,12 @@ pub struct RunArgs {
         help = "Path to consumer ONNX with fine-tuned weights to inject at inference time"
     )]
     pub weights: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value = "true",
+        help = "Run inference on combined monolithic ONNX instead of per-slice execution"
+    )]
+    pub combined: bool,
 }
 
 #[derive(Args)]
@@ -163,6 +179,12 @@ pub struct FullRunArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
+    #[arg(
+        long,
+        default_value = "true",
+        help = "Run inference on combined monolithic ONNX instead of per-slice execution"
+    )]
+    pub combined: bool,
 }
 
 struct CircuitOps(Vec<String>);
@@ -232,6 +254,14 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn cmd_combine(args: CombineArgs) -> Result<()> {
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
+    let meta = pipeline::runner::load_model_metadata(&slices_dir)?;
+    let path = crate::slicer::combiner::materialize_combined_to_disk(&slices_dir, &meta)?;
+    tracing::info!(path = %path.display(), "combined ONNX materialized");
+    Ok(())
+}
+
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let backend = JstproveBackend::default();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
@@ -273,6 +303,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
         parallel: args.parallel.get(),
         batch: args.batch,
         weights_onnx: args.weights,
+        combined: args.combined,
     };
 
     pipeline::run_inference(&slices_dir, &args.input_file, &run_dir, &backend, &config)?;
@@ -341,6 +372,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         parallel: args.parallel.get(),
         batch: args.batch,
         weights_onnx: args.weights,
+        combined: args.combined,
     };
 
     tracing::info!("running inference");

@@ -470,7 +470,7 @@ fn get_segment_details(
     Ok((inputs, outputs, initializers))
 }
 
-fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
+pub fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
     let mut types: HashMap<String, i32> = HashMap::new();
     for node in &graph.node {
         match node.op_type.as_str() {

@@ -115,6 +115,7 @@ fn compile_slices(
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (slices_dir, input_file, run_dir, parallel=1, batch=false, weights_onnx=None, combined=true))]
 fn run_inference(
     py: Python<'_>,

@@ -397,6 +397,7 @@ fn execute_slice(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_single(
     slices_dir: &Path,
     slice_run_dir: &Path,

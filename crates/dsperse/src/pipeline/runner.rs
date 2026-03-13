@@ -370,7 +370,8 @@ fn execute_slice(
             let slice_circuit = meta
                 .jstprove_circuit_path
                 .as_deref()
-                .map(std::path::PathBuf::from);
+                .map(|p| resolve_relative_path(slices_dir, p))
+                .transpose()?;
             execute_tiled(
                 slices_dir,
                 slice_run_dir,
@@ -384,6 +385,7 @@ fn execute_slice(
             )
         }
         ExecutionStrategy::Single { .. } => execute_single(
+            slices_dir,
             slice_run_dir,
             slice_id,
             node,
@@ -396,6 +398,7 @@ fn execute_slice(
 }
 
 fn execute_single(
+    slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     node: &ExecutionNode,
@@ -436,7 +439,8 @@ fn execute_single(
         let circuit_path = meta
             .jstprove_circuit_path
             .as_deref()
-            .map(std::path::PathBuf::from)
+            .map(|p| resolve_relative_path(slices_dir, p))
+            .transpose()?
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
         let params = backend.load_params(&circuit_path)?;
@@ -1228,21 +1232,14 @@ pub(crate) fn build_execution_chain(
         }
 
         let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
-            let path = slice
-                .compilation
-                .jstprove
-                .files
-                .compiled
-                .as_ref()
-                .map(|p| resolve_relative_path(slices_dir, p))
-                .transpose()?
-                .map(|p| p.to_string_lossy().into_owned());
+            let path = slice.compilation.jstprove.files.compiled.clone();
             (true, path)
         } else {
             let bundle = slice_dir.join("jstprove/circuit.bundle");
             if bundle.is_dir() {
                 tracing::info!(slice = %slice_id, "detected circuit on filesystem (metadata.compiled=false)");
-                (true, Some(bundle.to_string_lossy().into_owned()))
+                let rel = format!("slice_{}/jstprove/circuit.bundle", slice.index);
+                (true, Some(rel))
             } else {
                 (false, None)
             }

@@ -9,6 +9,14 @@ use crate::schema::metadata::ModelMetadata;
 use crate::slicer::onnx_proto;
 use crate::utils::paths::{find_metadata_path, slice_dir_path};
 
+enum CompileOutcome {
+    Compiled,
+    CompiledChannelSplit {
+        group_circuits: Vec<(usize, String)>,
+    },
+    Skipped,
+}
+
 pub fn compile_slices(
     slices_dir: &Path,
     backend: &JstproveBackend,
@@ -42,7 +50,7 @@ pub fn compile_slices(
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-    let results: Vec<(usize, Result<bool>)> = pool.install(|| {
+    let results: Vec<(usize, Result<CompileOutcome>)> = pool.install(|| {
         slices
             .par_iter()
             .map(|slice| {
@@ -54,8 +62,19 @@ pub fn compile_slices(
                     jstprove_ops,
                 );
                 match &r {
-                    Ok(true) => tracing::info!(slice = slice.index, "compiled"),
-                    Ok(false) => tracing::info!(slice = slice.index, "skipped (unsupported ops)"),
+                    Ok(CompileOutcome::Compiled) => {
+                        tracing::info!(slice = slice.index, "compiled")
+                    }
+                    Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
+                        tracing::info!(
+                            slice = slice.index,
+                            groups = group_circuits.len(),
+                            "compiled channel split groups"
+                        )
+                    }
+                    Ok(CompileOutcome::Skipped) => {
+                        tracing::info!(slice = slice.index, "skipped (unsupported ops)")
+                    }
                     Err(e) => {
                         tracing::error!(slice = slice.index, error = %e, "compilation failed")
                     }
@@ -66,11 +85,16 @@ pub fn compile_slices(
     });
 
     let mut compiled_indices: Vec<usize> = Vec::new();
+    let mut channel_split_results: Vec<(usize, Vec<(usize, String)>)> = Vec::new();
     let mut errors: Vec<(usize, DsperseError)> = Vec::new();
     for (idx, result) in results {
         match result {
-            Ok(true) => compiled_indices.push(idx),
-            Ok(false) => {}
+            Ok(CompileOutcome::Compiled) => compiled_indices.push(idx),
+            Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
+                compiled_indices.push(idx);
+                channel_split_results.push((idx, group_circuits));
+            }
+            Ok(CompileOutcome::Skipped) => {}
             Err(e) => errors.push((idx, e)),
         }
     }
@@ -79,11 +103,35 @@ pub fn compile_slices(
         drop(slices);
         let mut compiled_set = std::collections::HashSet::with_capacity(compiled_indices.len());
         compiled_set.extend(compiled_indices.iter().copied());
+
+        let cs_map: std::collections::HashMap<usize, &Vec<(usize, String)>> = channel_split_results
+            .iter()
+            .map(|(idx, gc)| (*idx, gc))
+            .collect();
+
         for slice in &mut metadata.slices {
             if compiled_set.contains(&slice.index) {
                 slice.compilation.jstprove.compiled = true;
-                slice.compilation.jstprove.files.compiled =
-                    Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
+                if let Some(group_circuits) = cs_map.get(&slice.index) {
+                    if let Some(ref mut cs) = slice.channel_split {
+                        for (group_idx, circuit_path) in *group_circuits {
+                            if let Some(group) =
+                                cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
+                            {
+                                group.jstprove_circuit_path = Some(circuit_path.clone());
+                            } else {
+                                tracing::warn!(
+                                    slice = slice.index,
+                                    group = group_idx,
+                                    "compiled group not found in metadata"
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    slice.compilation.jstprove.files.compiled =
+                        Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
+                }
             }
         }
         metadata.save(&meta_path)?;
@@ -135,13 +183,26 @@ fn compile_single_slice(
     backend: &JstproveBackend,
     weights_as_inputs: bool,
     jstprove_ops: &[&str],
-) -> Result<bool> {
+) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
         return Err(DsperseError::Pipeline(format!(
             "slice directory not found: {}",
             slice_dir.display()
         )));
+    }
+
+    if let Some(ref cs) = slice.channel_split
+        && !cs.groups.is_empty()
+    {
+        return compile_channel_split_slice(
+            slices_dir,
+            slice,
+            cs,
+            backend,
+            weights_as_inputs,
+            jstprove_ops,
+        );
     }
 
     let onnx_path = resolve_compile_onnx(slices_dir, slice)?;
@@ -155,7 +216,7 @@ fn compile_single_slice(
 
     let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
     if !analysis.compatible {
-        return Ok(false);
+        return Ok(CompileOutcome::Skipped);
     }
 
     let jst_dir = slice_dir.join("jstprove");
@@ -167,7 +228,7 @@ fn compile_single_slice(
         match backend.load_params(&circuit_path) {
             Ok(_) => {
                 tracing::info!(slice = slice.index, "already compiled, skipping");
-                return Ok(true);
+                return Ok(CompileOutcome::Compiled);
             }
             Err(e) => {
                 tracing::warn!(slice = slice.index, error = %e, "cached circuit invalid, recompiling");
@@ -200,7 +261,122 @@ fn compile_single_slice(
             DsperseError::Backend(format!("jstprove panicked: {msg}"))
         })??;
 
-    Ok(true)
+    Ok(CompileOutcome::Compiled)
+}
+
+fn compile_channel_split_slice(
+    slices_dir: &Path,
+    slice: &crate::schema::metadata::SliceMetadata,
+    cs: &crate::schema::tiling::ChannelSplitInfo,
+    backend: &JstproveBackend,
+    weights_as_inputs: bool,
+    jstprove_ops: &[&str],
+) -> Result<CompileOutcome> {
+    let slice_dir = slice_dir_path(slices_dir, slice.index);
+    let jst_dir = slice_dir.join("jstprove");
+    std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
+
+    let mut group_circuits: Vec<(usize, String)> = Vec::new();
+    let mut all_cached = true;
+
+    for group in &cs.groups {
+        let group_circuit_dir = jst_dir.join(format!("group_{}", group.group_idx));
+        let circuit_path = group_circuit_dir.join("circuit.bundle");
+
+        if circuit_path.is_dir() {
+            match backend.load_params(&circuit_path) {
+                Ok(_) => {
+                    tracing::info!(
+                        slice = slice.index,
+                        group = group.group_idx,
+                        "group already compiled, skipping"
+                    );
+                    let rel = format!(
+                        "slice_{}/jstprove/group_{}/circuit.bundle",
+                        slice.index, group.group_idx
+                    );
+                    group_circuits.push((group.group_idx, rel));
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        slice = slice.index,
+                        group = group.group_idx,
+                        error = %e,
+                        "cached group circuit invalid, recompiling"
+                    );
+                    std::fs::remove_dir_all(&circuit_path)
+                        .map_err(|e| DsperseError::io(e, &circuit_path))?;
+                }
+            }
+        }
+
+        all_cached = false;
+
+        let onnx_path = slices_dir.join(&group.path);
+        if !onnx_path.exists() {
+            return Err(DsperseError::Pipeline(format!(
+                "channel group ONNX not found: {}",
+                onnx_path.display()
+            )));
+        }
+
+        let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
+        if !analysis.compatible {
+            return Err(DsperseError::Pipeline(format!(
+                "slice {} group {} has unsupported ops for circuit compilation",
+                slice.index, group.group_idx
+            )));
+        }
+
+        let effective_wai = if weights_as_inputs && analysis.has_initializers {
+            false
+        } else {
+            weights_as_inputs
+        };
+
+        std::fs::create_dir_all(&group_circuit_dir)
+            .map_err(|e| DsperseError::io(e, &group_circuit_dir))?;
+
+        tracing::info!(
+            slice = slice.index,
+            group = group.group_idx,
+            channels = format!("{}..{}", group.c_start, group.c_end),
+            "compiling channel group"
+        );
+
+        let (params, architecture, wandb) =
+            converter::prepare_jstprove_artifacts(&onnx_path, effective_wai)?;
+
+        std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
+            .map_err(|p| {
+            let msg = p
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            DsperseError::Backend(format!(
+                "jstprove panicked on slice {} group {}: {msg}",
+                slice.index, group.group_idx
+            ))
+        })??;
+
+        let rel = format!(
+            "slice_{}/jstprove/group_{}/circuit.bundle",
+            slice.index, group.group_idx
+        );
+        group_circuits.push((group.group_idx, rel));
+    }
+
+    if all_cached {
+        tracing::info!(
+            slice = slice.index,
+            groups = cs.groups.len(),
+            "all channel groups already compiled"
+        );
+    }
+
+    Ok(CompileOutcome::CompiledChannelSplit { group_circuits })
 }
 
 fn resolve_compile_onnx(

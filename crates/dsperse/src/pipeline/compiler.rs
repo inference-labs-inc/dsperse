@@ -280,6 +280,32 @@ fn compile_single_slice(
     Ok(CompileOutcome::Compiled)
 }
 
+fn strip_initializers_to_inputs(src: &Path, dst: &Path) -> Result<()> {
+    let mut model = onnx_proto::load_model(src)?;
+    let graph = model
+        .graph
+        .as_mut()
+        .ok_or_else(|| DsperseError::Slicer("no graph in model".into()))?;
+
+    let existing_input_names: std::collections::HashSet<String> =
+        graph.input.iter().map(|i| i.name.clone()).collect();
+
+    for init in &graph.initializer {
+        if existing_input_names.contains(&init.name) {
+            continue;
+        }
+        let vi = onnx_proto::make_tensor_value_info(&init.name, init.data_type, &init.dims);
+        graph.input.push(vi);
+    }
+
+    graph.initializer.clear();
+
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
+    }
+    onnx_proto::save_model(&model, dst)
+}
+
 fn populate_channel_split_groups(
     slices_dir: &Path,
     slice_idx: usize,
@@ -376,8 +402,11 @@ fn compile_channel_split_slice(
             "compiling shared channel group circuit (weights-as-inputs)"
         );
 
+        let wai_onnx_path = jst_dir.join("shared").join("wai_model.onnx");
+        strip_initializers_to_inputs(&onnx_path, &wai_onnx_path)?;
+
         let (params, architecture, wandb) =
-            converter::prepare_jstprove_artifacts(&onnx_path, true)?;
+            converter::prepare_jstprove_artifacts(&wai_onnx_path, true)?;
 
         std::panic::catch_unwind(|| {
             backend.compile(&shared_circuit_path, params, architecture, wandb)

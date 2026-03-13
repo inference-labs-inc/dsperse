@@ -119,6 +119,12 @@ pub fn compile_slices(
                                 cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
                             {
                                 group.jstprove_circuit_path = Some(circuit_path.clone());
+                            } else {
+                                tracing::warn!(
+                                    slice = slice.index,
+                                    group = group_idx,
+                                    "compiled group not found in metadata"
+                                );
                             }
                         }
                     }

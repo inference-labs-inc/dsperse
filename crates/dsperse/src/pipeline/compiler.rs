@@ -37,6 +37,22 @@ pub fn compile_slices(
         crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &metadata)?;
     }
 
+    let mut metadata_dirty = false;
+    for slice in &mut metadata.slices {
+        if let Some(ref mut cs) = slice.channel_split
+            && cs.groups.is_empty()
+        {
+            let populated = populate_channel_split_groups(slices_dir, slice.index, cs)?;
+            if populated {
+                metadata_dirty = true;
+            }
+        }
+    }
+    if metadata_dirty {
+        metadata.save(&meta_path)?;
+        tracing::info!("persisted materialized channel split groups to metadata");
+    }
+
     let slices: Vec<_> = metadata
         .slices
         .iter()
@@ -262,6 +278,58 @@ fn compile_single_slice(
         })??;
 
     Ok(CompileOutcome::Compiled)
+}
+
+fn populate_channel_split_groups(
+    slices_dir: &Path,
+    slice_idx: usize,
+    cs: &mut crate::schema::tiling::ChannelSplitInfo,
+) -> Result<bool> {
+    let groups_dir = slices_dir
+        .join(format!("slice_{slice_idx}"))
+        .join("payload")
+        .join("channel_groups");
+    if !groups_dir.exists() {
+        return Ok(false);
+    }
+
+    let cpg = cs.channels_per_group;
+    let mut groups = Vec::with_capacity(cs.num_groups);
+    for g in 0..cs.num_groups {
+        let c_start = g * cpg;
+        let c_end = ((g + 1) * cpg).min(cs.c_in);
+        let rel_path = format!("slice_{slice_idx}/payload/channel_groups/group_{g}.onnx");
+        let abs_path = slices_dir.join(&rel_path);
+        if !abs_path.exists() {
+            tracing::warn!(
+                slice = slice_idx,
+                group = g,
+                "expected group ONNX not found, skipping population"
+            );
+            return Ok(false);
+        }
+        groups.push(crate::schema::tiling::ChannelGroupInfo {
+            group_idx: g,
+            c_start,
+            c_end,
+            path: rel_path,
+            jstprove_circuit_path: None,
+            jstprove_settings_path: None,
+        });
+    }
+
+    let bias_rel = format!("slice_{slice_idx}/payload/channel_groups/bias.msgpack");
+    if slices_dir.join(&bias_rel).exists() {
+        cs.bias_path = Some(bias_rel);
+    }
+
+    tracing::info!(
+        slice = slice_idx,
+        groups = groups.len(),
+        "populated channel split groups from materialized files"
+    );
+    cs.groups = groups;
+    Ok(true)
 }
 
 fn compile_channel_split_slice(

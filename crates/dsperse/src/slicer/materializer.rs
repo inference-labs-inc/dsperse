@@ -201,10 +201,11 @@ fn materialize_tiling_artifacts(
     }
 
     if let Some(ref cs) = slice_meta.channel_split {
-        let needs_materialization = cs.groups.iter().any(|g| {
-            let group_path = slices_dir.join(&g.path);
-            !group_path.exists()
-        });
+        let needs_materialization = cs.groups.is_empty()
+            || cs.groups.iter().any(|g| {
+                let group_path = slices_dir.join(&g.path);
+                !group_path.exists()
+            });
 
         if needs_materialization {
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
@@ -233,7 +234,7 @@ fn materialize_tiling_artifacts(
                     w,
                     slice_idx,
                 };
-                autotiler::apply_channel_splitting(
+                let cs_info = autotiler::apply_channel_splitting(
                     &slice_model,
                     &params,
                     &input_name,
@@ -242,7 +243,7 @@ fn materialize_tiling_artifacts(
                 )?;
                 tracing::info!(
                     slice = slice_idx,
-                    groups = num_groups,
+                    groups = cs_info.groups.len(),
                     "materialized channel groups"
                 );
             }

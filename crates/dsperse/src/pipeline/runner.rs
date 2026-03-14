@@ -1399,10 +1399,10 @@ fn execute_channel_group(
 }
 
 pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {
-    if tiling.halo[0] < 0 || tiling.halo[1] < 0 {
+    if tiling.halo.iter().any(|&v| v < 0) {
         return Err(DsperseError::Pipeline(format!(
-            "negative halo values not supported: halo=[{}, {}]",
-            tiling.halo[0], tiling.halo[1]
+            "negative halo values not supported: halo={:?}",
+            tiling.halo
         )));
     }
     let (n, c, h, w) = input.dim();
@@ -1411,16 +1411,18 @@ pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<
             "split_into_tiles: batch size {n} not supported, expected 1"
         )));
     }
-    let halo_h = tiling.halo[0] as usize;
-    let halo_w = tiling.halo[1] as usize;
-    let tile_h = tiling.tile_size + 2 * halo_h;
-    let tile_w = tiling.tile_size + 2 * halo_w;
+    let halo_top = tiling.halo[0] as usize;
+    let halo_left = tiling.halo[1] as usize;
+    let halo_bottom = tiling.halo[2] as usize;
+    let halo_right = tiling.halo[3] as usize;
+    let tile_h = tiling.tile_size + halo_top + halo_bottom;
+    let tile_w = tiling.tile_size + halo_left + halo_right;
 
-    let padded_h = h + 2 * halo_h;
-    let padded_w = w + 2 * halo_w;
+    let padded_h = h + halo_top + halo_bottom;
+    let padded_w = w + halo_left + halo_right;
     let mut padded = Array4::<f64>::zeros((n, c, padded_h, padded_w));
     padded
-        .slice_mut(s![.., .., halo_h..halo_h + h, halo_w..halo_w + w])
+        .slice_mut(s![.., .., halo_top..halo_top + h, halo_left..halo_left + w])
         .assign(input);
 
     let mut tiles = Vec::new();
@@ -1746,7 +1748,7 @@ mod tests {
         tile_size: usize,
         tiles_y: usize,
         tiles_x: usize,
-        halo: [i64; 2],
+        halo: [i64; 4],
         out_tile: [i64; 2],
         c_out: usize,
     ) -> TilingInfo {
@@ -1799,7 +1801,7 @@ mod tests {
     fn split_into_tiles_2x2_no_halo() {
         let input =
             Array4::from_shape_vec((1, 1, 4, 4), (0..16).map(|i| i as f64).collect()).unwrap();
-        let tiling = make_tiling(2, 2, 2, [0, 0], [2, 2], 1);
+        let tiling = make_tiling(2, 2, 2, [0, 0, 0, 0], [2, 2], 1);
         let tiles = split_into_tiles(&input, &tiling).unwrap();
         assert_eq!(tiles.len(), 4);
         for tile in &tiles {
@@ -1811,7 +1813,7 @@ mod tests {
     fn split_into_tiles_with_halo() {
         let input =
             Array4::from_shape_vec((1, 1, 4, 4), (0..16).map(|i| i as f64).collect()).unwrap();
-        let tiling = make_tiling(2, 2, 2, [1, 1], [2, 2], 1);
+        let tiling = make_tiling(2, 2, 2, [1, 1, 1, 1], [2, 2], 1);
         let tiles = split_into_tiles(&input, &tiling).unwrap();
         assert_eq!(tiles.len(), 4);
         for tile in &tiles {
@@ -1822,14 +1824,14 @@ mod tests {
     #[test]
     fn split_into_tiles_negative_halo_rejected() {
         let input = Array4::zeros((1, 1, 4, 4));
-        let tiling = make_tiling(2, 2, 2, [-1, 0], [2, 2], 1);
+        let tiling = make_tiling(2, 2, 2, [-1, 0, 0, 0], [2, 2], 1);
         assert!(split_into_tiles(&input, &tiling).is_err());
     }
 
     #[test]
     fn split_into_tiles_batch_gt1_rejected() {
         let input = Array4::zeros((2, 1, 4, 4));
-        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        let tiling = make_tiling(2, 1, 1, [0, 0, 0, 0], [2, 2], 1);
         assert!(split_into_tiles(&input, &tiling).is_err());
     }
 
@@ -1838,7 +1840,7 @@ mod tests {
         let c_out = 1;
         let out_h = 2usize;
         let out_w = 2usize;
-        let tiling = make_tiling(4, 2, 2, [0, 0], [out_h as i64, out_w as i64], c_out);
+        let tiling = make_tiling(4, 2, 2, [0, 0, 0, 0], [out_h as i64, out_w as i64], c_out);
 
         let tiles: Vec<ArrayD<f64>> = (0..4)
             .map(|i| {
@@ -1856,13 +1858,13 @@ mod tests {
 
     #[test]
     fn reconstruct_from_tiles_empty() {
-        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        let tiling = make_tiling(2, 1, 1, [0, 0, 0, 0], [2, 2], 1);
         assert!(reconstruct_from_tiles(&[], &tiling).is_err());
     }
 
     #[test]
     fn reconstruct_from_tiles_wrong_element_count() {
-        let tiling = make_tiling(2, 1, 1, [0, 0], [2, 2], 1);
+        let tiling = make_tiling(2, 1, 1, [0, 0, 0, 0], [2, 2], 1);
         let bad_tile = vec![ArrayD::from_shape_vec(IxDyn(&[3]), vec![1.0; 3]).unwrap()];
         assert!(reconstruct_from_tiles(&bad_tile, &tiling).is_err());
     }
@@ -1872,7 +1874,7 @@ mod tests {
         let c_out = 1;
         let out_h = 2i64;
         let out_w = 2i64;
-        let tiling = make_tiling(4, 2, 2, [0, 0], [out_h, out_w], c_out);
+        let tiling = make_tiling(4, 2, 2, [0, 0, 0, 0], [out_h, out_w], c_out);
         let make_tile = || {
             ArrayD::from_shape_vec(
                 IxDyn(&[1, c_out, out_h as usize, out_w as usize]),
@@ -1895,7 +1897,7 @@ mod tests {
         let input = Array4::from_shape_vec((1, c, h, w), data).unwrap();
 
         let tile_size = 4;
-        let tiling = make_tiling(tile_size, 2, 2, [0, 0], [4, 4], c);
+        let tiling = make_tiling(tile_size, 2, 2, [0, 0, 0, 0], [4, 4], c);
 
         let tiles = split_into_tiles(&input, &tiling).unwrap();
         assert_eq!(tiles.len(), 4);

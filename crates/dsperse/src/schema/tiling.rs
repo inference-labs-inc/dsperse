@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{self, Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TileInfo {
@@ -22,8 +22,8 @@ pub struct TilingInfo {
     pub tiles_y: usize,
     #[serde(default = "default_one")]
     pub tiles_x: usize,
-    #[serde(default = "default_pair_zero")]
-    pub halo: [i64; 2],
+    #[serde(default = "default_quad_zero", deserialize_with = "deserialize_halo")]
+    pub halo: [i64; 4],
     #[serde(default = "default_pair_zero")]
     pub out_tile: [i64; 2],
     #[serde(default = "default_pair_one")]
@@ -98,6 +98,25 @@ fn default_pair_zero() -> [i64; 2] {
 
 fn default_pair_one() -> [i64; 2] {
     [1, 1]
+}
+
+fn default_quad_zero() -> [i64; 4] {
+    [0, 0, 0, 0]
+}
+
+fn deserialize_halo<'de, D>(deserializer: D) -> std::result::Result<[i64; 4], D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let v: Vec<i64> = Vec::deserialize(deserializer)?;
+    match v.len() {
+        2 => Ok([v[0], v[1], v[0], v[1]]),
+        4 => Ok([v[0], v[1], v[2], v[3]]),
+        _ => Err(serde::de::Error::custom(format!(
+            "expected 2 or 4 elements for halo, got {}",
+            v.len()
+        ))),
+    }
 }
 
 fn default_input_name() -> String {

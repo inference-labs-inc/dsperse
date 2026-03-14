@@ -184,9 +184,11 @@ fn conv_output_hw(
     Some((out_h, out_w))
 }
 
-fn compute_halo_size(kernel: [i64; 2], dilation: [i64; 2]) -> Option<[i64; 2]> {
-    let eff = effective_kernel(kernel, dilation)?;
-    Some([eff[0] / 2, eff[1] / 2])
+fn compute_halo_size(pads: [i64; 4]) -> Option<[i64; 4]> {
+    if pads.iter().any(|&v| v < 0) {
+        return None;
+    }
+    Some(pads)
 }
 
 fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> Option<i64> {
@@ -218,13 +220,12 @@ fn is_tileable(graph: &GraphProto) -> bool {
     let Some(cp) = is_standard_conv_slice(graph) else {
         return false;
     };
-    if cp.kernel[0] % 2 == 0 || cp.kernel[1] % 2 == 0 {
-        return false;
-    }
-    let Some(halo) = compute_halo_size(cp.kernel, cp.dilation) else {
+    let Some(eff) = effective_kernel(cp.kernel, cp.dilation) else {
         return false;
     };
-    cp.pads == [halo[0], halo[1], halo[0], halo[1]]
+    let total_pad_h = cp.pads[0] + cp.pads[2];
+    let total_pad_w = cp.pads[1] + cp.pads[3];
+    total_pad_h >= eff[0] - cp.stride[0] && total_pad_w >= eff[1] - cp.stride[1]
 }
 
 fn is_channel_splittable(graph: &GraphProto) -> bool {
@@ -405,7 +406,7 @@ pub fn detect_tiling_needs(
             let tiles_y = h / actual_tile;
             let tiles_x = w / actual_tile;
             if tiles_y * tiles_x >= 2 {
-                let halo = compute_halo_size(cp.kernel, cp.dilation)?;
+                let halo = compute_halo_size(cp.pads)?;
                 return Some(TilingDetection::Spatial {
                     input_name: inp_name,
                     output_name: out_name,
@@ -452,7 +453,7 @@ pub enum TilingDetection {
         h: i64,
         w: i64,
         tile_size: i64,
-        halo: [i64; 2],
+        halo: [i64; 4],
         tiles_y: i64,
         tiles_x: i64,
         out_tile: [i64; 2],
@@ -498,27 +499,25 @@ pub fn create_tile_slice(
         )
     })?;
 
-    let halo = compute_halo_size(cp.kernel, cp.dilation).ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_tile_slice: effective kernel computation overflow".to_string(),
-        )
+    let halo = compute_halo_size(cp.pads).ok_or_else(|| {
+        crate::error::DsperseError::Slicer("create_tile_slice: invalid pad values".to_string())
     })?;
-    let tile_h = halo[0]
-        .checked_mul(2)
-        .and_then(|h2| tile_size.checked_add(h2))
+    let tile_h = tile_size
+        .checked_add(halo[0])
+        .and_then(|v| v.checked_add(halo[2]))
         .ok_or_else(|| {
             crate::error::DsperseError::Slicer(format!(
-                "create_tile_slice: tile_h overflow (tile_size={tile_size}, halo_h={})",
-                halo[0]
+                "create_tile_slice: tile_h overflow (tile_size={tile_size}, halo_top={}, halo_bottom={})",
+                halo[0], halo[2]
             ))
         })?;
-    let tile_w = halo[1]
-        .checked_mul(2)
-        .and_then(|w2| tile_size.checked_add(w2))
+    let tile_w = tile_size
+        .checked_add(halo[1])
+        .and_then(|v| v.checked_add(halo[3]))
         .ok_or_else(|| {
             crate::error::DsperseError::Slicer(format!(
-                "create_tile_slice: tile_w overflow (tile_size={tile_size}, halo_w={})",
-                halo[1]
+                "create_tile_slice: tile_w overflow (tile_size={tile_size}, halo_left={}, halo_right={})",
+                halo[1], halo[3]
             ))
         })?;
     let (out_h, out_w) = conv_output_hw(
@@ -1072,28 +1071,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn halo_3x3_no_dilation() {
-        assert_eq!(compute_halo_size([3, 3], [1, 1]), Some([1, 1]));
+    fn halo_symmetric_pads() {
+        assert_eq!(compute_halo_size([1, 1, 1, 1]), Some([1, 1, 1, 1]));
     }
 
     #[test]
-    fn halo_5x5_no_dilation() {
-        assert_eq!(compute_halo_size([5, 5], [1, 1]), Some([2, 2]));
+    fn halo_asymmetric_pads() {
+        assert_eq!(compute_halo_size([6, 6, 7, 7]), Some([6, 6, 7, 7]));
     }
 
     #[test]
-    fn halo_3x3_dilation_2() {
-        assert_eq!(compute_halo_size([3, 3], [2, 2]), Some([2, 2]));
+    fn halo_zero_pads() {
+        assert_eq!(compute_halo_size([0, 0, 0, 0]), Some([0, 0, 0, 0]));
     }
 
     #[test]
-    fn halo_1x1_kernel() {
-        assert_eq!(compute_halo_size([1, 1], [1, 1]), Some([0, 0]));
+    fn halo_negative_pads_rejected() {
+        assert_eq!(compute_halo_size([-1, 0, 0, 0]), None);
     }
 
     #[test]
-    fn halo_asymmetric_kernel() {
-        assert_eq!(compute_halo_size([3, 5], [1, 1]), Some([1, 2]));
+    fn halo_mixed_pads() {
+        assert_eq!(compute_halo_size([1, 2, 1, 2]), Some([1, 2, 1, 2]));
     }
 
     #[test]
@@ -1368,8 +1367,8 @@ mod tests {
     }
 
     #[test]
-    fn compute_halo_size_overflow() {
-        assert_eq!(compute_halo_size([i64::MAX, 1], [2, 1]), None);
+    fn compute_halo_size_negative_rejected() {
+        assert_eq!(compute_halo_size([0, 0, -1, 0]), None);
     }
 
     #[test]

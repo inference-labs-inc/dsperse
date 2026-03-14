@@ -15,6 +15,16 @@ pub fn prepare_jstprove_artifacts(
     let mut params = meta.circuit_params;
     if weights_as_inputs {
         params.weights_as_inputs = true;
+        for wb in &meta.wandb.w_and_b {
+            let shape = wb.shape.get(&wb.name).cloned().unwrap_or_default();
+            params.inputs.push(
+                jstprove_circuits::circuit_functions::utils::onnx_types::ONNXIO {
+                    name: wb.name.clone(),
+                    elem_type: 1,
+                    shape,
+                },
+            );
+        }
     }
 
     Ok((params, meta.architecture, meta.wandb))

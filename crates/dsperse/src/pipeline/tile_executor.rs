@@ -62,7 +62,7 @@ mod tests {
             num_tiles: 4,
             tiles_y: 2,
             tiles_x: 2,
-            halo: [0, 0],
+            halo: [0, 0, 0, 0],
             out_tile: [4, 4],
             stride: [1, 1],
             c_in: 1,

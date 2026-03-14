@@ -107,7 +107,7 @@ fn model_metadata_roundtrip() {
     assert!(s1.tiling.is_some());
     let tiling = s1.tiling.as_ref().unwrap();
     assert_eq!(tiling.num_tiles, 4);
-    assert_eq!(tiling.halo, [1, 1]);
+    assert_eq!(tiling.halo, [1, 1, 1, 1]);
     assert_eq!(tiling.tiles.as_ref().unwrap().len(), 2);
 
     let msgpack_bytes = rmp_serde::to_vec_named(&meta).unwrap();

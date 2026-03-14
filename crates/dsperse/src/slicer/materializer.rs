@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::autotiler::{self, ChannelSplitParams, TilingDetection};
+use super::autotiler::{self, ChannelSplitParams};
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
@@ -201,51 +201,37 @@ fn materialize_tiling_artifacts(
     }
 
     if let Some(ref cs) = slice_meta.channel_split {
-        let needs_materialization = cs.groups.iter().any(|g| {
-            let group_path = slices_dir.join(&g.path);
-            !group_path.exists()
-        });
+        let needs_materialization = cs.groups.is_empty()
+            || cs.groups.iter().any(|g| {
+                let group_path = slices_dir.join(&g.path);
+                !group_path.exists()
+            });
 
-        if needs_materialization {
+        if needs_materialization && cs.num_groups > 0 {
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
 
-            let tile_elements = cs.c_in.checked_mul(cs.h).and_then(|v| v.checked_mul(cs.w));
-            let detection = autotiler::detect_tiling_needs(&slice_model, tile_elements);
-
-            if let Some(TilingDetection::ChannelSplit {
-                input_name,
-                output_name,
-                c_in,
-                c_out,
-                h,
-                w,
-                num_groups,
-                channels_per_group,
-            }) = detection
-            {
-                let params = ChannelSplitParams {
-                    c_in,
-                    c_out,
-                    num_groups,
-                    channels_per_group,
-                    h,
-                    w,
-                    slice_idx,
-                };
-                autotiler::apply_channel_splitting(
-                    &slice_model,
-                    &params,
-                    &input_name,
-                    &output_name,
-                    &payload_dir,
-                )?;
-                tracing::info!(
-                    slice = slice_idx,
-                    groups = num_groups,
-                    "materialized channel groups"
-                );
-            }
+            let params = ChannelSplitParams {
+                c_in: cs.c_in as i64,
+                c_out: cs.c_out as i64,
+                num_groups: cs.num_groups as i64,
+                channels_per_group: cs.channels_per_group as i64,
+                h: cs.h as i64,
+                w: cs.w as i64,
+                slice_idx,
+            };
+            let cs_info = autotiler::apply_channel_splitting(
+                &slice_model,
+                &params,
+                &cs.input_name,
+                &cs.output_name,
+                &payload_dir,
+            )?;
+            tracing::info!(
+                slice = slice_idx,
+                groups = cs_info.groups.len(),
+                "materialized channel groups"
+            );
         }
     }
 

@@ -211,14 +211,7 @@ fn compile_single_slice(
     if let Some(ref cs) = slice.channel_split
         && !cs.groups.is_empty()
     {
-        return compile_channel_split_slice(
-            slices_dir,
-            slice,
-            cs,
-            backend,
-            weights_as_inputs,
-            jstprove_ops,
-        );
+        return compile_channel_split_slice(slices_dir, slice, cs, backend, jstprove_ops);
     }
 
     let onnx_path = resolve_compile_onnx(slices_dir, slice)?;
@@ -296,8 +289,15 @@ fn populate_channel_split_groups(
     let cpg = cs.channels_per_group;
     let mut groups = Vec::with_capacity(cs.num_groups);
     for g in 0..cs.num_groups {
-        let c_start = g * cpg;
-        let c_end = ((g + 1) * cpg).min(cs.c_in);
+        let c_start = g.checked_mul(cpg).ok_or_else(|| {
+            DsperseError::Slicer(format!("overflow computing c_start for group {g}"))
+        })?;
+        let c_end = (g + 1)
+            .checked_mul(cpg)
+            .map(|v| v.min(cs.c_in))
+            .ok_or_else(|| {
+                DsperseError::Slicer(format!("overflow computing c_end for group {g}"))
+            })?;
         let rel_path = format!("slice_{slice_idx}/payload/channel_groups/group_{g}.onnx");
         let abs_path = slices_dir.join(&rel_path);
         if !abs_path.exists() {
@@ -337,7 +337,6 @@ fn compile_channel_split_slice(
     slice: &crate::schema::metadata::SliceMetadata,
     cs: &crate::schema::tiling::ChannelSplitInfo,
     backend: &JstproveBackend,
-    _weights_as_inputs: bool,
     jstprove_ops: &[&str],
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
@@ -367,8 +366,10 @@ fn compile_channel_split_slice(
             )));
         }
 
-        std::fs::create_dir_all(shared_circuit_path.parent().unwrap())
-            .map_err(|e| DsperseError::io(e, &jst_dir))?;
+        let shared_dir = shared_circuit_path
+            .parent()
+            .ok_or_else(|| DsperseError::Pipeline("shared circuit path has no parent".into()))?;
+        std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
 
         tracing::info!(
             slice = slice.index,

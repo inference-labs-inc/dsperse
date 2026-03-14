@@ -16,7 +16,12 @@ pub fn prepare_jstprove_artifacts(
     if weights_as_inputs {
         params.weights_as_inputs = true;
         for wb in &meta.wandb.w_and_b {
-            let shape = wb.shape.get(&wb.name).cloned().unwrap_or_default();
+            let shape = wb.shape.get(&wb.name).cloned().ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "wandb entry '{}' missing shape for WAI input population",
+                    wb.name
+                ))
+            })?;
             params.inputs.push(
                 jstprove_circuits::circuit_functions::utils::onnx_types::ONNXIO {
                     name: wb.name.clone(),

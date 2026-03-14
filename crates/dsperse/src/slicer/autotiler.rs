@@ -386,49 +386,45 @@ pub fn detect_tiling_needs(
     tile_size: Option<usize>,
 ) -> Option<TilingDetection> {
     let graph = model.graph.as_ref()?;
-    if !is_tileable(graph) {
-        return None;
-    }
     let (inp_name, out_name, c_in, h, w) = get_model_dimensions(graph)?;
     let cp = get_conv_params(graph)?;
     let c_out = cp.c_out;
     let tile_size = tile_size? as i64;
-    let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
 
-    let (actual_tile, skip_reason) =
-        calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
+    if is_tileable(graph) {
+        let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
+        let (actual_tile, _skip_reason) =
+            calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
 
-    if let Some(actual_tile) = actual_tile {
-        if h % actual_tile != 0 || w % actual_tile != 0 {
-            return None;
+        if let Some(actual_tile) = actual_tile
+            && h % actual_tile == 0
+            && w % actual_tile == 0
+            && actual_tile % cp.stride[0] == 0
+            && actual_tile % cp.stride[1] == 0
+        {
+            let tiles_y = h / actual_tile;
+            let tiles_x = w / actual_tile;
+            if tiles_y * tiles_x >= 2 {
+                let halo = compute_halo_size(cp.kernel, cp.dilation)?;
+                return Some(TilingDetection::Spatial {
+                    input_name: inp_name,
+                    output_name: out_name,
+                    c_in,
+                    c_out,
+                    h,
+                    w,
+                    tile_size: actual_tile,
+                    halo,
+                    tiles_y,
+                    tiles_x,
+                    out_tile: [actual_tile / cp.stride[0], actual_tile / cp.stride[1]],
+                    stride: cp.stride,
+                });
+            }
         }
-        if actual_tile % cp.stride[0] != 0 || actual_tile % cp.stride[1] != 0 {
-            return None;
-        }
-        let tiles_y = h / actual_tile;
-        let tiles_x = w / actual_tile;
-        if tiles_y * tiles_x < 2 {
-            return None;
-        }
-        let halo = compute_halo_size(cp.kernel, cp.dilation)?;
-        return Some(TilingDetection::Spatial {
-            input_name: inp_name,
-            output_name: out_name,
-            c_in,
-            c_out,
-            h,
-            w,
-            tile_size: actual_tile,
-            halo,
-            tiles_y,
-            tiles_x,
-            out_tile: [actual_tile / cp.stride[0], actual_tile / cp.stride[1]],
-            stride: cp.stride,
-        });
     }
 
-    if matches!(skip_reason, Some("min_tile_too_large" | "no_divisor"))
-        && is_channel_splittable(graph)
+    if is_channel_splittable(graph)
         && let Some((num_groups, cpg)) =
             calculate_channel_split_config(c_in, c_out, h, w, tile_size)
     {

@@ -26,6 +26,7 @@ pub enum Commands {
     Run(RunArgs),
     Prove(ProveArgs),
     Verify(VerifyArgs),
+    Package(PackageArgs),
     #[command(name = "full-run")]
     FullRun(FullRunArgs),
 }
@@ -38,6 +39,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Run(args) => cmd_run(args),
         Commands::Prove(args) => cmd_prove(args),
         Commands::Verify(args) => cmd_verify(args),
+        Commands::Package(args) => cmd_package(args),
         Commands::FullRun(args) => cmd_full_run(args),
     }
 }
@@ -146,6 +148,16 @@ pub struct VerifyArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
+}
+
+#[derive(Args)]
+pub struct PackageArgs {
+    #[arg(long)]
+    pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub no_cleanup: bool,
 }
 
 #[derive(Args)]
@@ -325,6 +337,18 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
+    Ok(())
+}
+
+pub fn cmd_package(args: PackageArgs) -> Result<()> {
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
+    let cleanup = !args.no_cleanup;
+    let result = pipeline::packager::package_slices(&slices_dir, cleanup)?;
+    tracing::info!(
+        archives = result.count,
+        total_size_bytes = result.total_size,
+        "packaging complete"
+    );
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 mod compiler;
 mod incremental;
+pub mod packager;
 mod prover;
 pub mod runner;
 mod stage;

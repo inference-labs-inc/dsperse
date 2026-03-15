@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::{Read, Write};
 use std::path::Path;
 
 use walkdir::WalkDir;
@@ -127,11 +126,8 @@ fn create_zip_archive(source_dir: &Path, archive_path: &Path) -> Result<()> {
             zip.start_file(relative.to_string_lossy(), options.clone())
                 .map_err(|e| DsperseError::Archive(e.to_string()))?;
             let mut f = fs::File::open(abs_path).map_err(|e| DsperseError::io(e, abs_path))?;
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf)
+            std::io::copy(&mut f, &mut zip)
                 .map_err(|e| DsperseError::io(e, abs_path))?;
-            zip.write_all(&buf)
-                .map_err(|e| DsperseError::io(e, archive_path))?;
         }
     }
 

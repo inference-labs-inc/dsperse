@@ -343,12 +343,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 pub fn cmd_package(args: PackageArgs) -> Result<()> {
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
     let cleanup = !args.no_cleanup;
-    let result = pipeline::packager::package_slices(&slices_dir, cleanup)?;
-    tracing::info!(
-        archives = result.count,
-        total_size_bytes = result.total_size,
-        "packaging complete"
-    );
+    pipeline::packager::package_slices(&slices_dir, cleanup)?;
     Ok(())
 }
 

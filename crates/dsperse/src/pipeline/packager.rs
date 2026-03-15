@@ -126,8 +126,7 @@ fn create_zip_archive(source_dir: &Path, archive_path: &Path) -> Result<()> {
             zip.start_file(relative.to_string_lossy(), options.clone())
                 .map_err(|e| DsperseError::Archive(e.to_string()))?;
             let mut f = fs::File::open(abs_path).map_err(|e| DsperseError::io(e, abs_path))?;
-            std::io::copy(&mut f, &mut zip)
-                .map_err(|e| DsperseError::io(e, abs_path))?;
+            std::io::copy(&mut f, &mut zip).map_err(|e| DsperseError::io(e, abs_path))?;
         }
     }
 

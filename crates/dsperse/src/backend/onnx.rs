@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use ndarray::IxDyn;
 use tract_onnx::prelude::*;
@@ -15,27 +16,38 @@ fn load_onnx_model(onnx_path: &Path) -> Result<InferenceModel> {
 }
 
 fn resolve_concrete_shape(model: &InferenceModel, input_shape: &[usize]) -> Result<Vec<usize>> {
+    let model_shape = model
+        .input_fact(0)
+        .ok()
+        .and_then(|f| f.shape.as_concrete_finite().ok().flatten())
+        .map(|s| s.to_vec());
+
     if input_shape.is_empty() {
-        let input_fact = model
-            .input_fact(0)
-            .map_err(|e| DsperseError::Onnx(format!("input fact: {e}")))?;
-        input_fact
-            .shape
-            .as_concrete_finite()
-            .map_err(|e| DsperseError::Onnx(format!("shape analysis: {e}")))?
-            .ok_or_else(|| {
-                DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
-            })
-            .map(|s| s.to_vec())
-    } else {
-        Ok(input_shape.to_vec())
+        return model_shape.ok_or_else(|| {
+            DsperseError::Onnx("symbolic input shape — provide explicit shape".into())
+        });
     }
+
+    if let Some(ref ms) = model_shape {
+        let model_elems: usize = ms.iter().product();
+        let input_elems: usize = input_shape.iter().product();
+        if input_shape.len() == 1 && ms.len() > 1 && model_elems == input_elems {
+            tracing::debug!(
+                model_shape = ?ms,
+                provided_shape = ?input_shape,
+                "reshaping flat input to model-declared shape"
+            );
+            return Ok(ms.clone());
+        }
+    }
+
+    Ok(input_shape.to_vec())
 }
 
 fn optimize_to_runnable(
     model: InferenceModel,
     concrete_shape: &[usize],
-) -> Result<TypedRunnableModel<TypedModel>> {
+) -> Result<Arc<TypedRunnableModel>> {
     model
         .with_input_fact(
             0,
@@ -43,15 +55,15 @@ fn optimize_to_runnable(
         )
         .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
         .into_optimized()
-        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+        .map_err(|e| DsperseError::Onnx(format!("optimize: {e:#}")))?
         .into_runnable()
-        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))
+        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e:#}")))
 }
 
 fn load_runnable(
     onnx_path: &Path,
     input_shape: &[usize],
-) -> Result<(TypedRunnableModel<TypedModel>, Vec<usize>)> {
+) -> Result<(Arc<TypedRunnableModel>, Vec<usize>)> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
     let plan = optimize_to_runnable(model, &concrete_shape)?;
@@ -66,7 +78,7 @@ fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {
 }
 
 fn run_single(
-    plan: &TypedRunnableModel<TypedModel>,
+    plan: &Arc<TypedRunnableModel>,
     input_data: &[f64],
     shape: &[usize],
 ) -> Result<TVec<TValue>> {
@@ -76,7 +88,7 @@ fn run_single(
 }
 
 pub struct WarmModel {
-    plan: TypedRunnableModel<TypedModel>,
+    plan: Arc<TypedRunnableModel>,
     input_shape: Vec<usize>,
 }
 
@@ -192,9 +204,9 @@ fn run_multi_inner(
             DsperseError::Onnx(format!("type analysis (unmatched: {unmatched:?}): {e}"))
         })?
         .into_optimized()
-        .map_err(|e| DsperseError::Onnx(format!("optimize: {e}")))?
+        .map_err(|e| DsperseError::Onnx(format!("optimize: {e:#}")))?
         .into_runnable()
-        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e}")))?;
+        .map_err(|e| DsperseError::Onnx(format!("make runnable: {e:#}")))?;
 
     let mut input_tvs = TVec::new();
     for (model_idx, idx) in input_order.iter().enumerate() {
@@ -246,24 +258,24 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let dt = tv.datum_type();
     let data: Vec<f64> = if dt == f32::datum_type() {
         let arr = tv
-            .to_array_view::<f32>()
+            .to_dense_array_view::<f32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == f64::datum_type() {
         let arr = tv
-            .to_array_view::<f64>()
+            .to_dense_array_view::<f64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().copied().collect()
     } else if dt == i64::datum_type() {
         let arr = tv
-            .to_array_view::<i64>()
+            .to_dense_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))
             .collect::<Result<Vec<_>>>()?
     } else if dt == i32::datum_type() {
         let arr = tv
-            .to_array_view::<i32>()
+            .to_dense_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt.is_tdim() {
@@ -271,7 +283,7 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .cast_to::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: TDim->i64 cast: {e}")))?;
         let arr = casted
-            .to_array_view::<i64>()
+            .to_dense_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))

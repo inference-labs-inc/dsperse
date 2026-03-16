@@ -142,7 +142,8 @@ pub fn materialize_combined_to_disk(
         slices_dir.join(original_path)
     };
 
-    let model = onnx_proto::load_model(&model_path)?;
+    let mut model = onnx_proto::load_model(&model_path)?;
+    onnx_proto::normalize_opset(&mut model);
     let combined = materialize_combined_model(&model, metadata, traced_shapes)?;
 
     let output_path = slices_dir.join("combined.onnx");

@@ -34,7 +34,6 @@ pub enum Commands {
 }
 
 pub fn dispatch(command: Commands) -> Result<()> {
-    eprintln!("dsperse {VERSION}");
     match command {
         Commands::Slice(args) => cmd_slice(args),
         Commands::Combine(args) => cmd_combine(args),

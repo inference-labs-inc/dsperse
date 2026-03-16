@@ -17,10 +17,15 @@ pub fn slice_model(
     tile_size: Option<usize>,
     jstprove_ops: &[&str],
 ) -> Result<ModelMetadata> {
-    let model = onnx_proto::load_model(onnx_path)?;
+    let mut model = onnx_proto::load_model(onnx_path)?;
+    onnx_proto::normalize_opset(&mut model);
+
+    let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
+    let normalized_path = tmp_dir.path().join("model.onnx");
+    onnx_proto::save_model(&model, &normalized_path)?;
 
     tracing::info!("tracing shapes via tract");
-    let traced_shapes = trace_shapes_tract(onnx_path, &model)?;
+    let traced_shapes = trace_shapes_tract(&normalized_path, &model)?;
 
     let analysis = analyzer::analyze(&model, Some(onnx_path))?;
 

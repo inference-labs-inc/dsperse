@@ -455,8 +455,14 @@ pub fn detect_tiling_needs(
         if total <= tile_size {
             return None;
         }
-        let max_spatial = ((tile_size as f64) / (c_in as f64)).sqrt() as i64;
-        let actual_tile = max_spatial.min(h).min(w).max(1);
+        if c_in > tile_size {
+            return None;
+        }
+        let max_spatial = ((tile_size / c_in) as f64).sqrt() as i64;
+        if max_spatial < 1 {
+            return None;
+        }
+        let actual_tile = max_spatial.min(h).min(w);
         let tiles_y = (h + actual_tile - 1) / actual_tile;
         let tiles_x = (w + actual_tile - 1) / actual_tile;
         if tiles_y * tiles_x >= 2 {
@@ -1175,10 +1181,17 @@ pub fn create_elementwise_tile_slice(
         let is_last = i == graph.node.len() - 1;
         let new_outputs = if is_last {
             let mut remapped = orig_node.output.clone();
-            if let Some(first) = remapped.first_mut()
-                && (first == orig_output_name || graph.node.len() == 1)
-            {
-                *first = "tile_out".to_string();
+            let mut mapped = false;
+            for out_name in &mut remapped {
+                if out_name == orig_output_name {
+                    *out_name = "tile_out".to_string();
+                    mapped = true;
+                }
+            }
+            if !mapped {
+                return Err(crate::error::DsperseError::Slicer(
+                    "create_elementwise_tile_slice: last node does not produce selected graph output".to_string(),
+                ));
             }
             remapped
         } else {

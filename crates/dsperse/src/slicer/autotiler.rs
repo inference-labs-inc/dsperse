@@ -1119,11 +1119,13 @@ pub fn create_elementwise_tile_slice(
             "create_elementwise_tile_slice: model.graph is None".to_string(),
         )
     })?;
-    let inp = graph.input.first().ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_elementwise_tile_slice: no graph inputs".to_string(),
-        )
-    })?;
+    if graph.input.len() != 1 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_elementwise_tile_slice: expected exactly 1 graph input, got {}",
+            graph.input.len()
+        )));
+    }
+    let inp = &graph.input[0];
     let out = graph.output.first().ok_or_else(|| {
         crate::error::DsperseError::Slicer(
             "create_elementwise_tile_slice: no graph outputs".to_string(),

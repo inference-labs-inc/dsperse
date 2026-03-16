@@ -1429,6 +1429,11 @@ pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<
 
     let padded_h = tiling.tiles_y * tiling.tile_size + halo_top + halo_bottom;
     let padded_w = tiling.tiles_x * tiling.tile_size + halo_left + halo_right;
+    if halo_top + h > padded_h || halo_left + w > padded_w {
+        return Err(DsperseError::Pipeline(format!(
+            "split_into_tiles: input spatial ({h}x{w}) exceeds padded grid ({padded_h}x{padded_w})"
+        )));
+    }
     let mut padded = Array4::<f64>::zeros((n, c, padded_h, padded_w));
     padded
         .slice_mut(s![.., .., halo_top..halo_top + h, halo_left..halo_left + w])

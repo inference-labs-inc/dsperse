@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use ndarray::IxDyn;
 use tract_onnx::prelude::*;
@@ -46,7 +47,7 @@ fn resolve_concrete_shape(model: &InferenceModel, input_shape: &[usize]) -> Resu
 fn optimize_to_runnable(
     model: InferenceModel,
     concrete_shape: &[usize],
-) -> Result<TypedRunnableModel<TypedModel>> {
+) -> Result<Arc<TypedRunnableModel>> {
     model
         .with_input_fact(
             0,
@@ -62,7 +63,7 @@ fn optimize_to_runnable(
 fn load_runnable(
     onnx_path: &Path,
     input_shape: &[usize],
-) -> Result<(TypedRunnableModel<TypedModel>, Vec<usize>)> {
+) -> Result<(Arc<TypedRunnableModel>, Vec<usize>)> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
     let plan = optimize_to_runnable(model, &concrete_shape)?;
@@ -77,7 +78,7 @@ fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {
 }
 
 fn run_single(
-    plan: &TypedRunnableModel<TypedModel>,
+    plan: &Arc<TypedRunnableModel>,
     input_data: &[f64],
     shape: &[usize],
 ) -> Result<TVec<TValue>> {
@@ -87,7 +88,7 @@ fn run_single(
 }
 
 pub struct WarmModel {
-    plan: TypedRunnableModel<TypedModel>,
+    plan: Arc<TypedRunnableModel>,
     input_shape: Vec<usize>,
 }
 
@@ -257,24 +258,24 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let dt = tv.datum_type();
     let data: Vec<f64> = if dt == f32::datum_type() {
         let arr = tv
-            .to_array_view::<f32>()
+            .to_dense_array_view::<f32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == f64::datum_type() {
         let arr = tv
-            .to_array_view::<f64>()
+            .to_dense_array_view::<f64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().copied().collect()
     } else if dt == i64::datum_type() {
         let arr = tv
-            .to_array_view::<i64>()
+            .to_dense_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))
             .collect::<Result<Vec<_>>>()?
     } else if dt == i32::datum_type() {
         let arr = tv
-            .to_array_view::<i32>()
+            .to_dense_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt.is_tdim() {
@@ -282,7 +283,7 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .cast_to::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: TDim->i64 cast: {e}")))?;
         let arr = casted
-            .to_array_view::<i64>()
+            .to_dense_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))

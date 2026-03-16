@@ -292,6 +292,15 @@ fn model_opset_version(model: &ModelProto) -> i64 {
         .unwrap_or(1)
 }
 
+fn min_opset_for_op(op_type: &str) -> Option<i64> {
+    match op_type {
+        "GridSample" => Some(16),
+        "ScatterND" => Some(16),
+        "ScatterElements" => Some(16),
+        _ => None,
+    }
+}
+
 pub fn normalize_opset(model: &mut ModelProto) -> usize {
     let opset = model_opset_version(model);
     if opset < 13 {
@@ -301,6 +310,12 @@ pub fn normalize_opset(model: &mut ModelProto) -> usize {
         Some(g) => g,
         None => return 0,
     };
+    let mut required_opset = opset;
+    for node in graph.node.iter() {
+        if let Some(min) = min_opset_for_op(&node.op_type) {
+            required_opset = required_opset.max(min);
+        }
+    }
     let mut new_initializers: Vec<TensorProto> = Vec::new();
     let mut count = 0;
     for node in &mut graph.node {
@@ -331,8 +346,27 @@ pub fn normalize_opset(model: &mut ModelProto) -> usize {
         }
     }
     graph.initializer.extend(new_initializers);
+    if required_opset > opset {
+        if let Some(entry) = model
+            .opset_import
+            .iter_mut()
+            .find(|o| o.domain.is_empty() || o.domain == "ai.onnx")
+        {
+            entry.version = required_opset;
+        }
+        tracing::info!(
+            from = opset,
+            to = required_opset,
+            "bumped declared opset to match op requirements"
+        );
+        count += 1;
+    }
     if count > 0 {
-        tracing::info!(opset, fixes = count, "normalized ONNX opset conventions");
+        tracing::info!(
+            opset = required_opset,
+            fixes = count,
+            "normalized ONNX opset conventions"
+        );
     }
     count
 }

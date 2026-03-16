@@ -29,10 +29,10 @@ jobs:
       contents: read
 
   release:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     uses: inference-labs-inc/release/.github/workflows/publish-release.yml@c8fedc682daa107a820a5bc1fbd03b95ff428421
     with:
-      version: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.0.0-dev' }}
+      version: ${{ github.ref_name }}
       rust-toolchain: nightly-2025-03-27
       version-files: |
         pyproject.toml
@@ -40,9 +40,25 @@ jobs:
       test-import: "from dsperse import slice_model"
       system-deps-linux: "protobuf-compiler protobuf-devel pkgconf-pkg-config perl-IPC-Cmd perl-Time-Piece clang-devel"
       system-deps-macos: "protobuf llvm"
-      publish: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+      publish: true
     secrets: inherit
     permissions:
       contents: write
       id-token: write
       attestations: write
+
+  dry-run:
+    if: github.event_name == 'workflow_dispatch'
+    uses: inference-labs-inc/release/.github/workflows/publish-release.yml@c8fedc682daa107a820a5bc1fbd03b95ff428421
+    with:
+      version: 0.0.0-dev
+      rust-toolchain: nightly-2025-03-27
+      version-files: |
+        pyproject.toml
+        crates/dsperse/Cargo.toml
+      test-import: "from dsperse import slice_model"
+      system-deps-linux: "protobuf-compiler protobuf-devel pkgconf-pkg-config perl-IPC-Cmd perl-Time-Piece clang-devel"
+      system-deps-macos: "protobuf llvm"
+      publish: false
+    permissions:
+      contents: read

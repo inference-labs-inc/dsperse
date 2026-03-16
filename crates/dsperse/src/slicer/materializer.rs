@@ -154,7 +154,8 @@ pub fn ensure_slice_materialized(
         slices_dir.join(original_path)
     };
 
-    let model = onnx_proto::load_model(&model_path)?;
+    let mut model = onnx_proto::load_model(&model_path)?;
+    onnx_proto::normalize_opset(&mut model);
     let model_with_shapes = apply_traced_shapes(model, traced_shapes);
 
     std::fs::create_dir_all(&payload_dir).map_err(|e| DsperseError::io(e, &payload_dir))?;

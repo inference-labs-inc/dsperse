@@ -282,3 +282,57 @@ pub fn build_patched_onnx(
     save_model(&model, tmp.path())?;
     Ok(tmp)
 }
+
+fn model_opset_version(model: &ModelProto) -> i64 {
+    model
+        .opset_import
+        .iter()
+        .find(|o| o.domain.is_empty() || o.domain == "ai.onnx")
+        .map(|o| o.version)
+        .unwrap_or(1)
+}
+
+pub fn normalize_opset(model: &mut ModelProto) -> usize {
+    let opset = model_opset_version(model);
+    if opset < 13 {
+        return 0;
+    }
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+    let mut new_initializers: Vec<TensorProto> = Vec::new();
+    let mut count = 0;
+    for node in &mut graph.node {
+        match node.op_type.as_str() {
+            "Unsqueeze" | "Squeeze" if node.input.len() == 1 => {
+                if let Some(axes) = get_attribute_ints(node, "axes") {
+                    let axes_name = format!("{}_axes_const", node.name);
+                    new_initializers.push(TensorProto {
+                        name: axes_name.clone(),
+                        data_type: TensorProto::INT64,
+                        dims: vec![axes.len() as i64],
+                        int64_data: axes,
+                        ..Default::default()
+                    });
+                    node.input.push(axes_name);
+                    node.attribute.retain(|a| a.name != "axes");
+                    count += 1;
+                }
+            }
+            "Reshape" if opset < 14 => {
+                let had = node.attribute.iter().any(|a| a.name == "allowzero");
+                if had {
+                    node.attribute.retain(|a| a.name != "allowzero");
+                    count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    graph.initializer.extend(new_initializers);
+    if count > 0 {
+        tracing::info!(opset, fixes = count, "normalized ONNX opset conventions");
+    }
+    count
+}

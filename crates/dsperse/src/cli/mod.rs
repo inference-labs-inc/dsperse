@@ -9,8 +9,10 @@ use crate::pipeline::{self, RunConfig};
 
 use jstprove_circuits::ProofSystem;
 
+pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");
+
 #[derive(Parser)]
-#[command(name = "dsperse", about = "Distributed zkML Toolkit")]
+#[command(name = "dsperse", about = "Distributed zkML Toolkit", version = VERSION)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -32,6 +34,7 @@ pub enum Commands {
 }
 
 pub fn dispatch(command: Commands) -> Result<()> {
+    eprintln!("dsperse {VERSION}");
     match command {
         Commands::Slice(args) => cmd_slice(args),
         Commands::Combine(args) => cmd_combine(args),

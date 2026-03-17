@@ -1239,6 +1239,11 @@ pub fn create_elementwise_tile_slice(
     })?;
     let first_dims = onnx_proto::vi_shape(&graph.input[0]);
     let rank = first_dims.len();
+    if rank != 3 && rank != 4 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_elementwise_tile_slice: unsupported input rank {rank}"
+        )));
+    }
     let orig_output_name = &out.name;
 
     let mut orig_to_tile: Vec<(String, String)> = Vec::with_capacity(graph.input.len());
@@ -1250,6 +1255,13 @@ pub fn create_elementwise_tile_slice(
             format!("tile_in_{idx}")
         };
         let inp_dims = onnx_proto::vi_shape(inp);
+        if inp_dims.len() != rank {
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "create_elementwise_tile_slice: rank mismatch for input '{}' (expected {rank}, got {})",
+                inp.name,
+                inp_dims.len()
+            )));
+        }
         let tile_shape: Vec<i64> = match rank {
             3 => {
                 let hidden = inp_dims.get(2).copied().filter(|&v| v > 0).ok_or_else(|| {
@@ -1284,6 +1296,12 @@ pub fn create_elementwise_tile_slice(
     }
 
     let out_dims = onnx_proto::vi_shape(out);
+    if out_dims.len() != rank {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_elementwise_tile_slice: output rank mismatch (expected {rank}, got {})",
+            out_dims.len()
+        )));
+    }
     let out_tile_shape: Vec<i64> = match rank {
         3 => {
             let hidden = out_dims

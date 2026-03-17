@@ -1843,15 +1843,29 @@ fn split_into_tiles_1d(input: &ArrayD<f64>, tiling: &TilingInfo) -> Result<Vec<A
             shape.len()
         )));
     }
-    let (n, seq, hidden) = (shape[0], shape[1], shape[2]);
+    let (n, seq, _hidden) = (shape[0], shape[1], shape[2]);
     if n != 1 {
         return Err(DsperseError::Pipeline(format!(
             "split_into_tiles_1d: batch size {n} not supported, expected 1"
         )));
     }
     let tile_size = tiling.tile_size;
-    let padded_seq = tiling.tiles_y * tile_size;
-    let mut padded = ArrayD::<f64>::zeros(vec![n, padded_seq, hidden]);
+    if tile_size == 0 || tiling.tiles_y == 0 {
+        return Err(DsperseError::Pipeline(format!(
+            "split_into_tiles_1d: invalid tiling config tile_size={}, tiles_y={}",
+            tile_size, tiling.tiles_y
+        )));
+    }
+    let padded_seq = tiling
+        .tiles_y
+        .checked_mul(tile_size)
+        .ok_or_else(|| DsperseError::Pipeline("split_into_tiles_1d: padded_seq overflow".into()))?;
+    if seq > padded_seq {
+        return Err(DsperseError::Pipeline(format!(
+            "split_into_tiles_1d: input seq {seq} exceeds padded seq {padded_seq}"
+        )));
+    }
+    let mut padded = ArrayD::<f64>::zeros(vec![n, padded_seq, shape[2]]);
     padded.slice_mut(s![.., ..seq, ..]).assign(input);
 
     let mut tiles = Vec::with_capacity(tiling.tiles_y);
@@ -1870,6 +1884,11 @@ fn reconstruct_from_tiles_1d(
     tile_outputs: &[ArrayD<f64>],
     tiling: &TilingInfo,
 ) -> Result<ArrayD<f64>> {
+    if tile_outputs.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "reconstruct_1d: no tile outputs".into(),
+        ));
+    }
     if tile_outputs.len() != tiling.tiles_y {
         return Err(DsperseError::Pipeline(format!(
             "reconstruct_1d: expected {} tiles, got {}",
@@ -1878,11 +1897,24 @@ fn reconstruct_from_tiles_1d(
         )));
     }
     let first = &tile_outputs[0];
+    if first.ndim() != 3 {
+        return Err(DsperseError::Pipeline(format!(
+            "reconstruct_1d: expected 3D tiles, got {}D",
+            first.ndim()
+        )));
+    }
     let fshape = first.shape();
     let (tile_len, hidden) = (fshape[1], fshape[2]);
     let total_seq = tile_len * tile_outputs.len();
     let mut output = ArrayD::<f64>::zeros(vec![1, total_seq, hidden]);
     for (idx, tile) in tile_outputs.iter().enumerate() {
+        if tile.shape() != fshape {
+            return Err(DsperseError::Pipeline(format!(
+                "reconstruct_1d: tile {idx} shape {:?} != first tile shape {:?}",
+                tile.shape(),
+                fshape
+            )));
+        }
         let start = idx * tile_len;
         output
             .slice_mut(s![.., start..start + tile_len, ..])
@@ -1895,8 +1927,13 @@ fn trim_to_original_seq(arr: ArrayD<f64>, tiling: &TilingInfo) -> Result<ArrayD<
     if tiling.h == 0 {
         return Ok(arr);
     }
-    let shape = arr.shape();
-    let current_seq = shape[1];
+    if arr.ndim() != 3 {
+        return Err(DsperseError::Pipeline(format!(
+            "trim_to_original_seq: expected 3D array, got {}D",
+            arr.ndim()
+        )));
+    }
+    let current_seq = arr.shape()[1];
     if current_seq > tiling.h {
         Ok(arr.slice(s![.., ..tiling.h, ..]).to_owned().into_dyn())
     } else {

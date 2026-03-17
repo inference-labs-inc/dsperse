@@ -438,10 +438,13 @@ pub fn detect_tiling_needs(
     tile_size: Option<usize>,
 ) -> Option<TilingDetection> {
     let graph = model.graph.as_ref()?;
-    let (inp_name, out_name, c_in, h, w) = get_model_dimensions(graph)?;
     let tile_size = tile_size? as i64;
 
-    if let Some(cp) = get_conv_params(graph) {
+    let dims_4d = get_model_dimensions(graph);
+
+    if let Some((ref inp_name, ref out_name, c_in, h, w)) = dims_4d
+        && let Some(cp) = get_conv_params(graph)
+    {
         let c_out = cp.c_out;
 
         if is_tileable(graph) {
@@ -461,8 +464,8 @@ pub fn detect_tiling_needs(
                     let halo = compute_halo_size(cp.pads)?;
                     return Some(TilingDetection::Spatial {
                         input_name: inp_name.clone(),
-                        output_name: out_name,
-                        input_names: vec![inp_name],
+                        output_name: out_name.clone(),
+                        input_names: vec![inp_name.clone()],
                         ndim: 4,
                         c_in,
                         c_out,
@@ -484,8 +487,8 @@ pub fn detect_tiling_needs(
                 calculate_channel_split_config(c_in, c_out, h, w, tile_size)
         {
             return Some(TilingDetection::ChannelSplit {
-                input_name: inp_name,
-                output_name: out_name,
+                input_name: inp_name.clone(),
+                output_name: out_name.clone(),
                 c_in,
                 c_out,
                 h,

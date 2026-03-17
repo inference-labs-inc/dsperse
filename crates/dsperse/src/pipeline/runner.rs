@@ -508,18 +508,38 @@ fn run_combined_inference(
             continue;
         }
 
-        match ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)? {
-            ExecutionStrategy::Single { .. } => {}
-            ExecutionStrategy::Tiled(_) => {
-                return Err(DsperseError::Pipeline(format!(
-                    "{slice_id}: combined mode does not support tiled circuit slices; use --combined false"
-                )));
+        let strategy = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?;
+
+        if let ExecutionStrategy::ChannelSplit(_) = &strategy {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: combined mode does not support channel-split circuit slices; use --combined false"
+            )));
+        }
+
+        if let ExecutionStrategy::Tiled(tiling) = &strategy {
+            let exec_info = execute_combined_tiled(
+                slices_dir,
+                &slice_run_dir,
+                &slice_id,
+                tiling,
+                &mut tensor_cache,
+                backend,
+                config,
+                donor_map.as_ref(),
+            )?;
+
+            let success = exec_info.success;
+            results.push(ExecutionResultEntry {
+                slice_id: slice_id.clone(),
+                witness_execution: Some(exec_info),
+                proof_execution: None,
+                verification_execution: None,
+            });
+
+            if !success {
+                break;
             }
-            ExecutionStrategy::ChannelSplit(_) => {
-                return Err(DsperseError::Pipeline(format!(
-                    "{slice_id}: combined mode does not support channel-split circuit slices; use --combined false"
-                )));
-            }
+            continue;
         }
 
         let circuit_path = slice_meta
@@ -877,33 +897,7 @@ fn execute_tiled(
     let all_names = tiling.all_input_names();
     let multi_input = all_names.len() > 1;
 
-    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
-    for name in &all_names {
-        let input_arr = tensor_cache.get(name)?.clone();
-        let input_4d = if input_arr.ndim() == 4 {
-            let s = input_arr.shape();
-            Array4::from_shape_vec(
-                (s[0], s[1], s[2], s[3]),
-                input_arr.iter().copied().collect(),
-            )
-            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
-        } else {
-            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-            let h = if tiling.h > 0 {
-                tiling.h
-            } else {
-                tiling.tiles_y * tiling.tile_size
-            };
-            let w = if tiling.w > 0 {
-                tiling.w
-            } else {
-                tiling.tiles_x * tiling.tile_size
-            };
-            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
-        };
-        let tiles = split_into_tiles(&input_4d, tiling)?;
-        all_tiles.push(tiles);
-    }
+    let all_tiles = prepare_tiles_from_cache(tiling, tensor_cache)?;
 
     let num_tiles = all_tiles[0].len();
     let tiles = &all_tiles[0];
@@ -1215,6 +1209,189 @@ fn execute_tiled(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn execute_combined_tiled(
+    slices_dir: &Path,
+    slice_run_dir: &Path,
+    slice_id: &str,
+    tiling: &TilingInfo,
+    tensor_cache: &mut TensorStore,
+    backend: &JstproveBackend,
+    config: &RunConfig,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
+) -> Result<ExecutionInfo> {
+    let all_names = tiling.all_input_names();
+
+    let all_tiles = prepare_tiles_from_cache(tiling, tensor_cache)?;
+
+    let num_tiles = all_tiles[0].len();
+
+    tracing::info!(
+        slice = %slice_id,
+        num_tiles,
+        tile_size = tiling.tile_size,
+        "splitting combined activations into tiles for witness generation"
+    );
+
+    let tile_infos = tiling.tiles.as_deref().unwrap_or(&[]);
+    let single_tile = tiling.tile.as_ref();
+    let first_tile_info = tile_infos.first().or(single_tile);
+
+    let circuit_path = match first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()) {
+        Some(p) => Some(resolve_relative_path(slices_dir, p)?),
+        None => None,
+    };
+
+    let circuit_path = match circuit_path {
+        Some(p) => p,
+        None => {
+            return Ok(ExecutionInfo {
+                method: ExecutionMethod::Tiled,
+                success: true,
+                error: None,
+                witness_file: None,
+                tile_exec_infos: (0..num_tiles)
+                    .map(|i| TileResult::success(i, Some(ExecutionMethod::OnnxOnly), 0.0))
+                    .collect(),
+            });
+        }
+    };
+
+    let tile_onnx = first_tile_info
+        .map(|ti| resolve_relative_path(slices_dir, &ti.path))
+        .transpose()?;
+
+    let patched_tile_onnx = match (&tile_onnx, donor_init_map) {
+        (Some(onnx_path), Some(map)) => Some(crate::slicer::onnx_proto::build_patched_onnx(
+            onnx_path, map,
+        )?),
+        _ => None,
+    };
+    let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
+    let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
+
+    let params = backend.load_params(&circuit_path)?;
+    let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
+
+    if donor_init_map.is_some() && !is_wai {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: consumer weights require circuits compiled with --weights-as-inputs"
+        )));
+    }
+
+    if all_names.len() > 1 {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: tiled circuit execution does not support multiple activation inputs"
+        )));
+    }
+
+    let warm_circuit = match effective_tile_onnx_ref {
+        Some(onnx_path) => {
+            let initializers = if is_wai {
+                if let Some(map) = donor_init_map {
+                    extract_initializers_from_map(map, params.as_ref().unwrap())?
+                } else {
+                    extract_onnx_initializers(onnx_path, params.as_ref().unwrap())?
+                }
+            } else {
+                vec![]
+            };
+            let wc =
+                crate::backend::jstprove::WarmCircuit::load(&circuit_path, initializers, backend)?;
+            tracing::info!(slice = %slice_id, wai = is_wai, "loaded tile circuit for combined tiling");
+            Some(wc)
+        }
+        None => None,
+    };
+
+    let warm_circuit = warm_circuit.map(Arc::new);
+    let circuit_path = Arc::from(circuit_path);
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.parallel)
+        .build()
+        .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
+
+    let collected: Vec<TileResult> = pool.install(|| {
+        (0..num_tiles)
+            .into_par_iter()
+            .map(|tile_idx| {
+                let start = std::time::Instant::now();
+                let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
+                if let Err(e) = std::fs::create_dir_all(&tile_dir) {
+                    return TileResult::failure(
+                        tile_idx,
+                        format!("mkdir: {e}"),
+                        None,
+                        start.elapsed().as_secs_f64(),
+                    );
+                }
+
+                let tile_dyn = all_tiles[0][tile_idx].clone().into_dyn();
+                let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+
+                let witness_result = if let Some(ref wc) = warm_circuit {
+                    wc.witness_f64(&flat)
+                } else {
+                    backend.witness_f64(&circuit_path, &flat, &[])
+                };
+
+                match witness_result {
+                    Ok(witness_bytes) => {
+                        let witness_path = tile_dir.join(crate::utils::paths::WITNESS_FILE);
+                        if let Err(e) = std::fs::write(&witness_path, &witness_bytes) {
+                            return TileResult::failure(
+                                tile_idx,
+                                format!("write witness: {e}"),
+                                Some(ExecutionMethod::JstproveGenWitness),
+                                start.elapsed().as_secs_f64(),
+                            );
+                        }
+                        TileResult::success(
+                            tile_idx,
+                            Some(ExecutionMethod::JstproveGenWitness),
+                            start.elapsed().as_secs_f64(),
+                        )
+                    }
+                    Err(e) => TileResult::failure(
+                        tile_idx,
+                        e.to_string(),
+                        Some(ExecutionMethod::JstproveGenWitness),
+                        start.elapsed().as_secs_f64(),
+                    ),
+                }
+            })
+            .collect()
+    });
+
+    let all_success = collected.iter().all(|r| r.success);
+    if !all_success {
+        let failed: Vec<_> = collected
+            .iter()
+            .filter(|r| !r.success)
+            .map(|r| format!("tile {}: {}", r.tile_idx, r.error.as_deref().unwrap_or("?")))
+            .collect();
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: tiled witness generation failed: {}",
+            failed.join("; ")
+        )));
+    }
+
+    tracing::info!(
+        slice = %slice_id,
+        num_tiles,
+        "tiled witness generation from combined outputs complete"
+    );
+
+    Ok(ExecutionInfo {
+        method: ExecutionMethod::Tiled,
+        success: true,
+        error: None,
+        witness_file: None,
+        tile_exec_infos: collected,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_channel_split(
     slices_dir: &Path,
     slice_run_dir: &Path,
@@ -1462,6 +1639,41 @@ fn execute_channel_group(
     } else {
         run_onnx_inference(effective_onnx, group_input)
     }
+}
+
+fn prepare_tiles_from_cache(
+    tiling: &TilingInfo,
+    tensor_cache: &TensorStore,
+) -> Result<Vec<Vec<Array4<f64>>>> {
+    let all_names = tiling.all_input_names();
+    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
+    for name in &all_names {
+        let input_arr = tensor_cache.get(name)?.clone();
+        let input_4d = if input_arr.ndim() == 4 {
+            let s = input_arr.shape();
+            Array4::from_shape_vec(
+                (s[0], s[1], s[2], s[3]),
+                input_arr.iter().copied().collect(),
+            )
+            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
+        } else {
+            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
+            let h = if tiling.h > 0 {
+                tiling.h
+            } else {
+                tiling.tiles_y * tiling.tile_size
+            };
+            let w = if tiling.w > 0 {
+                tiling.w
+            } else {
+                tiling.tiles_x * tiling.tile_size
+            };
+            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
+        };
+        let tiles = split_into_tiles(&input_4d, tiling)?;
+        all_tiles.push(tiles);
+    }
+    Ok(all_tiles)
 }
 
 pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {

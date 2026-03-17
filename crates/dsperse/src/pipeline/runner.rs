@@ -472,6 +472,21 @@ fn run_combined_inference(
         tensor_cache.put(name.clone(), arr);
     }
 
+    for name in declared_inputs {
+        if !tensor_cache.contains(name) {
+            if input_val.is_map() {
+                let v = map_get_ref(input_val, name).ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "combined fallback: input map missing key {name:?}"
+                    ))
+                })?;
+                tensor_cache.put(name.clone(), value_to_arrayd(v)?);
+            } else if declared_inputs.len() == 1 {
+                tensor_cache.put(name.clone(), value_to_arrayd(input_val)?);
+            }
+        }
+    }
+
     crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, model_meta)?;
     let chain = build_execution_chain(model_meta, slices_dir)?;
     let run_meta = build_run_metadata(model_meta, slices_dir, &chain)?;

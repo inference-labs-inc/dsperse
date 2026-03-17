@@ -897,33 +897,7 @@ fn execute_tiled(
     let all_names = tiling.all_input_names();
     let multi_input = all_names.len() > 1;
 
-    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
-    for name in &all_names {
-        let input_arr = tensor_cache.get(name)?.clone();
-        let input_4d = if input_arr.ndim() == 4 {
-            let s = input_arr.shape();
-            Array4::from_shape_vec(
-                (s[0], s[1], s[2], s[3]),
-                input_arr.iter().copied().collect(),
-            )
-            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
-        } else {
-            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-            let h = if tiling.h > 0 {
-                tiling.h
-            } else {
-                tiling.tiles_y * tiling.tile_size
-            };
-            let w = if tiling.w > 0 {
-                tiling.w
-            } else {
-                tiling.tiles_x * tiling.tile_size
-            };
-            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
-        };
-        let tiles = split_into_tiles(&input_4d, tiling)?;
-        all_tiles.push(tiles);
-    }
+    let all_tiles = prepare_tiles_from_cache(tiling, tensor_cache)?;
 
     let num_tiles = all_tiles[0].len();
     let tiles = &all_tiles[0];
@@ -1247,33 +1221,7 @@ fn execute_combined_tiled(
 ) -> Result<ExecutionInfo> {
     let all_names = tiling.all_input_names();
 
-    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
-    for name in &all_names {
-        let input_arr = tensor_cache.get(name)?.clone();
-        let input_4d = if input_arr.ndim() == 4 {
-            let s = input_arr.shape();
-            Array4::from_shape_vec(
-                (s[0], s[1], s[2], s[3]),
-                input_arr.iter().copied().collect(),
-            )
-            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
-        } else {
-            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-            let h = if tiling.h > 0 {
-                tiling.h
-            } else {
-                tiling.tiles_y * tiling.tile_size
-            };
-            let w = if tiling.w > 0 {
-                tiling.w
-            } else {
-                tiling.tiles_x * tiling.tile_size
-            };
-            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
-        };
-        let tiles = split_into_tiles(&input_4d, tiling)?;
-        all_tiles.push(tiles);
-    }
+    let all_tiles = prepare_tiles_from_cache(tiling, tensor_cache)?;
 
     let num_tiles = all_tiles[0].len();
 
@@ -1691,6 +1639,41 @@ fn execute_channel_group(
     } else {
         run_onnx_inference(effective_onnx, group_input)
     }
+}
+
+fn prepare_tiles_from_cache(
+    tiling: &TilingInfo,
+    tensor_cache: &TensorStore,
+) -> Result<Vec<Vec<Array4<f64>>>> {
+    let all_names = tiling.all_input_names();
+    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
+    for name in &all_names {
+        let input_arr = tensor_cache.get(name)?.clone();
+        let input_4d = if input_arr.ndim() == 4 {
+            let s = input_arr.shape();
+            Array4::from_shape_vec(
+                (s[0], s[1], s[2], s[3]),
+                input_arr.iter().copied().collect(),
+            )
+            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
+        } else {
+            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
+            let h = if tiling.h > 0 {
+                tiling.h
+            } else {
+                tiling.tiles_y * tiling.tile_size
+            };
+            let w = if tiling.w > 0 {
+                tiling.w
+            } else {
+                tiling.tiles_x * tiling.tile_size
+            };
+            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
+        };
+        let tiles = split_into_tiles(&input_4d, tiling)?;
+        all_tiles.push(tiles);
+    }
+    Ok(all_tiles)
 }
 
 pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {

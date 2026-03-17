@@ -125,6 +125,7 @@ fn build_slice_metadata(
                     input_name,
                     output_name,
                     input_names,
+                    ndim,
                     c_in,
                     c_out,
                     h,
@@ -150,6 +151,7 @@ fn build_slice_metadata(
                         input_name: input_name.clone(),
                         output_name: output_name.clone(),
                         input_names: input_names.clone(),
+                        ndim: *ndim as usize,
                         h: *h as usize,
                         w: *w as usize,
                         tile: Some(crate::schema::tiling::TileInfo {

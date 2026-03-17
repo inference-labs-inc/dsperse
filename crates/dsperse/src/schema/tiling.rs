@@ -38,6 +38,8 @@ pub struct TilingInfo {
     pub output_name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_names: Vec<String>,
+    #[serde(default = "default_four")]
+    pub ndim: usize,
     #[serde(default)]
     pub h: usize,
     #[serde(default)]
@@ -106,6 +108,10 @@ pub struct ChannelSplitInfo {
 
 fn default_one() -> usize {
     1
+}
+
+fn default_four() -> usize {
+    4
 }
 
 fn default_pair_zero() -> [i64; 2] {

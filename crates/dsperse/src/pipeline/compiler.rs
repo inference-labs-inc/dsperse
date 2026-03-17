@@ -569,6 +569,7 @@ mod tests {
             input_name: "input".into(),
             output_name: "output".into(),
             input_names: vec![],
+            ndim: 4,
             h: 16,
             w: 16,
             tile: Some(TileInfo {
@@ -604,6 +605,7 @@ mod tests {
             input_name: "input".into(),
             output_name: "output".into(),
             input_names: vec![],
+            ndim: 4,
             h: 16,
             w: 16,
             tile: Some(TileInfo {

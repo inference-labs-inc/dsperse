@@ -252,10 +252,32 @@ fn get_model_dimensions(graph: &GraphProto) -> Option<(String, String, i64, i64,
 }
 
 fn is_elementwise_only_slice(graph: &GraphProto) -> bool {
-    if graph.node.is_empty() || graph.input.len() != 1 {
+    if graph.node.is_empty() || graph.input.is_empty() {
         return false;
     }
     graph.node.iter().all(|n| is_elementwise(&n.op_type))
+}
+
+fn get_elementwise_dimensions(graph: &GraphProto) -> Option<(Vec<String>, String, i64, i64, i64)> {
+    if graph.input.is_empty() {
+        return None;
+    }
+    let out = graph.output.first()?;
+    let first = graph.input.first()?;
+    let dims = onnx_proto::vi_shape(first);
+    if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 {
+        return None;
+    }
+    let (c, h, w) = (dims[1], dims[2], dims[3]);
+    let mut input_names = Vec::with_capacity(graph.input.len());
+    for inp in &graph.input {
+        let d = onnx_proto::vi_shape(inp);
+        if d.len() != 4 || d[1] != c || d[2] != h || d[3] != w {
+            return None;
+        }
+        input_names.push(inp.name.clone());
+    }
+    Some((input_names, out.name.clone(), c, h, w))
 }
 
 fn find_weights_and_bias(
@@ -416,8 +438,9 @@ pub fn detect_tiling_needs(
                 if tiles_y * tiles_x >= 2 {
                     let halo = compute_halo_size(cp.pads)?;
                     return Some(TilingDetection::Spatial {
-                        input_name: inp_name,
+                        input_name: inp_name.clone(),
                         output_name: out_name,
+                        input_names: vec![inp_name],
                         c_in,
                         c_out,
                         h,
@@ -450,35 +473,42 @@ pub fn detect_tiling_needs(
         }
     }
 
-    if is_elementwise_only_slice(graph) {
-        let total = c_in * h * w;
+    if is_elementwise_only_slice(graph)
+        && let Some((ew_input_names, ew_out_name, ew_c, ew_h, ew_w)) =
+            get_elementwise_dimensions(graph)
+    {
+        let num_inputs = i64::try_from(ew_input_names.len()).ok()?;
+        let per_pixel = ew_c.checked_mul(num_inputs)?;
+        let total = per_pixel.checked_mul(ew_h)?.checked_mul(ew_w)?;
         if total <= tile_size {
             return None;
         }
-        if c_in > tile_size {
+        if per_pixel > tile_size {
             return None;
         }
-        let max_spatial = ((tile_size / c_in) as f64).sqrt() as i64;
+        let max_spatial = ((tile_size / per_pixel) as f64).sqrt() as i64;
         if max_spatial < 1 {
             return None;
         }
-        let actual_tile = max_spatial.min(h).min(w);
-        let tiles_y = (h + actual_tile - 1) / actual_tile;
-        let tiles_x = (w + actual_tile - 1) / actual_tile;
+        let actual_tile = max_spatial.min(ew_h).min(ew_w);
+        let tiles_y = (ew_h + actual_tile - 1) / actual_tile;
+        let tiles_x = (ew_w + actual_tile - 1) / actual_tile;
         if tiles_y * tiles_x >= 2 {
             let c_out = graph
                 .output
                 .first()
                 .map(onnx_proto::vi_shape)
                 .and_then(|s| (s.len() == 4).then(|| s[1]))
-                .unwrap_or(c_in);
+                .unwrap_or(ew_c);
+            let primary_name = ew_input_names[0].clone();
             return Some(TilingDetection::Spatial {
-                input_name: inp_name,
-                output_name: out_name,
-                c_in,
+                input_name: primary_name,
+                output_name: ew_out_name,
+                input_names: ew_input_names,
+                c_in: ew_c,
                 c_out,
-                h,
-                w,
+                h: ew_h,
+                w: ew_w,
                 tile_size: actual_tile,
                 halo: [0, 0, 0, 0],
                 tiles_y,
@@ -497,6 +527,7 @@ pub enum TilingDetection {
     Spatial {
         input_name: String,
         output_name: String,
+        input_names: Vec<String>,
         c_in: i64,
         c_out: i64,
         h: i64,
@@ -1125,35 +1156,53 @@ pub fn create_elementwise_tile_slice(
             "create_elementwise_tile_slice: model.graph is None".to_string(),
         )
     })?;
-    if graph.input.len() != 1 {
-        return Err(crate::error::DsperseError::Slicer(format!(
-            "create_elementwise_tile_slice: expected exactly 1 graph input, got {}",
-            graph.input.len()
-        )));
+    if graph.input.is_empty() {
+        return Err(crate::error::DsperseError::Slicer(
+            "create_elementwise_tile_slice: no graph inputs".to_string(),
+        ));
     }
-    let inp = &graph.input[0];
     let out = graph.output.first().ok_or_else(|| {
         crate::error::DsperseError::Slicer(
             "create_elementwise_tile_slice: no graph outputs".to_string(),
         )
     })?;
-    let inp_dims = onnx_proto::vi_shape(inp);
-    let c_in = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_elementwise_tile_slice: unable to determine c_in".to_string(),
-        )
-    })?;
+    let first_dims = onnx_proto::vi_shape(&graph.input[0]);
+    let c_in = first_dims
+        .get(1)
+        .copied()
+        .filter(|&v| v > 0)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "create_elementwise_tile_slice: unable to determine c_in".to_string(),
+            )
+        })?;
     let out_dims = onnx_proto::vi_shape(out);
     let c_out = out_dims.get(1).copied().filter(|&v| v > 0).unwrap_or(c_in);
-
-    let orig_input_name = &inp.name;
     let orig_output_name = &out.name;
 
-    let x = onnx_proto::make_tensor_value_info(
-        "tile_in",
-        TensorProto::FLOAT,
-        &[1, c_in, tile_size, tile_size],
-    );
+    let mut orig_to_tile: Vec<(String, String)> = Vec::with_capacity(graph.input.len());
+    let mut tile_inputs = Vec::with_capacity(graph.input.len());
+    for (idx, inp) in graph.input.iter().enumerate() {
+        let tile_name = if graph.input.len() == 1 {
+            "tile_in".to_string()
+        } else {
+            format!("tile_in_{idx}")
+        };
+        let inp_dims = onnx_proto::vi_shape(inp);
+        let inp_c = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_elementwise_tile_slice: invalid c_in for input '{}'",
+                inp.name
+            ))
+        })?;
+        tile_inputs.push(onnx_proto::make_tensor_value_info(
+            &tile_name,
+            TensorProto::FLOAT,
+            &[1, inp_c, tile_size, tile_size],
+        ));
+        orig_to_tile.push((inp.name.clone(), tile_name));
+    }
+
     let y = onnx_proto::make_tensor_value_info(
         "tile_out",
         TensorProto::FLOAT,
@@ -1171,11 +1220,12 @@ pub fn create_elementwise_tile_slice(
             .input
             .iter()
             .map(|name| {
-                if name == orig_input_name {
-                    "tile_in".to_string()
-                } else {
-                    name.clone()
+                for (orig, tile) in &orig_to_tile {
+                    if name == orig {
+                        return tile.clone();
+                    }
                 }
+                name.clone()
             })
             .collect();
         let is_last = i == graph.node.len() - 1;
@@ -1215,7 +1265,7 @@ pub fn create_elementwise_tile_slice(
     let tile_graph = onnx_proto::make_graph(
         &format!("tile_{slice_idx}"),
         nodes,
-        vec![x],
+        tile_inputs,
         vec![y],
         initializers,
     );

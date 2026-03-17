@@ -17,10 +17,15 @@ pub fn slice_model(
     tile_size: Option<usize>,
     jstprove_ops: &[&str],
 ) -> Result<ModelMetadata> {
-    let model = onnx_proto::load_model(onnx_path)?;
+    let mut model = onnx_proto::load_model(onnx_path)?;
+    onnx_proto::normalize_opset(&mut model);
+
+    let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
+    let normalized_path = tmp_dir.path().join("model.onnx");
+    onnx_proto::save_model(&model, &normalized_path)?;
 
     tracing::info!("tracing shapes via tract");
-    let traced_shapes = trace_shapes_tract(onnx_path, &model)?;
+    let traced_shapes = trace_shapes_tract(&normalized_path, &model)?;
 
     let analysis = analyzer::analyze(&model, Some(onnx_path))?;
 
@@ -40,7 +45,7 @@ pub fn slice_model(
     );
 
     let model_dest = output_dir.join("model.onnx");
-    std::fs::copy(onnx_path, &model_dest).map_err(|e| DsperseError::io(e, &model_dest))?;
+    onnx_proto::save_model(&model, &model_dest)?;
 
     let segment_ranges = super::build_segment_ranges(&slice_points, None);
 
@@ -119,6 +124,7 @@ fn build_slice_metadata(
                 autotiler::TilingDetection::Spatial {
                     input_name,
                     output_name,
+                    input_names,
                     c_in,
                     c_out,
                     h,
@@ -143,6 +149,7 @@ fn build_slice_metadata(
                         c_out: *c_out as usize,
                         input_name: input_name.clone(),
                         output_name: output_name.clone(),
+                        input_names: input_names.clone(),
                         h: *h as usize,
                         w: *w as usize,
                         tile: Some(crate::schema::tiling::TileInfo {

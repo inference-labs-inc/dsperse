@@ -69,6 +69,7 @@ mod tests {
             c_out: 1,
             input_name: "input".into(),
             output_name: "output".into(),
+            input_names: vec![],
             h: 8,
             w: 8,
             tile: None,

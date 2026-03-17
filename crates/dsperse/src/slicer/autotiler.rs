@@ -1387,9 +1387,14 @@ pub fn create_elementwise_tile_slice(
     let onnx_path = tiles_dir.join("tile.onnx");
     onnx_proto::save_model(&tile_model, &onnx_path)?;
 
+    let conv_out = if rank == 3 {
+        [tile_size, 1]
+    } else {
+        [tile_size, tile_size]
+    };
     Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
-        conv_out: [tile_size, tile_size],
+        conv_out,
     })
 }
 

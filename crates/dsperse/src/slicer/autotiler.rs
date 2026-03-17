@@ -265,14 +265,14 @@ fn get_elementwise_dimensions_3d(graph: &GraphProto) -> Option<(Vec<String>, Str
     let out = graph.output.first()?;
     let first = graph.input.first()?;
     let dims = onnx_proto::vi_shape(first);
-    if dims.len() != 3 || dims[1] <= 0 || dims[2] <= 0 {
+    if dims.len() != 3 || dims[0] != 1 || dims[1] <= 0 || dims[2] <= 0 {
         return None;
     }
     let (seq, hidden) = (dims[1], dims[2]);
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);
-        if d.len() != 3 || d[1] != seq || d[2] != hidden {
+        if d.len() != 3 || d[0] != 1 || d[1] != seq || d[2] != hidden {
             return None;
         }
         input_names.push(inp.name.clone());

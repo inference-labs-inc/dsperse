@@ -537,6 +537,7 @@ fn run_combined_inference(
                 &slice_run_dir,
                 &slice_id,
                 tiling,
+                slice_meta.jstprove_circuit_path.as_deref(),
                 &mut tensor_cache,
                 backend,
                 config,
@@ -1229,6 +1230,7 @@ fn execute_combined_tiled(
     slice_run_dir: &Path,
     slice_id: &str,
     tiling: &TilingInfo,
+    slice_circuit_path: Option<&str>,
     tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
@@ -1251,7 +1253,10 @@ fn execute_combined_tiled(
     let single_tile = tiling.tile.as_ref();
     let first_tile_info = tile_infos.first().or(single_tile);
 
-    let circuit_path = match first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()) {
+    let circuit_path = match first_tile_info
+        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+        .or(slice_circuit_path)
+    {
         Some(p) => Some(resolve_relative_path(slices_dir, p)?),
         None => None,
     };

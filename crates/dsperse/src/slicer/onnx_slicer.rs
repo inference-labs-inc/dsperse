@@ -124,6 +124,7 @@ fn build_slice_metadata(
                 autotiler::TilingDetection::Spatial {
                     input_name,
                     output_name,
+                    input_names,
                     c_in,
                     c_out,
                     h,
@@ -148,6 +149,7 @@ fn build_slice_metadata(
                         c_out: *c_out as usize,
                         input_name: input_name.clone(),
                         output_name: output_name.clone(),
+                        input_names: input_names.clone(),
                         h: *h as usize,
                         w: *w as usize,
                         tile: Some(crate::schema::tiling::TileInfo {

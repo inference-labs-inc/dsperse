@@ -874,31 +874,39 @@ fn execute_tiled(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let input_arr = tensor_cache.get(&tiling.input_name)?.clone();
+    let all_names = tiling.all_input_names();
+    let multi_input = all_names.len() > 1;
 
-    let input_4d = if input_arr.ndim() == 4 {
-        let s = input_arr.shape();
-        Array4::from_shape_vec(
-            (s[0], s[1], s[2], s[3]),
-            input_arr.iter().copied().collect(),
-        )
-        .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
-    } else {
-        let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-        let h = if tiling.h > 0 {
-            tiling.h
+    let mut all_tiles: Vec<Vec<Array4<f64>>> = Vec::with_capacity(all_names.len());
+    for name in &all_names {
+        let input_arr = tensor_cache.get(name)?.clone();
+        let input_4d = if input_arr.ndim() == 4 {
+            let s = input_arr.shape();
+            Array4::from_shape_vec(
+                (s[0], s[1], s[2], s[3]),
+                input_arr.iter().copied().collect(),
+            )
+            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
         } else {
-            tiling.tiles_y * tiling.tile_size
+            let input_flat: Vec<f64> = input_arr.iter().copied().collect();
+            let h = if tiling.h > 0 {
+                tiling.h
+            } else {
+                tiling.tiles_y * tiling.tile_size
+            };
+            let w = if tiling.w > 0 {
+                tiling.w
+            } else {
+                tiling.tiles_x * tiling.tile_size
+            };
+            reshape_to_4d(&input_flat, tiling.c_in, h, w)?
         };
-        let w = if tiling.w > 0 {
-            tiling.w
-        } else {
-            tiling.tiles_x * tiling.tile_size
-        };
-        reshape_to_4d(&input_flat, tiling.c_in, h, w)?
-    };
+        let tiles = split_into_tiles(&input_4d, tiling)?;
+        all_tiles.push(tiles);
+    }
 
-    let tiles = split_into_tiles(&input_4d, tiling)?;
+    let num_tiles = all_tiles[0].len();
+    let tiles = &all_tiles[0];
 
     tracing::info!(
         slice = %slice_id,
@@ -931,14 +939,18 @@ fn execute_tiled(
     let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
     let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
 
-    let warm_model = match (effective_tile_onnx_ref, tiles.first()) {
-        (Some(onnx_path), Some(sample)) => {
-            let shape = sample.clone().into_dyn().shape().to_vec();
-            let model = crate::backend::onnx::WarmModel::load(onnx_path, &shape)?;
-            tracing::info!(slice = %slice_id, "loaded ONNX model");
-            Some(model)
+    let warm_model = if multi_input {
+        None
+    } else {
+        match (effective_tile_onnx_ref, tiles.first()) {
+            (Some(onnx_path), Some(sample)) => {
+                let shape = sample.clone().into_dyn().shape().to_vec();
+                let model = crate::backend::onnx::WarmModel::load(onnx_path, &shape)?;
+                tracing::info!(slice = %slice_id, "loaded ONNX model");
+                Some(model)
+            }
+            _ => None,
         }
-        _ => None,
     };
 
     let circuit_path = match first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()) {
@@ -983,11 +995,18 @@ fn execute_tiled(
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
+    let tile_input_names: Vec<String> = if multi_input {
+        (0..all_names.len())
+            .map(|i| format!("tile_in_{i}"))
+            .collect()
+    } else {
+        vec!["tile_in".to_string()]
+    };
+
     let collected: Vec<(TileResult, Option<ArrayD<f64>>)> = pool.install(|| {
-        tiles
-            .par_iter()
-            .enumerate()
-            .map(|(tile_idx, tile_data)| {
+        (0..num_tiles)
+            .into_par_iter()
+            .map(|tile_idx| {
                 let start = std::time::Instant::now();
                 let tile_dir = slice_run_dir.join(format!("tile_{tile_idx}"));
                 if let Err(e) = std::fs::create_dir_all(&tile_dir) {
@@ -1003,7 +1022,7 @@ fn execute_tiled(
                 }
 
                 let tile_info = tile_infos.get(tile_idx).or(single_tile);
-                let tile_dyn = tile_data.clone().into_dyn();
+                let tile_dyn = all_tiles[0][tile_idx].clone().into_dyn();
 
                 if tile_info.is_none() {
                     return (
@@ -1017,7 +1036,39 @@ fn execute_tiled(
                     );
                 }
 
-                let tile_output = if let Some(ref wm) = warm_model {
+                let tile_output = if multi_input {
+                    if let Some(onnx) = effective_tile_onnx_ref {
+                        let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = all_tiles
+                            .iter()
+                            .zip(tile_input_names.iter())
+                            .map(|(input_tiles, tile_name)| {
+                                let t = &input_tiles[tile_idx];
+                                let shape: Vec<usize> = t.shape().to_vec();
+                                let data: Vec<f64> = t.iter().copied().collect();
+                                (tile_name.as_str(), data, shape)
+                            })
+                            .collect();
+                        crate::backend::onnx::run_inference_multi_named(onnx, &inputs).and_then(
+                            |named| {
+                                let (data, shape) =
+                                    named.into_values().next().ok_or_else(|| {
+                                        DsperseError::Pipeline(
+                                            "multi-input tile produced no output".into(),
+                                        )
+                                    })?;
+                                ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {
+                                    DsperseError::Pipeline(format!(
+                                        "multi-input tile output reshape: {e}"
+                                    ))
+                                })
+                            },
+                        )
+                    } else {
+                        Err(DsperseError::Pipeline(format!(
+                            "tile {tile_idx}: no ONNX model available for inference"
+                        )))
+                    }
+                } else if let Some(ref wm) = warm_model {
                     let input_flat: Vec<f64> = tile_dyn.iter().copied().collect();
                     wm.run(&input_flat).and_then(|(data, shape)| {
                         ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {
@@ -1807,6 +1858,7 @@ mod tests {
             c_out,
             input_name: "input".into(),
             output_name: "output".into(),
+            input_names: vec![],
             h: tiles_y * tile_size,
             w: tiles_x * tile_size,
             tile: None,

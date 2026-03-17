@@ -12,6 +12,8 @@ fn main() {
         )
         .init();
 
+    eprintln!("dsperse {}", cli::VERSION);
+
     if let Err(e) = cli::dispatch(parsed.command) {
         tracing::error!("{e}");
         std::process::exit(1);

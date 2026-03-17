@@ -197,6 +197,8 @@ fn cli_main(py: Python<'_>, argv: Option<Vec<String>>) -> PyResult<()> {
         )
         .try_init();
 
+    eprintln!("dsperse {}", crate::cli::VERSION);
+
     let result = py.allow_threads(|| crate::cli::dispatch(cli.command));
 
     result.map_err(to_py_err)

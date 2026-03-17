@@ -191,12 +191,27 @@ fn materialize_tiling_artifacts(
         if !tile_path.exists() {
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
-            autotiler::create_tile_slice(
-                &slice_model,
-                tiling.tile_size as i64,
-                slice_idx,
-                &payload_dir,
-            )?;
+            let is_ew = slice_model.graph.as_ref().is_some_and(|g| {
+                !g.node.is_empty()
+                    && g.node
+                        .iter()
+                        .all(|n| super::ELEMENTWISE_OPS.contains(&n.op_type.as_str()))
+            });
+            if is_ew {
+                autotiler::create_elementwise_tile_slice(
+                    &slice_model,
+                    tiling.tile_size as i64,
+                    slice_idx,
+                    &payload_dir,
+                )?;
+            } else {
+                autotiler::create_tile_slice(
+                    &slice_model,
+                    tiling.tile_size as i64,
+                    slice_idx,
+                    &payload_dir,
+                )?;
+            }
             tracing::info!(slice = slice_idx, "materialized tile ONNX");
         }
     }

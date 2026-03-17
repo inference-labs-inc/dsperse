@@ -36,10 +36,28 @@ pub struct TilingInfo {
     pub input_name: String,
     #[serde(default = "default_output_name")]
     pub output_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_names: Vec<String>,
+    #[serde(default = "default_four")]
+    pub ndim: usize,
+    #[serde(default)]
+    pub h: usize,
+    #[serde(default)]
+    pub w: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tile: Option<TileInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiles: Option<Vec<TileInfo>>,
+}
+
+impl TilingInfo {
+    pub fn all_input_names(&self) -> Vec<&str> {
+        if self.input_names.is_empty() {
+            vec![&self.input_name]
+        } else {
+            self.input_names.iter().map(|s| s.as_str()).collect()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +108,10 @@ pub struct ChannelSplitInfo {
 
 fn default_one() -> usize {
     1
+}
+
+fn default_four() -> usize {
+    4
 }
 
 fn default_pair_zero() -> [i64; 2] {

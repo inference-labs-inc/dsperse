@@ -568,6 +568,10 @@ mod tests {
             c_out: 16,
             input_name: "input".into(),
             output_name: "output".into(),
+            input_names: vec![],
+            ndim: 4,
+            h: 16,
+            w: 16,
             tile: Some(TileInfo {
                 path: "slice_0/payload/tiles/tile.onnx".into(),
                 conv_out: [4, 4],
@@ -600,6 +604,10 @@ mod tests {
             c_out: 16,
             input_name: "input".into(),
             output_name: "output".into(),
+            input_names: vec![],
+            ndim: 4,
+            h: 16,
+            w: 16,
             tile: Some(TileInfo {
                 path: "slice_0/payload/tiles/nonexistent.onnx".into(),
                 conv_out: [4, 4],

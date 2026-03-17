@@ -475,9 +475,12 @@ fn run_combined_inference(
     for name in declared_inputs {
         if !tensor_cache.contains(name) {
             if input_val.is_map() {
-                if let Some(v) = map_get_ref(input_val, name) {
-                    tensor_cache.put(name.clone(), value_to_arrayd(v)?);
-                }
+                let v = map_get_ref(input_val, name).ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "combined fallback: input map missing key {name:?}"
+                    ))
+                })?;
+                tensor_cache.put(name.clone(), value_to_arrayd(v)?);
             } else if declared_inputs.len() == 1 {
                 tensor_cache.put(name.clone(), value_to_arrayd(input_val)?);
             }

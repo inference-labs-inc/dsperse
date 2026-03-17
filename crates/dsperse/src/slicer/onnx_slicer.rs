@@ -47,7 +47,7 @@ pub fn slice_model(
     );
 
     let model_dest = output_dir.join("model.onnx");
-    std::fs::copy(onnx_path, &model_dest).map_err(|e| DsperseError::io(e, &model_dest))?;
+    onnx_proto::save_model(&model, &model_dest)?;
 
     let segment_ranges = super::build_segment_ranges(&slice_points, None);
 

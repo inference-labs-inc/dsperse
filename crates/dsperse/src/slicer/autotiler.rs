@@ -1272,7 +1272,7 @@ pub fn create_elementwise_tile_slice(
                 })?;
                 vec![1, tile_size, hidden]
             }
-            4 => {
+            _ => {
                 let inp_c = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
                     crate::error::DsperseError::Slicer(format!(
                         "create_elementwise_tile_slice: invalid c_in for input '{}'",
@@ -1280,11 +1280,6 @@ pub fn create_elementwise_tile_slice(
                     ))
                 })?;
                 vec![1, inp_c, tile_size, tile_size]
-            }
-            _ => {
-                return Err(crate::error::DsperseError::Slicer(format!(
-                    "create_elementwise_tile_slice: unsupported input rank {rank}"
-                )));
             }
         };
         tile_inputs.push(onnx_proto::make_tensor_value_info(

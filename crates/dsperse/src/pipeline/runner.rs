@@ -885,8 +885,16 @@ fn execute_tiled(
         .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
     } else {
         let input_flat: Vec<f64> = input_arr.iter().copied().collect();
-        let h = tiling.tiles_y * tiling.tile_size;
-        let w = tiling.tiles_x * tiling.tile_size;
+        let h = if tiling.h > 0 {
+            tiling.h
+        } else {
+            tiling.tiles_y * tiling.tile_size
+        };
+        let w = if tiling.w > 0 {
+            tiling.w
+        } else {
+            tiling.tiles_x * tiling.tile_size
+        };
         reshape_to_4d(&input_flat, tiling.c_in, h, w)?
     };
 
@@ -1137,6 +1145,7 @@ fn execute_tiled(
         tiling.output_name
     );
     let reconstructed = reconstruct_from_tiles(&tile_outputs, tiling)?;
+    let reconstructed = trim_to_original_dims(reconstructed, tiling)?;
     tensor_cache.put(tiling.output_name.clone(), reconstructed);
 
     Ok(ExecutionInfo {
@@ -1418,8 +1427,13 @@ pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<
     let tile_h = tiling.tile_size + halo_top + halo_bottom;
     let tile_w = tiling.tile_size + halo_left + halo_right;
 
-    let padded_h = h + halo_top + halo_bottom;
-    let padded_w = w + halo_left + halo_right;
+    let padded_h = tiling.tiles_y * tiling.tile_size + halo_top + halo_bottom;
+    let padded_w = tiling.tiles_x * tiling.tile_size + halo_left + halo_right;
+    if halo_top + h > padded_h || halo_left + w > padded_w {
+        return Err(DsperseError::Pipeline(format!(
+            "split_into_tiles: input spatial ({h}x{w}) exceeds padded grid ({padded_h}x{padded_w})"
+        )));
+    }
     let mut padded = Array4::<f64>::zeros((n, c, padded_h, padded_w));
     padded
         .slice_mut(s![.., .., halo_top..halo_top + h, halo_left..halo_left + w])
@@ -1430,11 +1444,13 @@ pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<
         for tx in 0..tiling.tiles_x {
             let y_start = ty * tiling.tile_size;
             let x_start = tx * tiling.tile_size;
-            let y_end = (y_start + tile_h).min(padded_h);
-            let x_end = (x_start + tile_w).min(padded_w);
-
             let tile = padded
-                .slice(s![.., .., y_start..y_end, x_start..x_end])
+                .slice(s![
+                    ..,
+                    ..,
+                    y_start..y_start + tile_h,
+                    x_start..x_start + tile_w
+                ])
                 .to_owned();
             tiles.push(tile);
         }
@@ -1509,6 +1525,32 @@ pub fn reconstruct_from_tiles(
     }
 
     Ok(output.into_dyn())
+}
+
+fn trim_to_original_dims(arr: ArrayD<f64>, tiling: &TilingInfo) -> Result<ArrayD<f64>> {
+    if tiling.h == 0 || tiling.w == 0 {
+        return Ok(arr);
+    }
+    let stride_h = tiling.stride[0].max(1) as usize;
+    let stride_w = tiling.stride[1].max(1) as usize;
+    let expected_h = tiling.h / stride_h;
+    let expected_w = tiling.w / stride_w;
+    let grid_h = tiling.out_tile[0].max(1) as usize * tiling.tiles_y;
+    let grid_w = tiling.out_tile[1].max(1) as usize * tiling.tiles_x;
+    if grid_h > expected_h || grid_w > expected_w {
+        if arr.ndim() != 4 {
+            return Err(DsperseError::Pipeline(format!(
+                "trim_to_original_dims: expected 4D array, got {}D",
+                arr.ndim()
+            )));
+        }
+        Ok(arr
+            .slice(s![.., .., ..expected_h, ..expected_w])
+            .to_owned()
+            .into_dyn())
+    } else {
+        Ok(arr)
+    }
 }
 
 fn reshape_to_4d(flat: &[f64], c: usize, h: usize, w: usize) -> Result<Array4<f64>> {
@@ -1765,6 +1807,8 @@ mod tests {
             c_out,
             input_name: "input".into(),
             output_name: "output".into(),
+            h: tiles_y * tile_size,
+            w: tiles_x * tile_size,
             tile: None,
             tiles: None,
         }

@@ -239,7 +239,7 @@ fn get_model_dimensions(graph: &GraphProto) -> Option<(String, String, i64, i64,
     let inp = graph.input.first()?;
     let out = graph.output.first()?;
     let dims = onnx_proto::vi_shape(inp);
-    if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 || dims[2] != dims[3] {
+    if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 {
         return None;
     }
     Some((
@@ -249,6 +249,13 @@ fn get_model_dimensions(graph: &GraphProto) -> Option<(String, String, i64, i64,
         dims[2],
         dims[3],
     ))
+}
+
+fn is_elementwise_only_slice(graph: &GraphProto) -> bool {
+    if graph.node.is_empty() || graph.input.len() != 1 {
+        return false;
+    }
+    graph.node.iter().all(|n| is_elementwise(&n.op_type))
 }
 
 fn find_weights_and_bias(
@@ -388,58 +395,100 @@ pub fn detect_tiling_needs(
 ) -> Option<TilingDetection> {
     let graph = model.graph.as_ref()?;
     let (inp_name, out_name, c_in, h, w) = get_model_dimensions(graph)?;
-    let cp = get_conv_params(graph)?;
-    let c_out = cp.c_out;
     let tile_size = tile_size? as i64;
 
-    if is_tileable(graph) {
-        let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
-        let (actual_tile, _skip_reason) =
-            calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
+    if let Some(cp) = get_conv_params(graph) {
+        let c_out = cp.c_out;
 
-        if let Some(actual_tile) = actual_tile
-            && h % actual_tile == 0
-            && w % actual_tile == 0
-            && actual_tile % cp.stride[0] == 0
-            && actual_tile % cp.stride[1] == 0
-        {
-            let tiles_y = h / actual_tile;
-            let tiles_x = w / actual_tile;
-            if tiles_y * tiles_x >= 2 {
-                let halo = compute_halo_size(cp.pads)?;
-                return Some(TilingDetection::Spatial {
-                    input_name: inp_name,
-                    output_name: out_name,
-                    c_in,
-                    c_out,
-                    h,
-                    w,
-                    tile_size: actual_tile,
-                    halo,
-                    tiles_y,
-                    tiles_x,
-                    out_tile: [actual_tile / cp.stride[0], actual_tile / cp.stride[1]],
-                    stride: cp.stride,
-                });
+        if is_tileable(graph) {
+            let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
+            let (actual_tile, _skip_reason) =
+                calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
+
+            if let Some(actual_tile) = actual_tile
+                && h % actual_tile == 0
+                && w % actual_tile == 0
+                && actual_tile % cp.stride[0] == 0
+                && actual_tile % cp.stride[1] == 0
+            {
+                let tiles_y = h / actual_tile;
+                let tiles_x = w / actual_tile;
+                if tiles_y * tiles_x >= 2 {
+                    let halo = compute_halo_size(cp.pads)?;
+                    return Some(TilingDetection::Spatial {
+                        input_name: inp_name,
+                        output_name: out_name,
+                        c_in,
+                        c_out,
+                        h,
+                        w,
+                        tile_size: actual_tile,
+                        halo,
+                        tiles_y,
+                        tiles_x,
+                        out_tile: [actual_tile / cp.stride[0], actual_tile / cp.stride[1]],
+                        stride: cp.stride,
+                    });
+                }
             }
+        }
+
+        if is_channel_splittable(graph)
+            && let Some((num_groups, cpg)) =
+                calculate_channel_split_config(c_in, c_out, h, w, tile_size)
+        {
+            return Some(TilingDetection::ChannelSplit {
+                input_name: inp_name,
+                output_name: out_name,
+                c_in,
+                c_out,
+                h,
+                w,
+                num_groups,
+                channels_per_group: cpg,
+            });
         }
     }
 
-    if is_channel_splittable(graph)
-        && let Some((num_groups, cpg)) =
-            calculate_channel_split_config(c_in, c_out, h, w, tile_size)
-    {
-        return Some(TilingDetection::ChannelSplit {
-            input_name: inp_name,
-            output_name: out_name,
-            c_in,
-            c_out,
-            h,
-            w,
-            num_groups,
-            channels_per_group: cpg,
-        });
+    if is_elementwise_only_slice(graph) {
+        let total = c_in * h * w;
+        if total <= tile_size {
+            return None;
+        }
+        if c_in > tile_size {
+            return None;
+        }
+        let max_spatial = ((tile_size / c_in) as f64).sqrt() as i64;
+        if max_spatial < 1 {
+            return None;
+        }
+        let actual_tile = max_spatial.min(h).min(w);
+        let tiles_y = (h + actual_tile - 1) / actual_tile;
+        let tiles_x = (w + actual_tile - 1) / actual_tile;
+        if tiles_y * tiles_x >= 2 {
+            let c_out = graph
+                .output
+                .first()
+                .map(onnx_proto::vi_shape)
+                .and_then(|s| (s.len() == 4).then(|| s[1]))
+                .unwrap_or(c_in);
+            return Some(TilingDetection::Spatial {
+                input_name: inp_name,
+                output_name: out_name,
+                c_in,
+                c_out,
+                h,
+                w,
+                tile_size: actual_tile,
+                halo: [0, 0, 0, 0],
+                tiles_y,
+                tiles_x,
+                out_tile: [actual_tile, actual_tile],
+                stride: [1, 1],
+            });
+        }
     }
+
     None
 }
 
@@ -1057,6 +1106,130 @@ pub fn apply_channel_splitting(
         out_w: out_w_uz,
         groups,
         bias_path,
+    })
+}
+
+pub fn create_elementwise_tile_slice(
+    model: &ModelProto,
+    tile_size: i64,
+    slice_idx: usize,
+    output_dir: &Path,
+) -> Result<TileSliceResult> {
+    if tile_size <= 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_elementwise_tile_slice: tile_size must be > 0, got {tile_size}"
+        )));
+    }
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_elementwise_tile_slice: model.graph is None".to_string(),
+        )
+    })?;
+    if graph.input.len() != 1 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_elementwise_tile_slice: expected exactly 1 graph input, got {}",
+            graph.input.len()
+        )));
+    }
+    let inp = &graph.input[0];
+    let out = graph.output.first().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_elementwise_tile_slice: no graph outputs".to_string(),
+        )
+    })?;
+    let inp_dims = onnx_proto::vi_shape(inp);
+    let c_in = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_elementwise_tile_slice: unable to determine c_in".to_string(),
+        )
+    })?;
+    let out_dims = onnx_proto::vi_shape(out);
+    let c_out = out_dims.get(1).copied().filter(|&v| v > 0).unwrap_or(c_in);
+
+    let orig_input_name = &inp.name;
+    let orig_output_name = &out.name;
+
+    let x = onnx_proto::make_tensor_value_info(
+        "tile_in",
+        TensorProto::FLOAT,
+        &[1, c_in, tile_size, tile_size],
+    );
+    let y = onnx_proto::make_tensor_value_info(
+        "tile_out",
+        TensorProto::FLOAT,
+        &[1, c_out, tile_size, tile_size],
+    );
+
+    let mut initializers = Vec::new();
+    for init in &graph.initializer {
+        initializers.push(init.clone());
+    }
+
+    let mut nodes = Vec::new();
+    for (i, orig_node) in graph.node.iter().enumerate() {
+        let new_inputs: Vec<String> = orig_node
+            .input
+            .iter()
+            .map(|name| {
+                if name == orig_input_name {
+                    "tile_in".to_string()
+                } else {
+                    name.clone()
+                }
+            })
+            .collect();
+        let is_last = i == graph.node.len() - 1;
+        let new_outputs = if is_last {
+            let mut remapped = orig_node.output.clone();
+            let mut mapped = false;
+            for out_name in &mut remapped {
+                if out_name == orig_output_name {
+                    *out_name = "tile_out".to_string();
+                    mapped = true;
+                }
+            }
+            if !mapped {
+                return Err(crate::error::DsperseError::Slicer(
+                    "create_elementwise_tile_slice: last node does not produce selected graph output".to_string(),
+                ));
+            }
+            remapped
+        } else {
+            orig_node.output.clone()
+        };
+
+        nodes.push(NodeProto {
+            op_type: orig_node.op_type.clone(),
+            input: new_inputs,
+            output: new_outputs,
+            attribute: orig_node.attribute.clone(),
+            name: String::new(),
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        });
+    }
+
+    let tile_graph = onnx_proto::make_graph(
+        &format!("tile_{slice_idx}"),
+        nodes,
+        vec![x],
+        vec![y],
+        initializers,
+    );
+    let tile_model = onnx_proto::make_model(tile_graph, model_opset(model));
+
+    let tiles_dir = output_dir.join("tiles");
+    std::fs::create_dir_all(&tiles_dir)
+        .map_err(|e| crate::error::DsperseError::io(e, &tiles_dir))?;
+    let onnx_path = tiles_dir.join("tile.onnx");
+    onnx_proto::save_model(&tile_model, &onnx_path)?;
+
+    Ok(TileSliceResult {
+        path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
+        conv_out: [tile_size, tile_size],
     })
 }
 

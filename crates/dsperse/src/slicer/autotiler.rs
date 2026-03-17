@@ -477,15 +477,16 @@ pub fn detect_tiling_needs(
         && let Some((ew_input_names, ew_out_name, ew_c, ew_h, ew_w)) =
             get_elementwise_dimensions(graph)
     {
-        let num_inputs = ew_input_names.len() as i64;
-        let total = ew_c * ew_h * ew_w * num_inputs;
+        let num_inputs = i64::try_from(ew_input_names.len()).ok()?;
+        let per_pixel = ew_c.checked_mul(num_inputs)?;
+        let total = per_pixel.checked_mul(ew_h)?.checked_mul(ew_w)?;
         if total <= tile_size {
             return None;
         }
-        if ew_c * num_inputs > tile_size {
+        if per_pixel > tile_size {
             return None;
         }
-        let max_spatial = ((tile_size / (ew_c * num_inputs)) as f64).sqrt() as i64;
+        let max_spatial = ((tile_size / per_pixel) as f64).sqrt() as i64;
         if max_spatial < 1 {
             return None;
         }
@@ -1188,7 +1189,12 @@ pub fn create_elementwise_tile_slice(
             format!("tile_in_{idx}")
         };
         let inp_dims = onnx_proto::vi_shape(inp);
-        let inp_c = inp_dims.get(1).copied().unwrap_or(c_in);
+        let inp_c = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_elementwise_tile_slice: invalid c_in for input '{}'",
+                inp.name
+            ))
+        })?;
         tile_inputs.push(onnx_proto::make_tensor_value_info(
             &tile_name,
             TensorProto::FLOAT,

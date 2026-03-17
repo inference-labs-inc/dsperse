@@ -20,7 +20,9 @@ pub fn slice_model(
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
 
-    let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
+    let tmp_dir = tempfile::tempdir().map_err(|e| {
+        DsperseError::Slicer(format!("create tempdir for opset-normalized model: {e}"))
+    })?;
     let normalized_path = tmp_dir.path().join("model.onnx");
     onnx_proto::save_model(&model, &normalized_path)?;
 

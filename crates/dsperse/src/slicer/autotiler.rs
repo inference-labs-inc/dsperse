@@ -272,7 +272,7 @@ fn get_elementwise_dimensions(graph: &GraphProto) -> Option<(Vec<String>, String
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);
-        if d.len() != 4 || d[2] != h || d[3] != w {
+        if d.len() != 4 || d[1] != c || d[2] != h || d[3] != w {
             return None;
         }
         input_names.push(inp.name.clone());

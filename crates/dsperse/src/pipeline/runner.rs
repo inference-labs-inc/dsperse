@@ -959,6 +959,12 @@ fn execute_tiled(
     }
     .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
 
+    if multi_input && circuit_path.is_some() {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: tiled circuit execution does not support multiple activation inputs"
+        )));
+    }
+
     let warm_circuit = match (&circuit_path, &tile_onnx) {
         (Some(cp), Some(onnx_path)) => {
             let params = backend.load_params(cp)?;

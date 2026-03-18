@@ -2135,7 +2135,6 @@ pub(crate) fn build_run_metadata(
     Ok(RunMetadata {
         slices,
         execution_chain: chain.clone(),
-        overall_security: 0.0,
         packaging_type: None,
         source_path: Some(slices_dir.to_string_lossy().into_owned()),
         run_directory: None,

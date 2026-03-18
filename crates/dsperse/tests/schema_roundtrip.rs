@@ -151,13 +151,11 @@ fn run_metadata_roundtrip() {
             "execution_results": [],
             "jstprove_proved_slices": 0,
             "jstprove_verified_slices": 0
-        },
-        "overall_security": 100.0
+        }
     }"#;
 
     let meta: RunMetadata = serde_json::from_str(json).unwrap();
     assert_eq!(meta.slices.len(), 1);
-    assert_eq!(meta.overall_security, 100.0);
 
     let slice = meta.get_slice("slice_0").unwrap();
     assert_eq!(slice.backend, BackendKind::Jstprove);

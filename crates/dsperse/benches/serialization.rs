@@ -137,7 +137,6 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
             jstprove_proved_slices: num_slices,
             jstprove_verified_slices: 0,
         },
-        overall_security: 128.0,
         packaging_type: Some("dsperse".into()),
         source_path: Some("/tmp/model.onnx".into()),
         run_directory: Some("/tmp/runs/run_0".into()),

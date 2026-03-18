@@ -206,8 +206,6 @@ pub struct RunMetadata {
     pub slices: HashMap<String, RunSliceMetadata>,
     #[serde(default)]
     pub execution_chain: ExecutionChain,
-    #[serde(default)]
-    pub overall_security: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub packaging_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

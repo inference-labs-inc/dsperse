@@ -603,9 +603,9 @@ mod tests {
         for comp in components {
             let sha = comp["sha256"].as_str().unwrap();
             assert_eq!(sha.len(), 64);
-            assert!(comp["files"].as_array().unwrap().len() > 0);
+            assert!(!comp["files"].as_array().unwrap().is_empty());
             assert_eq!(comp["proof_system"], "jstprove");
-            assert!(comp["weights"].as_array().unwrap().len() > 0);
+            assert!(!comp["weights"].as_array().unwrap().is_empty());
         }
 
         let dag = manifest["dag"].as_array().unwrap();

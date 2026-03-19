@@ -19,6 +19,7 @@ rayon.workspace = true
 ndarray.workspace = true
 tract-onnx.workspace = true
 uuid.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 prost.workspace = true
 pyo3 = { workspace = true, optional = true }

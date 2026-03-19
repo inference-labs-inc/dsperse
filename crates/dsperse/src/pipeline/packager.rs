@@ -10,6 +10,7 @@ use walkdir::WalkDir;
 use crate::error::{DsperseError, Result};
 use crate::pipeline::runner::load_model_metadata;
 use crate::schema::metadata::SliceMetadata;
+use crate::utils::paths::resolve_relative_path;
 
 pub struct PackageConfig {
     pub output_dir: PathBuf,
@@ -20,6 +21,7 @@ pub struct PackageConfig {
     pub timeout: Option<u64>,
 }
 
+#[derive(Debug)]
 pub struct PackageResult {
     pub component_count: usize,
     pub wb_count: usize,
@@ -120,9 +122,26 @@ pub fn package_content_addressed(
             let dest = components_dir.join(&component_hash);
             fs::create_dir_all(&dest).map_err(|e| DsperseError::io(e, &dest))?;
 
-            let source_circuit_dir = resolve_circuit_dir(slices_dir, slice);
+            let source_circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
             if let Some(circuit_dir) = source_circuit_dir {
                 total_size += copy_files_flat(&circuit_dir, &dest)?;
+            } else {
+                for file in &component_files {
+                    let onnx_path = slice.resolve_onnx(slices_dir).unwrap_or_else(|_| {
+                        slice_dir
+                            .join("payload")
+                            .join(format!("slice_{}.onnx", slice.index))
+                    });
+                    if onnx_path.is_file() {
+                        let dest_file = dest.join(file);
+                        fs::copy(&onnx_path, &dest_file)
+                            .map_err(|e| DsperseError::io(e, &onnx_path))?;
+                        total_size += onnx_path
+                            .metadata()
+                            .map_err(|e| DsperseError::io(e, &onnx_path))?
+                            .len();
+                    }
+                }
             }
             written_components.insert(component_hash.clone());
         }
@@ -225,23 +244,23 @@ pub fn package_content_addressed(
     })
 }
 
-fn resolve_circuit_dir(slices_dir: &Path, slice: &SliceMetadata) -> Option<PathBuf> {
+fn resolve_circuit_dir(slices_dir: &Path, slice: &SliceMetadata) -> Result<Option<PathBuf>> {
     if let Some(ref compiled_path) = slice.compilation.jstprove.files.compiled {
-        let abs = slices_dir.join(compiled_path);
+        let abs = resolve_relative_path(slices_dir, compiled_path)?;
         if abs.is_dir() {
-            return Some(abs);
+            return Ok(Some(abs));
         }
     }
     if let Some(ref cs) = slice.channel_split
         && let Some(group) = cs.groups.first()
         && let Some(ref circuit_path) = group.jstprove_circuit_path
     {
-        let abs = slices_dir.join(circuit_path);
+        let abs = resolve_relative_path(slices_dir, circuit_path)?;
         if abs.is_dir() {
-            return Some(abs);
+            return Ok(Some(abs));
         }
     }
-    None
+    Ok(None)
 }
 
 fn extract_component(
@@ -250,7 +269,7 @@ fn extract_component(
     slice_dir: &Path,
 ) -> Result<(String, Vec<String>, Option<String>)> {
     if slice.compilation.jstprove.compiled {
-        let circuit_dir = resolve_circuit_dir(slices_dir, slice);
+        let circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
         return match circuit_dir {
             Some(dir) => {
                 let (hash, files) = hash_directory(&dir)?;
@@ -278,11 +297,10 @@ fn extract_component(
         return Ok((hash, vec![filename], None));
     }
 
-    Ok((
-        sha256_bytes(format!("slice_{}", slice.index).as_bytes()),
-        vec![],
-        None,
-    ))
+    Err(DsperseError::Other(format!(
+        "slice {} has no circuit directory or ONNX artifact to package",
+        slice.index
+    )))
 }
 
 fn collect_payload_blobs(
@@ -309,7 +327,7 @@ fn collect_payload_blobs(
 
     if let Some(ref cs) = slice.channel_split {
         for group in &cs.groups {
-            let group_path = slices_dir.join(&group.path);
+            let group_path = resolve_relative_path(slices_dir, &group.path)?;
             if group_path.is_file() {
                 let data = fs::read(&group_path).map_err(|e| DsperseError::io(e, &group_path))?;
                 let filename = group_path
@@ -321,7 +339,7 @@ fn collect_payload_blobs(
             }
         }
         if let Some(ref bias_path) = cs.bias_path {
-            let abs = slices_dir.join(bias_path);
+            let abs = resolve_relative_path(slices_dir, bias_path)?;
             if abs.is_file() {
                 let data = fs::read(&abs).map_err(|e| DsperseError::io(e, &abs))?;
                 blobs.push(("bias".to_string(), "bias.msgpack".to_string(), data));
@@ -827,6 +845,244 @@ mod tests {
         let hash2 = components[2]["sha256"].as_str().unwrap();
         assert_eq!(hash0, hash1);
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_uncompiled_onnx_only_slice() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        let payload_dir = slice_dir.join("payload");
+        fs::create_dir_all(&payload_dir).unwrap();
+        fs::write(payload_dir.join("slice_0.onnx"), "onnx_payload_data").unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1, 3, 224, 224]],
+            output_shapes: vec![vec![1, 1000]],
+            output_names: vec!["output".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1, 3, 224, 224]],
+                        output: vec![vec![1, 1000]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["input".to_string()],
+                    output: vec!["output".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let output_dir = tmp.path().join("output");
+        let config = PackageConfig {
+            output_dir: output_dir.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config).unwrap();
+        assert_eq!(result.component_count, 1);
+
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
+                .unwrap();
+
+        let comp = &manifest["components"][0];
+        assert!(comp["proof_system"].is_null());
+        let sha = comp["sha256"].as_str().unwrap();
+        let files = comp["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], "slice_0.onnx");
+
+        let comp_dir = output_dir.join("components").join(sha);
+        assert!(comp_dir.join("slice_0.onnx").is_file());
+    }
+
+    #[test]
+    fn test_missing_artifact_errors() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        fs::create_dir_all(&slice_dir).unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1]],
+            output_shapes: vec![vec![1]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1]],
+                        output: vec![vec![1]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["in".to_string()],
+                    output: vec!["out".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let config = PackageConfig {
+            output_dir: tmp.path().join("output"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no circuit directory or ONNX artifact"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        let payload_dir = slice_dir.join("payload");
+        fs::create_dir_all(&payload_dir).unwrap();
+        fs::write(payload_dir.join("slice_0.onnx"), "data").unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1]],
+            output_shapes: vec![vec![1]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1]],
+                        output: vec![vec![1]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["in".to_string()],
+                    output: vec!["out".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: true,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles {
+                            compiled: Some("../../etc/passwd".to_string()),
+                            settings: None,
+                            pk_key: None,
+                            vk_key: None,
+                        },
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let config = PackageConfig {
+            output_dir: tmp.path().join("output"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("path traversal"),
+            "expected path traversal error, got: {err}"
+        );
     }
 
     #[test]

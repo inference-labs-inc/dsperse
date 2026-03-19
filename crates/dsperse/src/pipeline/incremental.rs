@@ -44,10 +44,6 @@ impl IncrementalRun {
     pub fn new(slices_dir: &Path, input: ArrayD<f64>) -> Result<Self> {
         let model_meta = load_model_metadata(slices_dir)?;
 
-        if model_meta.original_model_path.is_some() {
-            crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &model_meta)?;
-        }
-
         let chain = build_execution_chain(&model_meta, slices_dir)?;
         let run_meta = build_run_metadata(&model_meta, slices_dir, &chain)?;
 
@@ -90,6 +86,17 @@ impl IncrementalRun {
         let meta = self.run_meta.slices.get(slice_id).ok_or_else(|| {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
+
+        if self.model_meta.original_model_path.is_some()
+            && let Some(idx_str) = slice_id.strip_prefix("slice_")
+            && let Ok(idx) = idx_str.parse::<usize>()
+        {
+            crate::slicer::materializer::ensure_slice_materialized(
+                &self.slices_dir,
+                &self.model_meta,
+                idx,
+            )?;
+        }
 
         let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
         let (input, named_inputs) = match strategy {

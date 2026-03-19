@@ -87,10 +87,17 @@ impl IncrementalRun {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
 
-        if self.model_meta.original_model_path.is_some()
-            && let Some(idx_str) = slice_id.strip_prefix("slice_")
-            && let Ok(idx) = idx_str.parse::<usize>()
-        {
+        if self.model_meta.original_model_path.is_some() {
+            let idx_str = slice_id.strip_prefix("slice_").ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "lazy materialization requires slice_<idx> ids, got {slice_id}"
+                ))
+            })?;
+            let idx = idx_str.parse::<usize>().map_err(|_| {
+                DsperseError::Pipeline(format!(
+                    "lazy materialization could not parse slice index from {slice_id}"
+                ))
+            })?;
             crate::slicer::materializer::ensure_slice_materialized(
                 &self.slices_dir,
                 &self.model_meta,

@@ -8,6 +8,7 @@ use crate::schema::metadata::{BackendKind, ModelMetadata, RunSliceMetadata};
 use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
 
 use super::runner::{build_execution_chain, build_run_metadata, load_model_metadata};
+use super::slice_cache::SliceAssets;
 use super::strategy::ExecutionStrategy;
 use super::tensor_store::TensorStore;
 
@@ -38,6 +39,7 @@ pub struct IncrementalRun {
     slices_dir: PathBuf,
     current_slice: Option<String>,
     results: Vec<ExecutionResultEntry>,
+    current_assets: Option<SliceAssets>,
 }
 
 impl IncrementalRun {
@@ -72,10 +74,11 @@ impl IncrementalRun {
             slices_dir: slices_dir.to_path_buf(),
             current_slice,
             results: Vec::new(),
+            current_assets: None,
         })
     }
 
-    pub fn next_slice(&self) -> Result<Option<SliceWork>> {
+    pub fn next_slice(&mut self) -> Result<Option<SliceWork>> {
         let slice_id = match self.current_slice.as_ref() {
             Some(id) => id,
             None => return Ok(None),
@@ -87,23 +90,8 @@ impl IncrementalRun {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
 
-        if self.model_meta.original_model_path.is_some() {
-            let idx_str = slice_id.strip_prefix("slice_").ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "lazy materialization requires slice_<idx> ids, got {slice_id}"
-                ))
-            })?;
-            let idx = idx_str.parse::<usize>().map_err(|_| {
-                DsperseError::Pipeline(format!(
-                    "lazy materialization could not parse slice index from {slice_id}"
-                ))
-            })?;
-            crate::slicer::materializer::ensure_slice_materialized(
-                &self.slices_dir,
-                &self.model_meta,
-                idx,
-            )?;
-        }
+        let assets = SliceAssets::load_from_dslice(&self.slices_dir, slice_id)?;
+        self.current_assets = Some(assets);
 
         let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
         let (input, named_inputs) = match strategy {
@@ -192,7 +180,7 @@ impl IncrementalRun {
             verification_execution: None,
         });
 
-        crate::slicer::materializer::cleanup_extracted_slice(&self.slices_dir, slice_id);
+        self.current_assets = None;
 
         let next = self
             .execution_chain
@@ -202,6 +190,10 @@ impl IncrementalRun {
         self.current_slice = next;
 
         Ok(())
+    }
+
+    pub fn current_assets(&self) -> Option<&SliceAssets> {
+        self.current_assets.as_ref()
     }
 
     pub fn is_complete(&self) -> bool {

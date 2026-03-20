@@ -221,9 +221,8 @@ pub fn package_content_addressed(
         dag: dag_nodes,
     };
 
-    let manifest_path = config.output_dir.join("manifest.json");
-    let manifest_bytes =
-        serde_json::to_string_pretty(&manifest).map_err(|e| DsperseError::Other(e.to_string()))?;
+    let manifest_path = config.output_dir.join("manifest.msgpack");
+    let manifest_bytes = rmp_serde::to_vec_named(&manifest)?;
     fs::write(&manifest_path, &manifest_bytes).map_err(|e| DsperseError::io(e, &manifest_path))?;
     total_size += manifest_bytes.len() as u64;
 
@@ -566,7 +565,7 @@ mod tests {
         assert!(result.total_size > 0);
         assert!(output_dir.join("components").is_dir());
         assert!(output_dir.join("wb").is_dir());
-        assert!(output_dir.join("manifest.json").is_file());
+        assert!(output_dir.join("manifest.msgpack").is_file());
     }
 
     #[test]
@@ -589,8 +588,7 @@ mod tests {
         package_content_addressed(&slices_dir, &config).unwrap();
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
-                .unwrap();
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
 
         assert_eq!(manifest["version"], 1);
         assert_eq!(manifest["model"]["name"], "test-model");
@@ -635,8 +633,7 @@ mod tests {
         package_content_addressed(&slices_dir, &config).unwrap();
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
-                .unwrap();
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
 
         let comp = &manifest["components"][0];
         let sha = comp["sha256"].as_str().unwrap();
@@ -666,8 +663,7 @@ mod tests {
         package_content_addressed(&slices_dir, &config).unwrap();
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
-                .unwrap();
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
 
         let weight = &manifest["components"][0]["weights"][0];
         let sha = weight["sha256"].as_str().unwrap();
@@ -709,9 +705,9 @@ mod tests {
         package_content_addressed(&slices_dir, &config2).unwrap();
 
         let m1: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(out1.join("manifest.json")).unwrap()).unwrap();
+            rmp_serde::from_slice(&fs::read(out1.join("manifest.msgpack")).unwrap()).unwrap();
         let m2: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(out2.join("manifest.json")).unwrap()).unwrap();
+            rmp_serde::from_slice(&fs::read(out2.join("manifest.msgpack")).unwrap()).unwrap();
 
         for i in 0..2 {
             assert_eq!(m1["components"][i]["sha256"], m2["components"][i]["sha256"]);
@@ -837,8 +833,7 @@ mod tests {
         assert_eq!(result.wb_count, 3);
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
-                .unwrap();
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
         let components = manifest["components"].as_array().unwrap();
         let hash0 = components[0]["sha256"].as_str().unwrap();
         let hash1 = components[1]["sha256"].as_str().unwrap();
@@ -918,8 +913,7 @@ mod tests {
         assert_eq!(result.component_count, 1);
 
         let manifest: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(output_dir.join("manifest.json")).unwrap())
-                .unwrap();
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
 
         let comp = &manifest["components"][0];
         assert!(comp["proof_system"].is_null());

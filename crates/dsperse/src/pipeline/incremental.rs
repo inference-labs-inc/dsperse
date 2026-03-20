@@ -192,8 +192,6 @@ impl IncrementalRun {
             verification_execution: None,
         });
 
-        crate::slicer::materializer::cleanup_extracted_slice(&self.slices_dir, slice_id);
-
         let next = self
             .execution_chain
             .nodes

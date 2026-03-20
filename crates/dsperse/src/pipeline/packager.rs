@@ -119,29 +119,28 @@ pub fn package_content_addressed(
     for slice in &model_meta.slices {
         let slice_dir = slices_dir.join(format!("slice_{}", slice.index));
 
-        let (component_hash, component_files, proof_system) =
+        let (component_hash, component_files, proof_system, source) =
             extract_component(slices_dir, slice, &slice_dir)?;
 
         if !written_components.contains(&component_hash) {
             let dest = components_dir.join(&component_hash);
             fs::create_dir_all(&dest).map_err(|e| DsperseError::io(e, &dest))?;
 
-            let source_circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
-            if let Some(circuit_dir) = source_circuit_dir {
-                total_size += copy_files_flat(&circuit_dir, &dest)?;
-            } else if let Some(filename) = component_files.first() {
-                let onnx_path = slice.resolve_onnx(slices_dir).unwrap_or_else(|_| {
-                    slice_dir
-                        .join("payload")
-                        .join(format!("slice_{}.onnx", slice.index))
-                });
-                reject_symlink_path(&onnx_path)?;
-                let dest_file = dest.join(filename);
-                fs::copy(&onnx_path, &dest_file).map_err(|e| DsperseError::io(e, &onnx_path))?;
-                total_size += onnx_path
-                    .metadata()
-                    .map_err(|e| DsperseError::io(e, &onnx_path))?
-                    .len();
+            match &source {
+                ComponentSource::CircuitBundle(circuit_dir) => {
+                    total_size += copy_files_flat(circuit_dir, &dest)?;
+                }
+                ComponentSource::OnnxFile(onnx_path) => {
+                    if let Some(filename) = component_files.first() {
+                        let dest_file = dest.join(filename);
+                        fs::copy(onnx_path, &dest_file)
+                            .map_err(|e| DsperseError::io(e, onnx_path))?;
+                        total_size += onnx_path
+                            .metadata()
+                            .map_err(|e| DsperseError::io(e, onnx_path))?
+                            .len();
+                    }
+                }
             }
             written_components.insert(component_hash.clone());
         }
@@ -263,17 +262,27 @@ fn resolve_circuit_dir(slices_dir: &Path, slice: &SliceMetadata) -> Result<Optio
     Ok(None)
 }
 
+enum ComponentSource {
+    CircuitBundle(PathBuf),
+    OnnxFile(PathBuf),
+}
+
 fn extract_component(
     slices_dir: &Path,
     slice: &SliceMetadata,
     slice_dir: &Path,
-) -> Result<(String, Vec<String>, Option<String>)> {
+) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
     if slice.compilation.jstprove.compiled {
         let circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
         return match circuit_dir {
             Some(dir) => {
                 let (hash, files) = hash_directory(&dir)?;
-                Ok((hash, files, Some("jstprove".to_string())))
+                Ok((
+                    hash,
+                    files,
+                    Some("jstprove".to_string()),
+                    ComponentSource::CircuitBundle(dir),
+                ))
             }
             None => Err(DsperseError::Other(format!(
                 "slice {} marked compiled but circuit directory not found",
@@ -287,6 +296,7 @@ fn extract_component(
             .join("payload")
             .join(format!("slice_{}.onnx", slice.index))
     });
+    reject_symlink_path(&onnx_path)?;
     if onnx_path.is_file() {
         let filename = onnx_path
             .file_name()
@@ -294,7 +304,12 @@ fn extract_component(
             .unwrap_or("model.onnx")
             .to_string();
         let hash = hash_named_file(&onnx_path, &filename)?;
-        return Ok((hash, vec![filename], None));
+        return Ok((
+            hash,
+            vec![filename],
+            None,
+            ComponentSource::OnnxFile(onnx_path),
+        ));
     }
 
     Err(DsperseError::Other(format!(
@@ -1264,5 +1279,86 @@ mod tests {
             .join(c1["sha256"].as_str().unwrap());
         assert!(dir0.join("slice_0.onnx").is_file());
         assert!(dir1.join("slice_1.onnx").is_file());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_symlink_payload_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let external = tmp.path().join("external_secret.bin");
+        fs::write(&external, "sensitive data").unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        let payload_dir = slice_dir.join("payload");
+        fs::create_dir_all(&payload_dir).unwrap();
+        symlink(&external, payload_dir.join("slice_0.onnx")).unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1]],
+            output_shapes: vec![vec![1]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1]],
+                        output: vec![vec![1]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["in".to_string()],
+                    output: vec!["out".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let config = PackageConfig {
+            output_dir: tmp.path().join("output"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("symlink"),
+            "expected symlink error, got: {err}"
+        );
     }
 }

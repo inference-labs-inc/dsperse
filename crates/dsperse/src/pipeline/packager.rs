@@ -99,6 +99,10 @@ pub fn package_content_addressed(
         )));
     }
 
+    if config.cleanup {
+        validate_output_dir_not_under_slice(&config.output_dir)?;
+    }
+
     let model_meta = load_model_metadata(slices_dir)?;
 
     let components_dir = config.output_dir.join("components");
@@ -287,12 +291,12 @@ fn extract_component(
             .join(format!("slice_{}.onnx", slice.index))
     });
     if onnx_path.is_file() {
-        let hash = hash_file(&onnx_path)?;
         let filename = onnx_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("model.onnx")
             .to_string();
+        let hash = hash_named_file(&onnx_path, &filename)?;
         return Ok((hash, vec![filename], None));
     }
 
@@ -349,11 +353,58 @@ fn collect_payload_blobs(
     Ok(blobs)
 }
 
+fn validate_output_dir_not_under_slice(output_dir: &Path) -> Result<()> {
+    for ancestor in output_dir.ancestors() {
+        if let Some(name) = ancestor.file_name()
+            && name.to_string_lossy().starts_with("slice_")
+        {
+            return Err(DsperseError::Other(format!(
+                "output directory {} is inside a slice directory that would be removed by cleanup",
+                output_dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn reject_symlink(entry: &walkdir::DirEntry) -> Result<()> {
+    if entry.file_type().is_symlink() {
+        return Err(DsperseError::Other(format!(
+            "symlinked bundle entry is not allowed: {}",
+            entry.path().display()
+        )));
+    }
+    Ok(())
+}
+
+fn hash_named_file(path: &Path, filename: &str) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let name_bytes = filename.as_bytes();
+    hasher.update((name_bytes.len() as u64).to_le_bytes());
+    hasher.update(name_bytes);
+    let mut file = fs::File::open(path).map_err(|e| DsperseError::io(e, path))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| DsperseError::io(e, path))?
+        .len();
+    hasher.update(file_len.to_le_bytes());
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| DsperseError::io(e, path))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(encode_hex(&hasher.finalize()))
+}
+
 fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     for entry in WalkDir::new(dir) {
         let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
-        if entry.path().is_file() {
+        reject_symlink(&entry)?;
+        if entry.file_type().is_file() {
             let relative = entry
                 .path()
                 .strip_prefix(dir)
@@ -393,20 +444,6 @@ fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
     Ok((hash, file_names))
 }
 
-fn hash_file(path: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    let mut file = fs::File::open(path).map_err(|e| DsperseError::io(e, path))?;
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file.read(&mut buf).map_err(|e| DsperseError::io(e, path))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(encode_hex(&hasher.finalize()))
-}
-
 fn sha256_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -426,7 +463,8 @@ fn copy_files_flat(source_dir: &Path, dest_dir: &Path) -> Result<u64> {
     let mut total: u64 = 0;
     for entry in WalkDir::new(source_dir) {
         let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
-        if entry.path().is_file() {
+        reject_symlink(&entry)?;
+        if entry.file_type().is_file() {
             let relative = entry
                 .path()
                 .strip_prefix(source_dir)
@@ -1091,5 +1129,127 @@ mod tests {
         };
         let result = package_content_addressed(Path::new("/nonexistent/path"), &config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cleanup_rejects_output_under_slice_dir() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+
+        let config = PackageConfig {
+            output_dir: slices_dir.join("slice_0").join("output"),
+            cleanup: true,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("slice directory"),
+            "expected slice dir error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_identical_bytes_different_filenames_distinct_hashes() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let identical_data = "identical_onnx_content";
+
+        let mut slices = Vec::new();
+        for i in 0..2 {
+            let slice_dir = slices_dir.join(format!("slice_{}", i));
+            let payload_dir = slice_dir.join("payload");
+            fs::create_dir_all(&payload_dir).unwrap();
+            fs::write(
+                payload_dir.join(format!("slice_{}.onnx", i)),
+                identical_data,
+            )
+            .unwrap();
+
+            slices.push(SliceMetadata {
+                index: i,
+                filename: format!("slice_{}.onnx", i),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: format!("slice_{}/payload/slice_{}.onnx", i, i),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1]],
+                        output: vec![vec![1]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec![format!("t_{}", i)],
+                    output: vec![format!("t_{}", i + 1)],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            });
+        }
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1]],
+            output_shapes: vec![vec![1]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0, 1],
+            slices,
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let output_dir = tmp.path().join("output");
+        let config = PackageConfig {
+            output_dir: output_dir.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+        };
+
+        let result = package_content_addressed(&slices_dir, &config).unwrap();
+        assert_eq!(result.component_count, 2);
+
+        let manifest: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
+        let c0 = &manifest["components"][0];
+        let c1 = &manifest["components"][1];
+        assert_ne!(c0["sha256"], c1["sha256"]);
+
+        let dir0 = output_dir
+            .join("components")
+            .join(c0["sha256"].as_str().unwrap());
+        let dir1 = output_dir
+            .join("components")
+            .join(c1["sha256"].as_str().unwrap());
+        assert!(dir0.join("slice_0.onnx").is_file());
+        assert!(dir1.join("slice_1.onnx").is_file());
     }
 }

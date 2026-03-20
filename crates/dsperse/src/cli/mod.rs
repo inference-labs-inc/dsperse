@@ -158,8 +158,18 @@ pub struct PackageArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub slices_dir: Option<PathBuf>,
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     pub no_cleanup: bool,
+    #[arg(long)]
+    pub author: Option<String>,
+    #[arg(long)]
+    pub model_version: Option<String>,
+    #[arg(long)]
+    pub model_name: Option<String>,
+    #[arg(long)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Args)]
@@ -344,8 +354,29 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
 
 pub fn cmd_package(args: PackageArgs) -> Result<()> {
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
-    let cleanup = !args.no_cleanup;
-    pipeline::packager::package_slices(&slices_dir, cleanup)?;
+    let output_dir = args
+        .output_dir
+        .unwrap_or_else(|| args.model_dir.join("package"));
+
+    let config = pipeline::packager::PackageConfig {
+        output_dir,
+        cleanup: !args.no_cleanup,
+        author: args.author,
+        model_version: args.model_version,
+        model_name: args.model_name,
+        timeout: args.timeout,
+    };
+
+    let result = pipeline::packager::package_content_addressed(&slices_dir, &config)?;
+
+    tracing::info!(
+        components = result.component_count,
+        weight_biases = result.wb_count,
+        total_bytes = result.total_size,
+        manifest = %result.manifest_path.display(),
+        "content-addressed packaging complete"
+    );
+
     Ok(())
 }
 

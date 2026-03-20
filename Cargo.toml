@@ -17,6 +17,7 @@ rayon = "1"
 ndarray = { version = "0.17", features = ["serde"] }
 tract-onnx = { git = "https://github.com/sonos/tract.git", rev = "bf9783c6" }
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 tempfile = "3"
 prost = "0.13"
 pyo3 = { version = "0.24" }

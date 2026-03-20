@@ -141,6 +141,17 @@ pub fn ensure_slice_materialized(
         return Ok(onnx_path);
     }
 
+    if !slice_dir.exists() {
+        let archive = slices_dir.join(format!("slice_{slice_idx}.dslice"));
+        if archive.exists() {
+            extract_dslice_archive(&archive, &slice_dir)?;
+            if onnx_path.exists() {
+                materialize_tiling_artifacts(slices_dir, metadata, slice_meta, slice_idx)?;
+                return Ok(onnx_path);
+            }
+        }
+    }
+
     let traced_shapes = metadata.traced_shapes.as_ref().ok_or_else(|| {
         DsperseError::Slicer("metadata missing traced_shapes for materialization".into())
     })?;
@@ -503,4 +514,45 @@ pub fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
         }
     }
     types
+}
+
+fn extract_dslice_archive(archive: &Path, dest: &Path) -> Result<()> {
+    let tmp_dir = dest.with_file_name(format!(
+        ".{}.extracting.{}",
+        dest.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| DsperseError::io(e, &tmp_dir))?;
+    let file = std::fs::File::open(archive).map_err(|e| DsperseError::io(e, archive))?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| {
+        DsperseError::Slicer(format!("reading dslice archive {}: {e}", archive.display()))
+    })?;
+    if let Err(e) = zip.extract(&tmp_dir) {
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        return Err(DsperseError::Slicer(format!(
+            "extracting {} to {}: {e}",
+            archive.display(),
+            tmp_dir.display()
+        )));
+    }
+    if let Err(e) = std::fs::rename(&tmp_dir, dest) {
+        std::fs::remove_dir_all(&tmp_dir).ok();
+        if dest.exists() {
+            return Ok(());
+        }
+        return Err(DsperseError::Slicer(format!(
+            "renaming {} to {}: {e}",
+            tmp_dir.display(),
+            dest.display()
+        )));
+    }
+    tracing::debug!(archive = %archive.display(), dest = %dest.display(), "extracted dslice archive");
+    Ok(())
+}
+
+pub fn cleanup_extracted_slice(slices_dir: &Path, slice_id: &str) {
+    let extract_dir = slices_dir.join(slice_id);
+    if std::fs::remove_dir_all(&extract_dir).is_err() && extract_dir.exists() {
+        tracing::warn!(dir = %extract_dir.display(), "failed to remove extracted slice dir");
+    }
 }

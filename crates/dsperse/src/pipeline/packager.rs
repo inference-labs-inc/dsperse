@@ -129,23 +129,19 @@ pub fn package_content_addressed(
             let source_circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
             if let Some(circuit_dir) = source_circuit_dir {
                 total_size += copy_files_flat(&circuit_dir, &dest)?;
-            } else {
-                for file in &component_files {
-                    let onnx_path = slice.resolve_onnx(slices_dir).unwrap_or_else(|_| {
-                        slice_dir
-                            .join("payload")
-                            .join(format!("slice_{}.onnx", slice.index))
-                    });
-                    if onnx_path.is_file() {
-                        let dest_file = dest.join(file);
-                        fs::copy(&onnx_path, &dest_file)
-                            .map_err(|e| DsperseError::io(e, &onnx_path))?;
-                        total_size += onnx_path
-                            .metadata()
-                            .map_err(|e| DsperseError::io(e, &onnx_path))?
-                            .len();
-                    }
-                }
+            } else if let Some(filename) = component_files.first() {
+                let onnx_path = slice.resolve_onnx(slices_dir).unwrap_or_else(|_| {
+                    slice_dir
+                        .join("payload")
+                        .join(format!("slice_{}.onnx", slice.index))
+                });
+                reject_symlink_path(&onnx_path)?;
+                let dest_file = dest.join(filename);
+                fs::copy(&onnx_path, &dest_file).map_err(|e| DsperseError::io(e, &onnx_path))?;
+                total_size += onnx_path
+                    .metadata()
+                    .map_err(|e| DsperseError::io(e, &onnx_path))?
+                    .len();
             }
             written_components.insert(component_hash.clone());
         }
@@ -226,7 +222,8 @@ pub fn package_content_addressed(
     };
 
     let manifest_path = config.output_dir.join("manifest.msgpack");
-    let manifest_bytes = rmp_serde::to_vec_named(&manifest)?;
+    let manifest_bytes = rmp_serde::to_vec_named(&manifest)
+        .map_err(|e| DsperseError::Other(format!("failed to serialize manifest: {e}")))?;
     fs::write(&manifest_path, &manifest_bytes).map_err(|e| DsperseError::io(e, &manifest_path))?;
     total_size += manifest_bytes.len() as u64;
 
@@ -318,6 +315,7 @@ fn collect_payload_blobs(
             .join("payload")
             .join(format!("slice_{}.onnx", slice.index))
     });
+    reject_symlink_path(&onnx_path)?;
     if onnx_path.is_file() {
         let data = fs::read(&onnx_path).map_err(|e| DsperseError::io(e, &onnx_path))?;
         let filename = onnx_path
@@ -331,6 +329,7 @@ fn collect_payload_blobs(
     if let Some(ref cs) = slice.channel_split {
         for group in &cs.groups {
             let group_path = resolve_relative_path(slices_dir, &group.path)?;
+            reject_symlink_path(&group_path)?;
             if group_path.is_file() {
                 let data = fs::read(&group_path).map_err(|e| DsperseError::io(e, &group_path))?;
                 let filename = group_path
@@ -343,6 +342,7 @@ fn collect_payload_blobs(
         }
         if let Some(ref bias_path) = cs.bias_path {
             let abs = resolve_relative_path(slices_dir, bias_path)?;
+            reject_symlink_path(&abs)?;
             if abs.is_file() {
                 let data = fs::read(&abs).map_err(|e| DsperseError::io(e, &abs))?;
                 blobs.push(("bias".to_string(), "bias.msgpack".to_string(), data));
@@ -363,6 +363,19 @@ fn validate_output_dir_not_under_slice(output_dir: &Path) -> Result<()> {
                 output_dir.display()
             )));
         }
+    }
+    Ok(())
+}
+
+fn reject_symlink_path(path: &Path) -> Result<()> {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err(DsperseError::Other(format!(
+            "symlinked file is not allowed: {}",
+            path.display()
+        )));
     }
     Ok(())
 }

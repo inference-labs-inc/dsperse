@@ -178,9 +178,9 @@ pub struct PackageArgs {
 pub struct PublishArgs {
     #[arg(long, help = "Directory containing files to publish")]
     pub dir: PathBuf,
-    #[arg(long, env = "REPOSITORY_API_URL", default_value = "https://repository.inferencelabs.com")]
-    pub api_url: String,
-    #[arg(long, env = "REPOSITORY_AUTH_TOKEN")]
+    #[arg(long, help = "Registry base URL")]
+    pub url: String,
+    #[arg(long, env = "REGISTRY_AUTH_TOKEN")]
     pub auth_token: String,
     #[arg(long, help = "64-char hex circuit ID (generated if omitted)")]
     pub circuit_id: Option<String>,
@@ -422,7 +422,7 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
     };
 
     let config = pipeline::publisher::PublishConfig {
-        api_url: args.api_url,
+        api_url: args.url,
         auth_token: args.auth_token,
         circuit_id,
         name: args.name,

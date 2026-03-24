@@ -6,8 +6,6 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{DsperseError, Result};
 
-const DEFAULT_API_URL: &str = "https://repository.inferencelabs.com";
-
 pub struct PublishConfig {
     pub api_url: String,
     pub auth_token: String,
@@ -84,11 +82,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     }
 
     let client = reqwest::Client::new();
-    let api_url = if config.api_url.is_empty() {
-        DEFAULT_API_URL
-    } else {
-        &config.api_url
-    };
+    let api_url = config.api_url.trim_end_matches('/');
 
     let input_schema: serde_json::Value = serde_json::json!({});
 

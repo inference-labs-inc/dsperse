@@ -2,13 +2,13 @@ mod compiler;
 mod incremental;
 pub mod packager;
 mod prover;
+pub mod publisher;
 pub mod runner;
 pub mod slice_cache;
 mod stage;
 pub mod strategy;
 pub mod tensor_store;
 pub mod tile_executor;
-pub mod publisher;
 mod verifier;
 
 pub use compiler::compile_slices;

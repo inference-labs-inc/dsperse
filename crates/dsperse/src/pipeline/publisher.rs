@@ -37,17 +37,20 @@ fn sha256_file(path: &Path) -> Result<String> {
 
 fn collect_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>> {
     let mut files = Vec::new();
-    for entry in fs::read_dir(dir).map_err(|e| DsperseError::io(e, dir))? {
-        let entry = entry.map_err(|e| DsperseError::io(e, dir))?;
-        let path = entry.path();
-        if path.is_file() {
-            let name = entry
-                .file_name()
-                .to_str()
-                .ok_or_else(|| DsperseError::Other("non-UTF-8 filename".into()))?
-                .to_string();
-            files.push((name, path));
+    for entry in walkdir::WalkDir::new(dir).min_depth(1) {
+        let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
+        if !entry.file_type().is_file() {
+            continue;
         }
+        let rel = entry
+            .path()
+            .strip_prefix(dir)
+            .map_err(|e| DsperseError::Other(e.to_string()))?;
+        let name = rel
+            .to_str()
+            .ok_or_else(|| DsperseError::Other("non-UTF-8 path".into()))?
+            .to_string();
+        files.push((name, entry.into_path()));
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
@@ -186,10 +189,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     if config.activate {
         tracing::info!("activating circuit");
         let activate_resp = client
-            .patch(format!(
-                "{api_url}/admin/circuits/{}",
-                config.circuit_id
-            ))
+            .patch(format!("{api_url}/admin/circuits/{}", config.circuit_id))
             .header("Authorization", format!("Bearer {}", config.auth_token))
             .json(&serde_json::json!({ "is_active": true }))
             .send()

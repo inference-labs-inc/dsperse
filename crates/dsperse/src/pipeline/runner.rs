@@ -753,7 +753,15 @@ fn execute_slice(
                 .output
                 .iter()
                 .position(|name| name == &cs.output_name)
-                .and_then(|idx| meta.output_shape.get(idx));
+                .and_then(|idx| meta.output_shape.get(idx))
+                .map(|v| v.as_slice());
+            if target_shape.is_none() {
+                tracing::debug!(
+                    slice = %slice_id,
+                    output_name = %cs.output_name,
+                    "target_shape lookup failed; output will not be reshaped"
+                );
+            }
             execute_channel_split(
                 slices_dir,
                 slice_run_dir,
@@ -1429,7 +1437,7 @@ fn execute_combined_tiled(
 
 fn reshape_channel_split_output(
     arr: ArrayD<f64>,
-    target_shape: Option<&Vec<i64>>,
+    target_shape: Option<&[i64]>,
 ) -> Result<ArrayD<f64>> {
     let Some(raw) = target_shape else {
         return Ok(arr);
@@ -1465,7 +1473,7 @@ fn execute_channel_split(
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
-    target_shape: Option<&Vec<i64>>,
+    target_shape: Option<&[i64]>,
     tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,

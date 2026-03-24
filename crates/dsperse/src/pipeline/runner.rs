@@ -752,6 +752,7 @@ fn execute_slice(
             slice_run_dir,
             slice_id,
             cs,
+            &meta.output_shape,
             tensor_cache,
             backend,
             donor_init_map,
@@ -1419,11 +1420,38 @@ fn execute_combined_tiled(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn reshape_channel_split_output(
+    arr: ArrayD<f64>,
+    output_shapes: &[Vec<i64>],
+) -> Result<ArrayD<f64>> {
+    if output_shapes.is_empty() {
+        return Ok(arr);
+    }
+    let target: Vec<usize> = output_shapes[0].iter().map(|&d| d as usize).collect();
+    if arr.shape() == target.as_slice() {
+        return Ok(arr);
+    }
+    let actual_elems: usize = arr.shape().iter().product();
+    let target_elems: usize = target.iter().product();
+    if actual_elems != target_elems {
+        return Ok(arr);
+    }
+    let actual_shape: Vec<usize> = arr.shape().to_vec();
+    arr.into_shape_with_order(ndarray::IxDyn(&target))
+        .map_err(|e| {
+            DsperseError::Pipeline(format!(
+                "channel_split output reshape from {actual_shape:?} to {target:?}: {e}",
+            ))
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_channel_split(
     slices_dir: &Path,
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
+    output_shapes: &[Vec<i64>],
     tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
@@ -1589,7 +1617,8 @@ fn execute_channel_split(
 
     match accumulated {
         Some(acc) => {
-            tensor_cache.put(cs.output_name.clone(), acc.into_dyn());
+            let output = reshape_channel_split_output(acc.into_dyn(), output_shapes)?;
+            tensor_cache.put(cs.output_name.clone(), output);
         }
         None => {
             return Err(DsperseError::Pipeline(format!(

@@ -414,7 +414,14 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
     use sha2::{Digest, Sha256};
 
     let circuit_id = match args.circuit_id {
-        Some(id) => id,
+        Some(id) => {
+            if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(DsperseError::Other(
+                    "circuit-id must be a 64-character hex string".into(),
+                ));
+            }
+            id.to_ascii_lowercase()
+        }
         None => {
             let hash = Sha256::digest(format!("{}:{}:{}", args.name, args.author, args.version));
             format!("{hash:x}")

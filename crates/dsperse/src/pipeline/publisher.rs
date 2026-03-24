@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
 use crate::error::{DsperseError, Result};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct PublishConfig {
     pub api_url: String,
@@ -81,7 +85,10 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         file_paths.insert(name.clone(), path.clone());
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| DsperseError::Other(format!("http client: {e}")))?;
     let api_url = config.api_url.trim_end_matches('/');
 
     let input_schema: serde_json::Value = serde_json::json!({});
@@ -132,6 +139,18 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         .as_object()
         .ok_or_else(|| DsperseError::Other("missing upload_urls in response".into()))?;
 
+    let missing: Vec<&str> = file_paths
+        .keys()
+        .filter(|f| !upload_urls.contains_key(f.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        return Err(DsperseError::Other(format!(
+            "registry did not return upload URLs for: {}",
+            missing.join(", ")
+        )));
+    }
+
     let mut uploaded = 0usize;
     for (filename, url_val) in upload_urls {
         let url = url_val
@@ -148,6 +167,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         tracing::info!(file = %filename, size, "uploading");
         let put_resp = client
             .put(url)
+            .timeout(UPLOAD_TIMEOUT)
             .body(data)
             .send()
             .await

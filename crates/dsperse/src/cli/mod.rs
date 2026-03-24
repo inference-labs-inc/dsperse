@@ -180,7 +180,7 @@ pub struct PublishArgs {
     pub dir: PathBuf,
     #[arg(long, help = "Registry base URL")]
     pub url: String,
-    #[arg(long, env = "REGISTRY_AUTH_TOKEN")]
+    #[arg(long, env = "REGISTRY_AUTH_TOKEN", hide_env_values = true)]
     pub auth_token: String,
     #[arg(long, help = "64-char hex circuit ID (generated if omitted)")]
     pub circuit_id: Option<String>,
@@ -445,7 +445,14 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
         activate: args.activate,
     };
 
-    let result = pipeline::publisher::publish(&args.dir, &config)?;
+    let publish_id = config.circuit_id.clone();
+    let result = match pipeline::publisher::publish(&args.dir, &config) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(id = %publish_id, error = %e, "publish failed");
+            return Err(e);
+        }
+    };
 
     tracing::info!(
         id = %result.circuit_id,

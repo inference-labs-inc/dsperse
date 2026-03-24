@@ -40,9 +40,9 @@ class Prover:
         ):
             segment_id = segment.get("segment_id")
             witness_execution = segment.get("witness_execution", {})
-            if witness_execution.get(
-                "method"
-            ) == "ezkl_gen_witness" and witness_execution.get("success"):
+            # Check for both EZKL and JSTprove witness generation
+            witness_method = witness_execution.get("method")
+            if witness_method in ("ezkl_gen_witness", "jstprove_gen_witness") and witness_execution.get("success"):
                 segment_metadata = metadata.get("slices", {}).get(segment_id)
                 if (
                     segment_metadata
@@ -59,9 +59,8 @@ class Prover:
         segment_id = segment["segment_id"]
         witness_execution = segment["witness_execution"]
 
-        if witness_execution.get(
-            "method"
-        ) != "ezkl_gen_witness" or not witness_execution.get("success"):
+        witness_method = witness_execution.get("method")
+        if witness_method not in ("ezkl_gen_witness", "jstprove_gen_witness") or not witness_execution.get("success"):
             # Just normalize structure
             return {"segment_id": segment_id, "witness_execution": witness_execution}, (
                 0,
@@ -79,10 +78,30 @@ class Prover:
                 0,
             )
 
-        witness_path = witness_execution.get("output_file")
+        # For JSTprove, use witness_file (output_witness.bin) instead of output_file
+        if witness_method == "jstprove_gen_witness":
+            output_file = witness_execution.get("output_file", "")
+            # Replace output.json with output_witness.bin
+            if output_file.endswith("output.json"):
+                witness_path = output_file.replace("output.json", "output_witness.bin")
+            else:
+                witness_path = witness_execution.get("witness_file") or output_file.replace(".json", "_witness.bin")
+        else:
+            witness_path = witness_execution.get("output_file")
+        
         model_path = segment_metadata.get("circuit_path")
         pk_path = segment_metadata.get("pk_path")
         settings_path = segment_metadata.get("settings_path")
+        
+        # For JSTprove, use the compiled circuit.txt file instead of ONNX
+        if witness_method == "jstprove_gen_witness" and model_path and model_path.endswith('.onnx'):
+            # Try to find the compiled circuit file
+            import os
+            circuit_dir = os.path.dirname(model_path)
+            circuit_txt = os.path.join(circuit_dir, "jstprove_circuitization", os.path.basename(model_path).replace('.onnx', '_circuit.txt'))
+            if os.path.exists(circuit_txt):
+                model_path = circuit_txt
+                print(f"Using compiled circuit file: {model_path}")
 
         # Validate circuit path
         if model_path is None:
@@ -110,13 +129,23 @@ class Prover:
         # Generate proof
         print(f"Generating proof for {segment_id}...")
         start_time = time.time()
-        prove_success, prove_result = self.backend.prove(
-            witness_path=witness_path,
-            model_path=model_path,
-            proof_path=proof_path,
-            pk_path=pk_path,
-            settings_path=settings_path
-        )
+        # JSTprove uses circuit_path instead of model_path
+        if hasattr(self.backend, '__class__') and 'JSTprove' in str(type(self.backend)):
+            prove_success, prove_result = self.backend.prove(
+                witness_path=witness_path,
+                circuit_path=model_path,  # JSTprove uses circuit_path
+                proof_path=proof_path,
+                pk_path=pk_path,
+                settings_path=settings_path
+            )
+        else:
+            prove_success, prove_result = self.backend.prove(
+                witness_path=witness_path,
+                model_path=model_path,
+                proof_path=proof_path,
+                pk_path=pk_path,
+                settings_path=settings_path
+            )
         prove_time = time.time() - start_time
 
         proof_execution = {
@@ -176,6 +205,7 @@ class Prover:
                 "No circuit files found. Please run 'dsperse circuitize' first to generate circuit files before attempting to prove."
             )
 
+        prove_start = time.time()
         proved_segments = 0
         total_ezkl_segments = 0
         updated_segments = []
@@ -187,10 +217,12 @@ class Prover:
             total_ezkl_segments += w_inc
             proved_segments += p_inc
 
+        prove_elapsed = time.time() - prove_start
         run_results["execution_chain"]["execution_results"] = updated_segments
         run_results = self._finalize_run_results(
             run_results, proved_segments, total_ezkl_segments
         )
+        run_results["execution_chain"]["prove_total_time"] = prove_elapsed
         self._save_run_results(run_results_path, run_results)
         return run_results
 

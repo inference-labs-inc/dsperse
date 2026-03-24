@@ -9,12 +9,14 @@ based on the model type.
 import os
 import json
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from dsperse.src.backends.ezkl import EZKL
 from dsperse.src.utils.utils import Utils
-from dsperse.src.utils.backend_manager import BackendManager
+from dsperse.src.utils.backend_manager import BackendManager, LayerAwareBackendManager
 from dsperse.src.runner import Runner
 
 logger = logging.getLogger(__name__)
@@ -28,16 +30,18 @@ class Compiler:
     """
     
     @staticmethod
-    def create(model_path: str, backend: Optional[str] = None) -> 'Compiler':
+    def create(model_path: str, backend: Optional[str] = None, layer_backends: Optional[Dict[int, str]] = None) -> 'Compiler':
         """
         Factory method to create a Compiler instance based on the model type.
-        
+
         Args:
             model_path: Path to the model file or directory
-            
+            backend: Optional global backend name
+            layer_backends: Optional dictionary mapping layer indices to backend names
+
         Returns:
             A Compiler instance
-            
+
         Raises:
             ValueError: If the model type is not supported
         """
@@ -68,10 +72,26 @@ class Compiler:
         # Create appropriate compiler
         if is_onnx:
             logger.info(f"Creating ONNX compiler for model: {model_path}")
-            backend_impl = BackendManager.get_backend(backend_name=backend)
-            # Determine backend name for directory naming
-            backend_name = backend if backend else os.environ.get('DSPERSE_BACKEND', 'ezkl')
-            return Compiler(backend_impl, backend_name)
+
+            # Use LayerAwareBackendManager if layer backends specified, otherwise use regular BackendManager
+            if layer_backends:
+                logger.info(f"Creating LayerAwareBackendManager with layer backends: {layer_backends}")
+                backend_manager = LayerAwareBackendManager(
+                    layer_backend_map=layer_backends,
+                    default_backend=backend,
+                    model_directory=model_dir
+                )
+                logger.info(f"LayerAwareBackendManager created successfully")
+                # Determine primary backend name for directory naming (use default backend)
+                backend_name = backend if backend else os.environ.get('DSPERSE_BACKEND', 'ezkl')
+                compiler = Compiler(backend_manager, backend_name)
+                logger.info(f"Compiler created with layer-aware backend support")
+                return compiler
+            else:
+                backend_impl = BackendManager.get_backend(backend_name=backend, model_directory=model_dir)
+                # Determine backend name for directory naming
+                backend_name = backend if backend else os.environ.get('DSPERSE_BACKEND', 'ezkl')
+                return Compiler(backend_impl, backend_name)
         else:
             # For now, we only support ONNX models as per requirements
             # In the future, this can be extended to support other model types
@@ -82,13 +102,14 @@ class Compiler:
         Initialize the Compiler with a specific implementation.
 
         Args:
-            compiler_impl: The compiler implementation to use
+            compiler_impl: The compiler implementation to use (BaseBackend or LayerAwareBackendManager)
             backend_name: Name of the backend (ezkl, jstprove, etc.)
         """
         self.compiler_impl = compiler_impl
         self.backend_name = backend_name or 'ezkl'
+        self.is_layer_aware = isinstance(compiler_impl, LayerAwareBackendManager)
         
-    def compile(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None) -> Dict[str, Any]:
+    def compile(self, model_path: str, input_file: Optional[str] = None, layers: Optional[str] = None) -> str:
         """
         Compile the model, deciding between whole-model or sliced-model compilation.
         
@@ -167,7 +188,7 @@ class Compiler:
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
 
-        segments = metadata.get('segments', [])
+        segments = metadata.get('segments', metadata.get('slices', []))
         segment_output_path = None
         compiled_count = 0
         skipped_count = 0
@@ -195,26 +216,25 @@ class Compiler:
                 )
 
                 if not success:
-                    logger.error(f"ONNX inference failed for segment {idx}: {exec_info.get('error', 'Unknown error')}")
-                    return
+                    error_msg = f"ONNX inference failed for segment {idx}: {exec_info.get('error', 'Unknown error')}"
+                    logger.error(error_msg)
+                    raise RuntimeError(error_msg)
 
                 current_input = output_tensor_path
                 logger.info(f"Generated calibration file: {output_tensor_path}")
         else:
             logger.warning("No input file provided, skipping ONNX inference chain")
 
-        # Phase 2: Compile selected layers
-        for idx, segment in enumerate(segments):
-            if layer_indices is not None and idx not in layer_indices:
-                logger.info(f"Skipping compilation for segment {idx} as it's not in the specified layers")
-                skipped_count += 1
-                continue
+        # Phase 2: Compile selected layers (parallel when possible)
+        phase2_start = time.time()
 
+        def _compile_segment(idx, segment):
+            seg_start = time.time()
             segment_path = segment.get('path')
             if not segment_path or not os.path.exists(segment_path):
                 logger.warning(f"Segment file not found for index {idx}: {segment_path}")
-                continue
-            # Prepare concise progress information similar to slicer output
+                return idx, None, 0
+
             deps = segment.get('dependencies', {}) if isinstance(segment, dict) else {}
             input_names = deps.get('filtered_inputs') or deps.get('input') or []
             output_names = deps.get('output') or []
@@ -222,8 +242,6 @@ class Compiler:
                 logger.info(f"Compiling segment {idx}: {input_names} -> {output_names}")
             except Exception:
                 logger.info(f"Compiling segment {idx}")
-            segment_output_path = os.path.join(os.path.dirname(segment_path), f"{self.backend_name}_circuitization")
-            os.makedirs(segment_output_path, exist_ok=True)
 
             calibration_input = input_file_path if idx == 0 else os.path.join(
                 os.path.dirname(segments[idx-1].get('path')),
@@ -233,16 +251,45 @@ class Compiler:
 
             if calibration_input and os.path.exists(calibration_input):
                 logger.info(f"Compiling segment {idx} with calibration input file {calibration_input}")
-            compilation_data = self.compiler_impl.compilation_pipeline(
+
+            if self.is_layer_aware:
+                backend_for_layer = self.compiler_impl.get_backend_for_layer(idx)
+                actual_backend_name = type(backend_for_layer).__name__.lower()
+            else:
+                backend_for_layer = self.compiler_impl
+                actual_backend_name = self.backend_name
+
+            seg_output_path = os.path.join(os.path.dirname(segment_path), f"{actual_backend_name}_circuitization")
+            os.makedirs(seg_output_path, exist_ok=True)
+
+            compilation_data = backend_for_layer.compilation_pipeline(
                 segment_path,
-                segment_output_path,
+                seg_output_path,
                 input_file_path=calibration_input,
                 segment_details=segment
             )
-            segment[f'{self.backend_name}_circuitization'] = compilation_data
-            compiled_count += 1
-            logger.info(f"Completed segment {idx}")
-            Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
+
+            seg_elapsed = time.time() - seg_start
+            logger.info(f"Completed segment {idx} in {seg_elapsed:.2f}s")
+            return idx, (actual_backend_name, compilation_data), seg_elapsed
+
+        compilable = [(idx, seg) for idx, seg in enumerate(segments)
+                      if layer_indices is None or idx in layer_indices]
+        skipped_count = len(segments) - len(compilable)
+
+        max_workers = min(len(compilable), os.cpu_count() or 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_compile_segment, idx, seg): idx for idx, seg in compilable}
+            for future in as_completed(futures):
+                idx, result, elapsed = future.result()
+                if result is not None:
+                    actual_backend_name, compilation_data = result
+                    segments[idx][f'{actual_backend_name}_circuitization'] = compilation_data
+                    compiled_count += 1
+                    Utils.save_metadata_file(metadata, os.path.dirname(metadata_path), os.path.basename(metadata_path))
+
+        phase2_elapsed = time.time() - phase2_start
+        logger.info(f"Phase 2 total: {phase2_elapsed:.2f}s ({compiled_count} segments, {max_workers} workers)")
 
 
         if segment_output_path:

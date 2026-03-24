@@ -142,11 +142,12 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         .as_object()
         .ok_or_else(|| DsperseError::Other("missing upload_urls in response".into()))?;
 
-    let missing: Vec<&str> = file_paths
+    let mut missing: Vec<&str> = file_paths
         .keys()
         .filter(|f| !upload_urls.contains_key(f.as_str()))
         .map(String::as_str)
         .collect();
+    missing.sort();
     if !missing.is_empty() {
         return Err(DsperseError::Other(format!(
             "registry did not return upload URLs for: {}",
@@ -171,6 +172,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         let put_resp = client
             .put(url)
             .timeout(UPLOAD_TIMEOUT)
+            .header("Content-Type", "application/octet-stream")
             .body(data)
             .send()
             .await

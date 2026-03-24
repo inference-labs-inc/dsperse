@@ -29,6 +29,7 @@ pub enum Commands {
     Prove(ProveArgs),
     Verify(VerifyArgs),
     Package(PackageArgs),
+    Publish(PublishArgs),
     #[command(name = "full-run")]
     FullRun(FullRunArgs),
 }
@@ -42,6 +43,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Prove(args) => cmd_prove(args),
         Commands::Verify(args) => cmd_verify(args),
         Commands::Package(args) => cmd_package(args),
+        Commands::Publish(args) => cmd_publish(args),
         Commands::FullRun(args) => cmd_full_run(args),
     }
 }
@@ -170,6 +172,34 @@ pub struct PackageArgs {
     pub model_name: Option<String>,
     #[arg(long)]
     pub timeout: Option<u64>,
+}
+
+#[derive(Args)]
+pub struct PublishArgs {
+    #[arg(long, help = "Directory containing files to publish")]
+    pub dir: PathBuf,
+    #[arg(long, help = "Registry base URL")]
+    pub url: String,
+    #[arg(long, env = "REGISTRY_AUTH_TOKEN", hide_env_values = true)]
+    pub auth_token: String,
+    #[arg(long, help = "64-char hex circuit ID (generated if omitted)")]
+    pub circuit_id: Option<String>,
+    #[arg(long)]
+    pub name: String,
+    #[arg(long, default_value = "")]
+    pub description: String,
+    #[arg(long)]
+    pub author: String,
+    #[arg(long, default_value = "1.0.0")]
+    pub version: String,
+    #[arg(long, default_value = "DSPERSE_PROOF_GENERATION")]
+    pub circuit_type: String,
+    #[arg(long, default_value = "JSTPROVE")]
+    pub proof_system: String,
+    #[arg(long, default_value = "180")]
+    pub timeout: u64,
+    #[arg(long, default_value_t = false, help = "Activate circuit after upload")]
+    pub activate: bool,
 }
 
 #[derive(Args)]
@@ -375,6 +405,59 @@ pub fn cmd_package(args: PackageArgs) -> Result<()> {
         total_bytes = result.total_size,
         manifest = %result.manifest_path.display(),
         "content-addressed packaging complete"
+    );
+
+    Ok(())
+}
+
+pub fn cmd_publish(args: PublishArgs) -> Result<()> {
+    use sha2::{Digest, Sha256};
+
+    let circuit_id = match args.circuit_id {
+        Some(id) => {
+            if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(DsperseError::Other(
+                    "circuit-id must be a 64-character hex string".into(),
+                ));
+            }
+            id.to_ascii_lowercase()
+        }
+        None => {
+            let hash = Sha256::digest(format!(
+                "{}\x00{}\x00{}",
+                args.name, args.author, args.version
+            ));
+            format!("{hash:x}")
+        }
+    };
+
+    let config = pipeline::publisher::PublishConfig {
+        api_url: args.url,
+        auth_token: args.auth_token,
+        circuit_id,
+        name: args.name,
+        description: args.description,
+        author: args.author,
+        version: args.version,
+        circuit_type: args.circuit_type,
+        proof_system: args.proof_system,
+        timeout: args.timeout,
+        activate: args.activate,
+    };
+
+    let publish_id = config.circuit_id.clone();
+    let result = match pipeline::publisher::publish(&args.dir, &config) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(id = %publish_id, error = %e, "publish failed");
+            return Err(e);
+        }
+    };
+
+    tracing::info!(
+        id = %result.circuit_id,
+        files = result.files_uploaded,
+        "publish complete"
     );
 
     Ok(())

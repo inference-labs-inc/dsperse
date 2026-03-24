@@ -2,6 +2,7 @@ mod compiler;
 mod incremental;
 pub mod packager;
 mod prover;
+pub mod publisher;
 pub mod runner;
 pub mod slice_cache;
 mod stage;

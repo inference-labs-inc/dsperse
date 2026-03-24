@@ -747,16 +747,24 @@ fn execute_slice(
 ) -> Result<ExecutionInfo> {
     let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
     match strategy {
-        ExecutionStrategy::ChannelSplit(cs) => execute_channel_split(
-            slices_dir,
-            slice_run_dir,
-            slice_id,
-            cs,
-            &meta.output_shape,
-            tensor_cache,
-            backend,
-            donor_init_map,
-        ),
+        ExecutionStrategy::ChannelSplit(cs) => {
+            let target_shape = meta
+                .dependencies
+                .output
+                .iter()
+                .position(|name| name == &cs.output_name)
+                .and_then(|idx| meta.output_shape.get(idx));
+            execute_channel_split(
+                slices_dir,
+                slice_run_dir,
+                slice_id,
+                cs,
+                target_shape,
+                tensor_cache,
+                backend,
+                donor_init_map,
+            )
+        }
         ExecutionStrategy::Tiled(tiling) => {
             let slice_circuit = meta
                 .jstprove_circuit_path
@@ -1419,15 +1427,21 @@ fn execute_combined_tiled(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reshape_channel_split_output(
     arr: ArrayD<f64>,
-    output_shapes: &[Vec<i64>],
+    target_shape: Option<&Vec<i64>>,
 ) -> Result<ArrayD<f64>> {
-    if output_shapes.is_empty() {
+    let Some(raw) = target_shape else {
         return Ok(arr);
-    }
-    let target: Vec<usize> = output_shapes[0].iter().map(|&d| d as usize).collect();
+    };
+    let target: Vec<usize> = raw
+        .iter()
+        .map(|&d| {
+            usize::try_from(d).map_err(|_| {
+                DsperseError::Pipeline(format!("negative dimension {d} in output_shape"))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     if arr.shape() == target.as_slice() {
         return Ok(arr);
     }
@@ -1451,7 +1465,7 @@ fn execute_channel_split(
     slice_run_dir: &Path,
     slice_id: &str,
     cs: &ChannelSplitInfo,
-    output_shapes: &[Vec<i64>],
+    target_shape: Option<&Vec<i64>>,
     tensor_cache: &mut TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
@@ -1617,7 +1631,7 @@ fn execute_channel_split(
 
     match accumulated {
         Some(acc) => {
-            let output = reshape_channel_split_output(acc.into_dyn(), output_shapes)?;
+            let output = reshape_channel_split_output(acc.into_dyn(), target_shape)?;
             tensor_cache.put(cs.output_name.clone(), output);
         }
         None => {

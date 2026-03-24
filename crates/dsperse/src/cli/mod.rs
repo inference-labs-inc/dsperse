@@ -423,7 +423,7 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
             id.to_ascii_lowercase()
         }
         None => {
-            let hash = Sha256::digest(format!("{}:{}:{}", args.name, args.author, args.version));
+            let hash = Sha256::digest(format!("{}\x00{}\x00{}", args.name, args.author, args.version));
             format!("{hash:x}")
         }
     };

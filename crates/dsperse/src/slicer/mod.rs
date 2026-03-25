@@ -26,6 +26,9 @@ pub(crate) const ELEMENTWISE_OPS: &[&str] = &[
     "Pow",
     "Sin",
     "Cos",
+    "Cast",
+    "Erf",
+    "Not",
 ];
 
 pub(crate) const SHAPE_PRESERVING_OPS: &[&str] = &[
@@ -42,6 +45,10 @@ pub(crate) const SHAPE_PRESERVING_OPS: &[&str] = &[
     "Log",
     "Sin",
     "Cos",
+    "Cast",
+    "Erf",
+    "Softmax",
+    "Not",
     "BatchNormalization",
     "Dropout",
     "Identity",

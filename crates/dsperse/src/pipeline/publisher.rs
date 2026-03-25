@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -13,47 +12,25 @@ const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 pub struct PublishConfig {
     pub api_url: String,
     pub auth_token: String,
-    pub circuit_id: String,
     pub name: String,
     pub description: String,
     pub author: String,
     pub version: String,
-    pub circuit_type: String,
     pub proof_system: String,
     pub timeout: u64,
     pub activate: bool,
 }
 
 pub struct PublishResult {
-    pub circuit_id: String,
-    pub files_uploaded: usize,
+    pub model_id: String,
+    pub components_uploaded: usize,
+    pub components_skipped: usize,
+    pub weights_uploaded: usize,
+    pub weights_skipped: usize,
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
-    let data = fs::read(path).map_err(|e| DsperseError::io(e, path))?;
-    let hash = Sha256::digest(&data);
-    Ok(format!("{hash:x}"))
-}
-
-fn collect_files(dir: &Path) -> Result<Vec<(String, std::path::PathBuf)>> {
-    let mut files = Vec::new();
-    for entry in walkdir::WalkDir::new(dir).min_depth(1) {
-        let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let rel = entry
-            .path()
-            .strip_prefix(dir)
-            .map_err(|e| DsperseError::Other(e.to_string()))?;
-        let name = rel
-            .to_str()
-            .ok_or_else(|| DsperseError::Other("non-UTF-8 path".into()))?
-            .to_string();
-        files.push((name, entry.into_path()));
-    }
-    files.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(files)
+fn auth_header(token: &str) -> String {
+    format!("Bearer {token}")
 }
 
 pub fn publish(dir: &Path, config: &PublishConfig) -> Result<PublishResult> {
@@ -66,144 +43,293 @@ pub fn publish(dir: &Path, config: &PublishConfig) -> Result<PublishResult> {
 }
 
 async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResult> {
-    if !dir.is_dir() {
+    let manifest_path = dir.join("manifest.msgpack");
+    if !manifest_path.is_file() {
         return Err(DsperseError::Other(format!(
-            "directory not found: {}",
+            "manifest.msgpack not found in {}",
             dir.display()
         )));
     }
 
-    let entries = collect_files(dir)?;
-    if entries.is_empty() {
-        return Err(DsperseError::Other("no files to publish".into()));
-    }
+    let manifest_bytes =
+        fs::read(&manifest_path).map_err(|e| DsperseError::io(e, &manifest_path))?;
+    let manifest: serde_json::Value = rmp_serde::from_slice(&manifest_bytes)
+        .map_err(|e| DsperseError::Other(format!("failed to parse manifest: {e}")))?;
 
-    tracing::info!(count = entries.len(), "hashing files");
-    let mut file_map: HashMap<String, String> = HashMap::new();
-    let mut file_paths: HashMap<String, std::path::PathBuf> = HashMap::new();
-    for (name, path) in &entries {
-        let hash = sha256_file(path)?;
-        tracing::info!(file = %name, hash = %hash, "hashed");
-        file_map.insert(name.clone(), hash);
-        file_paths.insert(name.clone(), path.clone());
-    }
+    let components = manifest["components"]
+        .as_array()
+        .ok_or_else(|| DsperseError::Other("manifest missing components array".into()))?;
+
+    let dag = manifest["dag"]
+        .as_array()
+        .ok_or_else(|| DsperseError::Other("manifest missing dag array".into()))?;
 
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| DsperseError::Other(format!("http client: {e}")))?;
-    let api_url = config.api_url.trim_end_matches('/');
+    let api = config.api_url.trim_end_matches('/');
+    let auth = auth_header(&config.auth_token);
 
-    let input_schema: serde_json::Value = serde_json::json!({});
+    let mut components_uploaded = 0usize;
+    let mut components_skipped = 0usize;
+    let mut weights_uploaded = 0usize;
+    let mut weights_skipped = 0usize;
 
-    let body = serde_json::json!({
-        "id": config.circuit_id,
-        "metadata": {
-            "name": config.name,
-            "description": config.description,
-            "author": config.author,
-            "version": config.version,
-            "type": config.circuit_type,
-            "proof_system": config.proof_system,
-            "netuid": null,
-            "weights_version": null,
-            "timeout": config.timeout,
-            "input_schema": input_schema,
-        },
-        "files": file_map,
-    });
-
-    tracing::info!(url = %api_url, id = %config.circuit_id, "registering circuit");
-    let resp = client
-        .post(format!("{api_url}/admin/circuits"))
-        .header("Authorization", format!("Bearer {}", config.auth_token))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| DsperseError::Other(format!("register request: {e}")))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "<no body>".to_string());
-        return Err(DsperseError::Other(format!(
-            "register failed ({status}): {text}"
-        )));
-    }
-
-    let register_resp: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| DsperseError::Other(format!("parse register response: {e}")))?;
-
-    let upload_urls = register_resp["upload_urls"]
-        .as_object()
-        .ok_or_else(|| DsperseError::Other("missing upload_urls in response".into()))?;
-
-    let mut missing: Vec<&str> = file_paths
-        .keys()
-        .filter(|f| !upload_urls.contains_key(f.as_str()))
-        .map(String::as_str)
-        .collect();
-    missing.sort();
-    if !missing.is_empty() {
-        return Err(DsperseError::Other(format!(
-            "registry did not return upload URLs for: {}",
-            missing.join(", ")
-        )));
-    }
-
-    let mut uploaded = 0usize;
-    for (filename, url_val) in upload_urls {
-        let url = url_val
+    for comp in components {
+        let sha = comp["sha256"]
             .as_str()
-            .ok_or_else(|| DsperseError::Other(format!("non-string URL for {filename}")))?;
+            .ok_or_else(|| DsperseError::Other("component missing sha256".into()))?;
+        let files: Vec<String> = comp["files"]
+            .as_array()
+            .ok_or_else(|| DsperseError::Other("component missing files".into()))?
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
 
-        let path = file_paths
-            .get(filename)
-            .ok_or_else(|| DsperseError::Other(format!("no local file for {filename}")))?;
-
-        let data = fs::read(path).map_err(|e| DsperseError::io(e, path))?;
-        let size = data.len();
-
-        tracing::info!(file = %filename, size, "uploading");
-        let put_resp = client
-            .put(url)
-            .timeout(UPLOAD_TIMEOUT)
-            .header("Content-Type", "application/octet-stream")
-            .body(data)
+        let check = client
+            .get(format!("{api}/components/{sha}"))
             .send()
             .await
-            .map_err(|e| DsperseError::Other(format!("upload {filename}: {e}")))?;
+            .map_err(|e| DsperseError::Other(format!("check component {sha}: {e}")))?;
 
-        if !put_resp.status().is_success() {
-            let status = put_resp.status();
+        if check.status().is_success() {
+            tracing::info!(sha = %sha, "component exists, skipping");
+            components_skipped += 1;
+            continue;
+        }
+
+        let proof_system = comp["proof_system"]
+            .as_str()
+            .unwrap_or(&config.proof_system);
+        let comp_name = comp["name"].as_str().unwrap_or(sha);
+
+        tracing::info!(sha = %sha, files = files.len(), "registering component");
+        let register_resp = client
+            .post(format!("{api}/admin/components"))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "sha256": sha,
+                "name": comp_name,
+                "description": "",
+                "proof_system": proof_system,
+                "files": files,
+            }))
+            .send()
+            .await
+            .map_err(|e| DsperseError::Other(format!("register component {sha}: {e}")))?;
+
+        if !register_resp.status().is_success() {
+            let status = register_resp.status();
+            let text = register_resp.text().await.unwrap_or_default();
             return Err(DsperseError::Other(format!(
-                "upload {filename} failed ({status})"
+                "register component {sha} failed ({status}): {text}"
             )));
         }
 
-        uploaded += 1;
+        let resp_body: serde_json::Value = register_resp
+            .json()
+            .await
+            .map_err(|e| DsperseError::Other(format!("parse component response: {e}")))?;
+
+        let upload_urls = resp_body["upload_urls"]
+            .as_object()
+            .ok_or_else(|| DsperseError::Other("missing upload_urls for component".into()))?;
+
+        let comp_dir = dir.join("components").join(sha);
+        for (filename, url_val) in upload_urls {
+            let url = url_val
+                .as_str()
+                .ok_or_else(|| DsperseError::Other(format!("non-string URL for {filename}")))?;
+            let file_path = comp_dir.join(filename);
+            let data = fs::read(&file_path).map_err(|e| DsperseError::io(e, &file_path))?;
+
+            tracing::info!(file = %filename, size = data.len(), "uploading component file");
+            let put = client
+                .put(url)
+                .timeout(UPLOAD_TIMEOUT)
+                .header("Content-Type", "application/octet-stream")
+                .body(data)
+                .send()
+                .await
+                .map_err(|e| DsperseError::Other(format!("upload {filename}: {e}")))?;
+
+            if !put.status().is_success() {
+                return Err(DsperseError::Other(format!(
+                    "upload component file {filename} failed ({})",
+                    put.status()
+                )));
+            }
+        }
+
+        components_uploaded += 1;
+    }
+
+    let mut all_weight_refs: Vec<&serde_json::Value> = Vec::new();
+    for comp in components {
+        if let Some(weights) = comp["weights"].as_array() {
+            all_weight_refs.extend(weights);
+        }
+    }
+
+    let mut uploaded_wbs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for wref in &all_weight_refs {
+        let sha = wref["sha256"]
+            .as_str()
+            .ok_or_else(|| DsperseError::Other("weight ref missing sha256".into()))?;
+
+        if uploaded_wbs.contains(sha) {
+            continue;
+        }
+
+        let size = wref["size_bytes"].as_u64().unwrap_or(0);
+
+        let check = client
+            .get(format!("{api}/models/wb/{sha}"))
+            .header("Range", "bytes=0-0")
+            .send()
+            .await
+            .map_err(|e| DsperseError::Other(format!("check wb {sha}: {e}")))?;
+
+        if check.status().is_success() || check.status().as_u16() == 206 {
+            tracing::info!(sha = %sha, "weight blob exists, skipping");
+            weights_skipped += 1;
+            uploaded_wbs.insert(sha.to_string());
+            continue;
+        }
+
+        let name = wref["role"].as_str().unwrap_or("");
+        tracing::info!(sha = %sha, size, "registering weight blob");
+        let wb_resp = client
+            .post(format!("{api}/admin/models/wb"))
+            .header("Authorization", &auth)
+            .json(&serde_json::json!({
+                "sha256": sha,
+                "name": name,
+                "size_bytes": size,
+            }))
+            .send()
+            .await
+            .map_err(|e| DsperseError::Other(format!("register wb {sha}: {e}")))?;
+
+        if !wb_resp.status().is_success() {
+            let status = wb_resp.status();
+            let text = wb_resp.text().await.unwrap_or_default();
+            if text.contains("already exists") {
+                tracing::info!(sha = %sha, "weight blob already registered");
+                weights_skipped += 1;
+                uploaded_wbs.insert(sha.to_string());
+                continue;
+            }
+            return Err(DsperseError::Other(format!(
+                "register wb {sha} failed ({status}): {text}"
+            )));
+        }
+
+        let wb_body: serde_json::Value = wb_resp
+            .json()
+            .await
+            .map_err(|e| DsperseError::Other(format!("parse wb response: {e}")))?;
+
+        if let Some(upload_url) = wb_body["upload_url"].as_str() {
+            let wb_path = dir.join("wb").join(sha);
+            let data = fs::read(&wb_path).map_err(|e| DsperseError::io(e, &wb_path))?;
+
+            tracing::info!(sha = %sha, size = data.len(), "uploading weight blob");
+            let put = client
+                .put(upload_url)
+                .timeout(UPLOAD_TIMEOUT)
+                .header("Content-Type", "application/octet-stream")
+                .body(data)
+                .send()
+                .await
+                .map_err(|e| DsperseError::Other(format!("upload wb {sha}: {e}")))?;
+
+            if !put.status().is_success() {
+                return Err(DsperseError::Other(format!(
+                    "upload wb {sha} failed ({})",
+                    put.status()
+                )));
+            }
+        }
+
+        weights_uploaded += 1;
+        uploaded_wbs.insert(sha.to_string());
+    }
+
+    let model_info = &manifest["model"];
+    let model_name = config.name.as_str();
+    let input_schema = &model_info["input_schema"];
+
+    let composition = serde_json::json!({
+        "version": 1,
+        "components": components,
+        "dag": dag,
+    });
+
+    let mut model_hasher = Sha256::new();
+    model_hasher.update(model_name.as_bytes());
+    model_hasher.update(b"\x00");
+    model_hasher.update(config.author.as_bytes());
+    model_hasher.update(b"\x00");
+    model_hasher.update(config.version.as_bytes());
+    model_hasher.update(b"\x00");
+    let comp_json = serde_json::to_string(&composition)
+        .map_err(|e| DsperseError::Other(format!("serialize composition: {e}")))?;
+    model_hasher.update(comp_json.as_bytes());
+    let model_id = format!("{:x}", model_hasher.finalize());
+
+    let dsperse_version = model_info["dsperse_version"].as_str();
+    let jstprove_version = model_info["jstprove_version"].as_str();
+
+    tracing::info!(id = %model_id, "creating model");
+    let model_resp = client
+        .post(format!("{api}/admin/models"))
+        .header("Authorization", &auth)
+        .json(&serde_json::json!({
+            "id": model_id,
+            "metadata": {
+                "name": model_name,
+                "description": config.description,
+                "author": config.author,
+                "version": config.version,
+                "netuid": null,
+                "weights_version": null,
+                "timeout": config.timeout,
+                "input_schema": input_schema,
+                "dsperse_version": dsperse_version,
+                "jstprove_version": jstprove_version,
+            },
+            "composition": composition,
+        }))
+        .send()
+        .await
+        .map_err(|e| DsperseError::Other(format!("create model: {e}")))?;
+
+    if !model_resp.status().is_success() {
+        let status = model_resp.status();
+        let text = model_resp.text().await.unwrap_or_default();
+        if !text.contains("already exists") {
+            return Err(DsperseError::Other(format!(
+                "create model failed ({status}): {text}"
+            )));
+        }
+        tracing::info!(id = %model_id, "model already exists");
     }
 
     if config.activate {
-        tracing::info!("activating circuit");
+        tracing::info!(id = %model_id, "activating model");
         let activate_resp = client
-            .patch(format!("{api_url}/admin/circuits/{}", config.circuit_id))
-            .header("Authorization", format!("Bearer {}", config.auth_token))
+            .patch(format!("{api}/admin/models/{model_id}"))
+            .header("Authorization", &auth)
             .json(&serde_json::json!({ "is_active": true }))
             .send()
             .await
-            .map_err(|e| DsperseError::Other(format!("activate request: {e}")))?;
+            .map_err(|e| DsperseError::Other(format!("activate: {e}")))?;
 
         if !activate_resp.status().is_success() {
             let status = activate_resp.status();
-            let text = activate_resp
-                .text()
-                .await
-                .unwrap_or_else(|_| "<no body>".to_string());
+            let text = activate_resp.text().await.unwrap_or_default();
             return Err(DsperseError::Other(format!(
                 "activate failed ({status}): {text}"
             )));
@@ -211,7 +337,10 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     }
 
     Ok(PublishResult {
-        circuit_id: config.circuit_id.clone(),
-        files_uploaded: uploaded,
+        model_id,
+        components_uploaded,
+        components_skipped,
+        weights_uploaded,
+        weights_skipped,
     })
 }

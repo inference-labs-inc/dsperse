@@ -530,8 +530,8 @@ fn trace_shapes_tract(
 
             for node in &graph.node {
                 if super::is_shape_preserving(&node.op_type)
-                    && let Some(in_shape) =
-                        node.input.iter().find_map(|inp| shapes.get(inp).cloned())
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp).cloned()
                 {
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
@@ -547,9 +547,19 @@ fn trace_shapes_tract(
                     && let Some(in_shape) = shapes.get(inp)
                 {
                     let rank = in_shape.len() as i64;
+                    let start = onnx_proto::get_attribute_int(node, "start").unwrap_or(0);
+                    let end = onnx_proto::get_attribute_int(node, "end").unwrap_or(rank);
+                    let normalize = |idx: i64| {
+                        if idx < 0 {
+                            (rank + idx).max(0)
+                        } else {
+                            idx.min(rank)
+                        }
+                    };
+                    let len = (normalize(end) - normalize(start)).max(0);
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), vec![rank]);
+                            shapes.insert(out.clone(), vec![len]);
                         }
                     }
                 }

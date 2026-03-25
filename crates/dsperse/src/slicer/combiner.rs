@@ -101,10 +101,8 @@ pub fn materialize_combined_model(
     Ok(combined)
 }
 
-const NON_NUMERIC_TENSOR_TYPES: &[i32] = &[
-    TensorProto::BOOL,
-    8, // STRING (ONNX TensorProto.DataType = 8)
-];
+const ONNX_STRING_DATATYPE: i32 = 8;
+const NON_NUMERIC_TENSOR_TYPES: &[i32] = &[TensorProto::BOOL, ONNX_STRING_DATATYPE];
 
 fn resolve_value_info(
     name: &str,
@@ -285,5 +283,63 @@ mod tests {
         let p1 = ensure_combined_materialized(tmp.path(), &meta).unwrap();
         let p2 = ensure_combined_materialized(tmp.path(), &meta).unwrap();
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn bool_outputs_excluded_from_combined_model() {
+        let vi_map: HashMap<String, &ValueInfoProto> = HashMap::new();
+        let init_types: HashMap<&str, i32> = HashMap::new();
+
+        let mut node_output_types = HashMap::new();
+        node_output_types.insert("float_tensor".to_string(), TensorProto::FLOAT);
+        node_output_types.insert("bool_tensor".to_string(), TensorProto::BOOL);
+        node_output_types.insert("string_tensor".to_string(), ONNX_STRING_DATATYPE);
+        node_output_types.insert("int_tensor".to_string(), TensorProto::INT64);
+
+        let mut traced_shapes = HashMap::new();
+        traced_shapes.insert("float_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("bool_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("string_tensor".to_string(), vec![4]);
+        traced_shapes.insert("int_tensor".to_string(), vec![1, 300]);
+
+        let float_vi = resolve_value_info(
+            "float_tensor",
+            &vi_map,
+            &traced_shapes,
+            &init_types,
+            &node_output_types,
+        )
+        .unwrap();
+        assert!(float_vi.is_some());
+
+        let bool_vi = resolve_value_info(
+            "bool_tensor",
+            &vi_map,
+            &traced_shapes,
+            &init_types,
+            &node_output_types,
+        )
+        .unwrap();
+        assert!(bool_vi.is_none());
+
+        let string_vi = resolve_value_info(
+            "string_tensor",
+            &vi_map,
+            &traced_shapes,
+            &init_types,
+            &node_output_types,
+        )
+        .unwrap();
+        assert!(string_vi.is_none());
+
+        let int_vi = resolve_value_info(
+            "int_tensor",
+            &vi_map,
+            &traced_shapes,
+            &init_types,
+            &node_output_types,
+        )
+        .unwrap();
+        assert!(int_vi.is_some());
     }
 }

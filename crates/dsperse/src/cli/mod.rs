@@ -196,8 +196,6 @@ pub struct PublishArgs {
     pub timeout: u64,
     #[arg(long, default_value_t = false, help = "Activate model after upload")]
     pub activate: bool,
-    #[arg(long, help = "Log level")]
-    pub log_level: Option<String>,
 }
 
 #[derive(Args)]

@@ -231,25 +231,30 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             .await
             .map_err(|e| DsperseError::Other(format!("parse wb response: {e}")))?;
 
-        if let Some(upload_url) = wb_body["upload_url"].as_str() {
-            let wb_path = dir.join("wb").join(sha);
-            let data = fs::read(&wb_path).map_err(|e| DsperseError::io(e, &wb_path))?;
+        match wb_body["upload_url"].as_str() {
+            Some(upload_url) => {
+                let wb_path = dir.join("wb").join(sha);
+                let data = fs::read(&wb_path).map_err(|e| DsperseError::io(e, &wb_path))?;
 
-            tracing::info!(sha = %sha, size = data.len(), "uploading weight blob");
-            let put = client
-                .put(upload_url)
-                .timeout(UPLOAD_TIMEOUT)
-                .header("Content-Type", "application/octet-stream")
-                .body(data)
-                .send()
-                .await
-                .map_err(|e| DsperseError::Other(format!("upload wb {sha}: {e}")))?;
+                tracing::info!(sha = %sha, size = data.len(), "uploading weight blob");
+                let put = client
+                    .put(upload_url)
+                    .timeout(UPLOAD_TIMEOUT)
+                    .header("Content-Type", "application/octet-stream")
+                    .body(data)
+                    .send()
+                    .await
+                    .map_err(|e| DsperseError::Other(format!("upload wb {sha}: {e}")))?;
 
-            if !put.status().is_success() {
-                return Err(DsperseError::Other(format!(
-                    "upload wb {sha} failed ({})",
-                    put.status()
-                )));
+                if !put.status().is_success() {
+                    return Err(DsperseError::Other(format!(
+                        "upload wb {sha} failed ({})",
+                        put.status()
+                    )));
+                }
+            }
+            None => {
+                tracing::warn!(sha = %sha, "registry returned no upload URL for weight blob");
             }
         }
 

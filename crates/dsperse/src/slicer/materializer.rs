@@ -30,6 +30,18 @@ fn resolve_shape_backward_inner(
         return Some(s.clone());
     }
 
+    if let Some(vi) = graph.value_info.iter().find(|v| v.name == tensor_name)
+        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+    {
+        return Some(shape);
+    }
+
+    for init in &graph.initializer {
+        if init.name == tensor_name {
+            return Some(init.dims.to_vec());
+        }
+    }
+
     let producer = graph
         .node
         .iter()
@@ -58,23 +70,11 @@ fn resolve_shape_backward_inner(
         }
     }
 
-    if let Some(vi) = graph.value_info.iter().find(|v| v.name == tensor_name)
-        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
-    {
-        return Some(shape);
-    }
-
     if let Some(inp) = producer.input.first()
         && let Some(in_shape) = resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1)
         && in_shape.len() == 1
     {
         return Some(in_shape);
-    }
-
-    for init in &graph.initializer {
-        if init.name == tensor_name {
-            return Some(init.dims.to_vec());
-        }
     }
 
     None

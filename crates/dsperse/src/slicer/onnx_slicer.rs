@@ -5,7 +5,6 @@ use super::analyzer::{self, AnalysisResult, NodeAnalysis};
 use super::autotiler;
 use super::materializer;
 use super::onnx_proto::{self, ModelProto};
-use super::{ELEMENTWISE_OPS, SHAPE_PRESERVING_OPS};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
     Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
@@ -296,7 +295,7 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
                 let mut end = pos + 1;
                 while end < sorted_nodes.len() {
                     let candidate = sorted_nodes[end];
-                    if !SHAPE_PRESERVING_OPS.contains(&candidate.node_type.as_str()) {
+                    if !super::is_shape_preserving(&candidate.node_type) {
                         break;
                     }
                     let consumes_produced = candidate.dependencies.input.iter().any(|inp| {
@@ -335,9 +334,8 @@ fn optimize_jstprove_slices(
 
 fn optimize_for_tiling(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     optimize_points(points, analysis, |updated, sorted_nodes, _max_idx| {
-        let is_tileable = |n: &NodeAnalysis| {
-            n.node_type == "Conv" || ELEMENTWISE_OPS.contains(&n.node_type.as_str())
-        };
+        let is_tileable =
+            |n: &NodeAnalysis| n.node_type == "Conv" || super::is_elementwise(&n.node_type);
         for i in 0..sorted_nodes.len().saturating_sub(1) {
             let curr = sorted_nodes[i];
             let next = sorted_nodes[i + 1];
@@ -526,17 +524,14 @@ fn trace_shapes_tract(
             }
         }
 
-        let binary_ops: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"]
-            .into_iter()
-            .collect();
-
         let mut prev_len = 0;
         while shapes.len() != prev_len {
             prev_len = shapes.len();
 
             for node in &graph.node {
-                if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
-                    && let Some(in_shape) = node.input.iter().find_map(|inp| shapes.get(inp).cloned())
+                if super::is_shape_preserving(&node.op_type)
+                    && let Some(in_shape) =
+                        node.input.iter().find_map(|inp| shapes.get(inp).cloned())
                 {
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
@@ -561,26 +556,20 @@ fn trace_shapes_tract(
             }
 
             for node in &graph.node {
-                let op = node.op_type.as_str();
-                if matches!(op, "Slice" | "Gather" | "Squeeze" | "Unsqueeze" | "Flatten" | "Expand" | "Tile" | "ConstantOfShape" | "Where" | "Equal" | "Greater" | "Less" | "And" | "Not" | "ReduceSum" | "ReduceMax" | "TopK" | "GatherElements" | "Split" | "GridSample")
-                    && let Some(inp) = node.input.first()
-                    && shapes.contains_key(inp)
-                {
-                    for out in &node.output {
-                        if out.is_empty() || shapes.contains_key(out) {
-                            continue;
-                        }
-                        if let Some(vi) = graph.value_info.iter().find(|v| v.name == *out) {
-                            if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
-                                shapes.insert(out.clone(), shape);
-                            }
-                        }
+                for out in &node.output {
+                    if out.is_empty() || shapes.contains_key(out) {
+                        continue;
+                    }
+                    if let Some(vi) = graph.value_info.iter().find(|v| v.name == *out)
+                        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+                    {
+                        shapes.insert(out.clone(), shape);
                     }
                 }
             }
 
             for node in &graph.node {
-                if binary_ops.contains(node.op_type.as_str()) {
+                if super::is_binary_arithmetic(&node.op_type) {
                     let input_shapes: Vec<&Vec<i64>> = node
                         .input
                         .iter()

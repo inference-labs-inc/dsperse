@@ -15,10 +15,13 @@ fn resolve_shape_backward(
         return Some(s.clone());
     }
 
-    let producer = graph.node.iter().find(|n| n.output.contains(&tensor_name.to_string()))?;
+    let producer = graph
+        .node
+        .iter()
+        .find(|n| n.output.contains(&tensor_name.to_string()))?;
     let op = producer.op_type.as_str();
 
-    if super::SHAPE_PRESERVING_OPS.contains(&op) {
+    if super::is_shape_preserving(op) {
         let inp = producer.input.first()?;
         return resolve_shape_backward(inp, graph, traced_shapes);
     }
@@ -29,14 +32,33 @@ fn resolve_shape_backward(
         return Some(vec![in_shape.len() as i64]);
     }
 
-    if op == "Slice" || op == "Gather" || op == "Squeeze" || op == "Unsqueeze" {
-        if let Some(vi) = graph.value_info.iter().find(|v| v.name == tensor_name) {
-            return onnx_proto::shape_from_value_info(vi);
+    if super::is_binary_arithmetic(op) {
+        let resolved: Vec<Vec<i64>> = producer
+            .input
+            .iter()
+            .filter_map(|inp| resolve_shape_backward(inp, graph, traced_shapes))
+            .collect();
+        if !resolved.is_empty() {
+            return resolved.into_iter().max_by_key(|s| s.len());
         }
-        let inp = producer.input.first()?;
-        let in_shape = resolve_shape_backward(inp, graph, traced_shapes)?;
-        if in_shape.len() == 1 {
-            return Some(in_shape);
+    }
+
+    if let Some(vi) = graph.value_info.iter().find(|v| v.name == tensor_name)
+        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+    {
+        return Some(shape);
+    }
+
+    if let Some(inp) = producer.input.first()
+        && let Some(in_shape) = resolve_shape_backward(inp, graph, traced_shapes)
+        && in_shape.len() == 1
+    {
+        return Some(in_shape);
+    }
+
+    for init in &graph.initializer {
+        if init.name == tensor_name {
+            return Some(init.dims.to_vec());
         }
     }
 
@@ -240,10 +262,7 @@ fn materialize_tiling_artifacts(
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
             let is_ew = slice_model.graph.as_ref().is_some_and(|g| {
-                !g.node.is_empty()
-                    && g.node
-                        .iter()
-                        .all(|n| super::ELEMENTWISE_OPS.contains(&n.op_type.as_str()))
+                !g.node.is_empty() && g.node.iter().all(|n| super::is_elementwise(&n.op_type))
             });
             if is_ew {
                 autotiler::create_elementwise_tile_slice(
@@ -474,7 +493,10 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(inp_name) {
                 inputs.push((*vi).clone());
             } else {
-                let shape = ctx.traced_shapes.get(inp_name).cloned()
+                let shape = ctx
+                    .traced_shapes
+                    .get(inp_name)
+                    .cloned()
                     .or_else(|| resolve_shape_backward(inp_name, ctx.graph, ctx.traced_shapes))
                     .ok_or_else(|| {
                         DsperseError::Slicer(format!(
@@ -505,7 +527,10 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(out_name) {
                 outputs.push((*vi).clone());
             } else {
-                let shape = ctx.traced_shapes.get(out_name).cloned()
+                let shape = ctx
+                    .traced_shapes
+                    .get(out_name)
+                    .cloned()
                     .or_else(|| resolve_shape_backward(out_name, ctx.graph, ctx.traced_shapes))
                     .ok_or_else(|| {
                         DsperseError::Slicer(format!(

@@ -29,6 +29,22 @@ pub fn save_model(model: &ModelProto, path: &Path) -> Result<()> {
     std::fs::write(path, bytes).map_err(|e| DsperseError::io(e, path))
 }
 
+pub fn shape_from_value_info(vi: &ValueInfoProto) -> Option<Vec<i64>> {
+    let tp = vi.r#type.as_ref()?;
+    let onnx::type_proto::Value::TensorType(tensor) = tp.value.as_ref()? else {
+        return None;
+    };
+    let shape_proto = tensor.shape.as_ref()?;
+    let mut dims = Vec::new();
+    for d in &shape_proto.dim {
+        match &d.value {
+            Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => dims.push(*v),
+            _ => return None,
+        }
+    }
+    Some(dims)
+}
+
 pub fn make_tensor_value_info(name: &str, elem_type: i32, shape: &[i64]) -> ValueInfoProto {
     ValueInfoProto {
         name: name.to_string(),

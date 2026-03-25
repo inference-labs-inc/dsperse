@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use super::ELEMENTWISE_OPS;
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
@@ -33,7 +32,7 @@ fn model_opset(model: &ModelProto) -> i64 {
 }
 
 fn is_elementwise(op: &str) -> bool {
-    ELEMENTWISE_OPS.contains(&op)
+    super::is_elementwise(op)
 }
 
 #[derive(Debug, Clone)]

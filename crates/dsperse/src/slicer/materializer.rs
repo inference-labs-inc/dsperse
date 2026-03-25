@@ -3,8 +3,77 @@ use std::path::{Path, PathBuf};
 
 use super::autotiler::{self, ChannelSplitParams};
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
+use super::onnx_slicer::broadcast_shapes;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
+
+const MAX_BACKWARD_DEPTH: usize = 64;
+
+fn resolve_shape_backward(
+    tensor_name: &str,
+    graph: &GraphProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+) -> Option<Vec<i64>> {
+    resolve_shape_backward_inner(tensor_name, graph, traced_shapes, 0)
+}
+
+fn resolve_shape_backward_inner(
+    tensor_name: &str,
+    graph: &GraphProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+    depth: usize,
+) -> Option<Vec<i64>> {
+    if depth > MAX_BACKWARD_DEPTH {
+        return None;
+    }
+
+    if let Some(s) = traced_shapes.get(tensor_name) {
+        return Some(s.clone());
+    }
+
+    if let Some(vi) = graph.value_info.iter().find(|v| v.name == tensor_name)
+        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+    {
+        return Some(shape);
+    }
+
+    for init in &graph.initializer {
+        if init.name == tensor_name {
+            return Some(init.dims.to_vec());
+        }
+    }
+
+    let producer = graph
+        .node
+        .iter()
+        .find(|n| n.output.contains(&tensor_name.to_string()))?;
+    let op = producer.op_type.as_str();
+
+    if super::is_shape_preserving(op) {
+        let inp = producer.input.first()?;
+        return resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1);
+    }
+
+    if op == "Shape" {
+        let inp = producer.input.first()?;
+        let in_shape = resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1)?;
+        return Some(vec![in_shape.len() as i64]);
+    }
+
+    if super::is_binary_arithmetic(op) {
+        let resolved: Vec<Vec<i64>> = producer
+            .input
+            .iter()
+            .filter_map(|inp| resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1))
+            .collect();
+        let refs: Vec<&Vec<i64>> = resolved.iter().collect();
+        if let Some(broadcasted) = broadcast_shapes(&refs) {
+            return Some(broadcasted);
+        }
+    }
+
+    None
+}
 
 pub fn materialize_slice_model(
     model: &ModelProto,
@@ -203,10 +272,7 @@ fn materialize_tiling_artifacts(
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
             let is_ew = slice_model.graph.as_ref().is_some_and(|g| {
-                !g.node.is_empty()
-                    && g.node
-                        .iter()
-                        .all(|n| super::ELEMENTWISE_OPS.contains(&n.op_type.as_str()))
+                !g.node.is_empty() && g.node.iter().all(|n| super::is_elementwise(&n.op_type))
             });
             if is_ew {
                 autotiler::create_elementwise_tile_slice(
@@ -437,11 +503,16 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(inp_name) {
                 inputs.push((*vi).clone());
             } else {
-                let shape = ctx.traced_shapes.get(inp_name).cloned().ok_or_else(|| {
-                    DsperseError::Slicer(format!(
-                        "no traced shape for segment input tensor '{inp_name}'"
-                    ))
-                })?;
+                let shape = ctx
+                    .traced_shapes
+                    .get(inp_name)
+                    .cloned()
+                    .or_else(|| resolve_shape_backward(inp_name, ctx.graph, ctx.traced_shapes))
+                    .ok_or_else(|| {
+                        DsperseError::Slicer(format!(
+                            "no traced shape for segment input tensor '{inp_name}'"
+                        ))
+                    })?;
                 inputs.push(onnx_proto::make_tensor_value_info(
                     inp_name,
                     ctx.resolve_elem_type(inp_name),
@@ -466,11 +537,16 @@ fn get_segment_details(
             if let Some(vi) = ctx.vi_map.get(out_name) {
                 outputs.push((*vi).clone());
             } else {
-                let shape = ctx.traced_shapes.get(out_name).cloned().ok_or_else(|| {
-                    DsperseError::Slicer(format!(
-                        "no traced shape for segment output tensor '{out_name}'"
-                    ))
-                })?;
+                let shape = ctx
+                    .traced_shapes
+                    .get(out_name)
+                    .cloned()
+                    .or_else(|| resolve_shape_backward(out_name, ctx.graph, ctx.traced_shapes))
+                    .ok_or_else(|| {
+                        DsperseError::Slicer(format!(
+                            "no traced shape for segment output tensor '{out_name}'"
+                        ))
+                    })?;
                 outputs.push(onnx_proto::make_tensor_value_info(
                     out_name,
                     ctx.resolve_elem_type(out_name),

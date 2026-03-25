@@ -7,15 +7,11 @@ pub mod onnx_slicer;
 
 pub use onnx_slicer::slice_model;
 
-pub(crate) const ELEMENTWISE_OPS: &[&str] = &[
-    "Sigmoid",
-    "Mul",
-    "Add",
-    "Sub",
-    "Div",
+pub(crate) const UNARY_ACTIVATIONS: &[&str] = &[
     "Relu",
     "LeakyRelu",
     "PRelu",
+    "Sigmoid",
     "Tanh",
     "Clip",
     "Neg",
@@ -23,29 +19,31 @@ pub(crate) const ELEMENTWISE_OPS: &[&str] = &[
     "Sqrt",
     "Exp",
     "Log",
-    "Pow",
     "Sin",
     "Cos",
+    "Erf",
 ];
 
-pub(crate) const SHAPE_PRESERVING_OPS: &[&str] = &[
-    "Relu",
-    "LeakyRelu",
-    "PRelu",
-    "Sigmoid",
-    "Tanh",
-    "Clip",
-    "Neg",
-    "Abs",
-    "Sqrt",
-    "Exp",
-    "Log",
-    "Sin",
-    "Cos",
-    "BatchNormalization",
-    "Dropout",
-    "Identity",
-];
+pub(crate) const UNARY_STRUCTURAL: &[&str] = &["Cast", "Not", "Identity", "Dropout"];
+
+pub(crate) const BINARY_ARITHMETIC: &[&str] = &["Add", "Sub", "Mul", "Div", "Pow", "Max", "Min"];
+
+pub(crate) const NORMALIZATION_OPS: &[&str] =
+    &["BatchNormalization", "Softmax", "LayerNormalization"];
+
+pub(crate) fn is_shape_preserving(op: &str) -> bool {
+    UNARY_ACTIVATIONS.contains(&op)
+        || UNARY_STRUCTURAL.contains(&op)
+        || NORMALIZATION_OPS.contains(&op)
+}
+
+pub(crate) fn is_elementwise(op: &str) -> bool {
+    UNARY_ACTIVATIONS.contains(&op) || BINARY_ARITHMETIC.contains(&op)
+}
+
+pub(crate) fn is_binary_arithmetic(op: &str) -> bool {
+    BINARY_ARITHMETIC.contains(&op)
+}
 
 pub(crate) fn build_segment_ranges(
     slice_points: &[usize],

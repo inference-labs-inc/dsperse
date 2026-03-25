@@ -141,15 +141,36 @@ pub fn gather_inputs_from_cache(
     if collected.len() == 1 {
         return Ok(collected.into_iter().next().unwrap());
     }
-    let ref_shape = &collected[0].shape()[1..];
-    for (i, arr) in collected.iter().enumerate().skip(1) {
-        if arr.shape()[1..] != *ref_shape {
-            return Err(DsperseError::Pipeline(format!(
-                "shape mismatch at input {}: expected trailing dims {:?}, got {:?}",
-                i,
-                ref_shape,
-                &arr.shape()[1..]
-            )));
+    if collected[0].ndim() == 0 {
+        return Err(DsperseError::Pipeline(
+            "cannot concatenate 0-dimensional tensors".into(),
+        ));
+    }
+    let ref_trailing = collected[0].shape()[1..].to_vec();
+    let ref_product: usize = ref_trailing.iter().product();
+    let batch = collected[0].shape()[0];
+    for (i, arr) in collected.iter_mut().enumerate().skip(1) {
+        let trailing = &arr.shape()[1..];
+        if trailing != ref_trailing.as_slice() {
+            let product: usize = trailing.iter().product();
+            if product == ref_product && arr.shape()[0] == batch {
+                let orig_shape: Vec<usize> = arr.shape().to_vec();
+                let mut target = vec![batch];
+                target.extend_from_slice(&ref_trailing);
+                let owned = std::mem::replace(arr, ArrayD::zeros(ndarray::IxDyn(&[])));
+                *arr = owned
+                    .into_shape_with_order(ndarray::IxDyn(&target))
+                    .map_err(|e| {
+                        DsperseError::Pipeline(format!(
+                            "gather reshape input {i} from {orig_shape:?} to {target:?}: {e}",
+                        ))
+                    })?;
+            } else {
+                return Err(DsperseError::Pipeline(format!(
+                    "shape mismatch at input {}: expected trailing dims {:?}, got {:?}",
+                    i, ref_trailing, trailing
+                )));
+            }
         }
     }
     ndarray::concatenate(

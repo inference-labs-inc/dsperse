@@ -536,12 +536,44 @@ fn trace_shapes_tract(
 
             for node in &graph.node {
                 if super::SHAPE_PRESERVING_OPS.contains(&node.op_type.as_str())
-                    && let Some(inp) = node.input.first()
-                    && let Some(in_shape) = shapes.get(inp).cloned()
+                    && let Some(in_shape) = node.input.iter().find_map(|inp| shapes.get(inp).cloned())
                 {
                     for out in &node.output {
                         if !out.is_empty() && !shapes.contains_key(out) {
                             shapes.insert(out.clone(), in_shape.clone());
+                        }
+                    }
+                }
+            }
+
+            for node in &graph.node {
+                if node.op_type == "Shape"
+                    && let Some(inp) = node.input.first()
+                    && let Some(in_shape) = shapes.get(inp)
+                {
+                    let rank = in_shape.len() as i64;
+                    for out in &node.output {
+                        if !out.is_empty() && !shapes.contains_key(out) {
+                            shapes.insert(out.clone(), vec![rank]);
+                        }
+                    }
+                }
+            }
+
+            for node in &graph.node {
+                let op = node.op_type.as_str();
+                if matches!(op, "Slice" | "Gather" | "Squeeze" | "Unsqueeze" | "Flatten" | "Expand" | "Tile" | "ConstantOfShape" | "Where" | "Equal" | "Greater" | "Less" | "And" | "Not" | "ReduceSum" | "ReduceMax" | "TopK" | "GatherElements" | "Split" | "GridSample")
+                    && let Some(inp) = node.input.first()
+                    && shapes.contains_key(inp)
+                {
+                    for out in &node.output {
+                        if out.is_empty() || shapes.contains_key(out) {
+                            continue;
+                        }
+                        if let Some(vi) = graph.value_info.iter().find(|v| v.name == *out) {
+                            if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+                                shapes.insert(out.clone(), shape);
+                            }
                         }
                     }
                 }

@@ -51,15 +51,16 @@ pub fn materialize_combined_model(
                     continue;
                 }
 
-                let vi = resolve_value_info(
+                if let Some(vi) = resolve_value_info(
                     output_name,
                     &vi_map,
                     traced_shapes,
                     &init_types,
                     &node_output_types,
-                )?;
-                new_outputs.push(vi);
-                added.insert(output_name.clone());
+                )? {
+                    new_outputs.push(vi);
+                    added.insert(output_name.clone());
+                }
             }
 
             for input_name in &slice.dependencies.filtered_inputs {
@@ -75,15 +76,16 @@ pub fn materialize_combined_model(
                     continue;
                 }
 
-                let vi = resolve_value_info(
+                if let Some(vi) = resolve_value_info(
                     input_name,
                     &vi_map,
                     traced_shapes,
                     &init_types,
                     &node_output_types,
-                )?;
-                new_outputs.push(vi);
-                added.insert(input_name.clone());
+                )? {
+                    new_outputs.push(vi);
+                    added.insert(input_name.clone());
+                }
             }
         }
     }
@@ -99,15 +101,24 @@ pub fn materialize_combined_model(
     Ok(combined)
 }
 
+const NON_NUMERIC_TENSOR_TYPES: &[i32] = &[
+    TensorProto::BOOL,
+    8, // STRING (ONNX TensorProto.DataType = 8)
+];
+
 fn resolve_value_info(
     name: &str,
     vi_map: &HashMap<String, &ValueInfoProto>,
     traced_shapes: &HashMap<String, Vec<i64>>,
     init_types: &HashMap<&str, i32>,
     node_output_types: &HashMap<String, i32>,
-) -> Result<ValueInfoProto> {
+) -> Result<Option<ValueInfoProto>> {
     if let Some(vi) = vi_map.get(name) {
-        return Ok((*vi).clone());
+        let elem_type = onnx_proto::elem_type_from_value_info(vi).unwrap_or(TensorProto::FLOAT);
+        if NON_NUMERIC_TENSOR_TYPES.contains(&elem_type) {
+            return Ok(None);
+        }
+        return Ok(Some((*vi).clone()));
     }
 
     let shape = traced_shapes.get(name).ok_or_else(|| {
@@ -122,7 +133,13 @@ fn resolve_value_info(
         .or_else(|| node_output_types.get(name).copied())
         .unwrap_or(TensorProto::FLOAT);
 
-    Ok(onnx_proto::make_tensor_value_info(name, elem_type, shape))
+    if NON_NUMERIC_TENSOR_TYPES.contains(&elem_type) {
+        return Ok(None);
+    }
+
+    Ok(Some(onnx_proto::make_tensor_value_info(
+        name, elem_type, shape,
+    )))
 }
 
 pub fn materialize_combined_to_disk(

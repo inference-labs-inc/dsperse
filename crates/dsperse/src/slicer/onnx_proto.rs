@@ -45,6 +45,14 @@ pub fn shape_from_value_info(vi: &ValueInfoProto) -> Option<Vec<i64>> {
     Some(dims)
 }
 
+pub fn elem_type_from_value_info(vi: &ValueInfoProto) -> Option<i32> {
+    let tp = vi.r#type.as_ref()?;
+    let onnx::type_proto::Value::TensorType(tensor) = tp.value.as_ref()? else {
+        return None;
+    };
+    Some(tensor.elem_type)
+}
+
 pub fn make_tensor_value_info(name: &str, elem_type: i32, shape: &[i64]) -> ValueInfoProto {
     ValueInfoProto {
         name: name.to_string(),

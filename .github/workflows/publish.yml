@@ -128,7 +128,7 @@ jobs:
           sed -i '' '1,/^version = /{s/^version = ".*"/version = "${{ steps.get_version.outputs.version }}"/;}' crates/dsperse/Cargo.toml
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # master
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable 2026-02-13
         with:
           toolchain: nightly-2025-03-27
 

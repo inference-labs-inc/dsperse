@@ -141,6 +141,11 @@ pub fn gather_inputs_from_cache(
     if collected.len() == 1 {
         return Ok(collected.into_iter().next().unwrap());
     }
+    if collected[0].ndim() == 0 {
+        return Err(DsperseError::Pipeline(
+            "cannot concatenate 0-dimensional tensors".into(),
+        ));
+    }
     let ref_trailing = collected[0].shape()[1..].to_vec();
     let ref_product: usize = ref_trailing.iter().product();
     let batch = collected[0].shape()[0];
@@ -149,15 +154,15 @@ pub fn gather_inputs_from_cache(
         if trailing != ref_trailing.as_slice() {
             let product: usize = trailing.iter().product();
             if product == ref_product && arr.shape()[0] == batch {
+                let orig_shape: Vec<usize> = arr.shape().to_vec();
                 let mut target = vec![batch];
                 target.extend_from_slice(&ref_trailing);
-                *arr = arr
-                    .clone()
+                let owned = std::mem::replace(arr, ArrayD::zeros(ndarray::IxDyn(&[])));
+                *arr = owned
                     .into_shape_with_order(ndarray::IxDyn(&target))
                     .map_err(|e| {
                         DsperseError::Pipeline(format!(
-                            "gather reshape input {i} from {:?} to {target:?}: {e}",
-                            arr.shape()
+                            "gather reshape input {i} from {orig_shape:?} to {target:?}: {e}",
                         ))
                     })?;
             } else {

@@ -657,7 +657,7 @@ fn trace_shapes_tract(
     Ok(shapes)
 }
 
-fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {
+pub(crate) fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {
     if shapes.is_empty() {
         return None;
     }

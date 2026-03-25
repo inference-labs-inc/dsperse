@@ -38,9 +38,7 @@ pub(crate) fn is_shape_preserving(op: &str) -> bool {
 }
 
 pub(crate) fn is_elementwise(op: &str) -> bool {
-    UNARY_ACTIVATIONS.contains(&op)
-        || UNARY_STRUCTURAL.contains(&op)
-        || BINARY_ARITHMETIC.contains(&op)
+    UNARY_ACTIVATIONS.contains(&op) || BINARY_ARITHMETIC.contains(&op)
 }
 
 pub(crate) fn is_binary_arithmetic(op: &str) -> bool {

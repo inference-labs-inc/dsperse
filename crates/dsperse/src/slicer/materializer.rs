@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::autotiler::{self, ChannelSplitParams};
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
+use super::onnx_slicer::broadcast_shapes;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
 
@@ -65,16 +66,10 @@ fn resolve_shape_backward_inner(
             .iter()
             .filter_map(|inp| resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1))
             .collect();
-        if !resolved.is_empty() {
-            return resolved.into_iter().max_by_key(|s| s.len());
+        let refs: Vec<&Vec<i64>> = resolved.iter().collect();
+        if let Some(broadcasted) = broadcast_shapes(&refs) {
+            return Some(broadcasted);
         }
-    }
-
-    if let Some(inp) = producer.input.first()
-        && let Some(in_shape) = resolve_shape_backward_inner(inp, graph, traced_shapes, depth + 1)
-        && in_shape.len() == 1
-    {
-        return Some(in_shape);
     }
 
     None

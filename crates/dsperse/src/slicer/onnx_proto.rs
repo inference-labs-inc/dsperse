@@ -416,16 +416,14 @@ pub fn normalize_opset(model: &mut ModelProto) -> usize {
     count
 }
 
-pub const FOLDED_CONSTANT_PREFIX: &str = "__const__/";
-
-pub fn fold_constant_nodes(model: &mut ModelProto) -> usize {
+pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<String> {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
-        None => return 0,
+        None => return std::collections::HashSet::new(),
     };
 
     let mut folded_tensors: Vec<TensorProto> = Vec::new();
-    let mut folded_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut folded_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for node in &graph.node {
         if node.op_type != "Constant" {
@@ -442,46 +440,23 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> usize {
             },
             None => continue,
         };
-        let tagged_name = format!("{FOLDED_CONSTANT_PREFIX}{out_name}");
         let mut t = tensor.clone();
-        t.name = tagged_name.clone();
+        t.name = out_name.clone();
         folded_tensors.push(t);
-        folded_outputs.insert(out_name.clone());
+        folded_names.insert(out_name.clone());
     }
 
-    if folded_outputs.is_empty() {
-        return 0;
+    if folded_names.is_empty() {
+        return folded_names;
     }
 
-    for node in &mut graph.node {
-        for inp in &mut node.input {
-            if folded_outputs.contains(inp.as_str()) {
-                *inp = format!("{FOLDED_CONSTANT_PREFIX}{inp}");
-            }
-        }
-        for out in &mut node.output {
-            if folded_outputs.contains(out.as_str()) {
-                *out = format!("{FOLDED_CONSTANT_PREFIX}{out}");
-            }
-        }
-    }
-
-    for vi in graph.output.iter_mut().chain(graph.value_info.iter_mut()) {
-        if folded_outputs.contains(vi.name.as_str()) {
-            vi.name = format!("{FOLDED_CONSTANT_PREFIX}{}", vi.name);
-        }
-    }
-
-    graph.node.retain(|n| {
-        n.op_type != "Constant"
-            || n.output
-                .iter()
-                .all(|o| !o.starts_with(FOLDED_CONSTANT_PREFIX))
-    });
+    graph
+        .node
+        .retain(|n| n.op_type != "Constant" || !n.output.iter().any(|o| folded_names.contains(o)));
 
     let count = folded_tensors.len();
     graph.initializer.extend(folded_tensors);
 
-    tracing::info!(count, "folded Constant ops into tagged initializers");
-    count
+    tracing::info!(count, "folded Constant ops into initializers");
+    folded_names
 }

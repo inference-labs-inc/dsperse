@@ -198,7 +198,10 @@ impl ModelMetadata {
                 .map_err(|e| crate::error::DsperseError::io(e, parent))?;
         }
         let data = rmp_serde::to_vec_named(self)?;
-        std::fs::write(path, data).map_err(|e| crate::error::DsperseError::io(e, path))
+        let tmp_path = path.with_extension("msgpack.tmp");
+        std::fs::write(&tmp_path, &data)
+            .map_err(|e| crate::error::DsperseError::io(e, &tmp_path))?;
+        std::fs::rename(&tmp_path, path).map_err(|e| crate::error::DsperseError::io(e, path))
     }
 
     pub fn stamp_version(&mut self) {

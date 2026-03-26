@@ -93,6 +93,23 @@ struct DagNode {
     output_shape: Vec<Vec<i64>>,
 }
 
+const VALID_CURVES: &[&str] = &["bn254", "goldilocks", "goldilocks_basefold"];
+
+fn normalize_curve(curve: Option<&str>) -> Result<Option<String>> {
+    let Some(c) = curve else { return Ok(None) };
+    let c = c.trim().to_ascii_lowercase();
+    if c.is_empty() {
+        return Err(DsperseError::Other("curve must not be empty".into()));
+    }
+    if !VALID_CURVES.contains(&c.as_str()) {
+        return Err(DsperseError::Other(format!(
+            "unsupported curve {c:?}; expected one of: {}",
+            VALID_CURVES.join(", ")
+        )));
+    }
+    Ok(Some(c))
+}
+
 pub fn package_content_addressed(
     slices_dir: &Path,
     config: &PackageConfig,
@@ -103,6 +120,8 @@ pub fn package_content_addressed(
             slices_dir.display()
         )));
     }
+
+    let curve = normalize_curve(config.curve.as_deref())?;
 
     if config.cleanup {
         validate_output_dir_not_under_slice(&config.output_dir)?;
@@ -125,7 +144,7 @@ pub fn package_content_addressed(
         let slice_dir = slices_dir.join(format!("slice_{}", slice.index));
 
         let (component_hash, component_files, proof_system, source) =
-            extract_component(slices_dir, slice, &slice_dir, config.curve.as_deref())?;
+            extract_component(slices_dir, slice, &slice_dir, curve.as_deref())?;
 
         if !written_components.contains(&component_hash) {
             let dest = components_dir.join(&component_hash);
@@ -172,7 +191,7 @@ pub fn package_content_addressed(
             index: slice.index,
             name: format!("slice_{}", slice.index),
             sha256: component_hash,
-            curve: config.curve.clone(),
+            curve: curve.clone(),
             proof_system,
             files: component_files,
             weights,
@@ -211,7 +230,7 @@ pub fn package_content_addressed(
         version: 1,
         model: ModelInfo {
             name: model_name,
-            curve: config.curve.clone(),
+            curve: curve.clone(),
             author: config.author.clone(),
             version: config.model_version.clone(),
             timeout: config.timeout,
@@ -802,6 +821,153 @@ mod tests {
         for i in 0..2 {
             assert_eq!(m1["components"][i]["sha256"], m2["components"][i]["sha256"]);
         }
+    }
+
+    #[test]
+    fn test_curve_changes_hash() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 2);
+
+        let out_none = tmp.path().join("out_none");
+        let out_bn = tmp.path().join("out_bn");
+        let out_gl = tmp.path().join("out_gl");
+
+        let config_none = PackageConfig {
+            output_dir: out_none.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let config_bn = PackageConfig {
+            output_dir: out_bn.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config_gl = PackageConfig {
+            output_dir: out_gl.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("goldilocks".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config_none).unwrap();
+        package_content_addressed(&slices_dir, &config_bn).unwrap();
+        package_content_addressed(&slices_dir, &config_gl).unwrap();
+
+        let m_none: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_none.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_bn: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_bn.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_gl: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_gl.join("manifest.msgpack")).unwrap()).unwrap();
+
+        for i in 0..2 {
+            let h_none = m_none["components"][i]["sha256"].as_str().unwrap();
+            let h_bn = m_bn["components"][i]["sha256"].as_str().unwrap();
+            let h_gl = m_gl["components"][i]["sha256"].as_str().unwrap();
+            assert_ne!(h_none, h_bn, "curve=None vs bn254 should differ");
+            assert_ne!(h_none, h_gl, "curve=None vs goldilocks should differ");
+            assert_ne!(h_bn, h_gl, "bn254 vs goldilocks should differ");
+        }
+    }
+
+    #[test]
+    #[test]
+    fn test_invalid_curve_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+
+        let config_typo = PackageConfig {
+            output_dir: tmp.path().join("output"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bm254".to_string()),
+        };
+        let result = package_content_addressed(&slices_dir, &config_typo);
+        assert!(result.is_err());
+
+        let config_empty = PackageConfig {
+            output_dir: tmp.path().join("output2"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("".to_string()),
+        };
+        let result = package_content_addressed(&slices_dir, &config_empty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_curve_normalization() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+
+        let out1 = tmp.path().join("out1");
+        let out2 = tmp.path().join("out2");
+        let out3 = tmp.path().join("out3");
+
+        let config1 = PackageConfig {
+            output_dir: out1.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config2 = PackageConfig {
+            output_dir: out2.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some(" bn254 ".to_string()),
+        };
+        let config3 = PackageConfig {
+            output_dir: out3.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("BN254".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config1).unwrap();
+        package_content_addressed(&slices_dir, &config2).unwrap();
+        package_content_addressed(&slices_dir, &config3).unwrap();
+
+        let m1: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out1.join("manifest.msgpack")).unwrap()).unwrap();
+        let m2: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out2.join("manifest.msgpack")).unwrap()).unwrap();
+        let m3: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out3.join("manifest.msgpack")).unwrap()).unwrap();
+
+        assert_eq!(m1["components"][0]["sha256"], m2["components"][0]["sha256"]);
+        assert_eq!(m1["components"][0]["sha256"], m3["components"][0]["sha256"]);
     }
 
     #[test]

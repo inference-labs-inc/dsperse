@@ -21,12 +21,24 @@ pub fn load_model(path: &Path) -> Result<ModelProto> {
         .map_err(|e| DsperseError::Slicer(format!("decode {}: {e}", path.display())))
 }
 
+fn canonicalize_graph_attributes(graph: &mut GraphProto) {
+    for node in &mut graph.node {
+        node.attribute.sort_by(|a, b| a.name.cmp(&b.name));
+        for attr in &mut node.attribute {
+            if let Some(g) = attr.g.as_mut() {
+                canonicalize_graph_attributes(g);
+            }
+            for g in &mut attr.graphs {
+                canonicalize_graph_attributes(g);
+            }
+        }
+    }
+}
+
 pub fn save_model(model: &ModelProto, path: &Path) -> Result<()> {
     let mut model = model.clone();
     if let Some(graph) = model.graph.as_mut() {
-        for node in &mut graph.node {
-            node.attribute.sort_by(|a, b| a.name.cmp(&b.name));
-        }
+        canonicalize_graph_attributes(graph);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;

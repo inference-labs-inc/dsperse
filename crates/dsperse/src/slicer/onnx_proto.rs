@@ -394,3 +394,67 @@ pub fn normalize_opset(model: &mut ModelProto) -> usize {
     }
     count
 }
+
+pub const FOLDED_CONSTANT_PREFIX: &str = "__const__/";
+
+pub fn fold_constant_nodes(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+
+    let mut folded_tensors: Vec<TensorProto> = Vec::new();
+    let mut folded_outputs: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for node in &graph.node {
+        if node.op_type != "Constant" {
+            continue;
+        }
+        let out_name = match node.output.first() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let tensor = match node.attribute.iter().find(|a| a.name == "value") {
+            Some(a) => match a.t.as_ref() {
+                Some(t) => t,
+                None => continue,
+            },
+            None => continue,
+        };
+        let tagged_name = format!("{FOLDED_CONSTANT_PREFIX}{out_name}");
+        let mut t = tensor.clone();
+        t.name = tagged_name.clone();
+        folded_tensors.push(t);
+        folded_outputs.insert(out_name.clone());
+    }
+
+    if folded_outputs.is_empty() {
+        return 0;
+    }
+
+    for node in &mut graph.node {
+        for inp in &mut node.input {
+            if folded_outputs.contains(inp.as_str()) {
+                *inp = format!("{FOLDED_CONSTANT_PREFIX}{inp}");
+            }
+        }
+        for out in &mut node.output {
+            if folded_outputs.contains(out.as_str()) {
+                *out = format!("{FOLDED_CONSTANT_PREFIX}{out}");
+            }
+        }
+    }
+
+    graph.node.retain(|n| {
+        n.op_type != "Constant"
+            || n.output
+                .iter()
+                .all(|o| !o.starts_with(FOLDED_CONSTANT_PREFIX))
+    });
+
+    let count = folded_tensors.len();
+    graph.initializer.extend(folded_tensors);
+
+    tracing::info!(count, "folded Constant ops into tagged initializers");
+    count
+}

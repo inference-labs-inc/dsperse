@@ -22,6 +22,15 @@ pub fn prepare_jstprove_artifacts(
                     wb.name
                 ))
             })?;
+            let num_elements: usize = shape.iter().product();
+            if num_elements <= 1 {
+                tracing::debug!(
+                    name = %wb.name,
+                    shape = ?shape,
+                    "skipping scalar constant from WAI inputs"
+                );
+                continue;
+            }
             params.inputs.push(
                 jstprove_circuits::circuit_functions::utils::onnx_types::ONNXIO {
                     name: wb.name.clone(),

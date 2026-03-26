@@ -884,7 +884,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_invalid_curve_rejected() {
         let tmp = TempDir::new().unwrap();
         let slices_dir = tmp.path().join("model").join("slices");

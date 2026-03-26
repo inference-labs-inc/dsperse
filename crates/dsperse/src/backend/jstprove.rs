@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub use jstprove_circuits::Curve;
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
 use jstprove_circuits::onnx::{
-    compile_bn254, extract_outputs_bn254, prove_bn254, verify_bn254, witness_bn254,
-    witness_bn254_from_f64,
+    compile_bn254, compile_goldilocks, extract_outputs_bn254, prove_bn254, prove_goldilocks,
+    verify_bn254, verify_goldilocks, witness_bn254, witness_bn254_from_f64, witness_goldilocks,
+    witness_goldilocks_from_f64,
 };
 use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
 use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
@@ -18,6 +20,7 @@ use super::traits::ProofBackend;
 #[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
+    curve: Curve,
     bundle_cache: Mutex<HashMap<PathBuf, Arc<CompiledCircuit>>>,
 }
 
@@ -25,6 +28,7 @@ impl Default for JstproveBackend {
     fn default() -> Self {
         Self {
             compress: true,
+            curve: Curve::default(),
             bundle_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -40,8 +44,17 @@ impl JstproveBackend {
         self
     }
 
+    pub fn with_curve(mut self, curve: Curve) -> Self {
+        self.curve = curve;
+        self
+    }
+
     pub fn compress(&self) -> bool {
         self.compress
+    }
+
+    pub fn curve(&self) -> Curve {
+        self.curve
     }
 
     pub fn load_bundle_cached(&self, path: &Path) -> Result<Arc<CompiledCircuit>> {
@@ -88,8 +101,13 @@ impl JstproveBackend {
             .to_str()
             .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
 
-        compile_bn254(circuit_path_str, self.compress, Some(params))
-            .map_err(|e| DsperseError::Backend(format!("compile: {e}")))?;
+        match self.curve {
+            Curve::Bn254 => compile_bn254(circuit_path_str, self.compress, Some(params)),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => {
+                compile_goldilocks(circuit_path_str, self.compress, Some(params))
+            }
+        }
+        .map_err(|e| DsperseError::Backend(format!("compile: {e}")))?;
 
         let key = circuit_path
             .canonicalize()
@@ -122,8 +140,13 @@ impl JstproveBackend {
             metadata: bundle.metadata.clone(),
         };
 
-        let result = witness_bn254(&req, self.compress)
-            .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
+        let result = match self.curve {
+            Curve::Bn254 => witness_bn254(&req, self.compress),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => {
+                witness_goldilocks(&req, self.compress)
+            }
+        }
+        .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
 
         Ok(result.witness)
     }
@@ -141,14 +164,24 @@ impl JstproveBackend {
             )
         })?;
 
-        let result = witness_bn254_from_f64(
-            &bundle.circuit,
-            &bundle.witness_solver,
-            params,
-            activations,
-            initializers,
-            self.compress,
-        )
+        let result = match self.curve {
+            Curve::Bn254 => witness_bn254_from_f64(
+                &bundle.circuit,
+                &bundle.witness_solver,
+                params,
+                activations,
+                initializers,
+                self.compress,
+            ),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => witness_goldilocks_from_f64(
+                &bundle.circuit,
+                &bundle.witness_solver,
+                params,
+                activations,
+                initializers,
+                self.compress,
+            ),
+        }
         .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
 
         Ok(result.witness)
@@ -162,8 +195,13 @@ impl JstproveBackend {
     pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
         let bundle = self.load_bundle_cached(circuit_path)?;
 
-        prove_bn254(&bundle.circuit, witness_bytes, self.compress)
-            .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
+        match self.curve {
+            Curve::Bn254 => prove_bn254(&bundle.circuit, witness_bytes, self.compress),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => {
+                prove_goldilocks(&bundle.circuit, witness_bytes, self.compress)
+            }
+        }
+        .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
     }
 
     pub fn extract_outputs(
@@ -189,8 +227,13 @@ impl JstproveBackend {
     ) -> Result<bool> {
         let bundle = self.load_bundle_cached(circuit_path)?;
 
-        verify_bn254(&bundle.circuit, witness_bytes, proof_bytes)
-            .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
+        match self.curve {
+            Curve::Bn254 => verify_bn254(&bundle.circuit, witness_bytes, proof_bytes),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => {
+                verify_goldilocks(&bundle.circuit, witness_bytes, proof_bytes)
+            }
+        }
+        .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
     }
 }
 
@@ -232,6 +275,7 @@ pub struct WarmCircuit {
     pub params: CircuitParams,
     initializers: Vec<(Vec<f64>, Vec<usize>)>,
     compress: bool,
+    curve: Curve,
 }
 
 impl WarmCircuit {
@@ -250,18 +294,29 @@ impl WarmCircuit {
             params,
             initializers,
             compress: backend.compress(),
+            curve: backend.curve(),
         })
     }
 
     pub fn witness_f64(&self, activations: &[f64]) -> Result<Vec<u8>> {
-        let result = witness_bn254_from_f64(
-            &self.bundle.circuit,
-            &self.bundle.witness_solver,
-            &self.params,
-            activations,
-            &self.initializers,
-            self.compress,
-        )
+        let result = match self.curve {
+            Curve::Bn254 => witness_bn254_from_f64(
+                &self.bundle.circuit,
+                &self.bundle.witness_solver,
+                &self.params,
+                activations,
+                &self.initializers,
+                self.compress,
+            ),
+            Curve::Goldilocks | Curve::GoldilocksBasefold => witness_goldilocks_from_f64(
+                &self.bundle.circuit,
+                &self.bundle.witness_solver,
+                &self.params,
+                activations,
+                &self.initializers,
+                self.compress,
+            ),
+        }
         .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
 
         Ok(result.witness)
@@ -277,6 +332,18 @@ mod tests {
         let backend = JstproveBackend::default();
         let cache = backend.bundle_cache.lock().unwrap();
         assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn default_curve_is_bn254() {
+        let backend = JstproveBackend::default();
+        assert_eq!(backend.curve(), Curve::Bn254);
+    }
+
+    #[test]
+    fn with_curve_sets_curve() {
+        let backend = JstproveBackend::new().with_curve(Curve::Goldilocks);
+        assert_eq!(backend.curve(), Curve::Goldilocks);
     }
 
     #[test]

@@ -3,11 +3,18 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::backend::jstprove::JstproveBackend;
+use crate::backend::jstprove::{Curve, JstproveBackend};
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
 
 use jstprove_circuits::ProofSystem;
+
+fn build_backend(curve: &str) -> Result<JstproveBackend> {
+    let c: Curve = curve
+        .parse()
+        .map_err(|e: jstprove_circuits::CurveParseError| DsperseError::Other(e.to_string()))?;
+    Ok(JstproveBackend::new().with_curve(c))
+}
 
 pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");
 
@@ -100,6 +107,12 @@ pub struct CompileArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
+    #[arg(
+        long,
+        default_value = "bn254",
+        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: String,
 }
 
 #[derive(Args)]
@@ -128,6 +141,12 @@ pub struct RunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
+    #[arg(
+        long,
+        default_value = "bn254",
+        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: String,
 }
 
 #[derive(Args)]
@@ -140,6 +159,12 @@ pub struct ProveArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
+    #[arg(
+        long,
+        default_value = "bn254",
+        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: String,
 }
 
 #[derive(Args)]
@@ -152,6 +177,12 @@ pub struct VerifyArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
+    #[arg(
+        long,
+        default_value = "bn254",
+        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: String,
 }
 
 #[derive(Args)]
@@ -237,6 +268,12 @@ pub struct FullRunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
+    #[arg(
+        long,
+        default_value = "bn254",
+        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: String,
 }
 
 struct CircuitOps(Vec<String>);
@@ -315,7 +352,7 @@ pub fn cmd_combine(args: CombineArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = build_backend(&args.curve)?;
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
@@ -344,7 +381,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
         )));
     }
 
-    let backend = JstproveBackend::default();
+    let backend = build_backend(&args.curve)?;
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let run_dir = args
@@ -363,7 +400,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 }
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = build_backend(&args.curve)?;
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -371,7 +408,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 }
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = build_backend(&args.curve)?;
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -440,7 +477,7 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = JstproveBackend::default();
+    let backend = build_backend(&args.curve)?;
 
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 

@@ -57,6 +57,7 @@ pub fn compile_slices(
         .slices
         .iter()
         .filter(|s| layers.is_none_or(|l| l.contains(&s.index)))
+        .cloned()
         .collect();
 
     tracing::info!(total = slices.len(), "compiling slices");
@@ -66,101 +67,81 @@ pub fn compile_slices(
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-    let results: Vec<(usize, Result<CompileOutcome>)> = pool.install(|| {
-        slices
-            .par_iter()
-            .map(|slice| {
-                let r = compile_single_slice(
-                    slices_dir,
-                    slice,
-                    backend,
-                    weights_as_inputs,
-                    jstprove_ops,
-                );
-                match &r {
-                    Ok(CompileOutcome::Compiled) => {
-                        tracing::info!(slice = slice.index, "compiled")
+    let meta_mutex = std::sync::Mutex::new((&mut metadata, &meta_path, 0usize));
+
+    let errors: std::sync::Mutex<Vec<(usize, DsperseError)>> = std::sync::Mutex::new(Vec::new());
+
+    pool.install(|| {
+        slices.par_iter().for_each(|slice| {
+            let r =
+                compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops);
+            match r {
+                Ok(CompileOutcome::Compiled) => {
+                    tracing::info!(slice = slice.index, "compiled");
+                    let mut guard = meta_mutex.lock().unwrap();
+                    let (ref mut meta, path, ref mut count) = *guard;
+                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index) {
+                        s.compilation.jstprove.compiled = true;
+                        s.compilation.jstprove.weights_as_inputs = weights_as_inputs;
+                        s.compilation.jstprove.files.compiled =
+                            Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
                     }
-                    Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
-                        tracing::info!(
-                            slice = slice.index,
-                            groups = group_circuits.len(),
-                            "compiled channel split groups"
-                        )
-                    }
-                    Ok(CompileOutcome::Skipped) => {
-                        tracing::info!(slice = slice.index, "skipped (unsupported ops)")
-                    }
-                    Err(e) => {
-                        tracing::error!(slice = slice.index, error = %e, "compilation failed")
+                    *count += 1;
+                    if let Err(e) = meta.save(path) {
+                        tracing::error!(error = %e, "failed to persist metadata");
+                    } else {
+                        tracing::info!(count = *count, slice = slice.index, "persisted metadata");
                     }
                 }
-                (slice.index, r)
-            })
-            .collect()
-    });
-
-    let mut compiled_indices: Vec<usize> = Vec::new();
-    let mut channel_split_results: Vec<(usize, Vec<(usize, String)>)> = Vec::new();
-    let mut errors: Vec<(usize, DsperseError)> = Vec::new();
-    for (idx, result) in results {
-        match result {
-            Ok(CompileOutcome::Compiled) => compiled_indices.push(idx),
-            Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
-                compiled_indices.push(idx);
-                channel_split_results.push((idx, group_circuits));
-            }
-            Ok(CompileOutcome::Skipped) => {}
-            Err(e) => errors.push((idx, e)),
-        }
-    }
-
-    if !compiled_indices.is_empty() {
-        drop(slices);
-        let mut compiled_set = std::collections::HashSet::with_capacity(compiled_indices.len());
-        compiled_set.extend(compiled_indices.iter().copied());
-
-        let cs_map: std::collections::HashMap<usize, &Vec<(usize, String)>> = channel_split_results
-            .iter()
-            .map(|(idx, gc)| (*idx, gc))
-            .collect();
-
-        for slice in &mut metadata.slices {
-            if compiled_set.contains(&slice.index) {
-                slice.compilation.jstprove.compiled = true;
-                if let Some(group_circuits) = cs_map.get(&slice.index) {
-                    if let Some(ref mut cs) = slice.channel_split {
-                        for (group_idx, circuit_path) in *group_circuits {
-                            if let Some(group) =
-                                cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
-                            {
-                                group.jstprove_circuit_path = Some(circuit_path.clone());
-                            } else {
-                                tracing::warn!(
-                                    slice = slice.index,
-                                    group = group_idx,
-                                    "compiled group not found in metadata"
-                                );
+                Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
+                    tracing::info!(
+                        slice = slice.index,
+                        groups = group_circuits.len(),
+                        "compiled channel split groups"
+                    );
+                    let mut guard = meta_mutex.lock().unwrap();
+                    let (ref mut meta, path, ref mut count) = *guard;
+                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index) {
+                        s.compilation.jstprove.compiled = true;
+                        s.compilation.jstprove.weights_as_inputs = weights_as_inputs;
+                        if let Some(ref mut cs) = s.channel_split {
+                            for (group_idx, circuit_path) in &group_circuits {
+                                if let Some(group) =
+                                    cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
+                                {
+                                    group.jstprove_circuit_path = Some(circuit_path.clone());
+                                }
                             }
                         }
                     }
-                } else {
-                    slice.compilation.jstprove.files.compiled =
-                        Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
+                    *count += 1;
+                    if let Err(e) = meta.save(path) {
+                        tracing::error!(error = %e, "failed to persist metadata");
+                    }
+                }
+                Ok(CompileOutcome::Skipped) => {
+                    tracing::info!(slice = slice.index, "skipped (unsupported ops)")
+                }
+                Err(e) => {
+                    tracing::error!(slice = slice.index, error = %e, "compilation failed");
+                    errors.lock().unwrap().push((slice.index, e));
                 }
             }
-        }
-        metadata.save(&meta_path)?;
-        tracing::info!(
-            count = compiled_indices.len(),
-            "persisted compiled flags to metadata"
-        );
-    }
+        });
+    });
+
+    let errors = errors.into_inner().unwrap();
+    let compiled_count = meta_mutex.into_inner().unwrap().2;
 
     if errors.is_empty() {
-        tracing::info!("all slices compiled");
+        tracing::info!(count = compiled_count, "all slices compiled");
         Ok(())
     } else {
+        tracing::warn!(
+            compiled = compiled_count,
+            failed = errors.len(),
+            "compilation completed with errors"
+        );
         let msg = errors
             .iter()
             .map(|(idx, e)| format!("slice {idx}: {e}"))

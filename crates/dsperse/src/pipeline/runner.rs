@@ -44,6 +44,26 @@ impl Default for RunConfig {
     }
 }
 
+fn resolve_circuit_path_required(
+    slices_dir: &Path,
+    circuit_path: Option<&str>,
+    label: &str,
+) -> Result<PathBuf> {
+    circuit_path
+        .map(|p| resolve_relative_path(slices_dir, p))
+        .transpose()?
+        .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {label}")))
+}
+
+fn resolve_circuit_path_optional(
+    slices_dir: &Path,
+    circuit_path: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    circuit_path
+        .map(|p| resolve_relative_path(slices_dir, p))
+        .transpose()
+}
+
 pub fn load_model_metadata(slices_dir: &Path) -> Result<ModelMetadata> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!(
@@ -558,12 +578,11 @@ fn run_combined_inference(
             continue;
         }
 
-        let circuit_path = slice_meta
-            .jstprove_circuit_path
-            .as_deref()
-            .map(|p| resolve_relative_path(slices_dir, p))
-            .transpose()?
-            .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
+        let circuit_path = resolve_circuit_path_required(
+            slices_dir,
+            slice_meta.jstprove_circuit_path.as_deref(),
+            &slice_id,
+        )?;
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -775,11 +794,8 @@ fn execute_slice(
             )
         }
         ExecutionStrategy::Tiled(tiling) => {
-            let slice_circuit = meta
-                .jstprove_circuit_path
-                .as_deref()
-                .map(|p| resolve_relative_path(slices_dir, p))
-                .transpose()?;
+            let slice_circuit =
+                resolve_circuit_path_optional(slices_dir, meta.jstprove_circuit_path.as_deref())?;
             execute_tiled(
                 slices_dir,
                 slice_run_dir,
@@ -845,12 +861,11 @@ fn execute_single(
         .map_or(onnx_path.as_path(), |t| t.path());
 
     if node.use_circuit {
-        let circuit_path = meta
-            .jstprove_circuit_path
-            .as_deref()
-            .map(|p| resolve_relative_path(slices_dir, p))
-            .transpose()?
-            .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
+        let circuit_path = resolve_circuit_path_required(
+            slices_dir,
+            meta.jstprove_circuit_path.as_deref(),
+            slice_id,
+        )?;
 
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -982,10 +997,10 @@ fn execute_tiled(
         }
     };
 
-    let circuit_path = match first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()) {
-        Some(p) => Some(resolve_relative_path(slices_dir, p)?),
-        None => None,
-    }
+    let circuit_path = resolve_circuit_path_optional(
+        slices_dir,
+        first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()),
+    )?
     .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
 
     if multi_input && circuit_path.is_some() {
@@ -1278,13 +1293,12 @@ fn execute_combined_tiled(
     let single_tile = tiling.tile.as_ref();
     let first_tile_info = tile_infos.first().or(single_tile);
 
-    let circuit_path = match first_tile_info
-        .and_then(|ti| ti.jstprove_circuit_path.as_deref())
-        .or(slice_circuit_path)
-    {
-        Some(p) => Some(resolve_relative_path(slices_dir, p)?),
-        None => None,
-    };
+    let circuit_path = resolve_circuit_path_optional(
+        slices_dir,
+        first_tile_info
+            .and_then(|ti| ti.jstprove_circuit_path.as_deref())
+            .or(slice_circuit_path),
+    )?;
 
     let circuit_path = match circuit_path {
         Some(p) => p,
@@ -1681,9 +1695,9 @@ fn execute_channel_group(
         .as_ref()
         .map_or(onnx_path.as_path(), |t| t.path());
 
-    if let Some(ref circuit_path_str) = group.jstprove_circuit_path {
-        let circuit_path = resolve_relative_path(slices_dir, circuit_path_str)?;
-
+    if let Some(circuit_path) =
+        resolve_circuit_path_optional(slices_dir, group.jstprove_circuit_path.as_deref())?
+    {
         let params = backend.load_params(&circuit_path)?;
         let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
 

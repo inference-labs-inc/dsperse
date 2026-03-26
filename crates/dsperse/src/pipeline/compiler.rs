@@ -175,7 +175,6 @@ pub fn compile_slices(
 
 struct SliceAnalysis {
     compatible: bool,
-    has_initializers: bool,
 }
 
 fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAnalysis> {
@@ -189,7 +188,6 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
             .node
             .iter()
             .all(|n| jstprove_ops.contains(&n.op_type.as_str())),
-        has_initializers: !graph.initializer.is_empty(),
     })
 }
 
@@ -247,15 +245,7 @@ fn compile_single_slice(
         }
     }
 
-    let effective_wai = if weights_as_inputs && analysis.has_initializers {
-        tracing::info!(
-            slice = slice.index,
-            "slice has embedded initializers; compiling with weights_as_inputs=false"
-        );
-        false
-    } else {
-        weights_as_inputs
-    };
+    let effective_wai = weights_as_inputs;
 
     let (params, architecture, wandb) =
         converter::prepare_jstprove_artifacts(&onnx_path, effective_wai)?;
@@ -513,7 +503,6 @@ mod tests {
         onnx_proto::save_model(&model, &path).unwrap();
         let analysis = analyze_slice_onnx(&path, &["Conv"]).unwrap();
         assert!(analysis.compatible);
-        assert!(analysis.has_initializers);
     }
 
     #[test]
@@ -531,7 +520,6 @@ mod tests {
         onnx_proto::save_model(&model, &path).unwrap();
         let analysis = analyze_slice_onnx(&path, &["Relu"]).unwrap();
         assert!(analysis.compatible);
-        assert!(!analysis.has_initializers);
     }
 
     #[test]

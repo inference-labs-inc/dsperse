@@ -203,6 +203,11 @@ pub struct PackageArgs {
     pub model_name: Option<String>,
     #[arg(long)]
     pub timeout: Option<u64>,
+    #[arg(
+        long,
+        help = "Finite field curve used as domain separator in content hashes (bn254, goldilocks, goldilocks_basefold)"
+    )]
+    pub curve: Option<String>,
 }
 
 #[derive(Args)]
@@ -428,6 +433,7 @@ pub fn cmd_package(args: PackageArgs) -> Result<()> {
         model_version: args.model_version,
         model_name: args.model_name,
         timeout: args.timeout,
+        curve: args.curve,
     };
 
     let result = pipeline::packager::package_content_addressed(&slices_dir, &config)?;

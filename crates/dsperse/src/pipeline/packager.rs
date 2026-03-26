@@ -19,6 +19,7 @@ pub struct PackageConfig {
     pub model_version: Option<String>,
     pub model_name: Option<String>,
     pub timeout: Option<u64>,
+    pub curve: Option<String>,
 }
 
 #[derive(Debug)]
@@ -40,6 +41,8 @@ struct Manifest {
 #[derive(Serialize)]
 struct ModelInfo {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    curve: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,6 +69,8 @@ struct ComponentEntry {
     name: String,
     sha256: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    curve: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     proof_system: Option<String>,
     files: Vec<String>,
     weights: Vec<WeightRef>,
@@ -88,6 +93,23 @@ struct DagNode {
     output_shape: Vec<Vec<i64>>,
 }
 
+const VALID_CURVES: &[&str] = &["bn254", "goldilocks", "goldilocks_basefold"];
+
+fn normalize_curve(curve: Option<&str>) -> Result<Option<String>> {
+    let Some(c) = curve else { return Ok(None) };
+    let c = c.trim().to_ascii_lowercase();
+    if c.is_empty() {
+        return Err(DsperseError::Other("curve must not be empty".into()));
+    }
+    if !VALID_CURVES.contains(&c.as_str()) {
+        return Err(DsperseError::Other(format!(
+            "unsupported curve {c:?}; expected one of: {}",
+            VALID_CURVES.join(", ")
+        )));
+    }
+    Ok(Some(c))
+}
+
 pub fn package_content_addressed(
     slices_dir: &Path,
     config: &PackageConfig,
@@ -98,6 +120,8 @@ pub fn package_content_addressed(
             slices_dir.display()
         )));
     }
+
+    let curve = normalize_curve(config.curve.as_deref())?;
 
     if config.cleanup {
         validate_output_dir_not_under_slice(&config.output_dir)?;
@@ -120,7 +144,7 @@ pub fn package_content_addressed(
         let slice_dir = slices_dir.join(format!("slice_{}", slice.index));
 
         let (component_hash, component_files, proof_system, source) =
-            extract_component(slices_dir, slice, &slice_dir)?;
+            extract_component(slices_dir, slice, &slice_dir, curve.as_deref())?;
 
         if !written_components.contains(&component_hash) {
             let dest = components_dir.join(&component_hash);
@@ -167,6 +191,7 @@ pub fn package_content_addressed(
             index: slice.index,
             name: format!("slice_{}", slice.index),
             sha256: component_hash,
+            curve: curve.clone(),
             proof_system,
             files: component_files,
             weights,
@@ -205,6 +230,7 @@ pub fn package_content_addressed(
         version: 1,
         model: ModelInfo {
             name: model_name,
+            curve: curve.clone(),
             author: config.author.clone(),
             version: config.model_version.clone(),
             timeout: config.timeout,
@@ -271,12 +297,13 @@ fn extract_component(
     slices_dir: &Path,
     slice: &SliceMetadata,
     slice_dir: &Path,
+    curve: Option<&str>,
 ) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
     if slice.compilation.jstprove.compiled {
         let circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
         return match circuit_dir {
             Some(dir) => {
-                let (hash, files) = hash_directory(&dir)?;
+                let (hash, files) = hash_directory(&dir, curve)?;
                 Ok((
                     hash,
                     files,
@@ -303,7 +330,7 @@ fn extract_component(
             .and_then(|n| n.to_str())
             .unwrap_or("model.onnx")
             .to_string();
-        let hash = hash_named_file(&onnx_path, &filename)?;
+        let hash = hash_named_file(&onnx_path, &filename, curve)?;
         return Ok((
             hash,
             vec![filename],
@@ -405,8 +432,13 @@ fn reject_symlink(entry: &walkdir::DirEntry) -> Result<()> {
     Ok(())
 }
 
-fn hash_named_file(path: &Path, filename: &str) -> Result<String> {
+fn hash_named_file(path: &Path, filename: &str, curve: Option<&str>) -> Result<String> {
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        let c_bytes = c.as_bytes();
+        hasher.update((c_bytes.len() as u64).to_le_bytes());
+        hasher.update(c_bytes);
+    }
     let name_bytes = filename.as_bytes();
     hasher.update((name_bytes.len() as u64).to_le_bytes());
     hasher.update(name_bytes);
@@ -427,7 +459,7 @@ fn hash_named_file(path: &Path, filename: &str) -> Result<String> {
     Ok(encode_hex(&hasher.finalize()))
 }
 
-fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
+fn hash_directory(dir: &Path, curve: Option<&str>) -> Result<(String, Vec<String>)> {
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     for entry in WalkDir::new(dir) {
         let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
@@ -437,14 +469,26 @@ fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
                 .path()
                 .strip_prefix(dir)
                 .map_err(|e| DsperseError::Other(e.to_string()))?
-                .to_string_lossy()
-                .to_string();
+                .components()
+                .map(|c| match c {
+                    std::path::Component::Normal(part) => Ok(part.to_string_lossy().into_owned()),
+                    _ => Err(DsperseError::Other(
+                        "unexpected non-normal path component in bundle".into(),
+                    )),
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join("/");
             entries.push((relative, entry.path().to_path_buf()));
         }
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        let c_bytes = c.as_bytes();
+        hasher.update((c_bytes.len() as u64).to_le_bytes());
+        hasher.update(c_bytes);
+    }
     let file_names: Vec<String> = entries.iter().map(|(name, _)| name.clone()).collect();
 
     for (name, path) in &entries {
@@ -622,6 +666,7 @@ mod tests {
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
             timeout: Some(300),
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -649,6 +694,7 @@ mod tests {
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
             timeout: Some(300),
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -694,6 +740,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -724,6 +771,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -757,6 +805,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
         let config2 = PackageConfig {
             output_dir: out2.clone(),
@@ -765,6 +814,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config1).unwrap();
@@ -778,6 +828,260 @@ mod tests {
         for i in 0..2 {
             assert_eq!(m1["components"][i]["sha256"], m2["components"][i]["sha256"]);
         }
+    }
+
+    #[test]
+    fn test_curve_changes_hash() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 2);
+
+        let out_none = tmp.path().join("out_none");
+        let out_bn = tmp.path().join("out_bn");
+        let out_gl = tmp.path().join("out_gl");
+
+        let config_none = PackageConfig {
+            output_dir: out_none.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let config_bn = PackageConfig {
+            output_dir: out_bn.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config_gl = PackageConfig {
+            output_dir: out_gl.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("goldilocks".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config_none).unwrap();
+        package_content_addressed(&slices_dir, &config_bn).unwrap();
+        package_content_addressed(&slices_dir, &config_gl).unwrap();
+
+        let m_none: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_none.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_bn: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_bn.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_gl: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_gl.join("manifest.msgpack")).unwrap()).unwrap();
+
+        for i in 0..2 {
+            let h_none = m_none["components"][i]["sha256"].as_str().unwrap();
+            let h_bn = m_bn["components"][i]["sha256"].as_str().unwrap();
+            let h_gl = m_gl["components"][i]["sha256"].as_str().unwrap();
+            assert_ne!(h_none, h_bn, "curve=None vs bn254 should differ");
+            assert_ne!(h_none, h_gl, "curve=None vs goldilocks should differ");
+            assert_ne!(h_bn, h_gl, "bn254 vs goldilocks should differ");
+        }
+    }
+
+    #[test]
+    fn test_curve_changes_hash_uncompiled_onnx() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        let payload_dir = slice_dir.join("payload");
+        fs::create_dir_all(&payload_dir).unwrap();
+        fs::write(payload_dir.join("slice_0.onnx"), "onnx_payload").unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1, 3]],
+            output_shapes: vec![vec![1, 3]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1, 3]],
+                        output: vec![vec![1, 3]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["in".to_string()],
+                    output: vec!["out".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let out_none = tmp.path().join("out_none");
+        let out_bn = tmp.path().join("out_bn");
+        let out_gl = tmp.path().join("out_gl");
+
+        let config_none = PackageConfig {
+            output_dir: out_none.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let config_bn = PackageConfig {
+            output_dir: out_bn.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config_gl = PackageConfig {
+            output_dir: out_gl.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("goldilocks".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config_none).unwrap();
+        package_content_addressed(&slices_dir, &config_bn).unwrap();
+        package_content_addressed(&slices_dir, &config_gl).unwrap();
+
+        let m_none: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_none.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_bn: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_bn.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_gl: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_gl.join("manifest.msgpack")).unwrap()).unwrap();
+
+        let h_none = m_none["components"][0]["sha256"].as_str().unwrap();
+        let h_bn = m_bn["components"][0]["sha256"].as_str().unwrap();
+        let h_gl = m_gl["components"][0]["sha256"].as_str().unwrap();
+        assert_ne!(h_none, h_bn, "onnx: curve=None vs bn254 should differ");
+        assert_ne!(h_none, h_gl, "onnx: curve=None vs goldilocks should differ");
+        assert_ne!(h_bn, h_gl, "onnx: bn254 vs goldilocks should differ");
+    }
+
+    #[test]
+    fn test_invalid_curve_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+
+        let config_typo = PackageConfig {
+            output_dir: tmp.path().join("output"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bm254".to_string()),
+        };
+        let result = package_content_addressed(&slices_dir, &config_typo);
+        assert!(result.is_err());
+
+        let config_empty = PackageConfig {
+            output_dir: tmp.path().join("output2"),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("".to_string()),
+        };
+        let result = package_content_addressed(&slices_dir, &config_empty);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_curve_normalization() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+
+        let out1 = tmp.path().join("out1");
+        let out2 = tmp.path().join("out2");
+        let out3 = tmp.path().join("out3");
+
+        let config1 = PackageConfig {
+            output_dir: out1.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config2 = PackageConfig {
+            output_dir: out2.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some(" bn254 ".to_string()),
+        };
+        let config3 = PackageConfig {
+            output_dir: out3.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("BN254".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config1).unwrap();
+        package_content_addressed(&slices_dir, &config2).unwrap();
+        package_content_addressed(&slices_dir, &config3).unwrap();
+
+        let m1: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out1.join("manifest.msgpack")).unwrap()).unwrap();
+        let m2: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out2.join("manifest.msgpack")).unwrap()).unwrap();
+        let m3: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out3.join("manifest.msgpack")).unwrap()).unwrap();
+
+        assert_eq!(m1["components"][0]["sha256"], m2["components"][0]["sha256"]);
+        assert_eq!(m1["components"][0]["sha256"], m3["components"][0]["sha256"]);
     }
 
     #[test]
@@ -795,6 +1099,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -891,6 +1196,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -973,6 +1279,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -1054,6 +1361,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1134,6 +1442,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1154,6 +1463,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
         let result = package_content_addressed(Path::new("/nonexistent/path"), &config);
         assert!(result.is_err());
@@ -1173,6 +1483,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1260,6 +1571,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -1351,6 +1663,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);

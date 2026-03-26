@@ -445,6 +445,12 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> usize {
         }
     }
 
+    for vi in graph.output.iter_mut().chain(graph.value_info.iter_mut()) {
+        if folded_outputs.contains(vi.name.as_str()) {
+            vi.name = format!("{FOLDED_CONSTANT_PREFIX}{}", vi.name);
+        }
+    }
+
     graph.node.retain(|n| {
         n.op_type != "Constant"
             || n.output

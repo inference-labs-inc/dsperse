@@ -469,8 +469,15 @@ fn hash_directory(dir: &Path, curve: Option<&str>) -> Result<(String, Vec<String
                 .path()
                 .strip_prefix(dir)
                 .map_err(|e| DsperseError::Other(e.to_string()))?
-                .to_string_lossy()
-                .to_string();
+                .components()
+                .map(|c| match c {
+                    std::path::Component::Normal(part) => Ok(part.to_string_lossy().into_owned()),
+                    _ => Err(DsperseError::Other(
+                        "unexpected non-normal path component in bundle".into(),
+                    )),
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join("/");
             entries.push((relative, entry.path().to_path_buf()));
         }
     }
@@ -881,6 +888,114 @@ mod tests {
             assert_ne!(h_none, h_gl, "curve=None vs goldilocks should differ");
             assert_ne!(h_bn, h_gl, "bn254 vs goldilocks should differ");
         }
+    }
+
+    #[test]
+    fn test_curve_changes_hash_uncompiled_onnx() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+
+        let slice_dir = slices_dir.join("slice_0");
+        let payload_dir = slice_dir.join("payload");
+        fs::create_dir_all(&payload_dir).unwrap();
+        fs::write(payload_dir.join("slice_0.onnx"), "onnx_payload").unwrap();
+
+        let meta = ModelMetadata {
+            original_model: "test".to_string(),
+            model_type: "onnx".to_string(),
+            input_shape: vec![vec![1, 3]],
+            output_shapes: vec![vec![1, 3]],
+            output_names: vec!["out".to_string()],
+            slice_points: vec![0],
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "slice_0.onnx".to_string(),
+                path: slice_dir.to_string_lossy().to_string(),
+                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![vec![1, 3]],
+                        output: vec![vec![1, 3]],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec!["in".to_string()],
+                    output: vec!["out".to_string()],
+                    filtered_inputs: vec![],
+                },
+                tiling: None,
+                channel_split: None,
+                compilation: Compilation {
+                    jstprove: BackendCompilation {
+                        compiled: false,
+                        tiled: false,
+                        weights_as_inputs: false,
+                        files: CompilationFiles::default(),
+                        compilation_timestamp: None,
+                    },
+                },
+                slice_metadata: None,
+                slice_metadata_relative_path: None,
+            }],
+            dsperse_version: None,
+            dsperse_rev: None,
+            jstprove_version: None,
+            jstprove_rev: None,
+            traced_shapes: None,
+            original_model_path: None,
+        };
+        meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+
+        let out_none = tmp.path().join("out_none");
+        let out_bn = tmp.path().join("out_bn");
+        let out_gl = tmp.path().join("out_gl");
+
+        let config_none = PackageConfig {
+            output_dir: out_none.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let config_bn = PackageConfig {
+            output_dir: out_bn.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("bn254".to_string()),
+        };
+        let config_gl = PackageConfig {
+            output_dir: out_gl.clone(),
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: Some("goldilocks".to_string()),
+        };
+
+        package_content_addressed(&slices_dir, &config_none).unwrap();
+        package_content_addressed(&slices_dir, &config_bn).unwrap();
+        package_content_addressed(&slices_dir, &config_gl).unwrap();
+
+        let m_none: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_none.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_bn: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_bn.join("manifest.msgpack")).unwrap()).unwrap();
+        let m_gl: serde_json::Value =
+            rmp_serde::from_slice(&fs::read(out_gl.join("manifest.msgpack")).unwrap()).unwrap();
+
+        let h_none = m_none["components"][0]["sha256"].as_str().unwrap();
+        let h_bn = m_bn["components"][0]["sha256"].as_str().unwrap();
+        let h_gl = m_gl["components"][0]["sha256"].as_str().unwrap();
+        assert_ne!(h_none, h_bn, "onnx: curve=None vs bn254 should differ");
+        assert_ne!(h_none, h_gl, "onnx: curve=None vs goldilocks should differ");
+        assert_ne!(h_bn, h_gl, "onnx: bn254 vs goldilocks should differ");
     }
 
     #[test]

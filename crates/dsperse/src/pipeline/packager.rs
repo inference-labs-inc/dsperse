@@ -19,6 +19,7 @@ pub struct PackageConfig {
     pub model_version: Option<String>,
     pub model_name: Option<String>,
     pub timeout: Option<u64>,
+    pub curve: Option<String>,
 }
 
 #[derive(Debug)]
@@ -40,6 +41,8 @@ struct Manifest {
 #[derive(Serialize)]
 struct ModelInfo {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    curve: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -65,6 +68,8 @@ struct ComponentEntry {
     index: usize,
     name: String,
     sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    curve: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     proof_system: Option<String>,
     files: Vec<String>,
@@ -120,7 +125,7 @@ pub fn package_content_addressed(
         let slice_dir = slices_dir.join(format!("slice_{}", slice.index));
 
         let (component_hash, component_files, proof_system, source) =
-            extract_component(slices_dir, slice, &slice_dir)?;
+            extract_component(slices_dir, slice, &slice_dir, config.curve.as_deref())?;
 
         if !written_components.contains(&component_hash) {
             let dest = components_dir.join(&component_hash);
@@ -167,6 +172,7 @@ pub fn package_content_addressed(
             index: slice.index,
             name: format!("slice_{}", slice.index),
             sha256: component_hash,
+            curve: config.curve.clone(),
             proof_system,
             files: component_files,
             weights,
@@ -205,6 +211,7 @@ pub fn package_content_addressed(
         version: 1,
         model: ModelInfo {
             name: model_name,
+            curve: config.curve.clone(),
             author: config.author.clone(),
             version: config.model_version.clone(),
             timeout: config.timeout,
@@ -271,12 +278,13 @@ fn extract_component(
     slices_dir: &Path,
     slice: &SliceMetadata,
     slice_dir: &Path,
+    curve: Option<&str>,
 ) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
     if slice.compilation.jstprove.compiled {
         let circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
         return match circuit_dir {
             Some(dir) => {
-                let (hash, files) = hash_directory(&dir)?;
+                let (hash, files) = hash_directory(&dir, curve)?;
                 Ok((
                     hash,
                     files,
@@ -303,7 +311,7 @@ fn extract_component(
             .and_then(|n| n.to_str())
             .unwrap_or("model.onnx")
             .to_string();
-        let hash = hash_named_file(&onnx_path, &filename)?;
+        let hash = hash_named_file(&onnx_path, &filename, curve)?;
         return Ok((
             hash,
             vec![filename],
@@ -405,8 +413,13 @@ fn reject_symlink(entry: &walkdir::DirEntry) -> Result<()> {
     Ok(())
 }
 
-fn hash_named_file(path: &Path, filename: &str) -> Result<String> {
+fn hash_named_file(path: &Path, filename: &str, curve: Option<&str>) -> Result<String> {
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        let c_bytes = c.as_bytes();
+        hasher.update((c_bytes.len() as u64).to_le_bytes());
+        hasher.update(c_bytes);
+    }
     let name_bytes = filename.as_bytes();
     hasher.update((name_bytes.len() as u64).to_le_bytes());
     hasher.update(name_bytes);
@@ -427,7 +440,7 @@ fn hash_named_file(path: &Path, filename: &str) -> Result<String> {
     Ok(encode_hex(&hasher.finalize()))
 }
 
-fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
+fn hash_directory(dir: &Path, curve: Option<&str>) -> Result<(String, Vec<String>)> {
     let mut entries: Vec<(String, PathBuf)> = Vec::new();
     for entry in WalkDir::new(dir) {
         let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
@@ -445,6 +458,11 @@ fn hash_directory(dir: &Path) -> Result<(String, Vec<String>)> {
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        let c_bytes = c.as_bytes();
+        hasher.update((c_bytes.len() as u64).to_le_bytes());
+        hasher.update(c_bytes);
+    }
     let file_names: Vec<String> = entries.iter().map(|(name, _)| name.clone()).collect();
 
     for (name, path) in &entries {
@@ -622,6 +640,7 @@ mod tests {
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
             timeout: Some(300),
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -649,6 +668,7 @@ mod tests {
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
             timeout: Some(300),
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -694,6 +714,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -724,6 +745,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -757,6 +779,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
         let config2 = PackageConfig {
             output_dir: out2.clone(),
@@ -765,6 +788,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config1).unwrap();
@@ -795,6 +819,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         package_content_addressed(&slices_dir, &config).unwrap();
@@ -891,6 +916,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -973,6 +999,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -1054,6 +1081,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1134,6 +1162,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1154,6 +1183,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
         let result = package_content_addressed(Path::new("/nonexistent/path"), &config);
         assert!(result.is_err());
@@ -1173,6 +1203,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);
@@ -1260,6 +1291,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config).unwrap();
@@ -1351,6 +1383,7 @@ mod tests {
             model_version: None,
             model_name: None,
             timeout: None,
+            curve: None,
         };
 
         let result = package_content_addressed(&slices_dir, &config);

@@ -22,6 +22,12 @@ pub fn load_model(path: &Path) -> Result<ModelProto> {
 }
 
 pub fn save_model(model: &ModelProto, path: &Path) -> Result<()> {
+    let mut model = model.clone();
+    if let Some(graph) = model.graph.as_mut() {
+        for node in &mut graph.node {
+            node.attribute.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }

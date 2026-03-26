@@ -98,6 +98,13 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             components_skipped += 1;
             continue;
         }
+        if check.status().as_u16() != 404 {
+            let status = check.status();
+            let text = check.text().await.unwrap_or_default();
+            return Err(DsperseError::Other(format!(
+                "probe component {sha} returned unexpected status ({status}): {text}"
+            )));
+        }
 
         let proof_system = comp["proof_system"]
             .as_str()
@@ -122,6 +129,11 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         if !register_resp.status().is_success() {
             let status = register_resp.status();
             let text = register_resp.text().await.unwrap_or_default();
+            if text.contains("already exists") {
+                tracing::info!(sha = %sha, "component already registered");
+                components_skipped += 1;
+                continue;
+            }
             return Err(DsperseError::Other(format!(
                 "register component {sha} failed ({status}): {text}"
             )));
@@ -197,6 +209,13 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             uploaded_wbs.insert(sha.to_string());
             continue;
         }
+        if check.status().as_u16() != 404 {
+            let status = check.status();
+            let text = check.text().await.unwrap_or_default();
+            return Err(DsperseError::Other(format!(
+                "probe wb {sha} returned unexpected status ({status}): {text}"
+            )));
+        }
 
         let name = wref["role"].as_str().unwrap_or("");
         tracing::info!(sha = %sha, size, "registering weight blob");
@@ -252,19 +271,30 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
                         put.status()
                     )));
                 }
+                weights_uploaded += 1;
             }
             None => {
-                tracing::warn!(sha = %sha, "registry returned no upload URL for weight blob");
+                return Err(DsperseError::Other(format!(
+                    "registry returned no upload URL for weight blob {sha}"
+                )));
             }
         }
 
-        weights_uploaded += 1;
         uploaded_wbs.insert(sha.to_string());
     }
 
     let model_info = &manifest["model"];
-    let model_name = config.name.as_str();
+    let model_name = model_info["name"].as_str().unwrap_or(config.name.as_str());
+    let model_author = model_info["author"]
+        .as_str()
+        .unwrap_or(config.author.as_str());
+    let model_version = model_info["version"]
+        .as_str()
+        .unwrap_or(config.version.as_str());
+    let model_timeout = model_info["timeout"].as_u64().unwrap_or(config.timeout);
     let input_schema = &model_info["input_schema"];
+    let dsperse_version = model_info["dsperse_version"].as_str();
+    let jstprove_version = model_info["jstprove_version"].as_str();
 
     let composition = serde_json::json!({
         "version": 1,
@@ -275,17 +305,14 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     let mut model_hasher = Sha256::new();
     model_hasher.update(model_name.as_bytes());
     model_hasher.update(b"\x00");
-    model_hasher.update(config.author.as_bytes());
+    model_hasher.update(model_author.as_bytes());
     model_hasher.update(b"\x00");
-    model_hasher.update(config.version.as_bytes());
+    model_hasher.update(model_version.as_bytes());
     model_hasher.update(b"\x00");
     let comp_json = serde_json::to_string(&composition)
         .map_err(|e| DsperseError::Other(format!("serialize composition: {e}")))?;
     model_hasher.update(comp_json.as_bytes());
     let model_id = format!("{:x}", model_hasher.finalize());
-
-    let dsperse_version = model_info["dsperse_version"].as_str();
-    let jstprove_version = model_info["jstprove_version"].as_str();
 
     tracing::info!(id = %model_id, "creating model");
     let model_resp = client
@@ -296,11 +323,11 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             "metadata": {
                 "name": model_name,
                 "description": config.description,
-                "author": config.author,
-                "version": config.version,
+                "author": model_author,
+                "version": model_version,
                 "netuid": null,
                 "weights_version": null,
-                "timeout": config.timeout,
+                "timeout": model_timeout,
                 "input_schema": input_schema,
                 "dsperse_version": dsperse_version,
                 "jstprove_version": jstprove_version,

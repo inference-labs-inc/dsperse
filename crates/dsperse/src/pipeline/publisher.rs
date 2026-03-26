@@ -126,8 +126,13 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             .await
             .map_err(|e| DsperseError::Other(format!("register component {sha}: {e}")))?;
 
-        if !register_resp.status().is_success() {
-            let status = register_resp.status();
+        let reg_status = register_resp.status();
+        if reg_status.as_u16() == 409 {
+            tracing::info!(sha = %sha, "component already registered (conflict)");
+            components_skipped += 1;
+            continue;
+        }
+        if !reg_status.is_success() {
             let text = register_resp.text().await.unwrap_or_default();
             if text.contains("already exists") {
                 tracing::info!(sha = %sha, "component already registered");
@@ -135,7 +140,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
                 continue;
             }
             return Err(DsperseError::Other(format!(
-                "register component {sha} failed ({status}): {text}"
+                "register component {sha} failed ({reg_status}): {text}"
             )));
         }
 
@@ -231,8 +236,14 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             .await
             .map_err(|e| DsperseError::Other(format!("register wb {sha}: {e}")))?;
 
-        if !wb_resp.status().is_success() {
-            let status = wb_resp.status();
+        let wb_status = wb_resp.status();
+        if wb_status.as_u16() == 409 {
+            tracing::info!(sha = %sha, "weight blob already registered (conflict)");
+            weights_skipped += 1;
+            uploaded_wbs.insert(sha.to_string());
+            continue;
+        }
+        if !wb_status.is_success() {
             let text = wb_resp.text().await.unwrap_or_default();
             if text.contains("already exists") {
                 tracing::info!(sha = %sha, "weight blob already registered");
@@ -241,7 +252,7 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
                 continue;
             }
             return Err(DsperseError::Other(format!(
-                "register wb {sha} failed ({status}): {text}"
+                "register wb {sha} failed ({wb_status}): {text}"
             )));
         }
 
@@ -308,6 +319,8 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     model_hasher.update(model_author.as_bytes());
     model_hasher.update(b"\x00");
     model_hasher.update(model_version.as_bytes());
+    model_hasher.update(b"\x00");
+    model_hasher.update(model_timeout.to_le_bytes());
     model_hasher.update(b"\x00");
     let comp_json = serde_json::to_string(&composition)
         .map_err(|e| DsperseError::Other(format!("serialize composition: {e}")))?;

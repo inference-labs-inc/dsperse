@@ -561,7 +561,8 @@ fn run_combined_inference(
         let circuit_path = slice_meta
             .jstprove_circuit_path
             .as_deref()
-            .map(PathBuf::from)
+            .map(|p| resolve_relative_path(slices_dir, p))
+            .transpose()?
             .ok_or_else(|| DsperseError::Pipeline(format!("no circuit path for {slice_id}")))?;
 
         let params = backend.load_params(&circuit_path)?;

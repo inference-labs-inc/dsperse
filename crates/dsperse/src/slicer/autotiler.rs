@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
-use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
+use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
 fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
     if v.len() == 2 {
@@ -586,6 +586,161 @@ pub fn detect_tiling_needs(
                 stride: [1, 1],
             });
         }
+    }
+
+    None
+}
+
+pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 500_000;
+
+#[derive(Debug, Clone)]
+pub struct DimSplitDetection {
+    pub split_kind: DimSplitKind,
+    pub split_dim: usize,
+    pub dim_size: usize,
+    pub num_groups: usize,
+    pub elements_per_group: usize,
+    pub input_name: String,
+    pub output_name: String,
+    pub concat_axis: usize,
+    pub estimated_constraints: u64,
+    pub weight_name: Option<String>,
+}
+
+pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
+    let mut total: u64 = 0;
+    for node in nodes {
+        let output_elements: u64 = node
+            .output
+            .first()
+            .and_then(|name| shapes.get(name))
+            .map(|s| s.iter().filter(|&&d| d > 0).map(|&d| d as u64).product())
+            .unwrap_or(0);
+
+        let cost = match node.op_type.as_str() {
+            "MatMul" | "Gemm" => {
+                let input_last_dim: u64 = node
+                    .input
+                    .first()
+                    .and_then(|name| shapes.get(name))
+                    .and_then(|s| s.last())
+                    .map(|&d| d.max(0) as u64)
+                    .unwrap_or(1);
+                output_elements
+                    .saturating_mul(input_last_dim)
+                    .saturating_mul(2)
+            }
+            "Softmax" => output_elements.saturating_mul(4),
+            "Conv" => output_elements.saturating_mul(3),
+            _ => output_elements.saturating_mul(2),
+        };
+        total = total.saturating_add(cost);
+    }
+    total
+}
+
+pub fn detect_dim_split(
+    nodes: &[NodeProto],
+    shapes: &HashMap<String, Vec<i64>>,
+    initializer_names: &HashSet<String>,
+) -> Option<DimSplitDetection> {
+    let estimated = estimate_slice_constraints(nodes, shapes);
+    if estimated <= MAX_ESTIMATED_CONSTRAINTS {
+        return None;
+    }
+
+    let target_groups = estimated.div_ceil(MAX_ESTIMATED_CONSTRAINTS) as usize;
+
+    for node in nodes {
+        if matches!(node.op_type.as_str(), "MatMul" | "Gemm") {
+            let weight_name = node.input.get(1)?;
+            if !initializer_names.contains(weight_name) {
+                continue;
+            }
+            let weight_shape = shapes.get(weight_name)?;
+            if weight_shape.len() != 2 {
+                continue;
+            }
+            let n_dim = weight_shape[1] as usize;
+            if n_dim <= 1 {
+                continue;
+            }
+            let num_groups = target_groups.min(n_dim);
+            let elements_per_group = n_dim.div_ceil(num_groups);
+            let output_shape = node.output.first().and_then(|name| shapes.get(name))?;
+            let concat_axis = output_shape.len().saturating_sub(1);
+            let input_name = node.input.first().cloned().unwrap_or_default();
+            let output_name = node.output.first().cloned().unwrap_or_default();
+            return Some(DimSplitDetection {
+                split_kind: DimSplitKind::MatMulOutputDim,
+                split_dim: 1,
+                dim_size: n_dim,
+                num_groups,
+                elements_per_group,
+                input_name,
+                output_name,
+                concat_axis,
+                estimated_constraints: estimated,
+                weight_name: Some(weight_name.clone()),
+            });
+        }
+    }
+
+    for node in nodes {
+        if node.op_type == "Softmax" {
+            let input_shape = node.input.first().and_then(|name| shapes.get(name))?;
+            if input_shape.len() == 4 && input_shape[1] > 1 {
+                let head_dim = input_shape[1] as usize;
+                let num_groups = target_groups.min(head_dim);
+                let elements_per_group = head_dim.div_ceil(num_groups);
+                let input_name = node.input.first().cloned().unwrap_or_default();
+                let output_name = node.output.first().cloned().unwrap_or_default();
+                return Some(DimSplitDetection {
+                    split_kind: DimSplitKind::HeadDim,
+                    split_dim: 1,
+                    dim_size: head_dim,
+                    num_groups,
+                    elements_per_group,
+                    input_name,
+                    output_name,
+                    concat_axis: 1,
+                    estimated_constraints: estimated,
+                    weight_name: None,
+                });
+            }
+        }
+    }
+
+    let first_input_shape = nodes
+        .first()
+        .and_then(|n| n.input.first())
+        .and_then(|name| shapes.get(name))?;
+    if !first_input_shape.is_empty() && first_input_shape[0] > 1 {
+        let batch_dim = first_input_shape[0] as usize;
+        let num_groups = target_groups.min(batch_dim);
+        let elements_per_group = batch_dim.div_ceil(num_groups);
+        let input_name = nodes
+            .first()
+            .and_then(|n| n.input.first())
+            .cloned()
+            .unwrap_or_default();
+        let output_name = nodes
+            .last()
+            .and_then(|n| n.output.first())
+            .cloned()
+            .unwrap_or_default();
+        return Some(DimSplitDetection {
+            split_kind: DimSplitKind::BatchDim,
+            split_dim: 0,
+            dim_size: batch_dim,
+            num_groups,
+            elements_per_group,
+            input_name,
+            output_name,
+            concat_axis: 0,
+            estimated_constraints: estimated,
+            weight_name: None,
+        });
     }
 
     None

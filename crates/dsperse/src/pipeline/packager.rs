@@ -613,6 +613,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: true,
@@ -927,6 +928,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: false,
@@ -1154,6 +1156,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: true,
@@ -1253,6 +1256,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: false,
@@ -1337,6 +1341,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: false,
@@ -1414,6 +1419,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: true,
@@ -1538,6 +1544,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: false,
@@ -1642,6 +1649,7 @@ mod tests {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 compilation: Compilation {
                     jstprove: BackendCompilation {
                         compiled: false,

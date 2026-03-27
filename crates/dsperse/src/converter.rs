@@ -1,14 +1,22 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::expander_metadata;
 
 use crate::error::{DsperseError, Result};
-use crate::slicer::onnx_proto::FOLDED_CONSTANT_PREFIX;
 
 pub fn prepare_jstprove_artifacts(
     onnx_path: &Path,
     weights_as_inputs: bool,
+) -> Result<(CircuitParams, Architecture, WANDB)> {
+    prepare_jstprove_artifacts_filtered(onnx_path, weights_as_inputs, &HashSet::new())
+}
+
+pub fn prepare_jstprove_artifacts_filtered(
+    onnx_path: &Path,
+    weights_as_inputs: bool,
+    exclude_from_wai: &HashSet<String>,
 ) -> Result<(CircuitParams, Architecture, WANDB)> {
     let meta = expander_metadata::generate_from_onnx(onnx_path)
         .map_err(|e| DsperseError::Pipeline(format!("ONNX metadata generation: {e:#}")))?;
@@ -17,7 +25,8 @@ pub fn prepare_jstprove_artifacts(
     if weights_as_inputs {
         params.weights_as_inputs = true;
         for wb in &meta.wandb.w_and_b {
-            if wb.name.starts_with(FOLDED_CONSTANT_PREFIX) {
+            if exclude_from_wai.contains(&wb.name) {
+                tracing::debug!(name = %wb.name, "excluding folded constant from WAI inputs");
                 continue;
             }
             let shape = wb.shape.get(&wb.name).cloned().ok_or_else(|| {

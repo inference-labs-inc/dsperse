@@ -646,6 +646,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
 
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
@@ -944,6 +945,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1185,6 +1187,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1268,6 +1271,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1351,6 +1355,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1432,6 +1437,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1560,6 +1566,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 
@@ -1653,6 +1660,7 @@ mod tests {
             jstprove_rev: None,
             traced_shapes: None,
             original_model_path: None,
+            folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
 

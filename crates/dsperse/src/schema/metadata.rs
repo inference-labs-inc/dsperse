@@ -156,7 +156,7 @@ pub struct RunSliceMetadata {
     pub jstprove_settings_path: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelMetadata {
     #[serde(default)]
     pub original_model: String,
@@ -184,6 +184,8 @@ pub struct ModelMetadata {
     pub traced_shapes: Option<HashMap<String, Vec<i64>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_model_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folded_constant_names: Vec<String>,
 }
 
 impl ModelMetadata {

@@ -62,6 +62,9 @@ pub fn compile_slices(
 
     tracing::info!(total = slices.len(), "compiling slices");
 
+    let exclude_from_wai: std::collections::HashSet<String> =
+        metadata.folded_constant_names.iter().cloned().collect();
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(parallel)
         .build()
@@ -73,8 +76,14 @@ pub fn compile_slices(
 
     pool.install(|| {
         slices.par_iter().for_each(|slice| {
-            let r =
-                compile_single_slice(slices_dir, slice, backend, weights_as_inputs, jstprove_ops);
+            let r = compile_single_slice(
+                slices_dir,
+                slice,
+                backend,
+                weights_as_inputs,
+                jstprove_ops,
+                &exclude_from_wai,
+            );
             match r {
                 Ok(CompileOutcome::Compiled) => {
                     tracing::info!(slice = slice.index, "compiled");
@@ -178,6 +187,7 @@ fn compile_single_slice(
     backend: &JstproveBackend,
     weights_as_inputs: bool,
     jstprove_ops: &[&str],
+    exclude_from_wai: &std::collections::HashSet<String>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -190,7 +200,14 @@ fn compile_single_slice(
     if let Some(ref cs) = slice.channel_split
         && !cs.groups.is_empty()
     {
-        return compile_channel_split_slice(slices_dir, slice, cs, backend, jstprove_ops);
+        return compile_channel_split_slice(
+            slices_dir,
+            slice,
+            cs,
+            backend,
+            jstprove_ops,
+            exclude_from_wai,
+        );
     }
 
     let onnx_path = resolve_compile_onnx(slices_dir, slice)?;
@@ -228,8 +245,11 @@ fn compile_single_slice(
 
     let effective_wai = weights_as_inputs;
 
-    let (params, architecture, wandb) =
-        converter::prepare_jstprove_artifacts(&onnx_path, effective_wai)?;
+    let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
+        &onnx_path,
+        effective_wai,
+        exclude_from_wai,
+    )?;
 
     std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
         .map_err(|p| {
@@ -309,6 +329,7 @@ fn compile_channel_split_slice(
     cs: &crate::schema::tiling::ChannelSplitInfo,
     backend: &JstproveBackend,
     jstprove_ops: &[&str],
+    exclude_from_wai: &std::collections::HashSet<String>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -349,7 +370,7 @@ fn compile_channel_split_slice(
         );
 
         let (params, architecture, wandb) =
-            converter::prepare_jstprove_artifacts(&onnx_path, true)?;
+            converter::prepare_jstprove_artifacts_filtered(&onnx_path, true, exclude_from_wai)?;
 
         std::panic::catch_unwind(|| {
             backend.compile(&shared_circuit_path, params, architecture, wandb)

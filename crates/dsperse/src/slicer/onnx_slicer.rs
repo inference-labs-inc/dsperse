@@ -18,7 +18,7 @@ pub fn slice_model(
 ) -> Result<ModelMetadata> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
-    onnx_proto::fold_constant_nodes(&mut model);
+    let folded_constants = onnx_proto::fold_constant_nodes(&mut model);
 
     let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
     let normalized_path = tmp_dir.path().join("model.onnx");
@@ -87,6 +87,7 @@ pub fn slice_model(
         jstprove_rev: None,
         traced_shapes: Some(traced_shapes),
         original_model_path: Some("model.onnx".to_string()),
+        folded_constant_names: folded_constants.into_iter().collect(),
     };
     metadata.stamp_version();
     metadata.save(&output_dir.join(crate::utils::paths::METADATA_FILE))?;

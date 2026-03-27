@@ -209,7 +209,11 @@ fn can_evaluate(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {
     if node.output.is_empty() || node.output.iter().all(|o| o.is_empty()) {
         return false;
     }
-    if node.output.iter().all(|o| known.contains_key(o)) {
+    if node
+        .output
+        .iter()
+        .all(|o| matches!(known.get(o), Some(v) if !matches!(v, ConstVal::ShapeOnly(_))))
+    {
         return false;
     }
     node.input

@@ -32,6 +32,14 @@ impl TensorStore {
         self.tensors.contains_key(name)
     }
 
+    pub fn len(&self) -> usize {
+        self.tensors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tensors.is_empty()
+    }
+
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.tensors.keys()
     }

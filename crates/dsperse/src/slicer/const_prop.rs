@@ -299,22 +299,41 @@ fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
     if axis != 0 || data_val.dims().len() != 1 {
         return None;
     }
-    let data = data_val.as_i64()?;
     let indices = inp(inputs, 1)?.as_i64()?;
-    let len = data.len() as i64;
-    let result: Option<Vec<i64>> = indices
-        .iter()
-        .map(|&i| {
-            let idx = if i < 0 { len + i } else { i };
-            if idx < 0 || idx >= len {
-                None
-            } else {
-                data.get(idx as usize).copied()
-            }
-        })
-        .collect();
     let dims = inp(inputs, 1)?.dims().to_vec();
-    Some(ConstVal::I64(result?, dims))
+    match data_val {
+        ConstVal::I64(data, _) => {
+            let len = data.len() as i64;
+            let result: Option<Vec<i64>> = indices
+                .iter()
+                .map(|&i| {
+                    let idx = if i < 0 { len + i } else { i };
+                    if idx < 0 || idx >= len {
+                        None
+                    } else {
+                        data.get(idx as usize).copied()
+                    }
+                })
+                .collect();
+            Some(ConstVal::I64(result?, dims))
+        }
+        ConstVal::F32(data, _) => {
+            let len = data.len() as i64;
+            let result: Option<Vec<f32>> = indices
+                .iter()
+                .map(|&i| {
+                    let idx = if i < 0 { len + i } else { i };
+                    if idx < 0 || idx >= len {
+                        None
+                    } else {
+                        data.get(idx as usize).copied()
+                    }
+                })
+                .collect();
+            Some(ConstVal::F32(result?, dims))
+        }
+        ConstVal::ShapeOnly(_) => None,
+    }
 }
 
 fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
@@ -322,7 +341,6 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     if data.dims().len() != 1 {
         return None;
     }
-    let vals = data.as_i64()?;
     let starts = inp(inputs, 1)?.as_i64()?;
     let ends = inp(inputs, 2)?.as_i64()?;
 
@@ -339,11 +357,23 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
         }
     }
 
-    let len = vals.len() as i64;
-    let s = normalize_idx(*starts.first()?, len);
-    let e = normalize_idx(*ends.first()?, len);
-    let result: Vec<i64> = vals[s..e].to_vec();
-    Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
+    match data {
+        ConstVal::I64(vals, _) => {
+            let len = vals.len() as i64;
+            let s = normalize_idx(*starts.first()?, len);
+            let e = normalize_idx(*ends.first()?, len);
+            let result: Vec<i64> = vals[s..e].to_vec();
+            Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
+        }
+        ConstVal::F32(vals, _) => {
+            let len = vals.len() as i64;
+            let s = normalize_idx(*starts.first()?, len);
+            let e = normalize_idx(*ends.first()?, len);
+            let result: Vec<f32> = vals[s..e].to_vec();
+            Some(ConstVal::F32(result.clone(), vec![result.len() as i64]))
+        }
+        ConstVal::ShapeOnly(_) => None,
+    }
 }
 
 fn eval_cast(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
@@ -478,7 +508,10 @@ fn eval_reshape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstV
 
 fn eval_constant_of_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let shape = inp(inputs, 0)?.as_i64()?;
-    let total: usize = shape.iter().map(|&d| d.max(0) as usize).product();
+    if shape.iter().any(|&d| d < 0) {
+        return None;
+    }
+    let total: usize = shape.iter().map(|&d| d as usize).product();
     let value_tensor = node
         .attribute
         .iter()

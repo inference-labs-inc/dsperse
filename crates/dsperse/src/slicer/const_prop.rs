@@ -116,6 +116,17 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
             known.insert(init.name.clone(), val);
         }
     }
+    for vi in graph.input.iter().chain(graph.value_info.iter()) {
+        if known.contains_key(&vi.name) {
+            continue;
+        }
+        if let Some(shape) = super::onnx_proto::shape_from_value_info(vi)
+            && !shape.is_empty()
+            && shape.iter().all(|&d| d > 0)
+        {
+            known.insert(vi.name.clone(), ConstVal::F32(vec![], shape));
+        }
+    }
 
     let mut evaluated: HashSet<usize> = HashSet::new();
     let mut progress = true;
@@ -585,5 +596,63 @@ mod tests {
             .find(|i| i.name == "sqrt_out")
             .expect("sqrt_out initializer");
         assert!((init.float_data[0] - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unsqueeze_multiple_axes() {
+        let val = ConstVal::I64(vec![1, 2, 3], vec![3]);
+        let inputs = vec![Some(&val)];
+        let mut node = super::super::onnx_proto::make_node(
+            "Unsqueeze",
+            vec!["x".into()],
+            vec!["y".into()],
+            vec![],
+        );
+        node.attribute
+            .push(super::super::onnx_proto::AttributeProto {
+                name: "axes".to_string(),
+                ints: vec![0, 2],
+                ..Default::default()
+            });
+        let result = eval_unsqueeze(&node, &inputs).unwrap();
+        assert_eq!(result.dims(), &[1, 3, 1]);
+    }
+
+    #[test]
+    fn reshape_infers_neg_one() {
+        let data = ConstVal::F32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
+        let shape = ConstVal::I64(vec![3, -1], vec![2]);
+        let inputs: Vec<Option<&ConstVal>> = vec![Some(&data), Some(&shape)];
+        let node = super::super::onnx_proto::make_node(
+            "Reshape",
+            vec!["d".into(), "s".into()],
+            vec!["out".into()],
+            vec![],
+        );
+        let result = eval_reshape(&node, &inputs).unwrap();
+        assert_eq!(result.dims(), &[3, 2]);
+    }
+
+    #[test]
+    fn reshape_rejects_invalid() {
+        let data = ConstVal::F32(vec![1.0, 2.0, 3.0, 4.0], vec![4]);
+        let shape = ConstVal::I64(vec![3], vec![1]);
+        let inputs: Vec<Option<&ConstVal>> = vec![Some(&data), Some(&shape)];
+        let node = super::super::onnx_proto::make_node(
+            "Reshape",
+            vec!["d".into(), "s".into()],
+            vec!["out".into()],
+            vec![],
+        );
+        assert!(eval_reshape(&node, &inputs).is_none());
+    }
+
+    #[test]
+    fn scalar_tensor_binary() {
+        let scalar = ConstVal::F32(vec![2.0], vec![1]);
+        let tensor = ConstVal::F32(vec![3.0, 6.0, 9.0], vec![3]);
+        let inputs: Vec<Option<&ConstVal>> = vec![Some(&scalar), Some(&tensor)];
+        let result = binary_f32(&inputs, |a, b| a * b).unwrap();
+        assert_eq!(result.as_f32().unwrap(), vec![6.0, 12.0, 18.0]);
     }
 }

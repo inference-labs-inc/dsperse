@@ -53,16 +53,14 @@ impl ConstVal {
     fn as_f32(&self) -> Option<Vec<f32>> {
         match self {
             Self::F32(v, _) => Some(v.clone()),
-            Self::I64(v, _) => Some(v.iter().map(|&i| i as f32).collect()),
-            Self::ShapeOnly(_) => None,
+            _ => None,
         }
     }
 
     fn as_i64(&self) -> Option<Vec<i64>> {
         match self {
             Self::I64(v, _) => Some(v.clone()),
-            Self::F32(v, _) => Some(v.iter().map(|&f| f as i64).collect()),
-            Self::ShapeOnly(_) => None,
+            _ => None,
         }
     }
 
@@ -385,9 +383,17 @@ fn eval_cast(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal>
     let to = attr_int(node, "to")? as i32;
     let dims = t.dims().to_vec();
     if to == TensorProto::FLOAT {
-        Some(ConstVal::F32(t.as_f32()?, dims))
+        match t {
+            ConstVal::F32(v, _) => Some(ConstVal::F32(v.clone(), dims)),
+            ConstVal::I64(v, _) => Some(ConstVal::F32(v.iter().map(|&i| i as f32).collect(), dims)),
+            ConstVal::ShapeOnly(_) => None,
+        }
     } else if to == TensorProto::INT64 {
-        Some(ConstVal::I64(t.as_i64()?, dims))
+        match t {
+            ConstVal::I64(v, _) => Some(ConstVal::I64(v.clone(), dims)),
+            ConstVal::F32(v, _) => Some(ConstVal::I64(v.iter().map(|&f| f as i64).collect(), dims)),
+            ConstVal::ShapeOnly(_) => None,
+        }
     } else {
         None
     }

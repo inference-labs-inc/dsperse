@@ -219,6 +219,45 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
     }
+    if !tensor.int64_data.is_empty() {
+        return tensor.int64_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.int32_data.is_empty() {
+        return tensor.int32_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.double_data.is_empty() {
+        return tensor.double_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.raw_data.is_empty() {
+        match tensor.data_type {
+            TensorProto::INT64 => {
+                return tensor
+                    .raw_data
+                    .chunks_exact(8)
+                    .map(|c| {
+                        i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
+                    })
+                    .collect();
+            }
+            TensorProto::INT32 => {
+                return tensor
+                    .raw_data
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
+                    .collect();
+            }
+            TensorProto::DOUBLE => {
+                return tensor
+                    .raw_data
+                    .chunks_exact(8)
+                    .map(|c| {
+                        f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+    }
     Vec::new()
 }
 

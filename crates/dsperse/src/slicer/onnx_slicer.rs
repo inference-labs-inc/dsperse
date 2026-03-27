@@ -18,8 +18,9 @@ pub fn slice_model(
 ) -> Result<ModelMetadata> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
-    let folded_constants = onnx_proto::fold_constant_nodes(&mut model);
-    super::const_prop::propagate_constants(&mut model);
+    let mut folded_constants = onnx_proto::fold_constant_nodes(&mut model);
+    let propagated_constants = super::const_prop::propagate_constants(&mut model);
+    folded_constants.extend(propagated_constants);
 
     let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
     let normalized_path = tmp_dir.path().join("model.onnx");

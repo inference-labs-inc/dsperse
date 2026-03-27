@@ -2455,4 +2455,60 @@ mod tests {
         assert!(config.weights_onnx.is_none());
         assert!(config.combined);
     }
+
+    #[test]
+    fn multi_input_activation_concatenation_ordering() {
+        use ndarray::IxDyn;
+        let mut cache = TensorStore::new();
+        cache.put(
+            "act_a".into(),
+            ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap(),
+        );
+        cache.put(
+            "act_b".into(),
+            ArrayD::from_shape_vec(IxDyn(&[2]), vec![7.0, 8.0]).unwrap(),
+        );
+        cache.put(
+            "act_c".into(),
+            ArrayD::from_shape_vec(IxDyn(&[1]), vec![9.0]).unwrap(),
+        );
+
+        let inputs = vec![
+            "act_a".to_string(),
+            "act_b".to_string(),
+            "act_c".to_string(),
+        ];
+        let mut flat: Vec<f64> = Vec::new();
+        for name in &inputs {
+            let arr = cache.get(name).unwrap();
+            flat.extend(arr.iter());
+        }
+
+        assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn multi_input_activation_missing_tensor_error() {
+        let mut cache = TensorStore::new();
+        cache.put(
+            "act_a".into(),
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[2]), vec![1.0, 2.0]).unwrap(),
+        );
+
+        let inputs = vec!["act_a".to_string(), "act_missing".to_string()];
+        let mut flat: Vec<f64> = Vec::new();
+        let mut err = None;
+        for name in &inputs {
+            match cache.get(name) {
+                Ok(arr) => flat.extend(arr.iter()),
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        assert!(err.is_some());
+        assert!(err.unwrap().to_string().contains("act_missing"));
+    }
 }

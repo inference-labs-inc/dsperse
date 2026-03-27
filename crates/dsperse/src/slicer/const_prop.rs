@@ -289,7 +289,11 @@ fn eval_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal
     let rank = t.dims().len() as i64;
     let s = normalize_idx(attr_int(node, "start").unwrap_or(0), rank);
     let e = normalize_idx(attr_int(node, "end").unwrap_or(rank), rank);
-    let vals: Vec<i64> = t.dims()[s..e].to_vec();
+    let vals: Vec<i64> = if s <= e {
+        t.dims()[s..e].to_vec()
+    } else {
+        vec![]
+    };
     Some(ConstVal::I64(vals.clone(), vec![vals.len() as i64]))
 }
 
@@ -362,14 +366,14 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
             let len = vals.len() as i64;
             let s = normalize_idx(*starts.first()?, len);
             let e = normalize_idx(*ends.first()?, len);
-            let result: Vec<i64> = vals[s..e].to_vec();
+            let result: Vec<i64> = if s <= e { vals[s..e].to_vec() } else { vec![] };
             Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
         }
         ConstVal::F32(vals, _) => {
             let len = vals.len() as i64;
             let s = normalize_idx(*starts.first()?, len);
             let e = normalize_idx(*ends.first()?, len);
-            let result: Vec<f32> = vals[s..e].to_vec();
+            let result: Vec<f32> = if s <= e { vals[s..e].to_vec() } else { vec![] };
             Some(ConstVal::F32(result.clone(), vec![result.len() as i64]))
         }
         ConstVal::ShapeOnly(_) => None,
@@ -456,11 +460,23 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
     if first.dims().len() != 1 || axis != 0 {
         return None;
     }
-    let mut result: Vec<i64> = Vec::new();
-    for i in inputs {
-        result.extend(i.as_ref()?.as_i64()?);
+    match first {
+        ConstVal::I64(..) => {
+            let mut result: Vec<i64> = Vec::new();
+            for i in inputs {
+                result.extend(i.as_ref()?.as_i64()?);
+            }
+            Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
+        }
+        ConstVal::F32(..) => {
+            let mut result: Vec<f32> = Vec::new();
+            for i in inputs {
+                result.extend(i.as_ref()?.as_f32()?);
+            }
+            Some(ConstVal::F32(result.clone(), vec![result.len() as i64]))
+        }
+        ConstVal::ShapeOnly(_) => None,
     }
-    Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
 }
 
 fn eval_reshape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {

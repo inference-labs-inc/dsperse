@@ -618,8 +618,16 @@ fn run_combined_inference(
 
             if is_wai {
                 let onnx_path = slice.resolve_onnx(slices_dir)?;
-                let initializers = if let Some(map) = donor_map.as_ref() {
-                    extract_initializers_from_map(map, params.as_ref().unwrap())?
+                let initializers = if let Some(donor) = donor_map.as_ref() {
+                    let slice_model = crate::slicer::onnx_proto::load_model(&onnx_path)?;
+                    let slice_graph = slice_model.graph.as_ref().ok_or_else(|| {
+                        DsperseError::Pipeline(format!("{slice_id}: ONNX missing graph"))
+                    })?;
+                    let mut merged = crate::slicer::onnx_proto::build_initializer_map(slice_graph);
+                    for (k, v) in donor.iter() {
+                        merged.insert(k.clone(), *v);
+                    }
+                    extract_initializers_from_map(&merged, params.as_ref().unwrap())?
                 } else {
                     extract_onnx_initializers(&onnx_path, params.as_ref().unwrap())?
                 };
@@ -2212,8 +2220,34 @@ fn extract_initializers_from_map(
     for io in &params.inputs {
         if let Some(tensor) = init_map.get(&io.name) {
             let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
-            let f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
-            let shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+            let mut f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
+            let target_shape = &io.shape;
+            let tensor_shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+            let target_elems: usize = target_shape.iter().product();
+            if f64_vals.len() < target_elems && !target_shape.is_empty() && !tensor_shape.is_empty()
+            {
+                let is_bias = tensor_shape.len() == 1;
+                let pad_val: f64 = if is_bias { -10.0 } else { 0.0 };
+                let last = target_shape.len() - 1;
+                let target_last = target_shape[last];
+                let donor_last = tensor_shape[last];
+                if donor_last < target_last {
+                    let rows = f64_vals.len() / donor_last.max(1);
+                    let mut padded = Vec::with_capacity(target_elems);
+                    for row in 0..rows {
+                        let start = row * donor_last;
+                        let end = start + donor_last;
+                        padded.extend_from_slice(&f64_vals[start..end.min(f64_vals.len())]);
+                        padded.resize(padded.len() + (target_last - donor_last), pad_val);
+                    }
+                    f64_vals = padded;
+                }
+            }
+            let shape: Vec<usize> = if f64_vals.len() == target_elems {
+                target_shape.clone()
+            } else {
+                tensor_shape
+            };
             initializers.push((f64_vals, shape));
         }
     }
@@ -2241,8 +2275,17 @@ fn generate_wai_witness(
     params: &CircuitParams,
     activations: &ArrayD<f64>,
 ) -> Result<Vec<u8>> {
-    let initializers = if let Some(map) = donor_init_map {
-        extract_initializers_from_map(map, params)?
+    let initializers = if let Some(donor) = donor_init_map {
+        let slice_model = crate::slicer::onnx_proto::load_model(slice_onnx_path)?;
+        let slice_graph = slice_model
+            .graph
+            .as_ref()
+            .ok_or_else(|| DsperseError::Pipeline("slice ONNX missing graph".into()))?;
+        let mut merged = crate::slicer::onnx_proto::build_initializer_map(slice_graph);
+        for (k, v) in donor.iter() {
+            merged.insert(k.clone(), *v);
+        }
+        extract_initializers_from_map(&merged, params)?
     } else {
         extract_onnx_initializers(slice_onnx_path, params)?
     };

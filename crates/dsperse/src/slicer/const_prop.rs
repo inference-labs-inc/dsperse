@@ -6,6 +6,7 @@ use super::onnx_proto::{ModelProto, NodeProto, TensorProto};
 enum ConstVal {
     F32(Vec<f32>, Vec<i64>),
     I64(Vec<i64>, Vec<i64>),
+    ShapeOnly(Vec<i64>),
 }
 
 impl ConstVal {
@@ -18,33 +19,34 @@ impl ConstVal {
             return Some(Self::I64(v, dims));
         }
         if !dims.is_empty() {
-            return Some(Self::F32(vec![], dims));
+            return Some(Self::ShapeOnly(dims));
         }
         None
     }
 
-    fn into_tensor(self, name: &str) -> TensorProto {
+    fn into_tensor(self, name: &str) -> Option<TensorProto> {
         match self {
-            Self::F32(data, dims) => TensorProto {
+            Self::F32(data, dims) => Some(TensorProto {
                 name: name.to_string(),
                 data_type: TensorProto::FLOAT,
                 dims,
                 float_data: data,
                 ..Default::default()
-            },
-            Self::I64(data, dims) => TensorProto {
+            }),
+            Self::I64(data, dims) => Some(TensorProto {
                 name: name.to_string(),
                 data_type: TensorProto::INT64,
                 dims,
                 int64_data: data,
                 ..Default::default()
-            },
+            }),
+            Self::ShapeOnly(_) => None,
         }
     }
 
     fn dims(&self) -> &[i64] {
         match self {
-            Self::F32(_, d) | Self::I64(_, d) => d,
+            Self::F32(_, d) | Self::I64(_, d) | Self::ShapeOnly(d) => d,
         }
     }
 
@@ -52,6 +54,7 @@ impl ConstVal {
         match self {
             Self::F32(v, _) => Some(v.clone()),
             Self::I64(v, _) => Some(v.iter().map(|&i| i as f32).collect()),
+            Self::ShapeOnly(_) => None,
         }
     }
 
@@ -59,6 +62,7 @@ impl ConstVal {
         match self {
             Self::I64(v, _) => Some(v.clone()),
             Self::F32(v, _) => Some(v.iter().map(|&f| f as i64).collect()),
+            Self::ShapeOnly(_) => None,
         }
     }
 
@@ -124,7 +128,7 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
             && !shape.is_empty()
             && shape.iter().all(|&d| d > 0)
         {
-            known.insert(vi.name.clone(), ConstVal::F32(vec![], shape));
+            known.insert(vi.name.clone(), ConstVal::ShapeOnly(shape));
         }
     }
 
@@ -166,8 +170,9 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
             if !out.is_empty()
                 && !existing.contains(out)
                 && let Some(val) = known.get(out)
+                && let Some(tensor) = val.clone().into_tensor(out)
             {
-                new_inits.push(val.clone().into_tensor(out));
+                new_inits.push(tensor);
             }
         }
     }
@@ -203,7 +208,7 @@ fn evaluate(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Vec<(Strin
     let out = out_name(node, 0)?;
     let result = match node.op_type.as_str() {
         "Shape" => eval_shape(node, inputs),
-        "Gather" => eval_gather(inputs),
+        "Gather" => eval_gather(node, inputs),
         "Slice" => eval_slice(inputs),
         "Cast" => eval_cast(node, inputs),
         "Sqrt" => map_f32(inputs, |v| v.sqrt()),
@@ -288,14 +293,24 @@ fn eval_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal
     Some(ConstVal::I64(vals.clone(), vec![vals.len() as i64]))
 }
 
-fn eval_gather(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
-    let data = inp(inputs, 0)?.as_i64()?;
+fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let data_val = inp(inputs, 0)?;
+    let axis = attr_int(node, "axis").unwrap_or(0);
+    if axis != 0 || data_val.dims().len() != 1 {
+        return None;
+    }
+    let data = data_val.as_i64()?;
     let indices = inp(inputs, 1)?.as_i64()?;
+    let len = data.len() as i64;
     let result: Option<Vec<i64>> = indices
         .iter()
         .map(|&i| {
-            let idx = normalize_idx(i, data.len() as i64);
-            data.get(idx).copied()
+            let idx = if i < 0 { len + i } else { i };
+            if idx < 0 || idx >= len {
+                None
+            } else {
+                data.get(idx as usize).copied()
+            }
         })
         .collect();
     let dims = inp(inputs, 1)?.dims().to_vec();
@@ -379,6 +394,7 @@ fn eval_unsqueeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Cons
     }
     match t {
         ConstVal::F32(v, _) => Some(ConstVal::F32(v.clone(), dims)),
+        ConstVal::ShapeOnly(_) => None,
         ConstVal::I64(v, _) => Some(ConstVal::I64(v.clone(), dims)),
     }
 }
@@ -435,6 +451,7 @@ fn eval_reshape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstV
     match data {
         ConstVal::F32(v, _) => Some(ConstVal::F32(v.clone(), shape)),
         ConstVal::I64(v, _) => Some(ConstVal::I64(v.clone(), shape)),
+        ConstVal::ShapeOnly(_) => None,
     }
 }
 

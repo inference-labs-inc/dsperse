@@ -618,8 +618,16 @@ fn run_combined_inference(
 
             if is_wai {
                 let onnx_path = slice.resolve_onnx(slices_dir)?;
-                let initializers = if let Some(map) = donor_map.as_ref() {
-                    extract_initializers_from_map(map, params.as_ref().unwrap())?
+                let initializers = if let Some(donor) = donor_map.as_ref() {
+                    let slice_model = crate::slicer::onnx_proto::load_model(&onnx_path)?;
+                    let slice_graph = slice_model.graph.as_ref().ok_or_else(|| {
+                        DsperseError::Pipeline(format!("{slice_id}: ONNX missing graph"))
+                    })?;
+                    let mut merged = crate::slicer::onnx_proto::build_initializer_map(slice_graph);
+                    for (k, v) in donor.iter() {
+                        merged.insert(k.clone(), *v);
+                    }
+                    extract_initializers_from_map(&merged, params.as_ref().unwrap())?
                 } else {
                     extract_onnx_initializers(&onnx_path, params.as_ref().unwrap())?
                 };
@@ -2241,8 +2249,17 @@ fn generate_wai_witness(
     params: &CircuitParams,
     activations: &ArrayD<f64>,
 ) -> Result<Vec<u8>> {
-    let initializers = if let Some(map) = donor_init_map {
-        extract_initializers_from_map(map, params)?
+    let initializers = if let Some(donor) = donor_init_map {
+        let slice_model = crate::slicer::onnx_proto::load_model(slice_onnx_path)?;
+        let slice_graph = slice_model
+            .graph
+            .as_ref()
+            .ok_or_else(|| DsperseError::Pipeline("slice ONNX missing graph".into()))?;
+        let mut merged = crate::slicer::onnx_proto::build_initializer_map(slice_graph);
+        for (k, v) in donor.iter() {
+            merged.insert(k.clone(), *v);
+        }
+        extract_initializers_from_map(&merged, params)?
     } else {
         extract_onnx_initializers(slice_onnx_path, params)?
     };

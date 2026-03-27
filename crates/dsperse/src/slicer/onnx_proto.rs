@@ -320,10 +320,11 @@ pub fn validate_initializer_compatibility(
                 )));
             }
         } else {
-            return Err(DsperseError::Pipeline(format!(
-                "consumer weights missing initializer '{}' required by {context}",
-                init.name
-            )));
+            tracing::debug!(
+                name = %init.name,
+                context,
+                "initializer not in donor weights, retaining slice value"
+            );
         }
     }
     Ok(())

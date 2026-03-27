@@ -681,8 +681,12 @@ pub fn detect_dim_split(
                 continue;
             };
             let concat_axis = output_shape.len().saturating_sub(1);
-            let input_name = node.input.first().cloned().unwrap_or_default();
-            let output_name = node.output.first().cloned().unwrap_or_default();
+            let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
+                continue;
+            };
+            let Some(output_name) = node.output.first().filter(|s| !s.is_empty()).cloned() else {
+                continue;
+            };
             return Some(DimSplitDetection {
                 split_kind: DimSplitKind::MatMulOutputDim,
                 split_dim,
@@ -707,8 +711,13 @@ pub fn detect_dim_split(
                 let head_dim = input_shape[1] as usize;
                 let num_groups = target_groups.min(head_dim);
                 let elements_per_group = head_dim.div_ceil(num_groups);
-                let input_name = node.input.first().cloned().unwrap_or_default();
-                let output_name = node.output.first().cloned().unwrap_or_default();
+                let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
+                    continue;
+                };
+                let Some(output_name) = node.output.first().filter(|s| !s.is_empty()).cloned()
+                else {
+                    continue;
+                };
                 return Some(DimSplitDetection {
                     split_kind: DimSplitKind::HeadDim,
                     split_dim: 1,
@@ -736,13 +745,13 @@ pub fn detect_dim_split(
         let input_name = nodes
             .first()
             .and_then(|n| n.input.first())
-            .cloned()
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())
+            .cloned()?;
         let output_name = nodes
             .last()
             .and_then(|n| n.output.first())
-            .cloned()
-            .unwrap_or_default();
+            .filter(|s| !s.is_empty())
+            .cloned()?;
         return Some(DimSplitDetection {
             split_kind: DimSplitKind::BatchDim,
             split_dim: 0,

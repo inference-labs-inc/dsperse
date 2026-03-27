@@ -605,32 +605,28 @@ fn run_combined_inference(
             Err(DsperseError::Pipeline(format!(
                 "{slice_id}: no activation inputs declared for circuit slice"
             )))
-        } else if activation_inputs.len() == 1 {
-            let input_name = &activation_inputs[0];
-            let input_arr = tensor_cache.get(input_name).map_err(|_| {
-                DsperseError::Pipeline(format!(
-                    "{slice_id}: activation input '{input_name}' not found in combined model outputs"
-                ))
-            })?;
+        } else {
+            let mut flat_activations: Vec<f64> = Vec::new();
+            for input_name in &activation_inputs {
+                let input_arr = tensor_cache.get(input_name).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: activation input '{input_name}' not found in combined model outputs"
+                    ))
+                })?;
+                flat_activations.extend(input_arr.iter());
+            }
 
             if is_wai {
                 let onnx_path = slice.resolve_onnx(slices_dir)?;
-                generate_wai_witness(
-                    backend,
-                    &circuit_path,
-                    &onnx_path,
-                    donor_map.as_ref(),
-                    params.as_ref().unwrap(),
-                    input_arr,
-                )
+                let initializers = if let Some(map) = donor_map.as_ref() {
+                    extract_initializers_from_map(map, params.as_ref().unwrap())?
+                } else {
+                    extract_onnx_initializers(&onnx_path, params.as_ref().unwrap())?
+                };
+                backend.witness_f64(&circuit_path, &flat_activations, &initializers)
             } else {
-                let flat: Vec<f64> = input_arr.iter().copied().collect();
-                backend.witness_f64(&circuit_path, &flat, &[])
+                backend.witness_f64(&circuit_path, &flat_activations, &[])
             }
-        } else {
-            Err(DsperseError::Pipeline(format!(
-                "{slice_id}: combined mode does not support multi-input circuit slices; use --combined false for per-slice execution"
-            )))
         };
 
         match witness_result {
@@ -2458,5 +2454,61 @@ mod tests {
         assert!(!config.batch);
         assert!(config.weights_onnx.is_none());
         assert!(config.combined);
+    }
+
+    #[test]
+    fn multi_input_activation_concatenation_ordering() {
+        use ndarray::IxDyn;
+        let mut cache = TensorStore::new();
+        cache.put(
+            "act_a".into(),
+            ArrayD::from_shape_vec(IxDyn(&[2, 3]), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap(),
+        );
+        cache.put(
+            "act_b".into(),
+            ArrayD::from_shape_vec(IxDyn(&[2]), vec![7.0, 8.0]).unwrap(),
+        );
+        cache.put(
+            "act_c".into(),
+            ArrayD::from_shape_vec(IxDyn(&[1]), vec![9.0]).unwrap(),
+        );
+
+        let inputs = vec![
+            "act_a".to_string(),
+            "act_b".to_string(),
+            "act_c".to_string(),
+        ];
+        let mut flat: Vec<f64> = Vec::new();
+        for name in &inputs {
+            let arr = cache.get(name).unwrap();
+            flat.extend(arr.iter());
+        }
+
+        assert_eq!(flat, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn multi_input_activation_missing_tensor_error() {
+        let mut cache = TensorStore::new();
+        cache.put(
+            "act_a".into(),
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[2]), vec![1.0, 2.0]).unwrap(),
+        );
+
+        let inputs = vec!["act_a".to_string(), "act_missing".to_string()];
+        let mut flat: Vec<f64> = Vec::new();
+        let mut err = None;
+        for name in &inputs {
+            match cache.get(name) {
+                Ok(arr) => flat.extend(arr.iter()),
+                Err(e) => {
+                    err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        assert!(err.is_some());
+        assert!(err.unwrap().to_string().contains("act_missing"));
     }
 }

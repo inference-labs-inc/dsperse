@@ -55,24 +55,14 @@ pub fn slice_model(
     let trimmed_points = &slice_points[..slice_points.len().saturating_sub(1)];
 
     let mut tiled_info = HashMap::new();
-    if tile_size.is_some() {
-        for (seg_idx, _) in segment_ranges.iter().enumerate() {
-            let slice_model = materializer::materialize_slice_model(
-                &model,
-                trimmed_points,
-                &traced_shapes,
-                seg_idx,
-            )?;
-            if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
-                tiled_info.insert(seg_idx, detection);
-            }
-        }
-    }
-
     let mut dim_split_info: HashMap<usize, autotiler::DimSplitDetection> = HashMap::new();
     for (seg_idx, _) in segment_ranges.iter().enumerate() {
         let slice_model =
             materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
+        if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
+            tiled_info.insert(seg_idx, detection);
+            continue;
+        }
         if let Some(graph) = slice_model.graph.as_ref() {
             let init_names: HashSet<String> =
                 graph.initializer.iter().map(|t| t.name.clone()).collect();

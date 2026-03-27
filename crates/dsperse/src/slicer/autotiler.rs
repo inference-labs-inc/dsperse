@@ -653,27 +653,39 @@ pub fn detect_dim_split(
 
     for node in nodes {
         if matches!(node.op_type.as_str(), "MatMul" | "Gemm") {
-            let weight_name = node.input.get(1)?;
+            let Some(weight_name) = node.input.get(1) else {
+                continue;
+            };
             if !initializer_names.contains(weight_name) {
                 continue;
             }
-            let weight_shape = shapes.get(weight_name)?;
+            let Some(weight_shape) = shapes.get(weight_name) else {
+                continue;
+            };
             if weight_shape.len() != 2 {
                 continue;
             }
-            let n_dim = weight_shape[1] as usize;
+            let trans_b = node.op_type == "Gemm"
+                && super::onnx_proto::get_attribute_int(node, "transB").unwrap_or(0) == 1;
+            let (n_dim, split_dim) = if trans_b {
+                (weight_shape[0] as usize, 0)
+            } else {
+                (weight_shape[1] as usize, 1)
+            };
             if n_dim <= 1 {
                 continue;
             }
             let num_groups = target_groups.min(n_dim);
             let elements_per_group = n_dim.div_ceil(num_groups);
-            let output_shape = node.output.first().and_then(|name| shapes.get(name))?;
+            let Some(output_shape) = node.output.first().and_then(|name| shapes.get(name)) else {
+                continue;
+            };
             let concat_axis = output_shape.len().saturating_sub(1);
             let input_name = node.input.first().cloned().unwrap_or_default();
             let output_name = node.output.first().cloned().unwrap_or_default();
             return Some(DimSplitDetection {
                 split_kind: DimSplitKind::MatMulOutputDim,
-                split_dim: 1,
+                split_dim,
                 dim_size: n_dim,
                 num_groups,
                 elements_per_group,
@@ -688,7 +700,9 @@ pub fn detect_dim_split(
 
     for node in nodes {
         if node.op_type == "Softmax" {
-            let input_shape = node.input.first().and_then(|name| shapes.get(name))?;
+            let Some(input_shape) = node.input.first().and_then(|name| shapes.get(name)) else {
+                continue;
+            };
             if input_shape.len() == 4 && input_shape[1] > 1 {
                 let head_dim = input_shape[1] as usize;
                 let num_groups = target_groups.min(head_dim);
@@ -1873,5 +1887,62 @@ mod tests {
         let sliced = slice_weights(&weights, 0, 3).unwrap();
         assert_eq!(sliced.dims, vec![2, 3, 2, 4]);
         assert_eq!(sliced.data, data);
+    }
+
+    #[test]
+    fn detect_dim_split_gemm_trans_b() {
+        use super::onnx_proto::{NodeProto, make_attribute_int};
+
+        let node = NodeProto {
+            op_type: "Gemm".to_string(),
+            input: vec![
+                "input".to_string(),
+                "weight".to_string(),
+                "bias".to_string(),
+            ],
+            output: vec!["output".to_string()],
+            attribute: vec![make_attribute_int("transB", 1)],
+            ..Default::default()
+        };
+
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 145, 384]);
+        shapes.insert("weight".to_string(), vec![1536, 384]);
+        shapes.insert("output".to_string(), vec![4, 145, 1536]);
+
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(detection.is_some());
+        let d = detection.unwrap();
+        assert_eq!(d.split_dim, 0);
+        assert_eq!(d.dim_size, 1536);
+        assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
+    }
+
+    #[test]
+    fn detect_dim_split_matmul_no_trans() {
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 145, 384]);
+        shapes.insert("weight".to_string(), vec![384, 1536]);
+        shapes.insert("output".to_string(), vec![4, 145, 1536]);
+
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(detection.is_some());
+        let d = detection.unwrap();
+        assert_eq!(d.split_dim, 1);
+        assert_eq!(d.dim_size, 1536);
+        assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
     }
 }

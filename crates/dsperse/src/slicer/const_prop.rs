@@ -843,4 +843,52 @@ mod tests {
             vec![Some(&data), Some(&starts), Some(&ends), Some(&axes)];
         assert!(eval_slice(&inputs).is_none());
     }
+
+    #[test]
+    fn shape_only_output_does_not_block_propagation() {
+        use super::super::onnx_proto;
+
+        let input_tensor = TensorProto {
+            name: "input".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![1, 6, 300, 64],
+            ..Default::default()
+        };
+
+        let mut model = ModelProto {
+            graph: Some(onnx_proto::GraphProto {
+                node: vec![onnx_proto::make_node(
+                    "Shape",
+                    vec!["input".into()],
+                    vec!["shape_out".into()],
+                    vec![],
+                )],
+                initializer: vec![input_tensor],
+                value_info: vec![onnx_proto::make_tensor_value_info(
+                    "shape_out",
+                    TensorProto::INT64,
+                    &[4],
+                )],
+                output: vec![onnx_proto::make_tensor_value_info(
+                    "shape_out",
+                    TensorProto::INT64,
+                    &[4],
+                )],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let count = propagate_constants(&mut model);
+        assert_eq!(count, 1);
+
+        let graph = model.graph.as_ref().unwrap();
+        assert!(graph.node.is_empty());
+        let init = graph
+            .initializer
+            .iter()
+            .find(|i| i.name == "shape_out")
+            .expect("shape_out should be an initializer");
+        assert_eq!(init.int64_data, vec![1, 6, 300, 64]);
+    }
 }

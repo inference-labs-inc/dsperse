@@ -2220,8 +2220,34 @@ fn extract_initializers_from_map(
     for io in &params.inputs {
         if let Some(tensor) = init_map.get(&io.name) {
             let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
-            let f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
-            let shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+            let mut f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
+            let target_shape = &io.shape;
+            let tensor_shape: Vec<usize> = tensor.dims.iter().map(|&d| d as usize).collect();
+            let target_elems: usize = target_shape.iter().product();
+            if f64_vals.len() < target_elems && !target_shape.is_empty() && !tensor_shape.is_empty()
+            {
+                let is_bias = tensor_shape.len() == 1;
+                let pad_val: f64 = if is_bias { -10.0 } else { 0.0 };
+                let last = target_shape.len() - 1;
+                let target_last = target_shape[last];
+                let donor_last = tensor_shape[last];
+                if donor_last < target_last {
+                    let rows = f64_vals.len() / donor_last.max(1);
+                    let mut padded = Vec::with_capacity(target_elems);
+                    for row in 0..rows {
+                        let start = row * donor_last;
+                        let end = start + donor_last;
+                        padded.extend_from_slice(&f64_vals[start..end.min(f64_vals.len())]);
+                        padded.resize(padded.len() + (target_last - donor_last), pad_val);
+                    }
+                    f64_vals = padded;
+                }
+            }
+            let shape: Vec<usize> = if f64_vals.len() == target_elems {
+                target_shape.clone()
+            } else {
+                tensor_shape
+            };
             initializers.push((f64_vals, shape));
         }
     }

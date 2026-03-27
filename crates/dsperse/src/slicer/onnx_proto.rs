@@ -300,6 +300,14 @@ impl TensorProto {
     pub const BOOL: i32 = 9;
 }
 
+fn is_paddable_shape(target: &[i64], donor: &[i64]) -> bool {
+    if target.len() != donor.len() || target.is_empty() {
+        return false;
+    }
+    let last = target.len() - 1;
+    target[..last] == donor[..last] && donor[last] < target[last] && donor[last] > 0
+}
+
 pub fn validate_initializer_compatibility(
     initializers: &[TensorProto],
     donor_init_map: &HashMap<String, &TensorProto>,
@@ -314,10 +322,19 @@ pub fn validate_initializer_compatibility(
                 )));
             }
             if init.dims != donor.dims {
-                return Err(DsperseError::Pipeline(format!(
-                    "shape mismatch for initializer '{}' in {context}: slice expects {:?}, consumer provides {:?}",
-                    init.name, init.dims, donor.dims
-                )));
+                if is_paddable_shape(&init.dims, &donor.dims) {
+                    tracing::info!(
+                        name = %init.name,
+                        target = ?init.dims,
+                        donor = ?donor.dims,
+                        "donor initializer will be zero-padded on last axis"
+                    );
+                } else {
+                    return Err(DsperseError::Pipeline(format!(
+                        "shape mismatch for initializer '{}' in {context}: slice expects {:?}, consumer provides {:?}",
+                        init.name, init.dims, donor.dims
+                    )));
+                }
             }
         } else {
             tracing::debug!(
@@ -328,6 +345,35 @@ pub fn validate_initializer_compatibility(
         }
     }
     Ok(())
+}
+
+fn pad_float_data(
+    donor_data: &[f32],
+    target_dims: &[i64],
+    donor_dims: &[i64],
+    pad_val: f32,
+) -> Vec<f32> {
+    let last = target_dims.len() - 1;
+    let target_last = target_dims[last] as usize;
+    let donor_last = donor_dims[last] as usize;
+    let rows = donor_data.len() / donor_last.max(1);
+    let mut padded = Vec::with_capacity(rows * target_last);
+    for row in 0..rows {
+        let start = row * donor_last;
+        let end = start + donor_last;
+        padded.extend_from_slice(&donor_data[start..end.min(donor_data.len())]);
+        padded.resize(padded.len() + (target_last - donor_last), pad_val);
+    }
+    padded
+}
+
+fn pad_raw_data_f32(raw: &[u8], target_dims: &[i64], donor_dims: &[i64], pad_val: f32) -> Vec<u8> {
+    let donor_floats: Vec<f32> = raw
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let padded = pad_float_data(&donor_floats, target_dims, donor_dims, pad_val);
+    padded.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 pub fn replace_initializers(
@@ -347,17 +393,38 @@ pub fn replace_initializers(
                     init.name, init.data_type, donor.data_type
                 )));
             }
-            if init.dims != donor.dims {
+            let needs_pad = init.dims != donor.dims && is_paddable_shape(&init.dims, &donor.dims);
+            if init.dims != donor.dims && !needs_pad {
                 return Err(DsperseError::Pipeline(format!(
                     "shape mismatch for initializer '{}' in replace_initializers: slice expects {:?}, consumer provides {:?}",
                     init.name, init.dims, donor.dims
                 )));
             }
-            init.float_data = donor.float_data.clone();
-            init.raw_data = donor.raw_data.clone();
-            init.double_data = donor.double_data.clone();
-            init.int32_data = donor.int32_data.clone();
-            init.int64_data = donor.int64_data.clone();
+            if needs_pad {
+                let is_bias = donor.dims.len() == 1;
+                let pad_val: f32 = if is_bias { -10.0 } else { 0.0 };
+                if !donor.float_data.is_empty() {
+                    init.float_data =
+                        pad_float_data(&donor.float_data, &init.dims, &donor.dims, pad_val);
+                    init.raw_data.clear();
+                } else if !donor.raw_data.is_empty() && donor.data_type == TensorProto::FLOAT {
+                    init.raw_data =
+                        pad_raw_data_f32(&donor.raw_data, &init.dims, &donor.dims, pad_val);
+                    init.float_data.clear();
+                }
+                tracing::info!(
+                    name = %init.name,
+                    from = ?donor.dims,
+                    to = ?init.dims,
+                    "padded donor initializer"
+                );
+            } else {
+                init.float_data = donor.float_data.clone();
+                init.raw_data = donor.raw_data.clone();
+                init.double_data = donor.double_data.clone();
+                init.int32_data = donor.int32_data.clone();
+                init.int64_data = donor.int64_data.clone();
+            }
             replaced += 1;
         }
     }

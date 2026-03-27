@@ -325,6 +325,20 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let vals = data.as_i64()?;
     let starts = inp(inputs, 1)?.as_i64()?;
     let ends = inp(inputs, 2)?.as_i64()?;
+
+    if let Some(axes) = inputs.get(3).and_then(|o| o.as_ref()) {
+        let ax = axes.as_i64()?;
+        if ax.len() != 1 || ax[0] != 0 {
+            return None;
+        }
+    }
+    if let Some(steps) = inputs.get(4).and_then(|o| o.as_ref()) {
+        let st = steps.as_i64()?;
+        if st.iter().any(|&s| s != 1) {
+            return None;
+        }
+    }
+
     let len = vals.len() as i64;
     let s = normalize_idx(*starts.first()?, len);
     let e = normalize_idx(*ends.first()?, len);
@@ -378,10 +392,17 @@ fn eval_unsqueeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Cons
         attr_ints(node, "axes")?
     };
     let out_rank = t.dims().len() + axes.len();
-    let normalized: Vec<usize> = axes
-        .iter()
-        .map(|&ax| normalize_idx(ax, out_rank as i64))
-        .collect();
+    let rank_i64 = out_rank as i64;
+    for &ax in &axes {
+        if ax < -rank_i64 || ax >= rank_i64 {
+            return None;
+        }
+    }
+    let normalized: Vec<usize> = axes.iter().map(|&ax| normalize_idx(ax, rank_i64)).collect();
+    let unique: HashSet<usize> = normalized.iter().copied().collect();
+    if unique.len() != normalized.len() {
+        return None;
+    }
     let mut dims: Vec<i64> = Vec::with_capacity(out_rank);
     let mut src = 0;
     for i in 0..out_rank {
@@ -671,5 +692,46 @@ mod tests {
         let inputs: Vec<Option<&ConstVal>> = vec![Some(&scalar), Some(&tensor)];
         let result = binary_f32(&inputs, |a, b| a * b).unwrap();
         assert_eq!(result.as_f32().unwrap(), vec![6.0, 12.0, 18.0]);
+    }
+
+    #[test]
+    fn unsqueeze_rejects_duplicate_axes() {
+        let val = ConstVal::I64(vec![1, 2, 3], vec![3]);
+        let inputs = vec![Some(&val)];
+        let mut node = super::super::onnx_proto::make_node(
+            "Unsqueeze",
+            vec!["x".into()],
+            vec!["y".into()],
+            vec![],
+        );
+        node.attribute
+            .push(super::super::onnx_proto::AttributeProto {
+                name: "axes".to_string(),
+                ints: vec![0, 0],
+                ..Default::default()
+            });
+        assert!(eval_unsqueeze(&node, &inputs).is_none());
+    }
+
+    #[test]
+    fn slice_bails_on_non_default_steps() {
+        let data = ConstVal::I64(vec![10, 20, 30, 40], vec![4]);
+        let starts = ConstVal::I64(vec![0], vec![1]);
+        let ends = ConstVal::I64(vec![4], vec![1]);
+        let steps = ConstVal::I64(vec![2], vec![1]);
+        let inputs: Vec<Option<&ConstVal>> =
+            vec![Some(&data), Some(&starts), Some(&ends), None, Some(&steps)];
+        assert!(eval_slice(&inputs).is_none());
+    }
+
+    #[test]
+    fn slice_bails_on_non_zero_axis() {
+        let data = ConstVal::I64(vec![10, 20, 30], vec![3]);
+        let starts = ConstVal::I64(vec![0], vec![1]);
+        let ends = ConstVal::I64(vec![2], vec![1]);
+        let axes = ConstVal::I64(vec![1], vec![1]);
+        let inputs: Vec<Option<&ConstVal>> =
+            vec![Some(&data), Some(&starts), Some(&ends), Some(&axes)];
+        assert!(eval_slice(&inputs).is_none());
     }
 }

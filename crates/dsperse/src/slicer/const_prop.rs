@@ -338,7 +338,7 @@ fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
                 .collect();
             Some(ConstVal::I64(result?, dims, *dt))
         }
-        ConstVal::F32(data, _, _) => {
+        ConstVal::F32(data, _, dt) => {
             let len = data.len() as i64;
             let result: Option<Vec<f32>> = indices
                 .iter()
@@ -351,7 +351,7 @@ fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
                     }
                 })
                 .collect();
-            Some(ConstVal::F32(result?, dims, TensorProto::FLOAT))
+            Some(ConstVal::F32(result?, dims, *dt))
         }
         ConstVal::ShapeOnly(_) => None,
     }

@@ -61,11 +61,10 @@ impl CombinedRun {
         let mut pending_slices = HashSet::new();
         for slice in &model_meta.slices {
             let slice_id = format!("slice_{}", slice.index);
-            if chain
-                .nodes
-                .get(&slice_id)
-                .is_some_and(|node| node.use_circuit)
-            {
+            let node = chain.nodes.get(&slice_id).ok_or_else(|| {
+                DsperseError::Pipeline(format!("execution chain missing node for {slice_id}"))
+            })?;
+            if node.use_circuit {
                 pending_slices.insert(slice_id);
             }
         }

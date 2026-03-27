@@ -201,10 +201,10 @@ fn evaluate(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Vec<(Strin
         "Add" => binary_f32(inputs, |a, b| a + b),
         "Sub" => binary_f32(inputs, |a, b| a - b),
         "Mul" => binary_f32(inputs, |a, b| a * b),
-        "Div" => binary_f32(inputs, |a, b| if b != 0.0 { a / b } else { 0.0 }),
+        "Div" => binary_f32(inputs, |a, b| a / b),
         "Unsqueeze" => eval_unsqueeze(node, inputs),
         "Concat" => eval_concat(node, inputs),
-        "Reshape" => eval_reshape(inputs),
+        "Reshape" => eval_reshape(node, inputs),
         "ConstantOfShape" => eval_constant_of_shape(node, inputs),
         _ => None,
     }?;
@@ -335,7 +335,7 @@ fn binary_f32(inputs: &[Option<&ConstVal>], f: impl Fn(f32, f32) -> f32) -> Opti
         bv.iter().map(|&bv| f(av[0], bv)).collect()
     } else if bv.len() == 1 {
         av.iter().map(|&av| f(av, bv[0])).collect()
-    } else if av.len() == bv.len() {
+    } else if a.dims() == b.dims() {
         av.iter().zip(&bv).map(|(&a, &b)| f(a, b)).collect()
     } else {
         return None;
@@ -385,17 +385,22 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
     Some(ConstVal::I64(result.clone(), vec![result.len() as i64]))
 }
 
-fn eval_reshape(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
+fn eval_reshape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let data = inp(inputs, 0)?;
     let raw_shape = inp(inputs, 1)?.as_i64()?;
     let old_dims = data.dims();
     let total_elems: i64 = old_dims.iter().product();
+    let allowzero = attr_int(node, "allowzero").unwrap_or(0) != 0;
+
+    if raw_shape.iter().filter(|&&d| d == -1).count() > 1 {
+        return None;
+    }
 
     let mut shape: Vec<i64> = raw_shape
         .iter()
         .enumerate()
         .map(|(i, &d)| {
-            if d == 0 {
+            if d == 0 && !allowzero {
                 old_dims.get(i).copied().unwrap_or(1)
             } else {
                 d
@@ -405,9 +410,15 @@ fn eval_reshape(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
 
     if let Some(neg_pos) = shape.iter().position(|&d| d == -1) {
         let known: i64 = shape.iter().filter(|&&d| d > 0).product();
-        if known > 0 {
-            shape[neg_pos] = total_elems / known;
+        if known <= 0 || total_elems % known != 0 {
+            return None;
         }
+        shape[neg_pos] = total_elems / known;
+    }
+
+    let result_elems: i64 = shape.iter().product();
+    if result_elems != total_elems {
+        return None;
     }
 
     match data {

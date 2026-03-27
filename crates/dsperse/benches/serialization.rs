@@ -30,6 +30,7 @@ fn make_slice_metadata(index: usize) -> SliceMetadata {
         },
         tiling: None,
         channel_split: None,
+        dim_split: None,
         compilation: Compilation::default(),
         slice_metadata: Some(format!("slice_{index}/metadata.msgpack")),
         slice_metadata_relative_path: Some(format!("slice_{index}/metadata.msgpack")),

@@ -121,10 +121,10 @@ impl ConstVal {
     }
 }
 
-pub fn propagate_constants(model: &mut ModelProto) -> usize {
+pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
-        None => return 0,
+        None => return HashSet::new(),
     };
 
     let mut known: HashMap<String, ConstVal> = HashMap::new();
@@ -173,11 +173,12 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
     }
 
     if evaluated.is_empty() {
-        return 0;
+        return HashSet::new();
     }
 
     let existing: HashSet<String> = graph.initializer.iter().map(|i| i.name.clone()).collect();
     let mut new_inits: Vec<TensorProto> = Vec::new();
+    let mut propagated_names: HashSet<String> = HashSet::new();
     for idx in &evaluated {
         for out in &graph.node[*idx].output {
             if !out.is_empty()
@@ -185,6 +186,7 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
                 && let Some(val) = known.get(out)
                 && let Some(tensor) = val.clone().into_tensor(out)
             {
+                propagated_names.insert(out.clone());
                 new_inits.push(tensor);
             }
         }
@@ -202,7 +204,7 @@ pub fn propagate_constants(model: &mut ModelProto) -> usize {
     if count > 0 {
         tracing::info!(count, "propagated constant subgraphs into initializers");
     }
-    count
+    propagated_names
 }
 
 fn can_evaluate(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {
@@ -650,9 +652,9 @@ mod tests {
         };
 
         onnx_proto::fold_constant_nodes(&mut model);
-        let count = propagate_constants(&mut model);
+        let propagated = propagate_constants(&mut model);
 
-        assert!(count > 0);
+        assert!(!propagated.is_empty());
         let graph = model.graph.as_ref().unwrap();
         assert!(graph.node.is_empty());
         let init = graph
@@ -729,8 +731,8 @@ mod tests {
             ..Default::default()
         };
 
-        let count = propagate_constants(&mut model);
-        assert_eq!(count, 4);
+        let propagated = propagate_constants(&mut model);
+        assert_eq!(propagated.len(), 4);
 
         let graph = model.graph.as_ref().unwrap();
         assert!(graph.node.is_empty());
@@ -880,8 +882,8 @@ mod tests {
             ..Default::default()
         };
 
-        let count = propagate_constants(&mut model);
-        assert_eq!(count, 1);
+        let propagated = propagate_constants(&mut model);
+        assert_eq!(propagated.len(), 1);
 
         let graph = model.graph.as_ref().unwrap();
         assert!(graph.node.is_empty());

@@ -213,11 +213,58 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
         return tensor.float_data.clone();
     }
     if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::FLOAT {
-        return tensor
-            .raw_data
-            .chunks_exact(4)
+        let chunks = tensor.raw_data.chunks_exact(4);
+        if !chunks.remainder().is_empty() {
+            return Vec::new();
+        }
+        return chunks
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
+    }
+    if !tensor.int64_data.is_empty() {
+        return tensor.int64_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.int32_data.is_empty() {
+        return tensor.int32_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.double_data.is_empty() {
+        return tensor.double_data.iter().map(|&v| v as f32).collect();
+    }
+    if !tensor.raw_data.is_empty() {
+        match tensor.data_type {
+            TensorProto::INT64 => {
+                let chunks = tensor.raw_data.chunks_exact(8);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
+                    .map(|c| {
+                        i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
+                    })
+                    .collect();
+            }
+            TensorProto::INT32 => {
+                let chunks = tensor.raw_data.chunks_exact(4);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
+                    .collect();
+            }
+            TensorProto::DOUBLE => {
+                let chunks = tensor.raw_data.chunks_exact(8);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
+                    .map(|c| {
+                        f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
     }
     Vec::new()
 }

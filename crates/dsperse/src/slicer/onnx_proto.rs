@@ -213,9 +213,11 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
         return tensor.float_data.clone();
     }
     if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::FLOAT {
-        return tensor
-            .raw_data
-            .chunks_exact(4)
+        let chunks = tensor.raw_data.chunks_exact(4);
+        if !chunks.remainder().is_empty() {
+            return Vec::new();
+        }
+        return chunks
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
     }
@@ -231,25 +233,31 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     if !tensor.raw_data.is_empty() {
         match tensor.data_type {
             TensorProto::INT64 => {
-                return tensor
-                    .raw_data
-                    .chunks_exact(8)
+                let chunks = tensor.raw_data.chunks_exact(8);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
                     .map(|c| {
                         i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
                     })
                     .collect();
             }
             TensorProto::INT32 => {
-                return tensor
-                    .raw_data
-                    .chunks_exact(4)
+                let chunks = tensor.raw_data.chunks_exact(4);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f32)
                     .collect();
             }
             TensorProto::DOUBLE => {
-                return tensor
-                    .raw_data
-                    .chunks_exact(8)
+                let chunks = tensor.raw_data.chunks_exact(8);
+                if !chunks.remainder().is_empty() {
+                    return Vec::new();
+                }
+                return chunks
                     .map(|c| {
                         f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f32
                     })

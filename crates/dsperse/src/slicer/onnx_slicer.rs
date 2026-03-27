@@ -9,6 +9,7 @@ use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
     Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
 };
+use crate::schema::tiling::DimSplitInfo;
 
 pub fn slice_model(
     onnx_path: &Path,
@@ -51,18 +52,56 @@ pub fn slice_model(
 
     let segment_ranges = super::build_segment_ranges(&slice_points, None);
 
+    let trimmed_points = &slice_points[..slice_points.len().saturating_sub(1)];
+
     let mut tiled_info = HashMap::new();
-    if tile_size.is_some() {
-        let trimmed_points = &slice_points[..slice_points.len().saturating_sub(1)];
-        for (seg_idx, _) in segment_ranges.iter().enumerate() {
-            let slice_model = materializer::materialize_slice_model(
-                &model,
-                trimmed_points,
-                &traced_shapes,
-                seg_idx,
-            )?;
-            if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
-                tiled_info.insert(seg_idx, detection);
+    let mut dim_split_info: HashMap<usize, autotiler::DimSplitDetection> = HashMap::new();
+    for (seg_idx, _) in segment_ranges.iter().enumerate() {
+        let slice_model =
+            materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
+        if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
+            tiled_info.insert(seg_idx, detection);
+            continue;
+        }
+        if let Some(graph) = slice_model.graph.as_ref() {
+            let init_names: HashSet<String> =
+                graph.initializer.iter().map(|t| t.name.clone()).collect();
+            let mut slice_shapes: HashMap<String, Vec<i64>> = HashMap::new();
+            for vi in graph
+                .input
+                .iter()
+                .chain(graph.output.iter())
+                .chain(graph.value_info.iter())
+            {
+                let dims = onnx_proto::vi_shape(vi);
+                if !dims.is_empty() {
+                    slice_shapes.insert(vi.name.clone(), dims);
+                }
+            }
+            for init in &graph.initializer {
+                slice_shapes
+                    .entry(init.name.clone())
+                    .or_insert_with(|| init.dims.to_vec());
+            }
+            for (name, shape) in &traced_shapes {
+                slice_shapes
+                    .entry(name.clone())
+                    .or_insert_with(|| shape.clone());
+            }
+            if let Some(detection) =
+                autotiler::detect_dim_split(&graph.node, &slice_shapes, &init_names)
+            {
+                tracing::info!(
+                    slice = seg_idx,
+                    estimated = detection.estimated_constraints,
+                    num_groups = detection.num_groups,
+                    "dim-split candidate detected"
+                );
+                tracing::warn!(
+                    slice = seg_idx,
+                    "dim-split detected but compilation support pending"
+                );
+                dim_split_info.insert(seg_idx, detection);
             }
         }
     }
@@ -73,6 +112,7 @@ pub fn slice_model(
         &segment_ranges,
         &traced_shapes,
         &tiled_info,
+        &dim_split_info,
     );
 
     let mut metadata = ModelMetadata {
@@ -109,6 +149,7 @@ fn build_slice_metadata(
     segment_ranges: &[(usize, usize)],
     traced_shapes: &HashMap<String, Vec<i64>>,
     tiled_info: &HashMap<usize, autotiler::TilingDetection>,
+    dim_split_info: &HashMap<usize, autotiler::DimSplitDetection>,
 ) -> Vec<SliceMetadata> {
     let mut slices = Vec::new();
 
@@ -194,6 +235,19 @@ fn build_slice_metadata(
             }
         }
 
+        let dim_split = dim_split_info.get(&seg_idx).map(|d| DimSplitInfo {
+            slice_idx: seg_idx,
+            split_kind: d.split_kind.clone(),
+            split_dim: d.split_dim,
+            dim_size: d.dim_size,
+            num_groups: d.num_groups,
+            elements_per_group: d.elements_per_group,
+            input_name: d.input_name.clone(),
+            output_name: d.output_name.clone(),
+            concat_axis: d.concat_axis,
+            groups: Vec::new(),
+        });
+
         slices.push(SliceMetadata {
             index: seg_idx,
             filename: filename.clone(),
@@ -205,6 +259,7 @@ fn build_slice_metadata(
             dependencies,
             tiling,
             channel_split,
+            dim_split,
             compilation: Compilation::default(),
             slice_metadata: None,
             slice_metadata_relative_path: None,

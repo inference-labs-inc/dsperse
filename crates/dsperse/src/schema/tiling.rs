@@ -141,6 +141,53 @@ where
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DimSplitKind {
+    #[default]
+    MatMulOutputDim,
+    HeadDim,
+    BatchDim,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DimSplitGroupInfo {
+    #[serde(default)]
+    pub group_idx: usize,
+    #[serde(default)]
+    pub dim_start: usize,
+    #[serde(default)]
+    pub dim_end: usize,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jstprove_circuit_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DimSplitInfo {
+    #[serde(default)]
+    pub slice_idx: usize,
+    #[serde(default)]
+    pub split_kind: DimSplitKind,
+    #[serde(default)]
+    pub split_dim: usize,
+    #[serde(default)]
+    pub dim_size: usize,
+    #[serde(default = "default_one")]
+    pub num_groups: usize,
+    #[serde(default)]
+    pub elements_per_group: usize,
+    #[serde(default = "default_input_name")]
+    pub input_name: String,
+    #[serde(default = "default_output_name")]
+    pub output_name: String,
+    #[serde(default)]
+    pub concat_axis: usize,
+    #[serde(default)]
+    pub groups: Vec<DimSplitGroupInfo>,
+}
+
 fn default_input_name() -> String {
     "input".to_string()
 }

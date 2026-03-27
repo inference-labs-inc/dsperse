@@ -1,9 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
-use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo};
+use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
 fn try_pair(v: &[i64]) -> Option<[i64; 2]> {
     if v.len() == 2 {
@@ -586,6 +586,184 @@ pub fn detect_tiling_needs(
                 stride: [1, 1],
             });
         }
+    }
+
+    None
+}
+
+pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 500_000;
+
+#[derive(Debug, Clone)]
+pub struct DimSplitDetection {
+    pub split_kind: DimSplitKind,
+    pub split_dim: usize,
+    pub dim_size: usize,
+    pub num_groups: usize,
+    pub elements_per_group: usize,
+    pub input_name: String,
+    pub output_name: String,
+    pub concat_axis: usize,
+    pub estimated_constraints: u64,
+    pub weight_name: Option<String>,
+}
+
+pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
+    let mut total: u64 = 0;
+    for node in nodes {
+        let output_elements: u64 = node
+            .output
+            .first()
+            .and_then(|name| shapes.get(name))
+            .map(|s| s.iter().filter(|&&d| d > 0).map(|&d| d as u64).product())
+            .unwrap_or(0);
+
+        let cost = match node.op_type.as_str() {
+            "MatMul" | "Gemm" => {
+                let input_last_dim: u64 = node
+                    .input
+                    .first()
+                    .and_then(|name| shapes.get(name))
+                    .and_then(|s| s.last())
+                    .map(|&d| d.max(0) as u64)
+                    .unwrap_or(1);
+                output_elements
+                    .saturating_mul(input_last_dim)
+                    .saturating_mul(2)
+            }
+            "Softmax" => output_elements.saturating_mul(4),
+            "Conv" => output_elements.saturating_mul(3),
+            _ => output_elements.saturating_mul(2),
+        };
+        total = total.saturating_add(cost);
+    }
+    total
+}
+
+pub fn detect_dim_split(
+    nodes: &[NodeProto],
+    shapes: &HashMap<String, Vec<i64>>,
+    initializer_names: &HashSet<String>,
+) -> Option<DimSplitDetection> {
+    let estimated = estimate_slice_constraints(nodes, shapes);
+    if estimated <= MAX_ESTIMATED_CONSTRAINTS {
+        return None;
+    }
+
+    let target_groups = estimated.div_ceil(MAX_ESTIMATED_CONSTRAINTS) as usize;
+
+    for node in nodes {
+        if matches!(node.op_type.as_str(), "MatMul" | "Gemm") {
+            let Some(weight_name) = node.input.get(1) else {
+                continue;
+            };
+            if !initializer_names.contains(weight_name) {
+                continue;
+            }
+            let Some(weight_shape) = shapes.get(weight_name) else {
+                continue;
+            };
+            if weight_shape.len() != 2 {
+                continue;
+            }
+            let trans_b = node.op_type == "Gemm"
+                && super::onnx_proto::get_attribute_int(node, "transB").unwrap_or(0) == 1;
+            let (n_dim, split_dim) = if trans_b {
+                (weight_shape[0] as usize, 0)
+            } else {
+                (weight_shape[1] as usize, 1)
+            };
+            if n_dim <= 1 {
+                continue;
+            }
+            let num_groups = target_groups.min(n_dim);
+            let elements_per_group = n_dim.div_ceil(num_groups);
+            let Some(output_shape) = node.output.first().and_then(|name| shapes.get(name)) else {
+                continue;
+            };
+            let concat_axis = output_shape.len().saturating_sub(1);
+            let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
+                continue;
+            };
+            let Some(output_name) = node.output.first().filter(|s| !s.is_empty()).cloned() else {
+                continue;
+            };
+            return Some(DimSplitDetection {
+                split_kind: DimSplitKind::MatMulOutputDim,
+                split_dim,
+                dim_size: n_dim,
+                num_groups,
+                elements_per_group,
+                input_name,
+                output_name,
+                concat_axis,
+                estimated_constraints: estimated,
+                weight_name: Some(weight_name.clone()),
+            });
+        }
+    }
+
+    for node in nodes {
+        if node.op_type == "Softmax" {
+            let Some(input_shape) = node.input.first().and_then(|name| shapes.get(name)) else {
+                continue;
+            };
+            if input_shape.len() == 4 && input_shape[1] > 1 {
+                let head_dim = input_shape[1] as usize;
+                let num_groups = target_groups.min(head_dim);
+                let elements_per_group = head_dim.div_ceil(num_groups);
+                let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
+                    continue;
+                };
+                let Some(output_name) = node.output.first().filter(|s| !s.is_empty()).cloned()
+                else {
+                    continue;
+                };
+                return Some(DimSplitDetection {
+                    split_kind: DimSplitKind::HeadDim,
+                    split_dim: 1,
+                    dim_size: head_dim,
+                    num_groups,
+                    elements_per_group,
+                    input_name,
+                    output_name,
+                    concat_axis: 1,
+                    estimated_constraints: estimated,
+                    weight_name: None,
+                });
+            }
+        }
+    }
+
+    let first_input_shape = nodes
+        .first()
+        .and_then(|n| n.input.first())
+        .and_then(|name| shapes.get(name))?;
+    if !first_input_shape.is_empty() && first_input_shape[0] > 1 {
+        let batch_dim = first_input_shape[0] as usize;
+        let num_groups = target_groups.min(batch_dim);
+        let elements_per_group = batch_dim.div_ceil(num_groups);
+        let input_name = nodes
+            .first()
+            .and_then(|n| n.input.first())
+            .filter(|s| !s.is_empty())
+            .cloned()?;
+        let output_name = nodes
+            .last()
+            .and_then(|n| n.output.first())
+            .filter(|s| !s.is_empty())
+            .cloned()?;
+        return Some(DimSplitDetection {
+            split_kind: DimSplitKind::BatchDim,
+            split_dim: 0,
+            dim_size: batch_dim,
+            num_groups,
+            elements_per_group,
+            input_name,
+            output_name,
+            concat_axis: 0,
+            estimated_constraints: estimated,
+            weight_name: None,
+        });
     }
 
     None
@@ -1718,5 +1896,62 @@ mod tests {
         let sliced = slice_weights(&weights, 0, 3).unwrap();
         assert_eq!(sliced.dims, vec![2, 3, 2, 4]);
         assert_eq!(sliced.data, data);
+    }
+
+    #[test]
+    fn detect_dim_split_gemm_trans_b() {
+        use super::onnx_proto::{NodeProto, make_attribute_int};
+
+        let node = NodeProto {
+            op_type: "Gemm".to_string(),
+            input: vec![
+                "input".to_string(),
+                "weight".to_string(),
+                "bias".to_string(),
+            ],
+            output: vec!["output".to_string()],
+            attribute: vec![make_attribute_int("transB", 1)],
+            ..Default::default()
+        };
+
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 145, 384]);
+        shapes.insert("weight".to_string(), vec![1536, 384]);
+        shapes.insert("output".to_string(), vec![4, 145, 1536]);
+
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(detection.is_some());
+        let d = detection.unwrap();
+        assert_eq!(d.split_dim, 0);
+        assert_eq!(d.dim_size, 1536);
+        assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
+    }
+
+    #[test]
+    fn detect_dim_split_matmul_no_trans() {
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 145, 384]);
+        shapes.insert("weight".to_string(), vec![384, 1536]);
+        shapes.insert("output".to_string(), vec![4, 145, 1536]);
+
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(detection.is_some());
+        let d = detection.unwrap();
+        assert_eq!(d.split_dim, 1);
+        assert_eq!(d.dim_size, 1536);
+        assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
     }
 }

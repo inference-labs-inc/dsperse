@@ -459,6 +459,7 @@ mod tests {
             },
             tiling: None,
             channel_split: None,
+            dim_split: None,
             compilation: Compilation::default(),
             slice_metadata: None,
             slice_metadata_relative_path: None,

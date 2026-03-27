@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::tiling::{ChannelSplitInfo, TilingInfo};
+use super::tiling::{ChannelSplitInfo, DimSplitInfo, TilingInfo};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,6 +101,8 @@ pub struct SliceMetadata {
     pub tiling: Option<TilingInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_split: Option<ChannelSplitInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_split: Option<DimSplitInfo>,
     #[serde(default)]
     pub compilation: Compilation,
     #[serde(default, skip_serializing_if = "Option::is_none")]

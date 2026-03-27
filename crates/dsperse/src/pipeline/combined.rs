@@ -143,8 +143,8 @@ impl CombinedRun {
         Ok(work_items)
     }
 
-    pub fn mark_slice_done(&mut self, slice_id: &str) {
-        self.pending_slices.remove(slice_id);
+    pub fn mark_slice_done(&mut self, slice_id: &str) -> bool {
+        self.pending_slices.remove(slice_id)
     }
 
     pub fn is_complete(&self) -> bool {

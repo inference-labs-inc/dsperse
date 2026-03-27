@@ -34,13 +34,20 @@ impl ConstVal {
                 float_data: data,
                 ..Default::default()
             }),
-            Self::I64(data, dims, dt) => Some(TensorProto {
-                name: name.to_string(),
-                data_type: dt,
-                dims,
-                int64_data: data,
-                ..Default::default()
-            }),
+            Self::I64(data, dims, dt) => {
+                let mut tensor = TensorProto {
+                    name: name.to_string(),
+                    data_type: dt,
+                    dims,
+                    ..Default::default()
+                };
+                if dt == TensorProto::INT32 {
+                    tensor.int32_data = data.iter().map(|&v| v as i32).collect();
+                } else {
+                    tensor.int64_data = data;
+                }
+                Some(tensor)
+            }
             Self::ShapeOnly(_) => None,
         }
     }

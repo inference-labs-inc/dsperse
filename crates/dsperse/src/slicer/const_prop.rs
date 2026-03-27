@@ -20,6 +20,13 @@ impl ConstVal {
             return Some(Self::I64(v, dims, dt));
         }
         if !dims.is_empty() {
+            if dims.contains(&0) {
+                return if dt == TensorProto::FLOAT || dt == TensorProto::DOUBLE {
+                    Some(Self::F32(vec![], dims, dt))
+                } else {
+                    Some(Self::I64(vec![], dims, dt))
+                };
+            }
             return Some(Self::ShapeOnly(dims));
         }
         None
@@ -316,7 +323,7 @@ fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
     let indices = inp(inputs, 1)?.as_i64()?;
     let dims = inp(inputs, 1)?.dims().to_vec();
     match data_val {
-        ConstVal::I64(data, _, _) => {
+        ConstVal::I64(data, _, dt) => {
             let len = data.len() as i64;
             let result: Option<Vec<i64>> = indices
                 .iter()
@@ -329,7 +336,7 @@ fn eval_gather(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
                     }
                 })
                 .collect();
-            Some(ConstVal::I64(result?, dims, TensorProto::INT64))
+            Some(ConstVal::I64(result?, dims, *dt))
         }
         ConstVal::F32(data, _, _) => {
             let len = data.len() as i64;
@@ -372,7 +379,7 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     }
 
     match data {
-        ConstVal::I64(vals, _, _) => {
+        ConstVal::I64(vals, _, dt) => {
             let len = vals.len() as i64;
             let s = normalize_idx(*starts.first()?, len);
             let e = normalize_idx(*ends.first()?, len);
@@ -380,10 +387,10 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
             Some(ConstVal::I64(
                 result.clone(),
                 vec![result.len() as i64],
-                TensorProto::INT64,
+                *dt,
             ))
         }
-        ConstVal::F32(vals, _, _) => {
+        ConstVal::F32(vals, _, dt) => {
             let len = vals.len() as i64;
             let s = normalize_idx(*starts.first()?, len);
             let e = normalize_idx(*ends.first()?, len);
@@ -391,7 +398,7 @@ fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
             Some(ConstVal::F32(
                 result.clone(),
                 vec![result.len() as i64],
-                TensorProto::FLOAT,
+                *dt,
             ))
         }
         ConstVal::ShapeOnly(_) => None,
@@ -414,7 +421,7 @@ fn eval_cast(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal>
         }
     } else if to == TensorProto::INT64 {
         match t {
-            ConstVal::I64(v, _, dt) => Some(ConstVal::I64(v.clone(), dims, *dt)),
+            ConstVal::I64(v, _, _) => Some(ConstVal::I64(v.clone(), dims, TensorProto::INT64)),
             ConstVal::F32(v, _, _) => Some(ConstVal::I64(
                 v.iter().map(|&f| f as i64).collect(),
                 dims,
@@ -495,7 +502,7 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
         return None;
     }
     match first {
-        ConstVal::I64(..) => {
+        ConstVal::I64(_, _, dt) => {
             let mut result: Vec<i64> = Vec::new();
             for i in inputs {
                 result.extend(i.as_ref()?.as_i64()?);
@@ -503,10 +510,10 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
             Some(ConstVal::I64(
                 result.clone(),
                 vec![result.len() as i64],
-                TensorProto::INT64,
+                *dt,
             ))
         }
-        ConstVal::F32(..) => {
+        ConstVal::F32(_, _, dt) => {
             let mut result: Vec<f32> = Vec::new();
             for i in inputs {
                 result.extend(i.as_ref()?.as_f32()?);
@@ -514,7 +521,7 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
             Some(ConstVal::F32(
                 result.clone(),
                 vec![result.len() as i64],
-                TensorProto::FLOAT,
+                *dt,
             ))
         }
         ConstVal::ShapeOnly(_) => None,
@@ -570,12 +577,15 @@ fn eval_constant_of_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Opt
         return None;
     }
     let total: usize = shape.iter().map(|&d| d as usize).product();
-    let value_tensor = node
+    let value_attr = node
         .attribute
         .iter()
-        .find(|a| a.name == "value")?
-        .t
-        .as_ref()?;
+        .find(|a| a.name == "value")
+        .and_then(|a| a.t.as_ref());
+
+    let Some(value_tensor) = value_attr else {
+        return Some(ConstVal::F32(vec![0.0; total], shape, TensorProto::FLOAT));
+    };
 
     if let Some(fv) = ConstVal::extract_f32(value_tensor) {
         let fill = fv.first().copied().unwrap_or(0.0);

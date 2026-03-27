@@ -4,6 +4,7 @@ use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, Circ
 use jstprove_circuits::expander_metadata;
 
 use crate::error::{DsperseError, Result};
+use crate::slicer::onnx_proto::FOLDED_CONSTANT_PREFIX;
 
 pub fn prepare_jstprove_artifacts(
     onnx_path: &Path,
@@ -16,6 +17,9 @@ pub fn prepare_jstprove_artifacts(
     if weights_as_inputs {
         params.weights_as_inputs = true;
         for wb in &meta.wandb.w_and_b {
+            if wb.name.starts_with(FOLDED_CONSTANT_PREFIX) {
+                continue;
+            }
             let shape = wb.shape.get(&wb.name).cloned().ok_or_else(|| {
                 DsperseError::Pipeline(format!(
                     "wandb entry '{}' missing shape for WAI input population",

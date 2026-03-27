@@ -241,6 +241,33 @@ fn normalize_idx(val: i64, len: i64) -> usize {
     }) as usize
 }
 
+fn broadcast_dims(a: &[i64], b: &[i64]) -> Option<Vec<i64>> {
+    let rank = a.len().max(b.len());
+    let mut result = vec![1i64; rank];
+    for i in 0..rank {
+        let da = if i < rank - a.len() {
+            1
+        } else {
+            a[i - (rank - a.len())]
+        };
+        let db = if i < rank - b.len() {
+            1
+        } else {
+            b[i - (rank - b.len())]
+        };
+        if da == db {
+            result[i] = da;
+        } else if da == 1 {
+            result[i] = db;
+        } else if db == 1 {
+            result[i] = da;
+        } else {
+            return None;
+        }
+    }
+    Some(result)
+}
+
 fn eval_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let t = inp(inputs, 0)?;
     let rank = t.dims().len() as i64;
@@ -253,15 +280,15 @@ fn eval_shape(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal
 fn eval_gather(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let data = inp(inputs, 0)?.as_i64()?;
     let indices = inp(inputs, 1)?.as_i64()?;
-    let result: Vec<i64> = indices
+    let result: Option<Vec<i64>> = indices
         .iter()
         .map(|&i| {
             let idx = normalize_idx(i, data.len() as i64);
-            data.get(idx).copied().unwrap_or(0)
+            data.get(idx).copied()
         })
         .collect();
     let dims = inp(inputs, 1)?.dims().to_vec();
-    Some(ConstVal::I64(result, dims))
+    Some(ConstVal::I64(result?, dims))
 }
 
 fn eval_slice(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
@@ -313,12 +340,8 @@ fn binary_f32(inputs: &[Option<&ConstVal>], f: impl Fn(f32, f32) -> f32) -> Opti
     } else {
         return None;
     };
-    let dims = if a.dims().len() >= b.dims().len() {
-        a.dims()
-    } else {
-        b.dims()
-    };
-    Some(ConstVal::F32(result, dims.to_vec()))
+    let dims = broadcast_dims(a.dims(), b.dims())?;
+    Some(ConstVal::F32(result, dims))
 }
 
 fn eval_unsqueeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
@@ -328,12 +351,20 @@ fn eval_unsqueeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Cons
     } else {
         attr_ints(node, "axes")?
     };
-    let mut dims = t.dims().to_vec();
-    let mut sorted = axes;
-    sorted.sort();
-    for &ax in &sorted {
-        let pos = normalize_idx(ax, dims.len() as i64 + 1);
-        dims.insert(pos.min(dims.len()), 1);
+    let out_rank = t.dims().len() + axes.len();
+    let normalized: Vec<usize> = axes
+        .iter()
+        .map(|&ax| normalize_idx(ax, out_rank as i64))
+        .collect();
+    let mut dims: Vec<i64> = Vec::with_capacity(out_rank);
+    let mut src = 0;
+    for i in 0..out_rank {
+        if normalized.contains(&i) {
+            dims.push(1);
+        } else {
+            dims.push(t.dims().get(src).copied().unwrap_or(1));
+            src += 1;
+        }
     }
     match t {
         ConstVal::F32(v, _) => Some(ConstVal::F32(v.clone(), dims)),
@@ -356,7 +387,29 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
 
 fn eval_reshape(inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
     let data = inp(inputs, 0)?;
-    let shape = inp(inputs, 1)?.as_i64()?;
+    let raw_shape = inp(inputs, 1)?.as_i64()?;
+    let old_dims = data.dims();
+    let total_elems: i64 = old_dims.iter().product();
+
+    let mut shape: Vec<i64> = raw_shape
+        .iter()
+        .enumerate()
+        .map(|(i, &d)| {
+            if d == 0 {
+                old_dims.get(i).copied().unwrap_or(1)
+            } else {
+                d
+            }
+        })
+        .collect();
+
+    if let Some(neg_pos) = shape.iter().position(|&d| d == -1) {
+        let known: i64 = shape.iter().filter(|&&d| d > 0).product();
+        if known > 0 {
+            shape[neg_pos] = total_elems / known;
+        }
+    }
+
     match data {
         ConstVal::F32(v, _) => Some(ConstVal::F32(v.clone(), shape)),
         ConstVal::I64(v, _) => Some(ConstVal::I64(v.clone(), shape)),

@@ -108,7 +108,8 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
 
         let proof_system = comp["proof_system"]
             .as_str()
-            .unwrap_or(&config.proof_system);
+            .unwrap_or(&config.proof_system)
+            .to_uppercase();
         let comp_name = comp["name"].as_str().unwrap_or(sha);
 
         tracing::info!(sha = %sha, files = files.len(), "registering component");

@@ -235,15 +235,7 @@ pub fn package_content_addressed(
                 src.display()
             )));
         }
-        let meta = src
-            .symlink_metadata()
-            .map_err(|e| DsperseError::io(e, &src))?;
-        if meta.file_type().is_symlink() {
-            return Err(DsperseError::Other(format!(
-                "model artifact '{}' is a symlink, refusing to package",
-                filename
-            )));
-        }
+        reject_symlink_path(&src)?;
         let data = fs::read(&src).map_err(|e| DsperseError::io(e, &src))?;
         let hash = sha256_bytes(&data);
         if !written_wbs.contains(&hash) {
@@ -748,6 +740,54 @@ mod tests {
             assert!(art["sha256"].as_str().unwrap().len() == 64);
             assert!(art["size_bytes"].as_u64().unwrap() > 0);
         }
+    }
+
+    #[test]
+    fn test_missing_model_onnx_fails() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+        fs::remove_file(slices_dir.join("model.onnx")).unwrap();
+
+        let output_dir = tmp.path().join("output");
+        let config = PackageConfig {
+            output_dir,
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let err = package_content_addressed(&slices_dir, &config).unwrap_err();
+        assert!(err.to_string().contains("model.onnx"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlinked_artifact_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let slices_dir = tmp.path().join("model").join("slices");
+        fs::create_dir_all(&slices_dir).unwrap();
+        create_test_model_metadata(&slices_dir, 1);
+        fs::remove_file(slices_dir.join("model.onnx")).unwrap();
+        let target = tmp.path().join("evil.bin");
+        fs::write(&target, b"evil").unwrap();
+        std::os::unix::fs::symlink(&target, slices_dir.join("model.onnx")).unwrap();
+
+        let output_dir = tmp.path().join("output");
+        let config = PackageConfig {
+            output_dir,
+            cleanup: false,
+            author: None,
+            model_version: None,
+            model_name: None,
+            timeout: None,
+            curve: None,
+        };
+        let err = package_content_addressed(&slices_dir, &config).unwrap_err();
+        assert!(err.to_string().contains("symlink"));
     }
 
     #[test]

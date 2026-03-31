@@ -33,6 +33,7 @@ pub struct PackageResult {
 #[derive(Serialize)]
 struct ArtifactRef {
     sha256: String,
+    role: String,
     filename: String,
     size_bytes: u64,
 }
@@ -238,6 +239,7 @@ pub fn package_content_addressed(
             }
             artifacts.push(ArtifactRef {
                 sha256: hash,
+                role: "artifact".to_string(),
                 filename: (*filename).to_string(),
                 size_bytes: data.len() as u64,
             });

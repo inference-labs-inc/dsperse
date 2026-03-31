@@ -116,11 +116,17 @@ impl CombinedRun {
                 ExecutionStrategy::Single { .. } => {
                     let filtered = &meta.dependencies.filtered_inputs;
                     let mut named = Vec::with_capacity(filtered.len());
+                    let mut flat_elems: Vec<f64> = Vec::new();
                     for name in filtered {
                         let arr = self.tensor_cache.get(name)?;
                         named.push((name.clone(), arr.clone()));
+                        flat_elems.extend(arr.iter());
                     }
-                    let concatenated = self.tensor_cache.gather(filtered)?;
+                    let concatenated = ndarray::ArrayD::from_shape_vec(
+                        ndarray::IxDyn(&[flat_elems.len()]),
+                        flat_elems,
+                    )
+                    .map_err(|e| DsperseError::Pipeline(format!("flatten inputs: {e}")))?;
                     (concatenated, named)
                 }
             };

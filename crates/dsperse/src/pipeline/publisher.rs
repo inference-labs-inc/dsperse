@@ -184,6 +184,9 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     }
 
     let mut all_weight_refs: Vec<&serde_json::Value> = Vec::new();
+    if let Some(artifacts) = manifest["artifacts"].as_array() {
+        all_weight_refs.extend(artifacts);
+    }
     for comp in components {
         if let Some(weights) = comp["weights"].as_array() {
             all_weight_refs.extend(weights);
@@ -308,8 +311,13 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
     let dsperse_version = model_info["dsperse_version"].as_str();
     let jstprove_version = model_info["jstprove_version"].as_str();
 
+    let artifacts = manifest["artifacts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let composition = serde_json::json!({
         "version": 1,
+        "artifacts": artifacts,
         "components": components,
         "dag": dag,
     });

@@ -228,23 +228,37 @@ pub fn package_content_addressed(
     let model_artifact_files = ["metadata.msgpack", "model.onnx"];
     for filename in &model_artifact_files {
         let src = slices_dir.join(filename);
-        if src.is_file() {
-            let data = fs::read(&src).map_err(|e| DsperseError::io(e, &src))?;
-            let hash = sha256_bytes(&data);
-            if !written_wbs.contains(&hash) {
-                let wb_path = wb_dir.join(&hash);
-                fs::write(&wb_path, &data).map_err(|e| DsperseError::io(e, &wb_path))?;
-                total_size += data.len() as u64;
-                written_wbs.insert(hash.clone());
-            }
-            artifacts.push(ArtifactRef {
-                sha256: hash,
-                role: "artifact".to_string(),
-                filename: (*filename).to_string(),
-                size_bytes: data.len() as u64,
-            });
-            tracing::info!(filename, "packaged model artifact");
+        if !src.is_file() {
+            return Err(DsperseError::Other(format!(
+                "required model artifact '{}' not found at {}",
+                filename,
+                src.display()
+            )));
         }
+        let meta = src
+            .symlink_metadata()
+            .map_err(|e| DsperseError::io(e, &src))?;
+        if meta.file_type().is_symlink() {
+            return Err(DsperseError::Other(format!(
+                "model artifact '{}' is a symlink, refusing to package",
+                filename
+            )));
+        }
+        let data = fs::read(&src).map_err(|e| DsperseError::io(e, &src))?;
+        let hash = sha256_bytes(&data);
+        if !written_wbs.contains(&hash) {
+            let wb_path = wb_dir.join(&hash);
+            fs::write(&wb_path, &data).map_err(|e| DsperseError::io(e, &wb_path))?;
+            total_size += data.len() as u64;
+            written_wbs.insert(hash.clone());
+        }
+        artifacts.push(ArtifactRef {
+            sha256: hash,
+            role: "artifact".to_string(),
+            filename: (*filename).to_string(),
+            size_bytes: data.len() as u64,
+        });
+        tracing::info!(filename, "packaged model artifact");
     }
 
     let model_name = config
@@ -685,6 +699,15 @@ mod tests {
         };
 
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
+        ensure_test_artifacts(&slices_dir);
+        ensure_test_artifacts(slices_dir);
+    }
+
+    fn ensure_test_artifacts(slices_dir: &Path) {
+        let p = slices_dir.join("model.onnx");
+        if !p.exists() {
+            fs::write(&p, b"fake-onnx-for-test").unwrap();
+        }
     }
 
     #[test]
@@ -708,11 +731,24 @@ mod tests {
         let result = package_content_addressed(&slices_dir, &config).unwrap();
 
         assert_eq!(result.component_count, 3);
-        assert_eq!(result.wb_count, 4);
+        assert_eq!(result.wb_count, 5);
         assert!(result.total_size > 0);
         assert!(output_dir.join("components").is_dir());
         assert!(output_dir.join("wb").is_dir());
         assert!(output_dir.join("manifest.msgpack").is_file());
+
+        let manifest_bytes = fs::read(output_dir.join("manifest.msgpack")).unwrap();
+        let manifest: serde_json::Value = rmp_serde::from_slice(&manifest_bytes).unwrap();
+        let arts = manifest["artifacts"].as_array().unwrap();
+        assert_eq!(arts.len(), 2);
+        let filenames: Vec<&str> = arts.iter().filter_map(|a| a["filename"].as_str()).collect();
+        assert!(filenames.contains(&"metadata.msgpack"));
+        assert!(filenames.contains(&"model.onnx"));
+        for art in arts {
+            assert_eq!(art["role"].as_str().unwrap(), "artifact");
+            assert!(art["sha256"].as_str().unwrap().len() == 64);
+            assert!(art["size_bytes"].as_u64().unwrap() > 0);
+        }
     }
 
     #[test]
@@ -984,7 +1020,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let out_none = tmp.path().join("out_none");
         let out_bn = tmp.path().join("out_bn");
         let out_gl = tmp.path().join("out_gl");
@@ -1227,7 +1263,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
@@ -1242,7 +1278,7 @@ mod tests {
         let result = package_content_addressed(&slices_dir, &config).unwrap();
 
         assert_eq!(result.component_count, 1);
-        assert_eq!(result.wb_count, 4);
+        assert_eq!(result.wb_count, 5);
 
         let manifest: serde_json::Value =
             rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();
@@ -1312,7 +1348,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
@@ -1397,7 +1433,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
             cleanup: false,
@@ -1480,7 +1516,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
             cleanup: false,
@@ -1610,7 +1646,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
@@ -1705,7 +1741,7 @@ mod tests {
             folded_constant_names: vec![],
         };
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-
+        ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
             cleanup: false,

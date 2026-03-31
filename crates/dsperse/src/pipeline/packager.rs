@@ -31,9 +31,18 @@ pub struct PackageResult {
 }
 
 #[derive(Serialize)]
+struct ArtifactRef {
+    sha256: String,
+    filename: String,
+    size_bytes: u64,
+}
+
+#[derive(Serialize)]
 struct Manifest {
     version: u32,
     model: ModelInfo,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    artifacts: Vec<ArtifactRef>,
     components: Vec<ComponentEntry>,
     dag: Vec<DagNode>,
 }
@@ -214,6 +223,28 @@ pub fn package_content_addressed(
         }
     }
 
+    let mut artifacts: Vec<ArtifactRef> = Vec::new();
+    let model_artifact_files = ["metadata.msgpack", "model.onnx"];
+    for filename in &model_artifact_files {
+        let src = slices_dir.join(filename);
+        if src.is_file() {
+            let data = fs::read(&src).map_err(|e| DsperseError::io(e, &src))?;
+            let hash = sha256_bytes(&data);
+            if !written_wbs.contains(&hash) {
+                let wb_path = wb_dir.join(&hash);
+                fs::write(&wb_path, &data).map_err(|e| DsperseError::io(e, &wb_path))?;
+                total_size += data.len() as u64;
+                written_wbs.insert(hash.clone());
+            }
+            artifacts.push(ArtifactRef {
+                sha256: hash,
+                filename: (*filename).to_string(),
+                size_bytes: data.len() as u64,
+            });
+            tracing::info!(filename, "packaged model artifact");
+        }
+    }
+
     let model_name = config
         .model_name
         .clone()
@@ -242,6 +273,7 @@ pub fn package_content_addressed(
             dsperse_version: model_meta.dsperse_version,
             jstprove_version: model_meta.jstprove_version,
         },
+        artifacts,
         components,
         dag: dag_nodes,
     };
@@ -674,7 +706,7 @@ mod tests {
         let result = package_content_addressed(&slices_dir, &config).unwrap();
 
         assert_eq!(result.component_count, 3);
-        assert_eq!(result.wb_count, 3);
+        assert_eq!(result.wb_count, 4);
         assert!(result.total_size > 0);
         assert!(output_dir.join("components").is_dir());
         assert!(output_dir.join("wb").is_dir());
@@ -1208,7 +1240,7 @@ mod tests {
         let result = package_content_addressed(&slices_dir, &config).unwrap();
 
         assert_eq!(result.component_count, 1);
-        assert_eq!(result.wb_count, 3);
+        assert_eq!(result.wb_count, 4);
 
         let manifest: serde_json::Value =
             rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();

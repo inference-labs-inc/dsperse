@@ -699,7 +699,6 @@ mod tests {
         };
 
         meta.save(&slices_dir.join("metadata.msgpack")).unwrap();
-        ensure_test_artifacts(&slices_dir);
         ensure_test_artifacts(slices_dir);
     }
 

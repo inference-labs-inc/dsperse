@@ -26,6 +26,8 @@ use crate::utils::io::{
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 use rmpv::Value;
 
+const MULTI_INPUT_SKIP_PREFIX: &str = "multi-input circuit slices not yet supported";
+
 pub struct RunConfig {
     pub parallel: usize,
     pub batch: bool,
@@ -561,7 +563,7 @@ fn run_combined_inference(
                     method: ExecutionMethod::JstproveGenWitness,
                     success: false,
                     error: Some(format!(
-                        "multi-input circuit slices not yet supported ({activation_input_count} activation inputs)"
+                        "{MULTI_INPUT_SKIP_PREFIX} ({activation_input_count} activation inputs)"
                     )),
                     witness_file: None,
                     tile_exec_infos: Vec::new(),
@@ -719,7 +721,7 @@ fn run_combined_inference(
                 .as_ref()
                 .filter(|w| !w.success)
                 .and_then(|w| w.error.as_ref())
-                .filter(|err| !err.starts_with("multi-input circuit slices not yet supported"))
+                .filter(|err| !err.starts_with(MULTI_INPUT_SKIP_PREFIX))
                 .map(|err| format!("{}: {err}", r.slice_id))
         })
         .next();

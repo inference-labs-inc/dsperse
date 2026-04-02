@@ -6,8 +6,8 @@ pub use jstprove_circuits::Curve;
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
 use jstprove_circuits::onnx::{
-    compile_bn254, compile_goldilocks, compile_goldilocks_ext2, extract_outputs_bn254,
-    prove_bn254, prove_goldilocks, prove_goldilocks_ext2, verify_bn254, verify_goldilocks,
+    compile_bn254, compile_goldilocks, compile_goldilocks_ext2, extract_outputs_bn254, prove_bn254,
+    prove_goldilocks, prove_goldilocks_ext2, verify_bn254, verify_goldilocks,
     verify_goldilocks_ext2, witness_bn254, witness_bn254_from_f64, witness_goldilocks,
     witness_goldilocks_ext2_from_f64, witness_goldilocks_from_f64,
 };

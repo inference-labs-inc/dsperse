@@ -26,8 +26,6 @@ use crate::utils::io::{
 use crate::utils::paths::{find_metadata_path, resolve_relative_path, slice_dir_path};
 use rmpv::Value;
 
-const MULTI_INPUT_SKIP_PREFIX: &str = "multi-input circuit slices not yet supported";
-
 pub struct RunConfig {
     pub parallel: usize,
     pub batch: bool,
@@ -545,35 +543,6 @@ fn run_combined_inference(
             continue;
         }
 
-        let activation_input_count = slice
-            .dependencies
-            .filtered_inputs
-            .iter()
-            .filter(|s| !s.is_empty())
-            .count();
-        if activation_input_count > 1 {
-            tracing::warn!(
-                slice = %slice_id,
-                inputs = activation_input_count,
-                "skipping circuit witness for multi-input slice (not yet supported)"
-            );
-            results.push(ExecutionResultEntry {
-                slice_id: slice_id.clone(),
-                witness_execution: Some(ExecutionInfo {
-                    method: ExecutionMethod::JstproveGenWitness,
-                    success: false,
-                    error: Some(format!(
-                        "{MULTI_INPUT_SKIP_PREFIX} ({activation_input_count} activation inputs)"
-                    )),
-                    witness_file: None,
-                    tile_exec_infos: Vec::new(),
-                }),
-                proof_execution: None,
-                verification_execution: None,
-            });
-            continue;
-        }
-
         let strategy = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?;
 
         if let ExecutionStrategy::ChannelSplit(_) = &strategy {
@@ -721,7 +690,6 @@ fn run_combined_inference(
                 .as_ref()
                 .filter(|w| !w.success)
                 .and_then(|w| w.error.as_ref())
-                .filter(|err| !err.starts_with(MULTI_INPUT_SKIP_PREFIX))
                 .map(|err| format!("{}: {err}", r.slice_id))
         })
         .next();
@@ -912,15 +880,14 @@ fn execute_single(
             )));
         }
 
-        if multi_input {
-            return Err(DsperseError::Pipeline(format!(
-                "{slice_id}: circuit path does not support multiple activation inputs"
-            )));
-        }
+        let named = if multi_input {
+            run_onnx_inference_multi_named(effective_onnx, tensor_cache, &inputs)?
+        } else {
+            let input_tensor = tensor_cache.gather(&inputs[..1])?;
+            run_onnx_inference_named(effective_onnx, &input_tensor)?
+        };
 
-        let input_tensor = tensor_cache.gather(&inputs[..1])?;
-        let named = run_onnx_inference_named(effective_onnx, &input_tensor)?;
-
+        let flat_activations = flatten_cached_inputs(tensor_cache, &inputs)?;
         let witness_bytes = if is_wai {
             generate_wai_witness(
                 backend,
@@ -928,11 +895,10 @@ fn execute_single(
                 &onnx_path,
                 donor_init_map,
                 params.as_ref().unwrap(),
-                &input_tensor,
+                &flat_activations,
             )?
         } else {
-            let flat: Vec<f64> = input_tensor.iter().copied().collect();
-            backend.witness_f64(&circuit_path, &flat, &[])?
+            backend.witness_f64(&circuit_path, &flat_activations, &[])?
         };
 
         let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
@@ -1038,12 +1004,6 @@ fn execute_tiled(
         first_tile_info.and_then(|ti| ti.jstprove_circuit_path.as_deref()),
     )?
     .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
-
-    if multi_input && circuit_path.is_some() {
-        return Err(DsperseError::Pipeline(format!(
-            "{slice_id}: tiled circuit execution does not support multiple activation inputs"
-        )));
-    }
 
     let warm_circuit = match (&circuit_path, &tile_onnx) {
         (Some(cp), Some(onnx_path)) => {
@@ -1197,11 +1157,10 @@ fn execute_tiled(
                     );
                 }
 
+                let flat: Vec<f64> = flatten_tile_inputs(&all_tiles_dyn, tile_idx);
                 let witness_result = if let Some(ref wc) = warm_circuit {
-                    let flat: Vec<f64> = tile_dyn.iter().copied().collect();
                     wc.witness_f64(&flat)
                 } else {
-                    let flat: Vec<f64> = tile_dyn.iter().copied().collect();
                     let cp = circuit_path
                         .as_ref()
                         .expect("circuit_path is Some: guarded by early return");
@@ -1311,8 +1270,6 @@ fn execute_combined_tiled(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let all_names = tiling.all_input_names();
-
     let is_1d = tiling.ndim == 3;
     let all_tiles_dyn = prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?;
 
@@ -1373,12 +1330,6 @@ fn execute_combined_tiled(
         )));
     }
 
-    if all_names.len() > 1 {
-        return Err(DsperseError::Pipeline(format!(
-            "{slice_id}: tiled circuit execution does not support multiple activation inputs"
-        )));
-    }
-
     let warm_circuit = match effective_tile_onnx_ref {
         Some(onnx_path) => {
             let initializers = if is_wai {
@@ -1421,8 +1372,7 @@ fn execute_combined_tiled(
                     );
                 }
 
-                let tile_dyn = all_tiles_dyn[0][tile_idx].clone();
-                let flat: Vec<f64> = tile_dyn.iter().copied().collect();
+                let flat: Vec<f64> = flatten_tile_inputs(&all_tiles_dyn, tile_idx);
 
                 let witness_result = if let Some(ref wc) = warm_circuit {
                     wc.witness_f64(&flat)
@@ -1746,6 +1696,7 @@ fn execute_channel_group(
 
         let output_tensor = run_onnx_inference(effective_onnx, group_input)?;
 
+        let flat: Vec<f64> = group_input.iter().copied().collect();
         let witness_bytes = if is_wai {
             generate_wai_witness(
                 backend,
@@ -1753,10 +1704,9 @@ fn execute_channel_group(
                 &onnx_path,
                 donor_init_map,
                 params.as_ref().unwrap(),
-                group_input,
+                &flat,
             )?
         } else {
-            let flat: Vec<f64> = group_input.iter().copied().collect();
             backend.witness_f64(&circuit_path, &flat, &[])?
         };
 
@@ -2299,13 +2249,29 @@ pub fn extract_onnx_initializers(
     extract_initializers_from_map(&init_map, params)
 }
 
+fn flatten_tile_inputs(all_tiles: &[Vec<ArrayD<f64>>], tile_idx: usize) -> Vec<f64> {
+    let mut flat = Vec::new();
+    for input_tiles in all_tiles {
+        flat.extend(input_tiles[tile_idx].iter().copied());
+    }
+    flat
+}
+
+fn flatten_cached_inputs(cache: &TensorStore, names: &[String]) -> Result<Vec<f64>> {
+    let mut flat = Vec::new();
+    for name in names {
+        flat.extend(cache.get(name)?.iter());
+    }
+    Ok(flat)
+}
+
 fn generate_wai_witness(
     backend: &JstproveBackend,
     circuit_path: &Path,
     slice_onnx_path: &Path,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
     params: &CircuitParams,
-    activations: &ArrayD<f64>,
+    flat_activations: &[f64],
 ) -> Result<Vec<u8>> {
     let initializers = if let Some(donor) = donor_init_map {
         let slice_model = crate::slicer::onnx_proto::load_model(slice_onnx_path)?;
@@ -2321,8 +2287,7 @@ fn generate_wai_witness(
     } else {
         extract_onnx_initializers(slice_onnx_path, params)?
     };
-    let flat_activations: Vec<f64> = activations.iter().copied().collect();
-    backend.witness_f64(circuit_path, &flat_activations, &initializers)
+    backend.witness_f64(circuit_path, flat_activations, &initializers)
 }
 
 #[cfg(test)]

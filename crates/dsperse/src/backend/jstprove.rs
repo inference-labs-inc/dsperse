@@ -6,9 +6,10 @@ pub use jstprove_circuits::Curve;
 use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
 use jstprove_circuits::io::io_reader::onnx_context::OnnxContext;
 use jstprove_circuits::onnx::{
-    compile_bn254, compile_goldilocks, extract_outputs_bn254, prove_bn254, prove_goldilocks,
-    verify_bn254, verify_goldilocks, witness_bn254, witness_bn254_from_f64, witness_goldilocks,
-    witness_goldilocks_from_f64,
+    compile_bn254, compile_goldilocks, compile_goldilocks_ext2, extract_outputs_bn254,
+    prove_bn254, prove_goldilocks, prove_goldilocks_ext2, verify_bn254, verify_goldilocks,
+    verify_goldilocks_ext2, witness_bn254, witness_bn254_from_f64, witness_goldilocks,
+    witness_goldilocks_ext2_from_f64, witness_goldilocks_from_f64,
 };
 use jstprove_circuits::runner::main_runner::read_circuit_msgpack;
 use jstprove_circuits::runner::schema::{CompiledCircuit, WitnessRequest};
@@ -106,6 +107,9 @@ impl JstproveBackend {
             Curve::Goldilocks | Curve::GoldilocksBasefold => {
                 compile_goldilocks(circuit_path_str, self.compress, Some(params))
             }
+            Curve::GoldilocksExt2 => {
+                compile_goldilocks_ext2(circuit_path_str, self.compress, Some(params))
+            }
         }
         .map_err(|e| DsperseError::Backend(format!("compile: {e}")))?;
 
@@ -145,6 +149,11 @@ impl JstproveBackend {
             Curve::Goldilocks | Curve::GoldilocksBasefold => {
                 witness_goldilocks(&req, self.compress)
             }
+            Curve::GoldilocksExt2 => {
+                return Err(DsperseError::Backend(
+                    "GoldilocksExt2 raw JSON witness not yet supported; use witness_f64".into(),
+                ));
+            }
         }
         .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
 
@@ -181,6 +190,14 @@ impl JstproveBackend {
                 initializers,
                 self.compress,
             ),
+            Curve::GoldilocksExt2 => witness_goldilocks_ext2_from_f64(
+                &bundle.circuit,
+                &bundle.witness_solver,
+                params,
+                activations,
+                initializers,
+                self.compress,
+            ),
         }
         .map_err(|e| DsperseError::Backend(format!("witness_f64: {e}")))?;
 
@@ -199,6 +216,9 @@ impl JstproveBackend {
             Curve::Bn254 => prove_bn254(&bundle.circuit, witness_bytes, self.compress),
             Curve::Goldilocks | Curve::GoldilocksBasefold => {
                 prove_goldilocks(&bundle.circuit, witness_bytes, self.compress)
+            }
+            Curve::GoldilocksExt2 => {
+                prove_goldilocks_ext2(&bundle.circuit, witness_bytes, self.compress)
             }
         }
         .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
@@ -231,6 +251,9 @@ impl JstproveBackend {
             Curve::Bn254 => verify_bn254(&bundle.circuit, witness_bytes, proof_bytes),
             Curve::Goldilocks | Curve::GoldilocksBasefold => {
                 verify_goldilocks(&bundle.circuit, witness_bytes, proof_bytes)
+            }
+            Curve::GoldilocksExt2 => {
+                verify_goldilocks_ext2(&bundle.circuit, witness_bytes, proof_bytes)
             }
         }
         .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
@@ -309,6 +332,14 @@ impl WarmCircuit {
                 self.compress,
             ),
             Curve::Goldilocks | Curve::GoldilocksBasefold => witness_goldilocks_from_f64(
+                &self.bundle.circuit,
+                &self.bundle.witness_solver,
+                &self.params,
+                activations,
+                &self.initializers,
+                self.compress,
+            ),
+            Curve::GoldilocksExt2 => witness_goldilocks_ext2_from_f64(
                 &self.bundle.circuit,
                 &self.bundle.witness_solver,
                 &self.params,

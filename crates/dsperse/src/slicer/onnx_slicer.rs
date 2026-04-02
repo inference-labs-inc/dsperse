@@ -556,33 +556,6 @@ fn trace_shapes_tract(
             })
             .collect();
 
-        for (onnx_name, onnx_outputs) in &onnx_node_outputs {
-            let mut matched_shape: Option<&Vec<i64>> = None;
-            for (tract_name, shape) in &tract_names_to_shapes {
-                if tract_name == onnx_name {
-                    matched_shape = Some(shape);
-                    break;
-                }
-            }
-            if matched_shape.is_none() {
-                let prefix = format!("{onnx_name}.");
-                for (tract_name, shape) in &tract_names_to_shapes {
-                    if tract_name.starts_with(&prefix)
-                        && matched_shape.is_none_or(|s| shape.len() > s.len())
-                    {
-                        matched_shape = Some(shape);
-                    }
-                }
-            }
-            if let Some(shape) = matched_shape {
-                for out in onnx_outputs {
-                    if !out.is_empty() && !shapes.contains_key(out) {
-                        shapes.insert(out.clone(), shape.clone());
-                    }
-                }
-            }
-        }
-
         let mut prev_len = 0;
         while shapes.len() != prev_len {
             prev_len = shapes.len();

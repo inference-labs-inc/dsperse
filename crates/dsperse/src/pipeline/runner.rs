@@ -543,6 +543,35 @@ fn run_combined_inference(
             continue;
         }
 
+        let activation_input_count = slice
+            .dependencies
+            .filtered_inputs
+            .iter()
+            .filter(|s| !s.is_empty())
+            .count();
+        if activation_input_count > 1 {
+            tracing::warn!(
+                slice = %slice_id,
+                inputs = activation_input_count,
+                "skipping circuit witness for multi-input slice (not yet supported)"
+            );
+            results.push(ExecutionResultEntry {
+                slice_id: slice_id.clone(),
+                witness_execution: Some(ExecutionInfo {
+                    method: ExecutionMethod::JstproveGenWitness,
+                    success: false,
+                    error: Some(format!(
+                        "multi-input circuit slices not yet supported ({activation_input_count} activation inputs)"
+                    )),
+                    witness_file: None,
+                    tile_exec_infos: Vec::new(),
+                }),
+                proof_execution: None,
+                verification_execution: None,
+            });
+            continue;
+        }
+
         let strategy = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?;
 
         if let ExecutionStrategy::ChannelSplit(_) = &strategy {
@@ -690,6 +719,7 @@ fn run_combined_inference(
                 .as_ref()
                 .filter(|w| !w.success)
                 .and_then(|w| w.error.as_ref())
+                .filter(|err| !err.starts_with("multi-input circuit slices not yet supported"))
                 .map(|err| format!("{}: {err}", r.slice_id))
         })
         .next();

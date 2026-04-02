@@ -178,12 +178,16 @@ impl CombinedRun {
     pub fn expected_slice_outputs(&self, slice_id: &str) -> Option<Vec<f64>> {
         let meta = self.run_meta.slices.get(slice_id)?;
         let output_names = &meta.dependencies.output;
+        self.outputs_for_names(output_names)
+    }
+
+    pub fn outputs_for_names(&self, names: &[String]) -> Option<Vec<f64>> {
         let mut flat = Vec::new();
-        for name in output_names {
+        for name in names {
             let tensor = self.tensor_cache.try_get(name)?;
             flat.extend(tensor.iter());
         }
-        Some(flat)
+        if flat.is_empty() { None } else { Some(flat) }
     }
 
     pub fn slice_tile_counts(&self) -> (usize, usize, HashMap<String, usize>) {

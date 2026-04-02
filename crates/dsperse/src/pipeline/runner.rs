@@ -2250,7 +2250,8 @@ pub fn extract_onnx_initializers(
 }
 
 fn flatten_tile_inputs(all_tiles: &[Vec<ArrayD<f64>>], tile_idx: usize) -> Vec<f64> {
-    let mut flat = Vec::new();
+    let total: usize = all_tiles.iter().map(|tiles| tiles[tile_idx].len()).sum();
+    let mut flat = Vec::with_capacity(total);
     for input_tiles in all_tiles {
         flat.extend(input_tiles[tile_idx].iter().copied());
     }
@@ -2258,9 +2259,11 @@ fn flatten_tile_inputs(all_tiles: &[Vec<ArrayD<f64>>], tile_idx: usize) -> Vec<f
 }
 
 fn flatten_cached_inputs(cache: &TensorStore, names: &[String]) -> Result<Vec<f64>> {
-    let mut flat = Vec::new();
-    for name in names {
-        flat.extend(cache.get(name)?.iter());
+    let arrays: Vec<&ArrayD<f64>> = names.iter().map(|n| cache.get(n)).collect::<Result<_>>()?;
+    let total: usize = arrays.iter().map(|a| a.len()).sum();
+    let mut flat = Vec::with_capacity(total);
+    for arr in arrays {
+        flat.extend(arr.iter());
     }
     Ok(flat)
 }

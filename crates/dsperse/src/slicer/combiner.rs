@@ -102,7 +102,7 @@ pub fn materialize_combined_model(
 }
 
 const ONNX_STRING_DATATYPE: i32 = 8;
-const NON_NUMERIC_TENSOR_TYPES: &[i32] = &[TensorProto::BOOL, ONNX_STRING_DATATYPE];
+const NON_NUMERIC_TENSOR_TYPES: &[i32] = &[ONNX_STRING_DATATYPE];
 
 fn resolve_value_info(
     name: &str,
@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn bool_outputs_excluded_from_combined_model() {
+    fn bool_outputs_included_in_combined_model() {
         let vi_map: HashMap<String, &ValueInfoProto> = HashMap::new();
         let init_types: HashMap<&str, i32> = HashMap::new();
 
@@ -320,7 +320,7 @@ mod tests {
             &node_output_types,
         )
         .unwrap();
-        assert!(bool_vi.is_none());
+        assert!(bool_vi.is_some());
 
         let string_vi = resolve_value_info(
             "string_tensor",

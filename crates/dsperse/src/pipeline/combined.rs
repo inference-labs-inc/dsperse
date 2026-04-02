@@ -180,11 +180,10 @@ impl CombinedRun {
         let output_names = &meta.dependencies.output;
         let mut flat = Vec::new();
         for name in output_names {
-            if let Some(tensor) = self.tensor_cache.try_get(name) {
-                flat.extend(tensor.iter());
-            }
+            let tensor = self.tensor_cache.try_get(name)?;
+            flat.extend(tensor.iter());
         }
-        if flat.is_empty() { None } else { Some(flat) }
+        Some(flat)
     }
 
     pub fn slice_tile_counts(&self) -> (usize, usize, HashMap<String, usize>) {

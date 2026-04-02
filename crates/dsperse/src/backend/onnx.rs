@@ -278,6 +278,11 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .to_dense_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == bool::datum_type() {
+        let arr = tv
+            .to_dense_array_view::<bool>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| if v { 1.0 } else { 0.0 }).collect()
     } else if dt.is_tdim() {
         let casted = tv
             .cast_to::<i64>()

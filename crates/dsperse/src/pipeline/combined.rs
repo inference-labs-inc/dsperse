@@ -175,6 +175,17 @@ impl CombinedRun {
         }
     }
 
+    pub fn expected_slice_outputs(&self, slice_id: &str) -> Option<Vec<f64>> {
+        let meta = self.run_meta.slices.get(slice_id)?;
+        let output_names = &meta.dependencies.output;
+        let mut flat = Vec::new();
+        for name in output_names {
+            let tensor = self.tensor_cache.try_get(name)?;
+            flat.extend(tensor.iter());
+        }
+        Some(flat)
+    }
+
     pub fn slice_tile_counts(&self) -> (usize, usize, HashMap<String, usize>) {
         let total_slices = self.model_meta.slices.len();
         let mut map = HashMap::with_capacity(total_slices);

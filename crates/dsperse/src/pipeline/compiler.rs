@@ -70,8 +70,8 @@ pub fn compile_slices(
         .build()
         .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
 
-    let meta_mutex = std::sync::Mutex::new((&mut metadata, &meta_path, 0usize));
-
+    let compiled_count = std::sync::atomic::AtomicUsize::new(0);
+    let meta_mutex = std::sync::Mutex::new((&mut metadata, false));
     let errors: std::sync::Mutex<Vec<(usize, DsperseError)>> = std::sync::Mutex::new(Vec::new());
 
     pool.install(|| {
@@ -86,46 +86,32 @@ pub fn compile_slices(
             );
             match r {
                 Ok(CompileOutcome::Compiled) => {
-                    tracing::info!(slice = slice.index, "compiled");
-                    let mut guard = meta_mutex.lock().unwrap();
-                    let (ref mut meta, path, ref mut count) = *guard;
-                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index) {
-                        s.compilation.jstprove.compiled = true;
-                        s.compilation.jstprove.weights_as_inputs = weights_as_inputs;
-                        s.compilation.jstprove.files.compiled =
-                            Some(format!("slice_{}/jstprove/circuit.bundle", slice.index));
-                    }
-                    *count += 1;
-                    if let Err(e) = meta.save(path) {
-                        tracing::error!(error = %e, "failed to persist metadata");
-                    } else {
-                        tracing::info!(count = *count, slice = slice.index, "persisted metadata");
-                    }
+                    let count =
+                        compiled_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    tracing::info!(slice = slice.index, count, "compiled");
                 }
                 Ok(CompileOutcome::CompiledChannelSplit { group_circuits }) => {
+                    let count =
+                        compiled_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     tracing::info!(
                         slice = slice.index,
                         groups = group_circuits.len(),
+                        count,
                         "compiled channel split groups"
                     );
                     let mut guard = meta_mutex.lock().unwrap();
-                    let (ref mut meta, path, ref mut count) = *guard;
-                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index) {
-                        s.compilation.jstprove.compiled = true;
-                        s.compilation.jstprove.weights_as_inputs = weights_as_inputs;
-                        if let Some(ref mut cs) = s.channel_split {
-                            for (group_idx, circuit_path) in &group_circuits {
-                                if let Some(group) =
-                                    cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
-                                {
-                                    group.jstprove_circuit_path = Some(circuit_path.clone());
-                                }
+                    let (ref mut meta, ref mut dirty) = *guard;
+                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index)
+                        && let Some(ref mut cs) = s.channel_split
+                    {
+                        for (group_idx, circuit_path) in &group_circuits {
+                            if let Some(group) =
+                                cs.groups.iter_mut().find(|g| g.group_idx == *group_idx)
+                            {
+                                group.jstprove_circuit_path = Some(circuit_path.clone());
                             }
                         }
-                    }
-                    *count += 1;
-                    if let Err(e) = meta.save(path) {
-                        tracing::error!(error = %e, "failed to persist metadata");
+                        *dirty = true;
                     }
                 }
                 Ok(CompileOutcome::Skipped) => {
@@ -140,7 +126,15 @@ pub fn compile_slices(
     });
 
     let errors = errors.into_inner().unwrap();
-    let compiled_count = meta_mutex.into_inner().unwrap().2;
+    let (metadata, cs_dirty) = meta_mutex.into_inner().unwrap();
+    if cs_dirty {
+        if let Err(e) = metadata.save(&meta_path) {
+            tracing::error!(error = %e, "failed to persist channel split circuit paths");
+        } else {
+            tracing::info!("persisted channel split circuit paths to metadata");
+        }
+    }
+    let compiled_count = compiled_count.load(std::sync::atomic::Ordering::Relaxed);
 
     if errors.is_empty() {
         tracing::info!(count = compiled_count, "all slices compiled");

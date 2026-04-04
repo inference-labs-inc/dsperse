@@ -7,7 +7,7 @@ use super::materializer;
 use super::onnx_proto::{self, ModelProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
-    Compilation, Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
+    Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
 };
 use crate::schema::tiling::DimSplitInfo;
 
@@ -260,7 +260,7 @@ fn build_slice_metadata(
             tiling,
             channel_split,
             dim_split,
-            compilation: Compilation::default(),
+            compilation: Default::default(),
             slice_metadata: None,
             slice_metadata_relative_path: None,
         });

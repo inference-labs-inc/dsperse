@@ -40,24 +40,19 @@ pub struct Dependencies {
     pub filtered_inputs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct CompilationFiles {
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "compiled_circuit",
-        alias = "circuit"
-    )]
+    #[serde(default, alias = "compiled_circuit", alias = "circuit")]
     pub compiled: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub settings: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub pk_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub vk_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct BackendCompilation {
     #[serde(default)]
     pub compiled: bool,
@@ -67,13 +62,14 @@ pub struct BackendCompilation {
     pub weights_as_inputs: bool,
     #[serde(default)]
     pub files: CompilationFiles,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub compilation_timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Compilation {
-    #[serde(default)]
+    #[serde(skip_serializing)]
     pub jstprove: BackendCompilation,
 }
 

@@ -636,4 +636,106 @@ mod tests {
             deps.input
         );
     }
+
+    #[test]
+    fn analyze_nested_subgraph_captures_outer_scope_refs() {
+        let relu = make_node("Relu", 0, vec!["x"], vec!["relu_out"]);
+
+        let inner_add = onnx_proto::NodeProto {
+            op_type: "Add".into(),
+            name: "inner_add".into(),
+            input: vec!["inner_in".into(), "relu_out".into()],
+            output: vec!["inner_out".into()],
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let inner_input =
+            onnx_proto::make_tensor_value_info("inner_in", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let inner_output =
+            onnx_proto::make_tensor_value_info("inner_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let inner_graph = onnx_proto::make_graph(
+            "inner_then",
+            vec![inner_add],
+            vec![inner_input],
+            vec![inner_output],
+            vec![],
+        );
+
+        let if_node_in_body = onnx_proto::NodeProto {
+            op_type: "If".into(),
+            name: "nested_if".into(),
+            input: vec!["body_cond".into()],
+            output: vec!["body_out".into()],
+            attribute: vec![
+                make_attribute_graph("then_branch", inner_graph.clone()),
+                make_attribute_graph("else_branch", inner_graph),
+            ],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let body_cond_in = onnx_proto::make_tensor_value_info("cond_in", TensorProto::BOOL, &[]);
+        let body_cond = onnx_proto::make_tensor_value_info("body_cond", TensorProto::BOOL, &[]);
+        let body_cond_out = onnx_proto::make_tensor_value_info("cond_out", TensorProto::BOOL, &[]);
+        let body_output =
+            onnx_proto::make_tensor_value_info("body_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let body_graph = onnx_proto::make_graph(
+            "loop_body",
+            vec![if_node_in_body],
+            vec![body_cond_in, body_cond],
+            vec![body_cond_out, body_output],
+            vec![],
+        );
+
+        let loop_node = onnx_proto::NodeProto {
+            op_type: "Loop".into(),
+            name: "Loop_1".into(),
+            input: vec!["trip_count".into(), "cond".into(), "init_val".into()],
+            output: vec!["loop_out".into()],
+            attribute: vec![make_attribute_graph("body", body_graph)],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let output =
+            onnx_proto::make_tensor_value_info("loop_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let trip_vi = onnx_proto::make_tensor_value_info("trip_count", TensorProto::INT64, &[]);
+        let cond_vi = onnx_proto::make_tensor_value_info("cond", TensorProto::BOOL, &[]);
+        let init_vi =
+            onnx_proto::make_tensor_value_info("init_val", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph(
+            "test",
+            vec![relu, loop_node],
+            vec![input, trip_vi, cond_vi, init_vi],
+            vec![output],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+
+        let result = analyze(&model, None).unwrap();
+        let loop_analysis = result
+            .nodes
+            .values()
+            .find(|n| n.node_type == "Loop")
+            .unwrap();
+
+        assert!(
+            loop_analysis
+                .dependencies
+                .input
+                .contains(&"relu_out".to_string()),
+            "Loop with nested If subgraph referencing outer-scope 'relu_out' must capture it, got: {:?}",
+            loop_analysis.dependencies.input
+        );
+    }
 }

@@ -1055,27 +1055,27 @@ mod tests {
                 vec!["relu_out"],
             ),
             (
-                "conv1",
+                "matmul0",
                 2,
-                "Conv",
+                "MatMul",
                 true,
                 vec!["relu_out"],
-                vec!["conv1_out"],
+                vec!["mm_out"],
             ),
             (
                 "loop0",
                 3,
                 "Loop",
                 false,
-                vec!["trip", "cond", "init", "conv1_out"],
+                vec!["trip", "cond", "init", "relu_out"],
                 vec!["loop_out"],
             ),
         ]);
         let points = vec![0, 2, 4];
         let result = merge_control_flow_segments(&points, &analysis);
         assert!(
-            !result.contains(&2) || result.contains(&4),
-            "slice point 2 between conv1 (producer of conv1_out) and Loop must be removed: {:?}",
+            !result.contains(&2),
+            "slice point 2 separates relu0 (producer of relu_out at idx 1) from Loop (idx 3); must be removed: {:?}",
             result
         );
     }

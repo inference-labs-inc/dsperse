@@ -67,7 +67,12 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
 
         let parameter_details = get_parameter_details(node, &initializer_map);
 
-        let mut inputs = node.input.clone();
+        let mut inputs: Vec<String> = node
+            .input
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
         if super::is_control_flow(&node.op_type) {
             let outer_refs = super::collect_subgraph_outer_refs(node, graph);
             for r in outer_refs {
@@ -469,14 +474,20 @@ mod tests {
             .find(|n| n.node_type == "Loop")
             .unwrap();
 
+        let loop_inputs = &loop_analysis.dependencies.input;
         assert!(
-            loop_analysis
-                .dependencies
-                .input
-                .contains(&"relu_out".to_string()),
+            loop_inputs.contains(&"relu_out".to_string()),
             "Loop node must include outer-scope ref 'relu_out' in its dependencies, got: {:?}",
-            loop_analysis.dependencies.input
+            loop_inputs
         );
+        for local in &["body_in", "body_out", "cond_in", "cond_out"] {
+            assert!(
+                !loop_inputs.contains(&local.to_string()),
+                "body-local name '{}' must not leak into Loop dependencies, got: {:?}",
+                local,
+                loop_inputs
+            );
+        }
     }
 
     #[test]
@@ -559,14 +570,20 @@ mod tests {
         let result = analyze(&model, None).unwrap();
         let if_analysis = result.nodes.values().find(|n| n.node_type == "If").unwrap();
 
+        let if_inputs = &if_analysis.dependencies.input;
         assert!(
-            if_analysis
-                .dependencies
-                .input
-                .contains(&"relu_out".to_string()),
+            if_inputs.contains(&"relu_out".to_string()),
             "If node must include outer-scope ref 'relu_out' from both branches, got: {:?}",
-            if_analysis.dependencies.input
+            if_inputs
         );
+        for local in &["then_out", "else_out"] {
+            assert!(
+                !if_inputs.contains(&local.to_string()),
+                "branch-local name '{}' must not leak into If dependencies, got: {:?}",
+                local,
+                if_inputs
+            );
+        }
     }
 
     #[test]
@@ -635,6 +652,14 @@ mod tests {
             "segment containing only Loop must list 'relu_out' as input dep, got: {:?}",
             deps.input
         );
+        for local in &["body_in", "body_out", "cond_in", "cond_out"] {
+            assert!(
+                !deps.input.contains(&local.to_string()),
+                "body-local name '{}' must not appear in segment inputs, got: {:?}",
+                local,
+                deps.input
+            );
+        }
     }
 
     #[test]
@@ -729,13 +754,19 @@ mod tests {
             .find(|n| n.node_type == "Loop")
             .unwrap();
 
+        let nested_inputs = &loop_analysis.dependencies.input;
         assert!(
-            loop_analysis
-                .dependencies
-                .input
-                .contains(&"relu_out".to_string()),
+            nested_inputs.contains(&"relu_out".to_string()),
             "Loop with nested If subgraph referencing outer-scope 'relu_out' must capture it, got: {:?}",
-            loop_analysis.dependencies.input
+            nested_inputs
         );
+        for local in &["body_cond", "inner_in", "inner_out", "body_out"] {
+            assert!(
+                !nested_inputs.contains(&local.to_string()),
+                "nested-body-local name '{}' must not leak into Loop dependencies, got: {:?}",
+                local,
+                nested_inputs
+            );
+        }
     }
 }

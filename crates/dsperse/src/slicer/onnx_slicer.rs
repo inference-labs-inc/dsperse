@@ -999,9 +999,9 @@ mod tests {
         assert!(points.len() >= 3);
     }
 
-    fn make_analysis_with_deps(
-        nodes: Vec<(&str, usize, &str, bool, Vec<&str>, Vec<&str>)>,
-    ) -> AnalysisResult {
+    type NodeSpec<'a> = (&'a str, usize, &'a str, bool, Vec<&'a str>, Vec<&'a str>);
+
+    fn make_analysis_with_deps(nodes: Vec<NodeSpec<'_>>) -> AnalysisResult {
         let mut node_map = HashMap::new();
         for (name, index, op_type, has_params, inputs, outputs) in &nodes {
             let mut parameter_details = HashMap::new();

@@ -67,6 +67,16 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
 
         let parameter_details = get_parameter_details(node, &initializer_map);
 
+        let mut inputs = node.input.clone();
+        if super::is_control_flow(&node.op_type) {
+            let outer_refs = super::collect_subgraph_outer_refs(node, graph);
+            for r in outer_refs {
+                if !inputs.contains(&r) {
+                    inputs.push(r);
+                }
+            }
+        }
+
         nodes.insert(
             node_key,
             NodeAnalysis {
@@ -75,7 +85,7 @@ pub fn analyze(model: &ModelProto, onnx_path: Option<&Path>) -> Result<AnalysisR
                 node_type: node.op_type.clone(),
                 parameter_details,
                 dependencies: NodeDependencies {
-                    input: node.input.clone(),
+                    input: inputs,
                     output: node.output.clone(),
                 },
             },
@@ -379,5 +389,251 @@ mod tests {
         let deps = get_segment_dependencies(&analysis, 0, 2);
         assert!(deps.output.contains(&"relu_out".to_string()));
         assert!(!deps.filtered_inputs.contains(&"w".to_string()));
+    }
+
+    fn make_attribute_graph(
+        name: &str,
+        graph: onnx_proto::GraphProto,
+    ) -> onnx_proto::AttributeProto {
+        onnx_proto::AttributeProto {
+            name: name.to_string(),
+            r#type: onnx_proto::onnx::attribute_proto::AttributeType::Graph as i32,
+            g: Some(graph),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn analyze_loop_captures_outer_scope_refs() {
+        let relu = make_node("Relu", 0, vec!["x"], vec!["relu_out"]);
+
+        let body_node = onnx_proto::NodeProto {
+            op_type: "Add".into(),
+            name: "body_add".into(),
+            input: vec!["body_in".into(), "relu_out".into()],
+            output: vec!["body_out".into()],
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let body_input =
+            onnx_proto::make_tensor_value_info("body_in", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let body_cond_in = onnx_proto::make_tensor_value_info("cond_in", TensorProto::BOOL, &[]);
+        let body_cond_out = onnx_proto::make_tensor_value_info("cond_out", TensorProto::BOOL, &[]);
+        let body_output =
+            onnx_proto::make_tensor_value_info("body_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let body_graph = onnx_proto::make_graph(
+            "loop_body",
+            vec![body_node],
+            vec![body_cond_in.clone(), body_input],
+            vec![body_cond_out, body_output],
+            vec![],
+        );
+
+        let loop_node = onnx_proto::NodeProto {
+            op_type: "Loop".into(),
+            name: "Loop_1".into(),
+            input: vec!["trip_count".into(), "cond".into(), "init_val".into()],
+            output: vec!["loop_out".into()],
+            attribute: vec![make_attribute_graph("body", body_graph)],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let output =
+            onnx_proto::make_tensor_value_info("loop_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let trip_vi = onnx_proto::make_tensor_value_info("trip_count", TensorProto::INT64, &[]);
+        let cond_vi = onnx_proto::make_tensor_value_info("cond", TensorProto::BOOL, &[]);
+        let init_vi =
+            onnx_proto::make_tensor_value_info("init_val", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph(
+            "test",
+            vec![relu, loop_node],
+            vec![input, trip_vi, cond_vi, init_vi],
+            vec![output],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+
+        let result = analyze(&model, None).unwrap();
+        let loop_analysis = result
+            .nodes
+            .values()
+            .find(|n| n.node_type == "Loop")
+            .unwrap();
+
+        assert!(
+            loop_analysis
+                .dependencies
+                .input
+                .contains(&"relu_out".to_string()),
+            "Loop node must include outer-scope ref 'relu_out' in its dependencies, got: {:?}",
+            loop_analysis.dependencies.input
+        );
+    }
+
+    #[test]
+    fn analyze_if_captures_outer_scope_refs() {
+        let relu = make_node("Relu", 0, vec!["x"], vec!["relu_out"]);
+
+        let then_node = onnx_proto::NodeProto {
+            op_type: "Identity".into(),
+            name: "then_id".into(),
+            input: vec!["relu_out".into()],
+            output: vec!["then_out".into()],
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let then_output =
+            onnx_proto::make_tensor_value_info("then_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let then_graph = onnx_proto::make_graph(
+            "then_branch",
+            vec![then_node],
+            vec![],
+            vec![then_output],
+            vec![],
+        );
+
+        let else_node = onnx_proto::NodeProto {
+            op_type: "Neg".into(),
+            name: "else_neg".into(),
+            input: vec!["relu_out".into()],
+            output: vec!["else_out".into()],
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let else_output =
+            onnx_proto::make_tensor_value_info("else_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let else_graph = onnx_proto::make_graph(
+            "else_branch",
+            vec![else_node],
+            vec![],
+            vec![else_output],
+            vec![],
+        );
+
+        let if_node = onnx_proto::NodeProto {
+            op_type: "If".into(),
+            name: "If_1".into(),
+            input: vec!["cond".into()],
+            output: vec!["if_out".into()],
+            attribute: vec![
+                make_attribute_graph("then_branch", then_graph),
+                make_attribute_graph("else_branch", else_graph),
+            ],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let cond_vi = onnx_proto::make_tensor_value_info("cond", TensorProto::BOOL, &[]);
+        let output =
+            onnx_proto::make_tensor_value_info("if_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph(
+            "test",
+            vec![relu, if_node],
+            vec![input, cond_vi],
+            vec![output],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+
+        let result = analyze(&model, None).unwrap();
+        let if_analysis = result.nodes.values().find(|n| n.node_type == "If").unwrap();
+
+        assert!(
+            if_analysis
+                .dependencies
+                .input
+                .contains(&"relu_out".to_string()),
+            "If node must include outer-scope ref 'relu_out' from both branches, got: {:?}",
+            if_analysis.dependencies.input
+        );
+    }
+
+    #[test]
+    fn segment_deps_include_subgraph_outer_refs() {
+        let relu = make_node("Relu", 0, vec!["x"], vec!["relu_out"]);
+
+        let body_node = onnx_proto::NodeProto {
+            op_type: "Add".into(),
+            name: "body_add".into(),
+            input: vec!["body_in".into(), "relu_out".into()],
+            output: vec!["body_out".into()],
+            attribute: vec![],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+        let body_input =
+            onnx_proto::make_tensor_value_info("body_in", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let body_cond_in = onnx_proto::make_tensor_value_info("cond_in", TensorProto::BOOL, &[]);
+        let body_cond_out = onnx_proto::make_tensor_value_info("cond_out", TensorProto::BOOL, &[]);
+        let body_output =
+            onnx_proto::make_tensor_value_info("body_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let body_graph = onnx_proto::make_graph(
+            "loop_body",
+            vec![body_node],
+            vec![body_cond_in, body_input],
+            vec![body_cond_out, body_output],
+            vec![],
+        );
+
+        let loop_node = onnx_proto::NodeProto {
+            op_type: "Loop".into(),
+            name: "Loop_1".into(),
+            input: vec!["trip_count".into(), "cond".into(), "init_val".into()],
+            output: vec!["loop_out".into()],
+            attribute: vec![make_attribute_graph("body", body_graph)],
+            domain: String::new(),
+            doc_string: String::new(),
+            overload: String::new(),
+            metadata_props: vec![],
+            device_configurations: vec![],
+        };
+
+        let input = onnx_proto::make_tensor_value_info("x", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let output =
+            onnx_proto::make_tensor_value_info("loop_out", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let trip_vi = onnx_proto::make_tensor_value_info("trip_count", TensorProto::INT64, &[]);
+        let cond_vi = onnx_proto::make_tensor_value_info("cond", TensorProto::BOOL, &[]);
+        let init_vi =
+            onnx_proto::make_tensor_value_info("init_val", TensorProto::FLOAT, &[1, 3, 8, 8]);
+        let graph = onnx_proto::make_graph(
+            "test",
+            vec![relu, loop_node],
+            vec![input, trip_vi, cond_vi, init_vi],
+            vec![output],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+        let result = analyze(&model, None).unwrap();
+
+        let deps = get_segment_dependencies(&result, 1, 2);
+        assert!(
+            deps.input.contains(&"relu_out".to_string()),
+            "segment containing only Loop must list 'relu_out' as input dep, got: {:?}",
+            deps.input
+        );
     }
 }

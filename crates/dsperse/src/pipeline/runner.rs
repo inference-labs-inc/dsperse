@@ -2090,18 +2090,12 @@ pub(crate) fn build_execution_chain(
             head = Some(slice_id.clone());
         }
 
-        let (has_circuit, circuit_path) = if slice.compilation.jstprove.compiled {
-            let path = slice.compilation.jstprove.files.compiled.clone();
-            (true, path)
+        let bundle = slice_dir.join("jstprove/circuit.bundle");
+        let (has_circuit, circuit_path) = if bundle.is_dir() {
+            let rel = format!("slice_{}/jstprove/circuit.bundle", slice.index);
+            (true, Some(rel))
         } else {
-            let bundle = slice_dir.join("jstprove/circuit.bundle");
-            if bundle.is_dir() {
-                tracing::info!(slice = %slice_id, "detected circuit on filesystem (metadata.compiled=false)");
-                let rel = format!("slice_{}/jstprove/circuit.bundle", slice.index);
-                (true, Some(rel))
-            } else {
-                (false, None)
-            }
+            (false, None)
         };
         let next = model_meta
             .slices

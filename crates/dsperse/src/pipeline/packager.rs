@@ -310,11 +310,12 @@ pub fn package_content_addressed(
 }
 
 fn resolve_circuit_dir(slices_dir: &Path, slice: &SliceMetadata) -> Result<Option<PathBuf>> {
-    if let Some(ref compiled_path) = slice.compilation.jstprove.files.compiled {
-        let abs = resolve_relative_path(slices_dir, compiled_path)?;
-        if abs.is_dir() {
-            return Ok(Some(abs));
-        }
+    let bundle = slices_dir
+        .join(format!("slice_{}", slice.index))
+        .join("jstprove")
+        .join("circuit.bundle");
+    if bundle.is_dir() {
+        return Ok(Some(bundle));
     }
     if let Some(ref cs) = slice.channel_split
         && let Some(group) = cs.groups.first()
@@ -336,33 +337,20 @@ enum ComponentSource {
 fn extract_component(
     slices_dir: &Path,
     slice: &SliceMetadata,
-    slice_dir: &Path,
+    _slice_dir: &Path,
     curve: Option<&str>,
 ) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
-    if slice.compilation.jstprove.compiled {
-        let circuit_dir = resolve_circuit_dir(slices_dir, slice)?;
-        return match circuit_dir {
-            Some(dir) => {
-                let (hash, files) = hash_directory(&dir, curve)?;
-                Ok((
-                    hash,
-                    files,
-                    Some("jstprove".to_string()),
-                    ComponentSource::CircuitBundle(dir),
-                ))
-            }
-            None => Err(DsperseError::Other(format!(
-                "slice {} marked compiled but circuit directory not found",
-                slice.index
-            ))),
-        };
+    if let Some(dir) = resolve_circuit_dir(slices_dir, slice)? {
+        let (hash, files) = hash_directory(&dir, curve)?;
+        return Ok((
+            hash,
+            files,
+            Some("jstprove".to_string()),
+            ComponentSource::CircuitBundle(dir),
+        ));
     }
 
-    let onnx_path = slice.resolve_onnx(slices_dir).unwrap_or_else(|_| {
-        slice_dir
-            .join("payload")
-            .join(format!("slice_{}.onnx", slice.index))
-    });
+    let onnx_path = slice.resolve_onnx(slices_dir)?;
     reject_symlink_path(&onnx_path)?;
     if onnx_path.is_file() {
         let filename = onnx_path
@@ -603,8 +591,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::schema::metadata::{
-        BackendCompilation, Compilation, CompilationFiles, Dependencies, ModelMetadata,
-        SliceShapeWrapper, TensorShape,
+        Compilation, Dependencies, ModelMetadata, SliceShapeWrapper, TensorShape,
     };
 
     fn create_test_model_metadata(slices_dir: &Path, count: usize) {
@@ -654,20 +641,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: true,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles {
-                            compiled: Some(format!("slice_{}/jstprove/circuit.bundle", i)),
-                            settings: None,
-                            pk_key: None,
-                            vk_key: None,
-                        },
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             });
@@ -1038,15 +1012,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: false,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles::default(),
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             }],
@@ -1229,13 +1195,6 @@ mod tests {
         fs::create_dir_all(&slices_dir).unwrap();
 
         let mut slices = Vec::new();
-        let shared_circuit_dir = slices_dir.join("shared_circuit").join("circuit.bundle");
-        fs::create_dir_all(&shared_circuit_dir).unwrap();
-        fs::write(
-            shared_circuit_dir.join("circuit.bin"),
-            "shared_circuit_data",
-        )
-        .unwrap();
 
         for i in 0..3 {
             let slice_dir = slices_dir.join(format!("slice_{}", i));
@@ -1246,6 +1205,9 @@ mod tests {
                 format!("onnx_data_{}", i),
             )
             .unwrap();
+            let circuit_dir = slice_dir.join("jstprove").join("circuit.bundle");
+            fs::create_dir_all(&circuit_dir).unwrap();
+            fs::write(circuit_dir.join("circuit.bin"), "shared_circuit_data").unwrap();
 
             slices.push(SliceMetadata {
                 index: i,
@@ -1266,20 +1228,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: true,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles {
-                            compiled: Some("shared_circuit/circuit.bundle".to_string()),
-                            settings: None,
-                            pk_key: None,
-                            vk_key: None,
-                        },
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             });
@@ -1366,15 +1315,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: false,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles::default(),
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             }],
@@ -1451,15 +1392,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: false,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles::default(),
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             }],
@@ -1514,7 +1447,7 @@ mod tests {
                 index: 0,
                 filename: "slice_0.onnx".to_string(),
                 path: slice_dir.to_string_lossy().to_string(),
-                relative_path: "slice_0/payload/slice_0.onnx".to_string(),
+                relative_path: "../../etc/passwd".to_string(),
                 shape: SliceShapeWrapper {
                     tensor_shape: TensorShape {
                         input: vec![vec![1]],
@@ -1529,20 +1462,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: true,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles {
-                            compiled: Some("../../etc/passwd".to_string()),
-                            settings: None,
-                            pk_key: None,
-                            vk_key: None,
-                        },
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             }],
@@ -1654,15 +1574,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: false,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles::default(),
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             });
@@ -1759,15 +1671,7 @@ mod tests {
                 tiling: None,
                 channel_split: None,
                 dim_split: None,
-                compilation: Compilation {
-                    jstprove: BackendCompilation {
-                        compiled: false,
-                        tiled: false,
-                        weights_as_inputs: false,
-                        files: CompilationFiles::default(),
-                        compilation_timestamp: None,
-                    },
-                },
+                compilation: Compilation::default(),
                 slice_metadata: None,
                 slice_metadata_relative_path: None,
             }],

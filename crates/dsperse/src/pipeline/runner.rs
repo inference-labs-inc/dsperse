@@ -1277,8 +1277,13 @@ fn execute_combined_tiled(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
+    let is_fixed_segment = tiling.ndim == 1;
     let is_1d = tiling.ndim == 3;
-    let all_tiles_dyn = prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?;
+    let all_tiles_dyn = if is_fixed_segment {
+        prepare_fixed_segments_from_cache(tiling, tensor_cache)?
+    } else {
+        prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?
+    };
 
     let num_tiles = all_tiles_dyn[0].len();
 

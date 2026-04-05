@@ -603,10 +603,19 @@ pub fn detect_tiling_needs(
 
 pub const ELEMENTWISE_SEGMENT_SIZE: i64 = 4096;
 
+fn elementwise_segment_size() -> i64 {
+    std::env::var("DSPERSE_EW_SEGMENT_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(ELEMENTWISE_SEGMENT_SIZE)
+}
+
 fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetection> {
     if !is_elementwise_only_slice(graph) {
         return None;
     }
+    let seg_size = elementwise_segment_size();
     let out = graph.output.first()?;
     let first_inp = graph.input.first()?;
     let first_dims = onnx_proto::vi_shape(first_inp);
@@ -616,7 +625,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     let total_elements = first_dims
         .iter()
         .try_fold(1i64, |acc, &d| acc.checked_mul(d))?;
-    if total_elements <= ELEMENTWISE_SEGMENT_SIZE {
+    if total_elements <= seg_size {
         return None;
     }
     let mut input_names = Vec::with_capacity(graph.input.len());
@@ -628,7 +637,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
         input_names.push(inp.name.clone());
     }
     #[allow(clippy::manual_div_ceil)]
-    let num_segments = (total_elements + ELEMENTWISE_SEGMENT_SIZE - 1) / ELEMENTWISE_SEGMENT_SIZE;
+    let num_segments = (total_elements + seg_size - 1) / seg_size;
     if num_segments < 2 {
         return None;
     }
@@ -638,7 +647,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
         output_name: out.name.clone(),
         input_names,
         total_elements,
-        segment_size: ELEMENTWISE_SEGMENT_SIZE,
+        segment_size: seg_size,
         num_segments,
         original_shape: first_dims,
     })

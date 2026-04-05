@@ -279,10 +279,11 @@ fn materialize_tiling_artifacts(
                 .as_ref()
                 .is_some_and(|g| g.node.iter().any(|n| n.op_type == "MaxPool"));
             if is_ew {
-                let seg_size = tiling
-                    .segment_size
-                    .map(|s| s as i64)
-                    .unwrap_or(tiling.tile_size as i64);
+                let seg_size = tiling.segment_size.ok_or_else(|| {
+                    crate::error::DsperseError::Slicer(format!(
+                        "slice {slice_idx}: elementwise tiling metadata missing segment_size; re-slice the model"
+                    ))
+                })? as i64;
                 autotiler::create_elementwise_tile_slice(
                     &slice_model,
                     seg_size,

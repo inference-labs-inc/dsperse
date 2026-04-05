@@ -80,6 +80,10 @@ impl PoolParams {
             None => [0, 0, 0, 0],
             Some(v) => try_quad(&v)?,
         };
+        let ceil_mode = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0);
+        if ceil_mode != 0 {
+            return None;
+        }
         if kernel.iter().any(|&v| v <= 0) || stride.iter().any(|&v| v <= 0) {
             return None;
         }
@@ -606,17 +610,19 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     let out = graph.output.first()?;
     let first_inp = graph.input.first()?;
     let first_dims = onnx_proto::vi_shape(first_inp);
-    if first_dims.is_empty() {
+    if first_dims.is_empty() || first_dims.iter().any(|&d| d <= 0) {
         return None;
     }
-    let total_elements: i64 = first_dims.iter().product();
+    let total_elements = first_dims
+        .iter()
+        .try_fold(1i64, |acc, &d| acc.checked_mul(d))?;
     if total_elements <= ELEMENTWISE_SEGMENT_SIZE {
         return None;
     }
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);
-        if d != first_dims {
+        if d != first_dims || d.iter().any(|&v| v <= 0) {
             return None;
         }
         input_names.push(inp.name.clone());

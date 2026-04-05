@@ -947,9 +947,14 @@ fn execute_tiled(
 ) -> Result<ExecutionInfo> {
     let all_names = tiling.all_input_names();
     let multi_input = all_names.len() > 1;
+    let is_fixed_segment = tiling.ndim == 1;
     let is_1d = tiling.ndim == 3;
 
-    let all_tiles_dyn = prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?;
+    let all_tiles_dyn = if is_fixed_segment {
+        prepare_fixed_segments_from_cache(tiling, tensor_cache)?
+    } else {
+        prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?
+    };
 
     let num_tiles = all_tiles_dyn[0].len();
 
@@ -985,7 +990,7 @@ fn execute_tiled(
     let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
     let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
 
-    let warm_model = if multi_input || is_1d {
+    let warm_model = if multi_input || is_1d || is_fixed_segment {
         None
     } else {
         match (effective_tile_onnx_ref, all_tiles_dyn[0].first()) {
@@ -1082,7 +1087,7 @@ fn execute_tiled(
                     );
                 }
 
-                let tile_output = if multi_input || is_1d {
+                let tile_output = if multi_input || is_1d || is_fixed_segment {
                     if let Some(onnx) = effective_tile_onnx_ref {
                         let inputs: Vec<(&str, Vec<f64>, Vec<usize>)> = all_tiles_dyn
                             .iter()
@@ -1240,7 +1245,9 @@ fn execute_tiled(
         "all tiles reported success but no outputs for '{}'",
         tiling.output_name
     );
-    let reconstructed = if is_1d {
+    let reconstructed = if is_fixed_segment {
+        reconstruct_from_fixed_segments(&tile_outputs, tiling)?
+    } else if is_1d {
         let r = reconstruct_from_tiles_1d(&tile_outputs, tiling)?;
         trim_to_original_seq(r, tiling)?
     } else {
@@ -1270,8 +1277,13 @@ fn execute_combined_tiled(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
+    let is_fixed_segment = tiling.ndim == 1;
     let is_1d = tiling.ndim == 3;
-    let all_tiles_dyn = prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?;
+    let all_tiles_dyn = if is_fixed_segment {
+        prepare_fixed_segments_from_cache(tiling, tensor_cache)?
+    } else {
+        prepare_tiles_from_cache(tiling, tensor_cache, is_1d)?
+    };
 
     let num_tiles = all_tiles_dyn[0].len();
 
@@ -2013,6 +2025,71 @@ fn trim_to_original_seq(arr: ArrayD<f64>, tiling: &TilingInfo) -> Result<ArrayD<
     }
 }
 
+fn prepare_fixed_segments_from_cache(
+    tiling: &TilingInfo,
+    tensor_cache: &TensorStore,
+) -> Result<Vec<Vec<ArrayD<f64>>>> {
+    let segment_size = tiling.segment_size.ok_or_else(|| {
+        DsperseError::Pipeline("fixed segment tiling missing segment_size".into())
+    })?;
+    let total_elements = tiling.total_elements.ok_or_else(|| {
+        DsperseError::Pipeline("fixed segment tiling missing total_elements".into())
+    })?;
+    let all_names = tiling.all_input_names();
+    let num_segments = total_elements.div_ceil(segment_size);
+    let mut all_segments: Vec<Vec<ArrayD<f64>>> = Vec::with_capacity(all_names.len());
+    for name in &all_names {
+        let input_arr = tensor_cache.get(name)?.clone();
+        let flat: Vec<f64> = input_arr.iter().copied().collect();
+        if flat.len() < total_elements {
+            return Err(DsperseError::Pipeline(format!(
+                "fixed segment: input '{}' has {} elements, expected at least {}",
+                name,
+                flat.len(),
+                total_elements
+            )));
+        }
+        let mut segments = Vec::with_capacity(num_segments);
+        for i in 0..num_segments {
+            let start = i * segment_size;
+            let end = (start + segment_size).min(flat.len());
+            let mut seg_data = vec![0.0f64; segment_size];
+            seg_data[..end - start].copy_from_slice(&flat[start..end]);
+            let seg = ArrayD::from_shape_vec(IxDyn(&[segment_size]), seg_data)
+                .map_err(|e| DsperseError::Pipeline(format!("fixed segment reshape: {e}")))?;
+            segments.push(seg);
+        }
+        all_segments.push(segments);
+    }
+    Ok(all_segments)
+}
+
+fn reconstruct_from_fixed_segments(
+    segment_outputs: &[ArrayD<f64>],
+    tiling: &TilingInfo,
+) -> Result<ArrayD<f64>> {
+    let total_elements = tiling.total_elements.ok_or_else(|| {
+        DsperseError::Pipeline("reconstruct fixed segments: missing total_elements".into())
+    })?;
+    if segment_outputs.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "reconstruct fixed segments: no outputs".into(),
+        ));
+    }
+    let mut flat = Vec::with_capacity(total_elements);
+    for seg in segment_outputs {
+        flat.extend(seg.iter().copied());
+    }
+    flat.truncate(total_elements);
+    let shape: Vec<usize> = if tiling.original_shape.is_empty() {
+        vec![total_elements]
+    } else {
+        tiling.original_shape.iter().map(|&d| d as usize).collect()
+    };
+    ArrayD::from_shape_vec(IxDyn(&shape), flat)
+        .map_err(|e| DsperseError::Pipeline(format!("reconstruct fixed segments reshape: {e}")))
+}
+
 fn reshape_to_4d(flat: &[f64], c: usize, h: usize, w: usize) -> Result<Array4<f64>> {
     let n = 1usize;
     let total = flat.len();
@@ -2319,6 +2396,9 @@ mod tests {
             w: tiles_x * tile_size,
             tile: None,
             tiles: None,
+            segment_size: None,
+            total_elements: None,
+            original_shape: vec![],
         }
     }
 

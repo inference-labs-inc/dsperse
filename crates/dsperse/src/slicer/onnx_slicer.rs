@@ -204,6 +204,46 @@ fn build_slice_metadata(
                             jstprove_circuit_path: None,
                         }),
                         tiles: None,
+                        segment_size: None,
+                        total_elements: None,
+                        original_shape: vec![],
+                    });
+                }
+                autotiler::TilingDetection::FixedSegment {
+                    input_name,
+                    output_name,
+                    input_names,
+                    total_elements,
+                    segment_size,
+                    num_segments,
+                    original_shape,
+                } => {
+                    tiling = Some(crate::schema::tiling::TilingInfo {
+                        slice_idx: seg_idx,
+                        tile_size: *segment_size as usize,
+                        num_tiles: *num_segments as usize,
+                        tiles_y: *num_segments as usize,
+                        tiles_x: 1,
+                        halo: [0, 0, 0, 0],
+                        out_tile: [*segment_size, 1],
+                        stride: [1, 1],
+                        c_in: 1,
+                        c_out: 1,
+                        input_name: input_name.clone(),
+                        output_name: output_name.clone(),
+                        input_names: input_names.clone(),
+                        ndim: 1,
+                        h: *total_elements as usize,
+                        w: 1,
+                        tile: Some(crate::schema::tiling::TileInfo {
+                            path: format!("slice_{seg_idx}/payload/tiles/tile.onnx"),
+                            conv_out: [*segment_size, 1],
+                            jstprove_circuit_path: None,
+                        }),
+                        tiles: None,
+                        segment_size: Some(*segment_size as usize),
+                        total_elements: Some(*total_elements as usize),
+                        original_shape: original_shape.clone(),
                     });
                 }
                 autotiler::TilingDetection::ChannelSplit {
@@ -341,10 +381,14 @@ fn optimize_points(
     v
 }
 
+fn is_spatial_primary(op: &str) -> bool {
+    op == "Conv" || op == "MaxPool"
+}
+
 fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
         for (pos, node) in sorted_nodes.iter().enumerate() {
-            if node.node_type == "Conv" {
+            if is_spatial_primary(&node.node_type) {
                 updated.insert(node.index);
                 let mut produced: HashSet<&str> = node
                     .dependencies
@@ -394,8 +438,9 @@ fn optimize_jstprove_slices(
 
 fn optimize_for_tiling(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
     optimize_points(points, analysis, |updated, sorted_nodes, _max_idx| {
-        let is_tileable =
-            |n: &NodeAnalysis| n.node_type == "Conv" || super::is_elementwise(&n.node_type);
+        let is_tileable = |n: &NodeAnalysis| {
+            n.node_type == "Conv" || n.node_type == "MaxPool" || super::is_elementwise(&n.node_type)
+        };
         for i in 0..sorted_nodes.len().saturating_sub(1) {
             let curr = sorted_nodes[i];
             let next = sorted_nodes[i + 1];
@@ -609,9 +654,13 @@ fn trace_shapes_tract(
             }
             if matched_shape.is_none() {
                 let prefix = format!("{onnx_name}.");
+                let volume = |s: &[i64]| -> i64 { s.iter().copied().product() };
                 for (tract_name, shape) in &tract_names_to_shapes {
                     if tract_name.starts_with(&prefix)
-                        && matched_shape.is_none_or(|s| shape.len() > s.len())
+                        && matched_shape.is_none_or(|s| {
+                            shape.len() > s.len()
+                                || (shape.len() == s.len() && volume(shape) > volume(s))
+                        })
                     {
                         matched_shape = Some(shape);
                     }
@@ -888,10 +937,19 @@ mod tests {
     #[test]
     fn isolate_conv_no_convs() {
         let analysis =
-            make_analysis_with_params(vec![("a", 0, "Relu", false), ("b", 1, "MaxPool", false)]);
+            make_analysis_with_params(vec![("a", 0, "Relu", false), ("b", 1, "Reshape", false)]);
         let points = vec![0];
         let result = isolate_conv(&points, &analysis);
         assert_eq!(result, vec![0]);
+    }
+
+    #[test]
+    fn isolate_maxpool_gets_boundary() {
+        let analysis =
+            make_analysis_with_params(vec![("a", 0, "Relu", false), ("b", 1, "MaxPool", false)]);
+        let points = vec![0];
+        let result = isolate_conv(&points, &analysis);
+        assert_eq!(result, vec![0, 1]);
     }
 
     #[test]
@@ -917,11 +975,24 @@ mod tests {
     }
 
     #[test]
-    fn optimize_for_tiling_splits_tileable_boundary() {
+    fn optimize_for_tiling_maxpool_stays_grouped() {
         let analysis = make_analysis_with_params(vec![
             ("a", 0, "Conv", false),
             ("b", 1, "Relu", false),
             ("c", 2, "MaxPool", false),
+            ("d", 3, "Conv", false),
+        ]);
+        let points = vec![0, 3];
+        let result = optimize_for_tiling(&points, &analysis);
+        assert!(!result.contains(&2));
+    }
+
+    #[test]
+    fn optimize_for_tiling_splits_at_non_tileable() {
+        let analysis = make_analysis_with_params(vec![
+            ("a", 0, "Conv", false),
+            ("b", 1, "Relu", false),
+            ("c", 2, "Reshape", false),
             ("d", 3, "Conv", false),
         ]);
         let points = vec![0, 3];

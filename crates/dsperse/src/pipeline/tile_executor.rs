@@ -75,6 +75,9 @@ mod tests {
             w: 8,
             tile: None,
             tiles: None,
+            segment_size: None,
+            total_elements: None,
+            original_shape: vec![],
         }
     }
 

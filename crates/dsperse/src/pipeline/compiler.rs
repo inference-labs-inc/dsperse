@@ -563,6 +563,9 @@ mod tests {
                 jstprove_circuit_path: None,
             }),
             tiles: None,
+            segment_size: None,
+            total_elements: None,
+            original_shape: vec![],
         });
         let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
         assert!(path.ends_with("tile.onnx"));
@@ -599,6 +602,9 @@ mod tests {
                 jstprove_circuit_path: None,
             }),
             tiles: None,
+            segment_size: None,
+            total_elements: None,
+            original_shape: vec![],
         });
         let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
         assert!(path.ends_with("slice_0.onnx"));

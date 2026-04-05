@@ -282,8 +282,24 @@ fn materialize_tiling_artifacts(
             let is_ew = slice_model.graph.as_ref().is_some_and(|g| {
                 !g.node.is_empty() && g.node.iter().all(|n| super::is_elementwise(&n.op_type))
             });
+            let is_pool = slice_model
+                .graph
+                .as_ref()
+                .is_some_and(|g| g.node.iter().any(|n| n.op_type == "MaxPool"));
             if is_ew {
+                let seg_size = tiling.segment_size.ok_or_else(|| {
+                    crate::error::DsperseError::Slicer(format!(
+                        "slice {slice_idx}: elementwise tiling metadata missing segment_size; re-slice the model"
+                    ))
+                })? as i64;
                 autotiler::create_elementwise_tile_slice(
+                    &slice_model,
+                    seg_size,
+                    slice_idx,
+                    &payload_dir,
+                )?;
+            } else if is_pool {
+                autotiler::create_pool_tile_slice(
                     &slice_model,
                     tiling.tile_size as i64,
                     slice_idx,

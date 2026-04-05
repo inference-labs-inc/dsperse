@@ -48,6 +48,12 @@ pub struct TilingInfo {
     pub tile: Option<TileInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiles: Option<Vec<TileInfo>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment_size: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_elements: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub original_shape: Vec<i64>,
 }
 
 impl TilingInfo {

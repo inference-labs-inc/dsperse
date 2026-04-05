@@ -46,6 +46,69 @@ pub struct ChannelSplitParams {
     pub slice_idx: usize,
 }
 
+struct PoolParams {
+    node_idx: usize,
+    kernel: [i64; 2],
+    stride: [i64; 2],
+    dilation: [i64; 2],
+    pads: [i64; 4],
+}
+
+impl PoolParams {
+    fn from_node(node: &NodeProto, node_idx: usize) -> Option<PoolParams> {
+        if node.op_type != "MaxPool" {
+            return None;
+        }
+        let kernel = try_pair(&onnx_proto::get_attribute_ints(node, "kernel_shape")?)?;
+        let stride = match onnx_proto::get_attribute_ints(node, "strides") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let dilation = match onnx_proto::get_attribute_ints(node, "dilations") {
+            None => [1, 1],
+            Some(v) => try_pair(&v)?,
+        };
+        let auto_pad = node
+            .attribute
+            .iter()
+            .find(|a| a.name == "auto_pad")
+            .map(|a| a.s.as_slice());
+        if matches!(auto_pad, Some(v) if !v.is_empty() && v != b"NOTSET") {
+            return None;
+        }
+        let pads = match onnx_proto::get_attribute_ints(node, "pads") {
+            None => [0, 0, 0, 0],
+            Some(v) => try_quad(&v)?,
+        };
+        let ceil_mode = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0);
+        if ceil_mode != 0 {
+            return None;
+        }
+        if kernel.iter().any(|&v| v <= 0) || stride.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        if dilation.iter().any(|&v| v <= 0) || pads.iter().any(|&v| v < 0) {
+            return None;
+        }
+        Some(PoolParams {
+            node_idx,
+            kernel,
+            stride,
+            dilation,
+            pads,
+        })
+    }
+}
+
+fn get_pool_params(graph: &GraphProto) -> Option<PoolParams> {
+    for (idx, node) in graph.node.iter().enumerate() {
+        if let Some(pp) = PoolParams::from_node(node, idx) {
+            return Some(pp);
+        }
+    }
+    None
+}
+
 struct ConvParams {
     node_idx: usize,
     kernel: [i64; 2],
@@ -195,36 +258,71 @@ fn compute_min_spatial_tile(kernel: [i64; 2], dilation: [i64; 2]) -> Option<i64>
     eff[0].max(eff[1]).checked_add(1)
 }
 
-fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
+struct SpatialKernelParams {
+    kernel: [i64; 2],
+    stride: [i64; 2],
+    dilation: [i64; 2],
+    pads: [i64; 4],
+}
+
+fn extract_spatial_kernel_params(
+    graph: &GraphProto,
+    primary_op: &str,
+) -> Option<SpatialKernelParams> {
     if graph.input.len() > 1 {
         return None;
     }
-    let conv_count = graph.node.iter().filter(|n| n.op_type == "Conv").count();
-    if conv_count != 1 {
+    let op_count = graph
+        .node
+        .iter()
+        .filter(|n| n.op_type == primary_op)
+        .count();
+    if op_count != 1 {
         return None;
     }
-    let conv_params = get_conv_params(graph)?;
-    if conv_params.node_idx != 0 {
+    let (node_idx, kernel, stride, dilation, pads) = if primary_op == "Conv" {
+        let cp = get_conv_params(graph)?;
+        (cp.node_idx, cp.kernel, cp.stride, cp.dilation, cp.pads)
+    } else if primary_op == "MaxPool" {
+        let pp = get_pool_params(graph)?;
+        (pp.node_idx, pp.kernel, pp.stride, pp.dilation, pp.pads)
+    } else {
+        return None;
+    };
+    if node_idx != 0 {
         return None;
     }
     let ops: HashSet<&str> = graph.node.iter().map(|n| n.op_type.as_str()).collect();
-    let non_conv: HashSet<&&str> = ops.iter().filter(|&&o| o != "Conv").collect();
-    if !non_conv.iter().all(|&&o| is_elementwise(o)) {
+    if ops.iter().any(|&o| o != primary_op && !is_elementwise(o)) {
         return None;
     }
-    Some(conv_params)
+    Some(SpatialKernelParams {
+        kernel,
+        stride,
+        dilation,
+        pads,
+    })
+}
+
+fn is_spatial_tileable(graph: &GraphProto, primary_op: &str) -> bool {
+    let Some(sp) = extract_spatial_kernel_params(graph, primary_op) else {
+        return false;
+    };
+    let Some(eff) = effective_kernel(sp.kernel, sp.dilation) else {
+        return false;
+    };
+    let total_pad_h = sp.pads[0] + sp.pads[2];
+    let total_pad_w = sp.pads[1] + sp.pads[3];
+    total_pad_h >= eff[0] - sp.stride[0] && total_pad_w >= eff[1] - sp.stride[1]
+}
+
+fn is_standard_conv_slice(graph: &GraphProto) -> Option<ConvParams> {
+    extract_spatial_kernel_params(graph, "Conv")?;
+    get_conv_params(graph)
 }
 
 fn is_tileable(graph: &GraphProto) -> bool {
-    let Some(cp) = is_standard_conv_slice(graph) else {
-        return false;
-    };
-    let Some(eff) = effective_kernel(cp.kernel, cp.dilation) else {
-        return false;
-    };
-    let total_pad_h = cp.pads[0] + cp.pads[2];
-    let total_pad_w = cp.pads[1] + cp.pads[3];
-    total_pad_h >= eff[0] - cp.stride[0] && total_pad_w >= eff[1] - cp.stride[1]
+    is_spatial_tileable(graph, "Conv")
 }
 
 fn is_channel_splittable(graph: &GraphProto) -> bool {
@@ -255,50 +353,6 @@ fn is_elementwise_only_slice(graph: &GraphProto) -> bool {
         return false;
     }
     graph.node.iter().all(|n| is_elementwise(&n.op_type))
-}
-
-fn get_elementwise_dimensions_3d(graph: &GraphProto) -> Option<(Vec<String>, String, i64, i64)> {
-    if graph.input.is_empty() {
-        return None;
-    }
-    let out = graph.output.first()?;
-    let first = graph.input.first()?;
-    let dims = onnx_proto::vi_shape(first);
-    if dims.len() != 3 || dims[0] != 1 || dims[1] <= 0 || dims[2] <= 0 {
-        return None;
-    }
-    let (seq, hidden) = (dims[1], dims[2]);
-    let mut input_names = Vec::with_capacity(graph.input.len());
-    for inp in &graph.input {
-        let d = onnx_proto::vi_shape(inp);
-        if d.len() != 3 || d[0] != 1 || d[1] != seq || d[2] != hidden {
-            return None;
-        }
-        input_names.push(inp.name.clone());
-    }
-    Some((input_names, out.name.clone(), hidden, seq))
-}
-
-fn get_elementwise_dimensions(graph: &GraphProto) -> Option<(Vec<String>, String, i64, i64, i64)> {
-    if graph.input.is_empty() {
-        return None;
-    }
-    let out = graph.output.first()?;
-    let first = graph.input.first()?;
-    let dims = onnx_proto::vi_shape(first);
-    if dims.len() != 4 || dims[1] <= 0 || dims[2] <= 0 || dims[3] <= 0 {
-        return None;
-    }
-    let (c, h, w) = (dims[1], dims[2], dims[3]);
-    let mut input_names = Vec::with_capacity(graph.input.len());
-    for inp in &graph.input {
-        let d = onnx_proto::vi_shape(inp);
-        if d.len() != 4 || d[1] != c || d[2] != h || d[3] != w {
-            return None;
-        }
-        input_names.push(inp.name.clone());
-    }
-    Some((input_names, out.name.clone(), c, h, w))
 }
 
 fn find_weights_and_bias(
@@ -432,24 +486,28 @@ fn calculate_channel_split_config(
     None
 }
 
+pub const CONV_TILE_BUDGET: i64 = 512;
+pub const POOL_TILE_BUDGET: i64 = 1024;
+
 pub fn detect_tiling_needs(
     model: &ModelProto,
     tile_size: Option<usize>,
 ) -> Option<TilingDetection> {
     let graph = model.graph.as_ref()?;
-    let tile_size = tile_size? as i64;
+    tile_size?;
 
     let dims_4d = get_model_dimensions(graph);
 
     if let Some((ref inp_name, ref out_name, c_in, h, w)) = dims_4d
         && let Some(cp) = get_conv_params(graph)
     {
+        let budget = CONV_TILE_BUDGET;
         let c_out = cp.c_out;
 
         if is_tileable(graph) {
             let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
             let (actual_tile, _skip_reason) =
-                calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
+                calculate_spatial_tile_config(c_in, h, w, budget, min_tile, cp.stride[0]);
 
             if let Some(actual_tile) = actual_tile
                 && h % actual_tile == 0
@@ -483,7 +541,7 @@ pub fn detect_tiling_needs(
 
         if is_channel_splittable(graph)
             && let Some((num_groups, cpg)) =
-                calculate_channel_split_config(c_in, c_out, h, w, tile_size)
+                calculate_channel_split_config(c_in, c_out, h, w, budget)
         {
             return Some(TilingDetection::ChannelSplit {
                 input_name: inp_name.clone(),
@@ -498,97 +556,102 @@ pub fn detect_tiling_needs(
         }
     }
 
-    if is_elementwise_only_slice(graph)
-        && let Some((ew_input_names, ew_out_name, ew_c, ew_h, ew_w)) =
-            get_elementwise_dimensions(graph)
+    if let Some((ref inp_name, ref out_name, c_in, h, w)) = dims_4d
+        && is_spatial_tileable(graph, "MaxPool")
+        && let Some(pp) = get_pool_params(graph)
     {
-        let num_inputs = i64::try_from(ew_input_names.len()).ok()?;
-        let per_pixel = ew_c.checked_mul(num_inputs)?;
-        let total = per_pixel.checked_mul(ew_h)?.checked_mul(ew_w)?;
-        if total <= tile_size {
-            return None;
-        }
-        if per_pixel > tile_size {
-            return None;
-        }
-        let max_spatial = ((tile_size / per_pixel) as f64).sqrt() as i64;
-        if max_spatial < 1 {
-            return None;
-        }
-        let actual_tile = max_spatial.min(ew_h).min(ew_w);
-        let tiles_y = (ew_h + actual_tile - 1) / actual_tile;
-        let tiles_x = (ew_w + actual_tile - 1) / actual_tile;
-        if tiles_y * tiles_x >= 2 {
-            let c_out = graph
-                .output
-                .first()
-                .map(onnx_proto::vi_shape)
-                .and_then(|s| (s.len() == 4).then(|| s[1]))
-                .unwrap_or(ew_c);
-            let primary_name = ew_input_names[0].clone();
-            return Some(TilingDetection::Spatial {
-                input_name: primary_name,
-                output_name: ew_out_name,
-                input_names: ew_input_names,
-                ndim: 4,
-                c_in: ew_c,
-                c_out,
-                h: ew_h,
-                w: ew_w,
-                tile_size: actual_tile,
-                halo: [0, 0, 0, 0],
-                tiles_y,
-                tiles_x,
-                out_tile: [actual_tile, actual_tile],
-                stride: [1, 1],
-            });
+        let budget = POOL_TILE_BUDGET;
+        let min_tile = compute_min_spatial_tile(pp.kernel, pp.dilation)?;
+        let (actual_tile, _skip_reason) =
+            calculate_spatial_tile_config(c_in, h, w, budget, min_tile, pp.stride[0]);
+
+        if let Some(actual_tile) = actual_tile
+            && h % actual_tile == 0
+            && w % actual_tile == 0
+            && actual_tile % pp.stride[0] == 0
+            && actual_tile % pp.stride[1] == 0
+        {
+            let tiles_y = h / actual_tile;
+            let tiles_x = w / actual_tile;
+            if tiles_y * tiles_x >= 2 {
+                let halo = compute_halo_size(pp.pads)?;
+                return Some(TilingDetection::Spatial {
+                    input_name: inp_name.clone(),
+                    output_name: out_name.clone(),
+                    input_names: vec![inp_name.clone()],
+                    ndim: 4,
+                    c_in,
+                    c_out: c_in,
+                    h,
+                    w,
+                    tile_size: actual_tile,
+                    halo,
+                    tiles_y,
+                    tiles_x,
+                    out_tile: [actual_tile / pp.stride[0], actual_tile / pp.stride[1]],
+                    stride: pp.stride,
+                });
+            }
         }
     }
 
-    if is_elementwise_only_slice(graph)
-        && let Some((ew_input_names, ew_out_name, ew_hidden, ew_seq)) =
-            get_elementwise_dimensions_3d(graph)
-    {
-        let num_inputs = i64::try_from(ew_input_names.len()).ok()?;
-        let per_tile_cost = ew_hidden.checked_mul(num_inputs)?;
-        let total = per_tile_cost.checked_mul(ew_seq)?;
-        if total <= tile_size {
-            return None;
-        }
-        if per_tile_cost > tile_size {
-            return None;
-        }
-        let max_tile = tile_size / per_tile_cost;
-        let actual_tile = max_tile.min(ew_seq);
-        let tiles_y = (ew_seq + actual_tile - 1) / actual_tile;
-        if tiles_y >= 2 {
-            let c_out = graph
-                .output
-                .first()
-                .map(onnx_proto::vi_shape)
-                .and_then(|s| (s.len() == 3).then(|| s[2]))
-                .unwrap_or(ew_hidden);
-            let primary_name = ew_input_names[0].clone();
-            return Some(TilingDetection::Spatial {
-                input_name: primary_name,
-                output_name: ew_out_name,
-                input_names: ew_input_names,
-                ndim: 3,
-                c_in: ew_hidden,
-                c_out,
-                h: ew_seq,
-                w: 1,
-                tile_size: actual_tile,
-                halo: [0, 0, 0, 0],
-                tiles_y,
-                tiles_x: 1,
-                out_tile: [actual_tile, 1],
-                stride: [1, 1],
-            });
-        }
+    if let Some(detection) = detect_elementwise_fixed_segments(graph) {
+        return Some(detection);
     }
 
     None
+}
+
+pub const ELEMENTWISE_SEGMENT_SIZE: i64 = 1024;
+
+fn elementwise_segment_size() -> i64 {
+    std::env::var("DSPERSE_EW_SEGMENT_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(ELEMENTWISE_SEGMENT_SIZE)
+}
+
+fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetection> {
+    if !is_elementwise_only_slice(graph) {
+        return None;
+    }
+    let seg_size = elementwise_segment_size();
+    let out = graph.output.first()?;
+    let first_inp = graph.input.first()?;
+    let first_dims = onnx_proto::vi_shape(first_inp);
+    if first_dims.is_empty() || first_dims.iter().any(|&d| d <= 0) {
+        return None;
+    }
+    let total_elements = first_dims
+        .iter()
+        .try_fold(1i64, |acc, &d| acc.checked_mul(d))?;
+    if total_elements <= seg_size {
+        return None;
+    }
+    let mut input_names = Vec::with_capacity(graph.input.len());
+    for inp in &graph.input {
+        let d = onnx_proto::vi_shape(inp);
+        if d != first_dims || d.iter().any(|&v| v <= 0) {
+            return None;
+        }
+        input_names.push(inp.name.clone());
+    }
+    #[allow(clippy::manual_div_ceil)]
+    let num_segments = (total_elements + seg_size - 1) / seg_size;
+    if num_segments < 2 {
+        return None;
+    }
+    let primary_name = input_names[0].clone();
+    Some(TilingDetection::FixedSegment {
+        input_name: primary_name,
+        output_name: out.name.clone(),
+        input_names,
+        total_elements,
+        segment_size: seg_size,
+        num_segments,
+        original_shape: first_dims,
+    })
 }
 
 pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 500_000;
@@ -797,6 +860,114 @@ pub enum TilingDetection {
         num_groups: i64,
         channels_per_group: i64,
     },
+    FixedSegment {
+        input_name: String,
+        output_name: String,
+        input_names: Vec<String>,
+        total_elements: i64,
+        segment_size: i64,
+        num_segments: i64,
+        original_shape: Vec<i64>,
+    },
+}
+
+struct SpatialTileGeometry {
+    c_in: i64,
+    c_out: i64,
+    tile_h: i64,
+    tile_w: i64,
+    out_h: i64,
+    out_w: i64,
+}
+
+fn compute_spatial_tile_geometry(
+    graph: &GraphProto,
+    pads: [i64; 4],
+    kernel: [i64; 2],
+    dilation: [i64; 2],
+    stride: [i64; 2],
+    tile_size: i64,
+    c_out_override: Option<i64>,
+) -> Result<SpatialTileGeometry> {
+    let halo = compute_halo_size(pads).ok_or_else(|| {
+        crate::error::DsperseError::Slicer("spatial tile: invalid pad values".to_string())
+    })?;
+    let tile_h = tile_size
+        .checked_add(halo[0])
+        .and_then(|v| v.checked_add(halo[2]))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "spatial tile: tile_h overflow (tile_size={tile_size}, halo={:?})",
+                halo
+            ))
+        })?;
+    let tile_w = tile_size
+        .checked_add(halo[1])
+        .and_then(|v| v.checked_add(halo[3]))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "spatial tile: tile_w overflow (tile_size={tile_size}, halo={:?})",
+                halo
+            ))
+        })?;
+    let (out_h, out_w) = conv_output_hw(tile_h, tile_w, [0, 0, 0, 0], kernel, dilation, stride)
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(format!(
+                "spatial tile: invalid output dims for tile_h={tile_h}, tile_w={tile_w}, stride={stride:?}, kernel={kernel:?}"
+            ))
+        })?;
+    let c_in = graph
+        .input
+        .first()
+        .map(onnx_proto::vi_shape)
+        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]))
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer(
+                "spatial tile: unable to determine input channels".to_string(),
+            )
+        })?;
+    let c_out = c_out_override.unwrap_or(c_in);
+    Ok(SpatialTileGeometry {
+        c_in,
+        c_out,
+        tile_h,
+        tile_w,
+        out_h,
+        out_w,
+    })
+}
+
+struct TileModelSpec {
+    nodes: Vec<NodeProto>,
+    input: onnx_proto::ValueInfoProto,
+    output: onnx_proto::ValueInfoProto,
+    initializers: Vec<onnx_proto::TensorProto>,
+    out_hw: [i64; 2],
+}
+
+fn save_tile_model(
+    model: &ModelProto,
+    spec: TileModelSpec,
+    slice_idx: usize,
+    output_dir: &Path,
+) -> Result<TileSliceResult> {
+    let graph = onnx_proto::make_graph(
+        &format!("tile_{slice_idx}"),
+        spec.nodes,
+        vec![spec.input],
+        vec![spec.output],
+        spec.initializers,
+    );
+    let tile_model = onnx_proto::make_model(graph, model_opset(model));
+    let tiles_dir = output_dir.join("tiles");
+    std::fs::create_dir_all(&tiles_dir)
+        .map_err(|e| crate::error::DsperseError::io(e, &tiles_dir))?;
+    let onnx_path = tiles_dir.join("tile.onnx");
+    onnx_proto::save_model(&tile_model, &onnx_path)?;
+    Ok(TileSliceResult {
+        path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
+        conv_out: spec.out_hw,
+    })
 }
 
 pub fn create_tile_slice(
@@ -817,80 +988,42 @@ pub fn create_tile_slice(
         bias,
     } = extract_slice_prologue(model).ok_or_else(|| {
         crate::error::DsperseError::Slicer(
-            "create_tile_slice: failed to extract slice prologue from model".to_string(),
+            "create_tile_slice: failed to extract slice prologue".to_string(),
         )
     })?;
     let conv_node = &graph.node[cp.node_idx];
     let weights = weights.ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_tile_slice: conv weights not found in model initializers".to_string(),
-        )
+        crate::error::DsperseError::Slicer("create_tile_slice: conv weights not found".to_string())
     })?;
 
-    let halo = compute_halo_size(cp.pads).ok_or_else(|| {
-        crate::error::DsperseError::Slicer("create_tile_slice: invalid pad values".to_string())
-    })?;
-    let tile_h = tile_size
-        .checked_add(halo[0])
-        .and_then(|v| v.checked_add(halo[2]))
-        .ok_or_else(|| {
-            crate::error::DsperseError::Slicer(format!(
-                "create_tile_slice: tile_h overflow (tile_size={tile_size}, halo_top={}, halo_bottom={})",
-                halo[0], halo[2]
-            ))
-        })?;
-    let tile_w = tile_size
-        .checked_add(halo[1])
-        .and_then(|v| v.checked_add(halo[3]))
-        .ok_or_else(|| {
-            crate::error::DsperseError::Slicer(format!(
-                "create_tile_slice: tile_w overflow (tile_size={tile_size}, halo_left={}, halo_right={})",
-                halo[1], halo[3]
-            ))
-        })?;
-    let (out_h, out_w) = conv_output_hw(
-        tile_h,
-        tile_w,
-        [0, 0, 0, 0],
+    let cfg_c_in = cp.c_in.checked_mul(cp.group).filter(|&v| v > 0);
+    let geom = compute_spatial_tile_geometry(
+        graph,
+        cp.pads,
         cp.kernel,
         cp.dilation,
         cp.stride,
-    )
-    .ok_or_else(|| {
-        crate::error::DsperseError::Slicer(format!(
-            "create_tile_slice: invalid conv output dimensions for tile_h={tile_h}, tile_w={tile_w}, stride={:?}, kernel={:?}",
-            cp.stride, cp.kernel
-        ))
-    })?;
-
-    let graph_c_in = graph
-        .input
-        .first()
-        .map(onnx_proto::vi_shape)
-        .and_then(|s| (s.len() == 4 && s[1] > 0).then_some(s[1]));
-    let cfg_c_in = cp.c_in.checked_mul(cp.group).filter(|&v| v > 0);
-    if let (Some(g), Some(c)) = (graph_c_in, cfg_c_in)
-        && g != c
+        tile_size,
+        Some(weights.dims[0]),
+    )?;
+    if let Some(c) = cfg_c_in
+        && geom.c_in != c
     {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "create_tile_slice: graph c_in ({g}) != weight c_in*group ({c})"
+            "create_tile_slice: graph c_in ({}) != weight c_in*group ({c})",
+            geom.c_in
         )));
     }
-    let c_in = graph_c_in.or(cfg_c_in).ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_tile_slice: unable to determine input channels".to_string(),
-        )
-    })?;
 
     let x = onnx_proto::make_tensor_value_info(
         "tile_in",
         TensorProto::FLOAT,
-        &[1, c_in, tile_h, tile_w],
+        &[1, geom.c_in, geom.tile_h, geom.tile_w],
     );
     let y = onnx_proto::make_tensor_value_info(
         "tile_out",
         TensorProto::FLOAT,
-        &[1, weights.dims[0], out_h, out_w],
+        &[1, geom.c_out, geom.out_h, geom.out_w],
     );
 
     let mut initializers = vec![onnx_proto::make_tensor(
@@ -902,7 +1035,7 @@ pub fn create_tile_slice(
     let mut conv_inputs = vec!["tile_in".to_string(), "W".to_string()];
 
     if let Some(bias_data) = &bias {
-        let bias_dims = [weights.dims[0]];
+        let bias_dims = [geom.c_out];
         initializers.push(onnx_proto::make_tensor(
             "B",
             TensorProto::FLOAT,
@@ -931,38 +1064,110 @@ pub fn create_tile_slice(
 
     integrate_extra_ops(graph, conv_node, &mut initializers, &mut nodes)?;
 
-    let graph = onnx_proto::make_graph(
-        &format!("tile_{slice_idx}"),
-        nodes,
-        vec![x],
-        vec![y],
-        initializers,
+    save_tile_model(
+        model,
+        TileModelSpec {
+            nodes,
+            input: x,
+            output: y,
+            initializers,
+            out_hw: [geom.out_h, geom.out_w],
+        },
+        slice_idx,
+        output_dir,
+    )
+}
+
+pub fn create_pool_tile_slice(
+    model: &ModelProto,
+    tile_size: i64,
+    slice_idx: usize,
+    output_dir: &Path,
+) -> Result<TileSliceResult> {
+    if tile_size <= 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_pool_tile_slice: tile_size must be > 0, got {tile_size}"
+        )));
+    }
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_pool_tile_slice: model.graph is None".to_string(),
+        )
+    })?;
+    let pp = get_pool_params(graph).ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_pool_tile_slice: no MaxPool node found".to_string(),
+        )
+    })?;
+    let pool_node = &graph.node[pp.node_idx];
+
+    let geom = compute_spatial_tile_geometry(
+        graph,
+        pp.pads,
+        pp.kernel,
+        pp.dilation,
+        pp.stride,
+        tile_size,
+        None,
+    )?;
+
+    let x = onnx_proto::make_tensor_value_info(
+        "tile_in",
+        TensorProto::FLOAT,
+        &[1, geom.c_in, geom.tile_h, geom.tile_w],
     );
-    let tile_model = onnx_proto::make_model(graph, model_opset(model));
+    let y = onnx_proto::make_tensor_value_info(
+        "tile_out",
+        TensorProto::FLOAT,
+        &[1, geom.c_out, geom.out_h, geom.out_w],
+    );
 
-    let tiles_dir = output_dir.join("tiles");
-    std::fs::create_dir_all(&tiles_dir)
-        .map_err(|e| crate::error::DsperseError::io(e, &tiles_dir))?;
-    let onnx_path = tiles_dir.join("tile.onnx");
-    onnx_proto::save_model(&tile_model, &onnx_path)?;
+    let pool_attrs = vec![
+        onnx_proto::make_attribute_ints("kernel_shape", &pp.kernel),
+        onnx_proto::make_attribute_ints("strides", &pp.stride),
+        onnx_proto::make_attribute_ints("pads", &[0, 0, 0, 0]),
+        onnx_proto::make_attribute_ints("dilations", &pp.dilation),
+    ];
+    let mut nodes = vec![onnx_proto::make_node(
+        "MaxPool",
+        vec!["tile_in".to_string()],
+        vec!["pool_out".to_string()],
+        pool_attrs,
+    )];
 
-    Ok(TileSliceResult {
-        path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
-        conv_out: [out_h, out_w],
-    })
+    let mut initializers = Vec::new();
+    integrate_extra_ops(graph, pool_node, &mut initializers, &mut nodes)?;
+
+    save_tile_model(
+        model,
+        TileModelSpec {
+            nodes,
+            input: x,
+            output: y,
+            initializers,
+            out_hw: [geom.out_h, geom.out_w],
+        },
+        slice_idx,
+        output_dir,
+    )
 }
 
 fn integrate_extra_ops(
     graph: &GraphProto,
-    conv_node: &NodeProto,
+    primary_node: &NodeProto,
     initializers: &mut Vec<onnx_proto::TensorProto>,
     nodes: &mut Vec<NodeProto>,
 ) -> crate::error::Result<()> {
+    let primary_op = primary_node.op_type.as_str();
     let orig_input_name = graph.input.first().map(|i| i.name.as_str()).unwrap_or("");
 
-    let non_conv: Vec<&NodeProto> = graph.node.iter().filter(|n| n.op_type != "Conv").collect();
+    let extra: Vec<&NodeProto> = graph
+        .node
+        .iter()
+        .filter(|n| n.op_type != primary_op)
+        .collect();
 
-    if non_conv.is_empty() {
+    if extra.is_empty() {
         let last = nodes.last_mut().ok_or_else(|| {
             crate::error::DsperseError::Slicer(
                 "integrate_extra_ops: no nodes to set output on".into(),
@@ -977,34 +1182,37 @@ fn integrate_extra_ops(
         return Ok(());
     }
 
-    let mut conv_weight_names: HashSet<String> = HashSet::new();
-    if conv_node.input.len() > 1 {
-        conv_weight_names.insert(conv_node.input[1].clone());
-    }
-    if conv_node.input.len() > 2 {
-        conv_weight_names.insert(conv_node.input[2].clone());
+    let mut primary_weight_names: HashSet<String> = HashSet::new();
+    for inp in primary_node.input.iter().skip(1) {
+        primary_weight_names.insert(inp.clone());
     }
 
     for init in &graph.initializer {
-        if !conv_weight_names.contains(&init.name) {
+        if !primary_weight_names.contains(&init.name) {
             initializers.push(init.clone());
         }
     }
 
-    let conv_outputs: HashSet<String> = graph
+    let primary_outputs: HashSet<String> = graph
         .node
         .iter()
-        .filter(|n| n.op_type == "Conv")
+        .filter(|n| n.op_type == primary_op)
         .flat_map(|n| n.output.iter().cloned())
         .collect();
 
-    for (i, orig_node) in non_conv.iter().enumerate() {
+    let primary_out_wire = nodes
+        .last()
+        .and_then(|n| n.output.first())
+        .cloned()
+        .unwrap_or_else(|| format!("{}_out", primary_op.to_lowercase()));
+
+    for (i, orig_node) in extra.iter().enumerate() {
         let new_inputs: Vec<String> = orig_node
             .input
             .iter()
             .map(|inp| {
-                if conv_outputs.contains(inp) {
-                    "conv_out".to_string()
+                if primary_outputs.contains(inp) {
+                    primary_out_wire.clone()
                 } else if inp == orig_input_name {
                     "tile_in".to_string()
                 } else {
@@ -1013,7 +1221,7 @@ fn integrate_extra_ops(
             })
             .collect();
 
-        let is_last = i == non_conv.len() - 1;
+        let is_last = i == extra.len() - 1;
         let new_outputs = if is_last {
             vec!["tile_out".to_string()]
         } else {
@@ -1390,13 +1598,13 @@ pub fn apply_channel_splitting(
 
 pub fn create_elementwise_tile_slice(
     model: &ModelProto,
-    tile_size: i64,
+    segment_size: i64,
     slice_idx: usize,
     output_dir: &Path,
 ) -> Result<TileSliceResult> {
-    if tile_size <= 0 {
+    if segment_size <= 0 {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "create_elementwise_tile_slice: tile_size must be > 0, got {tile_size}"
+            "create_elementwise_tile_slice: segment_size must be > 0, got {segment_size}"
         )));
     }
     let graph = model.graph.as_ref().ok_or_else(|| {
@@ -1414,14 +1622,9 @@ pub fn create_elementwise_tile_slice(
             "create_elementwise_tile_slice: no graph outputs".to_string(),
         )
     })?;
-    let first_dims = onnx_proto::vi_shape(&graph.input[0]);
-    let rank = first_dims.len();
-    if rank != 3 && rank != 4 {
-        return Err(crate::error::DsperseError::Slicer(format!(
-            "create_elementwise_tile_slice: unsupported input rank {rank}"
-        )));
-    }
     let orig_output_name = &out.name;
+
+    let tile_shape: Vec<i64> = vec![segment_size];
 
     let mut orig_to_tile: Vec<(String, String)> = Vec::with_capacity(graph.input.len());
     let mut tile_inputs = Vec::with_capacity(graph.input.len());
@@ -1431,34 +1634,6 @@ pub fn create_elementwise_tile_slice(
         } else {
             format!("tile_in_{idx}")
         };
-        let inp_dims = onnx_proto::vi_shape(inp);
-        if inp_dims.len() != rank {
-            return Err(crate::error::DsperseError::Slicer(format!(
-                "create_elementwise_tile_slice: rank mismatch for input '{}' (expected {rank}, got {})",
-                inp.name,
-                inp_dims.len()
-            )));
-        }
-        let tile_shape: Vec<i64> = match rank {
-            3 => {
-                let hidden = inp_dims.get(2).copied().filter(|&v| v > 0).ok_or_else(|| {
-                    crate::error::DsperseError::Slicer(format!(
-                        "create_elementwise_tile_slice: invalid hidden dim for input '{}'",
-                        inp.name
-                    ))
-                })?;
-                vec![1, tile_size, hidden]
-            }
-            _ => {
-                let inp_c = inp_dims.get(1).copied().filter(|&v| v > 0).ok_or_else(|| {
-                    crate::error::DsperseError::Slicer(format!(
-                        "create_elementwise_tile_slice: invalid c_in for input '{}'",
-                        inp.name
-                    ))
-                })?;
-                vec![1, inp_c, tile_size, tile_size]
-            }
-        };
         tile_inputs.push(onnx_proto::make_tensor_value_info(
             &tile_name,
             TensorProto::FLOAT,
@@ -1467,34 +1642,9 @@ pub fn create_elementwise_tile_slice(
         orig_to_tile.push((inp.name.clone(), tile_name));
     }
 
-    let out_dims = onnx_proto::vi_shape(out);
-    if out_dims.len() != rank {
-        return Err(crate::error::DsperseError::Slicer(format!(
-            "create_elementwise_tile_slice: output rank mismatch (expected {rank}, got {})",
-            out_dims.len()
-        )));
-    }
-    let out_tile_shape: Vec<i64> = match rank {
-        3 => {
-            let hidden = out_dims
-                .get(2)
-                .copied()
-                .filter(|&v| v > 0)
-                .unwrap_or(first_dims.get(2).copied().unwrap_or(1));
-            vec![1, tile_size, hidden]
-        }
-        _ => {
-            let c_in = first_dims.get(1).copied().unwrap_or(1);
-            let c_out = out_dims.get(1).copied().filter(|&v| v > 0).unwrap_or(c_in);
-            vec![1, c_out, tile_size, tile_size]
-        }
-    };
-    let y = onnx_proto::make_tensor_value_info("tile_out", TensorProto::FLOAT, &out_tile_shape);
+    let y = onnx_proto::make_tensor_value_info("tile_out", TensorProto::FLOAT, &tile_shape);
 
-    let mut initializers = Vec::new();
-    for init in &graph.initializer {
-        initializers.push(init.clone());
-    }
+    let initializers: Vec<_> = graph.initializer.to_vec();
 
     let mut nodes = Vec::new();
     for (i, orig_node) in graph.node.iter().enumerate() {
@@ -1522,7 +1672,8 @@ pub fn create_elementwise_tile_slice(
             }
             if !mapped {
                 return Err(crate::error::DsperseError::Slicer(
-                    "create_elementwise_tile_slice: last node does not produce selected graph output".to_string(),
+                    "create_elementwise_tile_slice: last node does not produce graph output"
+                        .to_string(),
                 ));
             }
             remapped
@@ -1559,14 +1710,9 @@ pub fn create_elementwise_tile_slice(
     let onnx_path = tiles_dir.join("tile.onnx");
     onnx_proto::save_model(&tile_model, &onnx_path)?;
 
-    let conv_out = if rank == 3 {
-        [tile_size, 1]
-    } else {
-        [tile_size, tile_size]
-    };
     Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
-        conv_out,
+        conv_out: [segment_size, 1],
     })
 }
 
@@ -1953,5 +2099,176 @@ mod tests {
         assert_eq!(d.split_dim, 1);
         assert_eq!(d.dim_size, 1536);
         assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
+    }
+
+    fn make_maxpool_node(
+        kernel: i64,
+        stride: i64,
+        pads: [i64; 4],
+        ceil_mode: Option<i64>,
+    ) -> NodeProto {
+        let mut attrs = vec![
+            onnx_proto::make_attribute_ints("kernel_shape", &[kernel, kernel]),
+            onnx_proto::make_attribute_ints("strides", &[stride, stride]),
+            onnx_proto::make_attribute_ints("pads", &pads),
+        ];
+        if let Some(cm) = ceil_mode {
+            attrs.push(onnx_proto::make_attribute_int("ceil_mode", cm));
+        }
+        onnx_proto::make_node(
+            "MaxPool",
+            vec!["input".into()],
+            vec!["output".into()],
+            attrs,
+        )
+    }
+
+    #[test]
+    fn pool_params_valid() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let pp = PoolParams::from_node(&node, 0);
+        assert!(pp.is_some());
+        let pp = pp.unwrap();
+        assert_eq!(pp.kernel, [2, 2]);
+        assert_eq!(pp.stride, [2, 2]);
+    }
+
+    #[test]
+    fn pool_params_rejects_ceil_mode() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], Some(1));
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    #[test]
+    fn pool_params_accepts_ceil_mode_zero() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], Some(0));
+        assert!(PoolParams::from_node(&node, 0).is_some());
+    }
+
+    #[test]
+    fn pool_params_rejects_auto_pad() {
+        let mut attrs = vec![
+            onnx_proto::make_attribute_ints("kernel_shape", &[2, 2]),
+            onnx_proto::make_attribute_ints("strides", &[2, 2]),
+        ];
+        attrs.push(onnx_proto::AttributeProto {
+            name: "auto_pad".into(),
+            s: b"SAME_UPPER".to_vec(),
+            ..Default::default()
+        });
+        let node = onnx_proto::make_node(
+            "MaxPool",
+            vec!["input".into()],
+            vec!["output".into()],
+            attrs,
+        );
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    #[test]
+    fn pool_params_rejects_non_maxpool() {
+        let node = onnx_proto::make_node(
+            "Conv",
+            vec!["input".into()],
+            vec!["output".into()],
+            vec![onnx_proto::make_attribute_ints("kernel_shape", &[3, 3])],
+        );
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    fn make_elementwise_model(op: &str, shape: &[i64]) -> ModelProto {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, shape);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, shape);
+        let node = onnx_proto::make_node(op, vec!["input".into()], vec!["output".into()], vec![]);
+        let graph = onnx_proto::make_graph("test", vec![node], vec![x], vec![y], vec![]);
+        onnx_proto::make_model(graph, 13)
+    }
+
+    #[test]
+    fn fixed_segments_too_small_returns_none() {
+        let model = make_elementwise_model("Relu", &[1, 3, 8, 8]);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn fixed_segments_detects_large_tensor() {
+        let model = make_elementwise_model("Relu", &[1, 16, 64, 64]);
+        let graph = model.graph.as_ref().unwrap();
+        let det = detect_elementwise_fixed_segments(graph);
+        assert!(det.is_some());
+        if let Some(TilingDetection::FixedSegment {
+            segment_size,
+            total_elements,
+            num_segments,
+            ..
+        }) = det
+        {
+            assert_eq!(total_elements, 16 * 64 * 64);
+            assert_eq!(segment_size, ELEMENTWISE_SEGMENT_SIZE);
+            assert_eq!(
+                num_segments,
+                (total_elements + segment_size - 1) / segment_size
+            );
+        } else {
+            panic!("expected FixedSegment variant");
+        }
+    }
+
+    #[test]
+    fn fixed_segments_rejects_zero_dim() {
+        let model = make_elementwise_model("Relu", &[1, 0, 64, 64]);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn fixed_segments_rejects_non_elementwise() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 16, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 16, 64, 64]);
+        let node = onnx_proto::make_node(
+            "Softmax",
+            vec!["input".into()],
+            vec!["output".into()],
+            vec![],
+        );
+        let graph = onnx_proto::make_graph("test", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn create_pool_tile_slice_valid() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 32, 32]);
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let graph = onnx_proto::make_graph("pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        let result = create_pool_tile_slice(&model, 16, 0, tmp.path());
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert!(r.path.contains("tile.onnx"));
+    }
+
+    #[test]
+    fn create_pool_tile_slice_rejects_zero_tile() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 32, 32]);
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let graph = onnx_proto::make_graph("pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(create_pool_tile_slice(&model, 0, 0, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn create_pool_tile_slice_no_pool_node() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let node =
+            onnx_proto::make_node("Relu", vec!["input".into()], vec!["output".into()], vec![]);
+        let graph = onnx_proto::make_graph("no_pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(create_pool_tile_slice(&model, 16, 0, tmp.path()).is_err());
     }
 }

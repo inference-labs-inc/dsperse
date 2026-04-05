@@ -293,11 +293,7 @@ fn extract_spatial_kernel_params(
         return None;
     }
     let ops: HashSet<&str> = graph.node.iter().map(|n| n.op_type.as_str()).collect();
-    if !ops
-        .iter()
-        .filter(|&&o| o != primary_op)
-        .all(|&o| is_elementwise(o))
-    {
+    if ops.iter().any(|&o| o != primary_op && !is_elementwise(o)) {
         return None;
     }
     Some(SpatialKernelParams {
@@ -501,12 +497,11 @@ pub fn detect_tiling_needs(
     tile_size?;
 
     let dims_4d = get_model_dimensions(graph);
-    let override_budget = tile_size.map(|t| t as i64);
 
     if let Some((ref inp_name, ref out_name, c_in, h, w)) = dims_4d
         && let Some(cp) = get_conv_params(graph)
     {
-        let budget = override_budget.unwrap_or(CONV_TILE_BUDGET);
+        let budget = CONV_TILE_BUDGET;
         let c_out = cp.c_out;
 
         if is_tileable(graph) {
@@ -565,7 +560,7 @@ pub fn detect_tiling_needs(
         && is_spatial_tileable(graph, "MaxPool")
         && let Some(pp) = get_pool_params(graph)
     {
-        let budget = override_budget.unwrap_or(POOL_TILE_BUDGET);
+        let budget = POOL_TILE_BUDGET;
         let min_tile = compute_min_spatial_tile(pp.kernel, pp.dilation)?;
         let (actual_tile, _skip_reason) =
             calculate_spatial_tile_config(c_in, h, w, budget, min_tile, pp.stride[0]);
@@ -1209,7 +1204,7 @@ fn integrate_extra_ops(
         .last()
         .and_then(|n| n.output.first())
         .cloned()
-        .unwrap_or_else(|| "conv_out".to_string());
+        .unwrap_or_else(|| format!("{}_out", primary_op.to_lowercase()));
 
     for (i, orig_node) in extra.iter().enumerate() {
         let new_inputs: Vec<String> = orig_node
@@ -2104,5 +2099,176 @@ mod tests {
         assert_eq!(d.split_dim, 1);
         assert_eq!(d.dim_size, 1536);
         assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
+    }
+
+    fn make_maxpool_node(
+        kernel: i64,
+        stride: i64,
+        pads: [i64; 4],
+        ceil_mode: Option<i64>,
+    ) -> NodeProto {
+        let mut attrs = vec![
+            onnx_proto::make_attribute_ints("kernel_shape", &[kernel, kernel]),
+            onnx_proto::make_attribute_ints("strides", &[stride, stride]),
+            onnx_proto::make_attribute_ints("pads", &pads),
+        ];
+        if let Some(cm) = ceil_mode {
+            attrs.push(onnx_proto::make_attribute_int("ceil_mode", cm));
+        }
+        onnx_proto::make_node(
+            "MaxPool",
+            vec!["input".into()],
+            vec!["output".into()],
+            attrs,
+        )
+    }
+
+    #[test]
+    fn pool_params_valid() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let pp = PoolParams::from_node(&node, 0);
+        assert!(pp.is_some());
+        let pp = pp.unwrap();
+        assert_eq!(pp.kernel, [2, 2]);
+        assert_eq!(pp.stride, [2, 2]);
+    }
+
+    #[test]
+    fn pool_params_rejects_ceil_mode() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], Some(1));
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    #[test]
+    fn pool_params_accepts_ceil_mode_zero() {
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], Some(0));
+        assert!(PoolParams::from_node(&node, 0).is_some());
+    }
+
+    #[test]
+    fn pool_params_rejects_auto_pad() {
+        let mut attrs = vec![
+            onnx_proto::make_attribute_ints("kernel_shape", &[2, 2]),
+            onnx_proto::make_attribute_ints("strides", &[2, 2]),
+        ];
+        attrs.push(onnx_proto::AttributeProto {
+            name: "auto_pad".into(),
+            s: b"SAME_UPPER".to_vec(),
+            ..Default::default()
+        });
+        let node = onnx_proto::make_node(
+            "MaxPool",
+            vec!["input".into()],
+            vec!["output".into()],
+            attrs,
+        );
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    #[test]
+    fn pool_params_rejects_non_maxpool() {
+        let node = onnx_proto::make_node(
+            "Conv",
+            vec!["input".into()],
+            vec!["output".into()],
+            vec![onnx_proto::make_attribute_ints("kernel_shape", &[3, 3])],
+        );
+        assert!(PoolParams::from_node(&node, 0).is_none());
+    }
+
+    fn make_elementwise_model(op: &str, shape: &[i64]) -> ModelProto {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, shape);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, shape);
+        let node = onnx_proto::make_node(op, vec!["input".into()], vec!["output".into()], vec![]);
+        let graph = onnx_proto::make_graph("test", vec![node], vec![x], vec![y], vec![]);
+        onnx_proto::make_model(graph, 13)
+    }
+
+    #[test]
+    fn fixed_segments_too_small_returns_none() {
+        let model = make_elementwise_model("Relu", &[1, 3, 8, 8]);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn fixed_segments_detects_large_tensor() {
+        let model = make_elementwise_model("Relu", &[1, 16, 64, 64]);
+        let graph = model.graph.as_ref().unwrap();
+        let det = detect_elementwise_fixed_segments(graph);
+        assert!(det.is_some());
+        if let Some(TilingDetection::FixedSegment {
+            segment_size,
+            total_elements,
+            num_segments,
+            ..
+        }) = det
+        {
+            assert_eq!(total_elements, 16 * 64 * 64);
+            assert_eq!(segment_size, ELEMENTWISE_SEGMENT_SIZE);
+            assert_eq!(
+                num_segments,
+                (total_elements + segment_size - 1) / segment_size
+            );
+        } else {
+            panic!("expected FixedSegment variant");
+        }
+    }
+
+    #[test]
+    fn fixed_segments_rejects_zero_dim() {
+        let model = make_elementwise_model("Relu", &[1, 0, 64, 64]);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn fixed_segments_rejects_non_elementwise() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 16, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 16, 64, 64]);
+        let node = onnx_proto::make_node(
+            "Softmax",
+            vec!["input".into()],
+            vec!["output".into()],
+            vec![],
+        );
+        let graph = onnx_proto::make_graph("test", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        assert!(detect_elementwise_fixed_segments(model.graph.as_ref().unwrap()).is_none());
+    }
+
+    #[test]
+    fn create_pool_tile_slice_valid() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 32, 32]);
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let graph = onnx_proto::make_graph("pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        let result = create_pool_tile_slice(&model, 16, 0, tmp.path());
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert!(r.path.contains("tile.onnx"));
+    }
+
+    #[test]
+    fn create_pool_tile_slice_rejects_zero_tile() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 32, 32]);
+        let node = make_maxpool_node(2, 2, [0, 0, 0, 0], None);
+        let graph = onnx_proto::make_graph("pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(create_pool_tile_slice(&model, 0, 0, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn create_pool_tile_slice_no_pool_node() {
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[1, 3, 64, 64]);
+        let node =
+            onnx_proto::make_node("Relu", vec!["input".into()], vec!["output".into()], vec![]);
+        let graph = onnx_proto::make_graph("no_pool", vec![node], vec![x], vec![y], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(create_pool_tile_slice(&model, 16, 0, tmp.path()).is_err());
     }
 }

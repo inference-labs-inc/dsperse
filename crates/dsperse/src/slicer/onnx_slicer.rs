@@ -611,9 +611,13 @@ fn trace_shapes_tract(
             }
             if matched_shape.is_none() {
                 let prefix = format!("{onnx_name}.");
+                let volume = |s: &[i64]| -> i64 { s.iter().copied().product() };
                 for (tract_name, shape) in &tract_names_to_shapes {
                     if tract_name.starts_with(&prefix)
-                        && matched_shape.is_none_or(|s| shape.len() > s.len())
+                        && matched_shape.is_none_or(|s| {
+                            shape.len() > s.len()
+                                || (shape.len() == s.len() && volume(shape) > volume(s))
+                        })
                     {
                         matched_shape = Some(shape);
                     }

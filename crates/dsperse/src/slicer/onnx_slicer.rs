@@ -318,6 +318,7 @@ fn determine_slice_points(
     }
 
     sorted_points = filter_constant_only_slices(&sorted_points, analysis);
+    sorted_points = merge_control_flow_segments(&sorted_points, analysis);
     sorted_points.sort();
     sorted_points.dedup();
 
@@ -434,6 +435,48 @@ fn filter_constant_only_slices(points: &[usize], analysis: &AnalysisResult) -> V
     if !to_remove.is_empty() {
         tracing::info!(count = to_remove.len(), "merged constant-only slices");
     }
+    points
+        .iter()
+        .filter(|p| !to_remove.contains(p))
+        .copied()
+        .collect()
+}
+
+fn merge_control_flow_segments(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
+    let output_to_node_idx: HashMap<&str, usize> = analysis
+        .nodes
+        .values()
+        .flat_map(|n| {
+            n.dependencies
+                .output
+                .iter()
+                .map(move |o| (o.as_str(), n.index))
+        })
+        .collect();
+
+    let mut to_remove: HashSet<usize> = HashSet::new();
+    for node in analysis.nodes.values() {
+        if !super::is_control_flow(&node.node_type) {
+            continue;
+        }
+        for inp in &node.dependencies.input {
+            if let Some(&producer_idx) = output_to_node_idx.get(inp.as_str()) {
+                for &pt in points {
+                    if pt > producer_idx && pt <= node.index {
+                        to_remove.insert(pt);
+                    }
+                }
+            }
+        }
+    }
+
+    if !to_remove.is_empty() {
+        tracing::info!(
+            count = to_remove.len(),
+            "removed slice points to preserve control flow node dependencies"
+        );
+    }
+
     points
         .iter()
         .filter(|p| !to_remove.contains(p))
@@ -954,5 +997,143 @@ mod tests {
         let points = determine_slice_points(&analysis, Some(1024), TEST_OPS);
         assert!(points.contains(&0));
         assert!(points.len() >= 3);
+    }
+
+    type NodeSpec<'a> = (&'a str, usize, &'a str, bool, Vec<&'a str>, Vec<&'a str>);
+
+    fn make_analysis_with_deps(nodes: Vec<NodeSpec<'_>>) -> AnalysisResult {
+        let mut node_map = HashMap::new();
+        for (name, index, op_type, has_params, inputs, outputs) in &nodes {
+            let mut parameter_details = HashMap::new();
+            if *has_params {
+                parameter_details.insert(
+                    format!("{}_weight", name),
+                    analyzer::ParameterDetail {
+                        shape: vec![3, 3],
+                        size: 9,
+                    },
+                );
+            }
+            node_map.insert(
+                name.to_string(),
+                NodeAnalysis {
+                    index: *index,
+                    slice_name: format!("{}_{}", op_type, index),
+                    node_type: op_type.to_string(),
+                    parameter_details,
+                    dependencies: NodeDependencies {
+                        input: inputs.iter().map(|s| s.to_string()).collect(),
+                        output: outputs.iter().map(|s| s.to_string()).collect(),
+                    },
+                },
+            );
+        }
+        AnalysisResult {
+            original_model: None,
+            model_type: "ONNX".to_string(),
+            node_count: nodes.len(),
+            initializer_count: 0,
+            input_shape: vec![],
+            output_shapes: vec![],
+            output_names: vec![],
+            opset_version: Some(18),
+            nodes: node_map,
+            initializer_names: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn merge_control_flow_removes_boundary_between_producer_and_loop() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            (
+                "relu0",
+                1,
+                "Relu",
+                false,
+                vec!["conv_out"],
+                vec!["relu_out"],
+            ),
+            (
+                "matmul0",
+                2,
+                "MatMul",
+                true,
+                vec!["relu_out"],
+                vec!["mm_out"],
+            ),
+            (
+                "loop0",
+                3,
+                "Loop",
+                false,
+                vec!["trip", "cond", "init", "relu_out"],
+                vec!["loop_out"],
+            ),
+        ]);
+        let points = vec![0, 2, 4];
+        let result = merge_control_flow_segments(&points, &analysis);
+        assert!(
+            !result.contains(&2),
+            "slice point 2 separates relu0 (producer of relu_out at idx 1) from Loop (idx 3); must be removed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn merge_control_flow_preserves_unrelated_boundaries() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            (
+                "relu0",
+                1,
+                "Relu",
+                false,
+                vec!["conv_out"],
+                vec!["relu_out"],
+            ),
+            (
+                "conv1",
+                2,
+                "Conv",
+                true,
+                vec!["relu_out"],
+                vec!["conv1_out"],
+            ),
+            (
+                "relu1",
+                3,
+                "Relu",
+                false,
+                vec!["conv1_out"],
+                vec!["relu1_out"],
+            ),
+            (
+                "loop0",
+                4,
+                "Loop",
+                false,
+                vec!["trip", "cond", "relu1_out"],
+                vec!["loop_out"],
+            ),
+        ]);
+        let points = vec![0, 2, 5];
+        let result = merge_control_flow_segments(&points, &analysis);
+        assert!(
+            result.contains(&2),
+            "boundary at 2 is between conv0/relu0 and conv1/relu1, should be preserved since Loop only depends on relu1_out (idx 3): {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn merge_control_flow_no_control_flow_ops() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            ("relu0", 1, "Relu", false, vec!["conv_out"], vec!["y"]),
+        ]);
+        let points = vec![0, 1, 2];
+        let result = merge_control_flow_segments(&points, &analysis);
+        assert_eq!(result, vec![0, 1, 2]);
     }
 }

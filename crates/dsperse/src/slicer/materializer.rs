@@ -136,7 +136,15 @@ pub fn materialize_slice_model(
 
     let seg_inputs_set: HashSet<String> = nodes
         .iter()
-        .flat_map(|n| n.input.iter().filter(|s| !s.is_empty()).cloned())
+        .flat_map(|n| {
+            let mut inputs: Vec<String> =
+                n.input.iter().filter(|s| !s.is_empty()).cloned().collect();
+            if super::is_control_flow(&n.op_type) {
+                let outer_refs = super::collect_subgraph_outer_refs(n, graph);
+                inputs.extend(outer_refs);
+            }
+            inputs
+        })
         .collect();
 
     let future = future_deps.get(&slice_idx).cloned().unwrap_or_default();
@@ -423,13 +431,21 @@ fn compute_future_dependencies(
 
         let inputs: HashSet<String> = graph.node[start..end]
             .iter()
-            .flat_map(|n| n.input.iter())
+            .flat_map(|n| {
+                if super::is_control_flow(&n.op_type) {
+                    let outer_refs = super::collect_subgraph_outer_refs(n, graph);
+                    return outer_refs
+                        .into_iter()
+                        .chain(n.input.iter().cloned())
+                        .collect::<Vec<String>>();
+                }
+                n.input.to_vec()
+            })
             .filter(|inp| {
                 !inp.is_empty()
                     && !seg_outputs.contains(inp.as_str())
                     && !init_map.contains_key(inp.as_str())
             })
-            .cloned()
             .collect();
 
         seg_inputs.insert(seg_idx, inputs);

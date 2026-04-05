@@ -490,24 +490,29 @@ fn calculate_channel_split_config(
     None
 }
 
+pub const CONV_TILE_BUDGET: i64 = 512;
+pub const POOL_TILE_BUDGET: i64 = 1024;
+
 pub fn detect_tiling_needs(
     model: &ModelProto,
     tile_size: Option<usize>,
 ) -> Option<TilingDetection> {
     let graph = model.graph.as_ref()?;
-    let tile_size = tile_size? as i64;
+    tile_size?;
 
     let dims_4d = get_model_dimensions(graph);
+    let override_budget = tile_size.map(|t| t as i64);
 
     if let Some((ref inp_name, ref out_name, c_in, h, w)) = dims_4d
         && let Some(cp) = get_conv_params(graph)
     {
+        let budget = override_budget.unwrap_or(CONV_TILE_BUDGET);
         let c_out = cp.c_out;
 
         if is_tileable(graph) {
             let min_tile = compute_min_spatial_tile(cp.kernel, cp.dilation)?;
             let (actual_tile, _skip_reason) =
-                calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, cp.stride[0]);
+                calculate_spatial_tile_config(c_in, h, w, budget, min_tile, cp.stride[0]);
 
             if let Some(actual_tile) = actual_tile
                 && h % actual_tile == 0
@@ -541,7 +546,7 @@ pub fn detect_tiling_needs(
 
         if is_channel_splittable(graph)
             && let Some((num_groups, cpg)) =
-                calculate_channel_split_config(c_in, c_out, h, w, tile_size)
+                calculate_channel_split_config(c_in, c_out, h, w, budget)
         {
             return Some(TilingDetection::ChannelSplit {
                 input_name: inp_name.clone(),
@@ -560,9 +565,10 @@ pub fn detect_tiling_needs(
         && is_spatial_tileable(graph, "MaxPool")
         && let Some(pp) = get_pool_params(graph)
     {
+        let budget = override_budget.unwrap_or(POOL_TILE_BUDGET);
         let min_tile = compute_min_spatial_tile(pp.kernel, pp.dilation)?;
         let (actual_tile, _skip_reason) =
-            calculate_spatial_tile_config(c_in, h, w, tile_size, min_tile, pp.stride[0]);
+            calculate_spatial_tile_config(c_in, h, w, budget, min_tile, pp.stride[0]);
 
         if let Some(actual_tile) = actual_tile
             && h % actual_tile == 0
@@ -601,7 +607,7 @@ pub fn detect_tiling_needs(
     None
 }
 
-pub const ELEMENTWISE_SEGMENT_SIZE: i64 = 4096;
+pub const ELEMENTWISE_SEGMENT_SIZE: i64 = 1024;
 
 fn elementwise_segment_size() -> i64 {
     std::env::var("DSPERSE_EW_SEGMENT_SIZE")

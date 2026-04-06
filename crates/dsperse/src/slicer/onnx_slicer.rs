@@ -597,7 +597,7 @@ fn fold_and_trace_via_tract(
             let shape: Vec<usize> = tf
                 .shape
                 .iter()
-                .map(|d| d.to_i64().unwrap_or(1) as usize)
+                .map(|d| d.to_i64().unwrap_or(1).max(1) as usize)
                 .collect();
             let tensor = Tensor::zero_dt(tf.datum_type, &shape)
                 .map_err(|e| DsperseError::Slicer(format!("zero tensor: {e}")))?;
@@ -606,7 +606,6 @@ fn fold_and_trace_via_tract(
     }
 
     let shapes_cell = std::cell::RefCell::new(HashMap::<usize, Vec<Vec<i64>>>::new());
-    let small_tensors_cell = std::cell::RefCell::new(Vec::<(usize, usize, TValue)>::new());
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.run_plan_with_eval(input_tvs, |session, op_state, node, inputs| {
@@ -654,13 +653,6 @@ fn fold_and_trace_via_tract(
                 .map(|t| t.shape().iter().map(|&d| d as i64).collect())
                 .collect();
             shapes_cell.borrow_mut().insert(node.id, node_shapes);
-            for (slot, tv) in outputs.iter().enumerate() {
-                if tv.len() <= 1024 {
-                    small_tensors_cell
-                        .borrow_mut()
-                        .push((node.id, slot, tv.clone()));
-                }
-            }
             Ok::<_, TractError>(outputs)
         })
     }));
@@ -672,59 +664,9 @@ fn fold_and_trace_via_tract(
     }
 
     let run_shapes = shapes_cell.into_inner();
-    let small_tensors = small_tensors_cell.into_inner();
-
-    let graph = model
-        .graph
-        .as_mut()
-        .ok_or_else(|| DsperseError::Slicer("model has no graph".into()))?;
-    let existing_inits: HashSet<String> =
-        graph.initializer.iter().map(|i| i.name.clone()).collect();
-
-    let mut folded_names = HashSet::new();
-    for (node_id, slot, tv) in &small_tensors {
-        let outlet = OutletId::new(*node_id, *slot);
-        let name = match tract_model.outlet_label(outlet) {
-            Some(n) if !n.is_empty() && !existing_inits.contains(n) => n.to_string(),
-            _ => continue,
-        };
-        let tensor = tv.clone().into_tensor();
-        if tensor.datum_type() == DatumType::TDim {
-            // Safety: datum_type() == TDim confirmed by outer if
-            let view = unsafe { tensor.as_slice_unchecked::<TDim>() };
-            let i64_vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
-            let dims: Vec<i64> = tensor.shape().iter().map(|&d| d as i64).collect();
-            graph.initializer.push(onnx_proto::TensorProto {
-                name: name.clone(),
-                data_type: onnx_proto::TensorProto::INT64,
-                dims,
-                int64_data: i64_vals,
-                ..Default::default()
-            });
-            folded_names.insert(name);
-            continue;
-        }
-        let dims: Vec<i64> = tensor.shape().iter().map(|&d| d as i64).collect();
-        let data_type = match tensor.datum_type() {
-            DatumType::F32 => onnx_proto::TensorProto::FLOAT,
-            DatumType::I64 => onnx_proto::TensorProto::INT64,
-            DatumType::I32 => onnx_proto::TensorProto::INT32,
-            DatumType::F64 => onnx_proto::TensorProto::DOUBLE,
-            DatumType::Bool => onnx_proto::TensorProto::BOOL,
-            _ => continue,
-        };
-        graph.initializer.push(onnx_proto::TensorProto {
-            name: name.clone(),
-            data_type,
-            dims,
-            raw_data: tensor.as_bytes().to_vec(),
-            ..Default::default()
-        });
-        folded_names.insert(name);
-    }
+    let folded_names = HashSet::<String>::new();
 
     tracing::info!(
-        folded = folded_names.len(),
         traced_nodes = run_shapes.len(),
         "constant folding and shape capture complete"
     );

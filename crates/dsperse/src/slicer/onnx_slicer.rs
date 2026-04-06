@@ -610,18 +610,33 @@ fn fold_and_trace_via_tract(
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.run_plan_with_eval(input_tvs, |session, op_state, node, inputs| {
+            let coerced: TVec<TValue> = inputs
+                .iter()
+                .map(|t| {
+                    if t.datum_type() == DatumType::TDim {
+                        let view = unsafe { t.as_slice_unchecked::<TDim>() };
+                        let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+                        let shape = t.shape().to_vec();
+                        Tensor::from_shape(&shape, &vals)
+                            .map(|t| t.into_tvalue())
+                            .unwrap_or_else(|_| t.clone())
+                    } else {
+                        t.clone()
+                    }
+                })
+                .collect();
             let eval_result = if let Some(st) = op_state {
-                st.eval(session, node.op.as_op(), inputs.clone())
+                st.eval(session, node.op.as_op(), coerced)
             } else {
-                node.op.eval(inputs.clone())
+                node.op.eval(coerced)
             };
             let outputs = match eval_result {
                 Ok(o) => o,
-                Err(e) => {
-                    tracing::debug!(node = %node.name, error = %e, "op eval failed, using input[0] as fallback");
-                    let fallback = inputs.first().cloned().unwrap_or_else(|| {
-                        Tensor::zero::<f32>(&[1]).unwrap().into_tvalue()
-                    });
+                Err(_) => {
+                    let fallback = inputs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
                     let n_outputs = node.outputs.len().max(1);
                     (0..n_outputs).map(|_| fallback.clone()).collect()
                 }
@@ -633,7 +648,9 @@ fn fold_and_trace_via_tract(
             shapes_cell.borrow_mut().insert(node.id, node_shapes);
             for (slot, tv) in outputs.iter().enumerate() {
                 if tv.len() <= 1024 {
-                    small_tensors_cell.borrow_mut().push((node.id, slot, tv.clone()));
+                    small_tensors_cell
+                        .borrow_mut()
+                        .push((node.id, slot, tv.clone()));
                 }
             }
             Ok::<_, TractError>(outputs)

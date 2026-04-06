@@ -36,6 +36,22 @@ pub fn slice_model(
     if let Some(graph) = &model.graph {
         super::const_prop::fill_shapes_from_graph(graph, &mut traced_shapes);
     }
+    let missing: Vec<String> = if let Some(graph) = &model.graph {
+        let mut missing = Vec::new();
+        for n in &graph.node {
+            for out in &n.output {
+                if !out.is_empty() && !traced_shapes.contains_key(out) {
+                    missing.push(out.clone());
+                }
+            }
+        }
+        missing
+    } else {
+        Vec::new()
+    };
+    if !missing.is_empty() {
+        tracing::warn!(count = missing.len(), first_few = ?&missing[..missing.len().min(5)], "unresolved tensor shapes after all inference passes");
+    }
 
     let analysis = analyzer::analyze(&model, Some(onnx_path))?;
 
@@ -691,13 +707,6 @@ fn fold_and_trace_via_tract(
         }
     }
 
-    let init_names: HashSet<String> = graph.initializer.iter().map(|i| i.name.clone()).collect();
-    graph.node.retain(|n| {
-        !n.output
-            .iter()
-            .filter(|o| !o.is_empty())
-            .all(|o| init_names.contains(o))
-    });
     tracing::info!(
         folded = folded_names.len(),
         evaluated = values.len(),

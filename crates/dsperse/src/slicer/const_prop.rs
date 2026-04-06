@@ -282,7 +282,7 @@ pub fn fill_shapes_from_graph(
                     continue;
                 }
                 if let Some(shape) = infer_output_shape(node, &known, &graph.initializer)
-                    && shape.iter().all(|&d| d > 0)
+                    && shape.iter().all(|&d| d >= 0)
                 {
                     known.insert(out.clone(), ConstVal::ShapeOnly(shape.clone()));
                     shapes.insert(out.clone(), shape);
@@ -525,8 +525,63 @@ fn infer_output_shape(
             };
             Some(dims)
         }
-        "LayerNormalization" | "BatchNormalization" | "ScatterND" | "ScatterElements" => {
-            input_shape(0)
+        "LayerNormalization" | "BatchNormalization" | "ScatterND" | "ScatterElements"
+        | "GatherElements" => input_shape(0),
+        "ReduceMean" | "ReduceMax" | "ReduceMin" | "ReduceSum" | "ReduceProd" => {
+            let x = input_shape(0)?;
+            let axes = onnx_proto::get_attribute_ints(node, "axes").or_else(|| {
+                node.input.get(1).and_then(|n| match known.get(n)? {
+                    ConstVal::I64(v, _, _) => Some(v.clone()),
+                    _ => None,
+                })
+            })?;
+            let keepdims = onnx_proto::get_attribute_int(node, "keepdims").unwrap_or(1) != 0;
+            let rank = x.len() as i64;
+            let norm: HashSet<usize> = axes
+                .iter()
+                .map(|&a| {
+                    if a < 0 {
+                        (rank + a) as usize
+                    } else {
+                        a as usize
+                    }
+                })
+                .collect();
+            if keepdims {
+                Some(
+                    x.iter()
+                        .enumerate()
+                        .map(|(i, &d)| if norm.contains(&i) { 1 } else { d })
+                        .collect(),
+                )
+            } else {
+                Some(
+                    x.iter()
+                        .enumerate()
+                        .filter(|(i, _)| !norm.contains(i))
+                        .map(|(_, &d)| d)
+                        .collect(),
+                )
+            }
+        }
+        "TopK" => {
+            let x = input_shape(0)?;
+            let k_name = node.input.get(1)?;
+            let k = match known.get(k_name)? {
+                ConstVal::I64(v, _, _) => *v.first()?,
+                _ => return None,
+            };
+            let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+            let axis = if axis < 0 {
+                x.len() as i64 + axis
+            } else {
+                axis
+            } as usize;
+            let mut out = x;
+            if axis < out.len() {
+                out[axis] = k;
+            }
+            Some(out)
         }
         "Expand" => {
             let x = input_shape(0)?;
@@ -549,6 +604,47 @@ fn infer_output_shape(
                     .copied()
                     .unwrap_or(1);
                 *d = xi.max(ti);
+            }
+            Some(out)
+        }
+        "Range" => {
+            let to_f64 = |idx: usize| -> Option<f64> {
+                let name = node.input.get(idx)?;
+                match known.get(name)? {
+                    ConstVal::I64(v, _, _) => v.first().map(|&x| x as f64),
+                    ConstVal::F32(v, _, _) => v.first().map(|&x| x as f64),
+                    _ => None,
+                }
+            };
+            let start = to_f64(0)?;
+            let limit = to_f64(1)?;
+            let delta = to_f64(2)?;
+            if delta == 0.0 {
+                return None;
+            }
+            let len = ((limit - start) / delta).ceil().max(0.0) as i64;
+            Some(vec![len])
+        }
+        "Where" => {
+            let cond = input_shape(0)?;
+            let x = input_shape(1)?;
+            let y = input_shape(2)?;
+            let rank = cond.len().max(x.len()).max(y.len());
+            let mut out = vec![1i64; rank];
+            for (i, d) in out.iter_mut().enumerate() {
+                let ci = cond
+                    .get(i + cond.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                let xi = x
+                    .get(i + x.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                let yi = y
+                    .get(i + y.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                *d = ci.max(xi).max(yi);
             }
             Some(out)
         }

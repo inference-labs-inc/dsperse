@@ -65,7 +65,7 @@ fn require_nonzero(parallel: usize) -> PyResult<()> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_path, output_dir=None, tile_size=None, proof_system="expander", circuit_ops=None))]
+#[pyo3(signature = (model_path, output_dir=None, tile_size=None, proof_system="expander", circuit_ops=None, input_shape=None))]
 fn slice_model(
     py: Python<'_>,
     model_path: &str,
@@ -73,13 +73,22 @@ fn slice_model(
     tile_size: Option<usize>,
     proof_system: &str,
     circuit_ops: Option<Vec<String>>,
+    input_shape: Option<Vec<i64>>,
 ) -> PyResult<String> {
     let model = PathBuf::from(model_path);
     let out = output_dir.map(PathBuf::from);
     let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     let metadata = py
-        .allow_threads(|| crate::slicer::slice_model(&model, out.as_deref(), tile_size, &ops_refs))
+        .allow_threads(|| {
+            crate::slicer::slice_model(
+                &model,
+                out.as_deref(),
+                tile_size,
+                &ops_refs,
+                input_shape.as_deref(),
+            )
+        })
         .map_err(to_py_err)?;
     to_pretty_json(&metadata)
 }

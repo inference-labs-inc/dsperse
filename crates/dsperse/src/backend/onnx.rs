@@ -344,7 +344,7 @@ mod tests {
             model_path.display()
         );
         let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
             .expect("slice_model failed");
         crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
             .expect("materialization failed");
@@ -398,7 +398,7 @@ mod tests {
             model_path.display()
         );
         let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
             .expect("slice_model failed");
         crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
             .expect("materialization failed");

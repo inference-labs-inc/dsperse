@@ -16,10 +16,12 @@ pub fn slice_model(
     output_path: Option<&Path>,
     tile_size: Option<usize>,
     jstprove_ops: &[&str],
+    input_shape: Option<&[i64]>,
 ) -> Result<ModelMetadata> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
     onnx_proto::normalize_resize_modes(&mut model);
+    onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape);
     onnx_proto::strip_symbolic_value_info(&mut model);
     let mut folded_constants = onnx_proto::fold_constant_nodes(&mut model);
     let propagated_constants = super::const_prop::propagate_constants(&mut model);

@@ -731,7 +731,7 @@ fn trace_shapes_tract(
                     .chain(graph.value_info.iter())
                 {
                     let shape = onnx_proto::vi_shape(vi);
-                    if !shape.is_empty() {
+                    if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
                         tract_names_to_shapes.push((vi.name.clone(), shape.clone()));
                         shapes.insert(vi.name.clone(), shape);
                     }

@@ -802,9 +802,11 @@ fn evaluate(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Vec<(Strin
         "Div" => binary_f32(inputs, |a, b| a / b),
         "Pow" => binary_f32(inputs, |a, b| a.powf(b)),
         "Unsqueeze" => eval_unsqueeze(node, inputs),
+        "Squeeze" => eval_squeeze(node, inputs),
         "Concat" => eval_concat(node, inputs),
         "Reshape" => eval_reshape(node, inputs),
         "ConstantOfShape" => eval_constant_of_shape(node, inputs),
+        "Split" => return eval_split(node, inputs),
         _ => None,
     }?;
     Some(vec![(out.to_string(), result)])
@@ -1063,6 +1065,81 @@ fn eval_unsqueeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Cons
         ConstVal::ShapeOnly(_) => None,
         ConstVal::I64(v, _, dt) => Some(ConstVal::I64(v.clone(), dims, *dt)),
     }
+}
+
+fn eval_squeeze(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {
+    let t = inp(inputs, 0)?;
+    let data = t.as_i64()?;
+    let old_dims = t.dims();
+    let axes = if let Some(ax) = inputs.get(1).and_then(|o| o.as_ref()) {
+        ax.as_i64()?
+    } else {
+        attr_ints(node, "axes")?
+    };
+    let rank = old_dims.len() as i64;
+    let remove: std::collections::HashSet<usize> = axes
+        .iter()
+        .map(|&a| {
+            if a < 0 {
+                (rank + a) as usize
+            } else {
+                a as usize
+            }
+        })
+        .collect();
+    let new_dims: Vec<i64> = old_dims
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !remove.contains(i))
+        .map(|(_, &d)| d)
+        .collect();
+    Some(ConstVal::I64(data, new_dims, TensorProto::INT64))
+}
+
+fn eval_split(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Vec<(String, ConstVal)>> {
+    let t = inp(inputs, 0)?;
+    let data = t.as_i64()?;
+    let old_dims = t.dims();
+    let axis = attr_int(node, "axis").unwrap_or(0);
+    let rank = old_dims.len() as i64;
+    let axis = if axis < 0 {
+        (rank + axis) as usize
+    } else {
+        axis as usize
+    };
+    if axis >= old_dims.len() {
+        return None;
+    }
+    let split_sizes = if let Some(sp) = inputs.get(1).and_then(|o| o.as_ref()) {
+        sp.as_i64()?
+    } else if let Some(sp) = attr_ints(node, "split") {
+        sp
+    } else {
+        let num = node.output.len() as i64;
+        let dim = old_dims[axis];
+        let chunk = dim / num;
+        vec![chunk; num as usize]
+    };
+    if old_dims.len() != 1 || axis != 0 {
+        return None;
+    }
+    let mut results = Vec::new();
+    let mut offset = 0usize;
+    for (i, &size) in split_sizes.iter().enumerate() {
+        let size = size as usize;
+        let out_name = node.output.get(i)?;
+        if out_name.is_empty() {
+            offset += size;
+            continue;
+        }
+        let chunk: Vec<i64> = data[offset..offset + size].to_vec();
+        results.push((
+            out_name.clone(),
+            ConstVal::I64(chunk, vec![size as i64], TensorProto::INT64),
+        ));
+        offset += size;
+    }
+    Some(results)
 }
 
 fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVal> {

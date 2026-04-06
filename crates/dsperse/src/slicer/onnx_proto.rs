@@ -1122,7 +1122,7 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
             _ => continue,
         };
         let a_shape = match shapes.get(a_name) {
-            Some(s) if s.len() > 2 => s.clone(),
+            Some(s) if s.len() > 3 => s.clone(),
             _ => continue,
         };
         let b_shape = match shapes.get(b_name) {

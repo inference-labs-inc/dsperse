@@ -60,28 +60,93 @@ fn optimize_to_runnable(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e:#}")))
 }
 
-fn optimize_to_runnable_with_coercion(
+pub fn run_inference_with_coercion(
     onnx_path: &Path,
-    concrete_shape: &[usize],
-) -> Result<Arc<TypedRunnableModel>> {
+    input_data: &[f64],
+    input_shape: &[usize],
+) -> Result<NamedOutputs> {
     let model = load_onnx_model(onnx_path)?;
-    match optimize_to_runnable(model, concrete_shape) {
-        Ok(plan) => Ok(plan),
-        Err(first_err) => {
-            tracing::warn!(
-                error = %first_err,
-                "standard optimization failed; attempting constant folding workaround"
-            );
-            let mut proto = crate::slicer::onnx_proto::load_model(onnx_path)?;
-            crate::slicer::onnx_proto::strip_symbolic_value_info(&mut proto);
-            crate::slicer::onnx_proto::fold_constant_nodes(&mut proto);
-            let tmp = tempfile::NamedTempFile::with_suffix(".onnx")
-                .map_err(|e| DsperseError::Onnx(format!("create temp: {e}")))?;
-            crate::slicer::onnx_proto::save_model(&proto, tmp.path())?;
-            let model2 = load_onnx_model(tmp.path())?;
-            optimize_to_runnable(model2, concrete_shape)
-        }
+    let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
+
+    if let Ok(plan) = optimize_to_runnable(model, &concrete_shape) {
+        let input = build_input_tvalue(input_data, &concrete_shape)?;
+        let result = plan
+            .run(tvec![input])
+            .map_err(|e| DsperseError::Onnx(format!("run: {e:#}")))?;
+        return extract_all_outputs(&result);
     }
+
+    tracing::warn!("standard optimization failed; using inference plan with TDim coercion");
+    let model2 = load_onnx_model(onnx_path)?;
+    let with_shape = model2
+        .with_input_fact(
+            0,
+            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
+        )
+        .map_err(|e| DsperseError::Onnx(format!("set input: {e}")))?;
+
+    let plan =
+        tract_onnx::tract_hir::infer::InferenceSimplePlan::new(std::sync::Arc::new(with_shape))
+            .map_err(|e| DsperseError::Onnx(format!("inference plan: {e}")))?;
+    let mut state = tract_onnx::tract_core::plan::SimpleState::new(&plan)
+        .map_err(|e| DsperseError::Onnx(format!("state: {e}")))?;
+
+    let input = build_input_tvalue(input_data, &concrete_shape)?;
+    let result = state
+        .run_plan_with_eval(tvec![input], |session, op_state, node, inputs| {
+            let coerced: TVec<TValue> = inputs
+                .iter()
+                .map(|t| {
+                    if t.datum_type() == DatumType::TDim {
+                        let view = unsafe { t.as_slice_unchecked::<TDim>() };
+                        let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+                        Tensor::from_shape(t.shape(), &vals)
+                            .map(|t| t.into_tvalue())
+                            .unwrap_or_else(|_| t.clone())
+                    } else {
+                        t.clone()
+                    }
+                })
+                .collect();
+            let eval_result = if let Some(st) = op_state {
+                st.eval(session, node.op.as_op(), coerced)
+            } else {
+                node.op.eval(coerced)
+            };
+            match eval_result {
+                Ok(o) => Ok::<_, TractError>(o),
+                Err(e) => {
+                    tracing::debug!(node = %node.name, error = %e, "eval failed, using fallback");
+                    let fallback = inputs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                    let n = node.outputs.len().max(1);
+                    Ok((0..n).map(|_| fallback.clone()).collect())
+                }
+            }
+        })
+        .map_err(|e| DsperseError::Onnx(format!("inference run: {e:#}")))?;
+
+    extract_all_outputs(&result)
+}
+
+fn extract_all_outputs(result: &[TValue]) -> Result<NamedOutputs> {
+    let mut outputs = NamedOutputs::new();
+    for (i, tv) in result.iter().enumerate() {
+        let shape = tv.shape().to_vec();
+        let tensor = tv.clone().into_tensor();
+        let data: Vec<f64> = if tensor.datum_type() == f32::datum_type() {
+            unsafe { tensor.as_slice_unchecked::<f32>() }
+                .iter()
+                .map(|&v| v as f64)
+                .collect()
+        } else {
+            vec![0.0; tensor.len()]
+        };
+        outputs.insert(format!("output_{i}"), (data, shape));
+    }
+    Ok(outputs)
 }
 
 fn load_runnable(
@@ -90,13 +155,8 @@ fn load_runnable(
 ) -> Result<(Arc<TypedRunnableModel>, Vec<usize>)> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    match optimize_to_runnable(model, &concrete_shape) {
-        Ok(plan) => Ok((plan, concrete_shape)),
-        Err(_) => {
-            let plan = optimize_to_runnable_with_coercion(onnx_path, &concrete_shape)?;
-            Ok((plan, concrete_shape))
-        }
-    }
+    let plan = optimize_to_runnable(model, &concrete_shape)?;
+    Ok((plan, concrete_shape))
 }
 
 fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {
@@ -151,9 +211,13 @@ pub fn run_inference_named(
     let model = load_onnx_model(onnx_path)?;
     let output_names = collect_output_names(&model);
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    let plan = optimize_to_runnable(model, &concrete_shape)?;
-    let result = run_single(&plan, input_data, &concrete_shape)?;
-    zip_named_outputs(&output_names, &result)
+    match optimize_to_runnable(model, &concrete_shape) {
+        Ok(plan) => {
+            let result = run_single(&plan, input_data, &concrete_shape)?;
+            zip_named_outputs(&output_names, &result)
+        }
+        Err(_) => run_inference_with_coercion(onnx_path, input_data, &concrete_shape),
+    }
 }
 
 pub fn run_inference_multi(

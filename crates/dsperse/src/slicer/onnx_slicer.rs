@@ -688,6 +688,7 @@ fn trace_shapes_tract(
     proto_model: &ModelProto,
 ) -> Result<HashMap<String, Vec<i64>>> {
     use tract_onnx::prelude::*;
+    use tract_onnx::tract_hir::infer::Factoid;
 
     let mut model = tract_onnx::onnx()
         .model_for_path(onnx_path)
@@ -712,53 +713,35 @@ fn trace_shapes_tract(
         }
     }
 
-    let typed_result = model.into_typed();
-
     let mut shapes = HashMap::new();
     let mut tract_names_to_shapes: Vec<(String, Vec<i64>)> = Vec::new();
 
-    match typed_result {
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "tract type inference failed; falling back to value_info shapes"
-            );
-            if let Some(graph) = &proto_model.graph {
-                for vi in graph
-                    .input
-                    .iter()
-                    .chain(graph.output.iter())
-                    .chain(graph.value_info.iter())
-                {
-                    let shape = onnx_proto::vi_shape(vi);
-                    if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
-                        tract_names_to_shapes.push((vi.name.clone(), shape.clone()));
-                        shapes.insert(vi.name.clone(), shape);
-                    }
-                }
-                for init in &graph.initializer {
-                    let shape: Vec<i64> = init.dims.to_vec();
-                    tract_names_to_shapes.push((init.name.clone(), shape.clone()));
-                    shapes.insert(init.name.clone(), shape);
-                }
-            }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.analyse(true))) {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "tract obstinate analysis encountered errors");
         }
-        Ok(typed) => {
-            for node_id in 0..typed.nodes().len() {
-                let node_obj = typed.node(node_id);
-                for (ix, outlet) in node_obj.outputs.iter().enumerate() {
-                    let fact = &outlet.fact;
-                    if let Some(shape) = fact.shape.as_concrete() {
-                        let shape_vec: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
-                        let name = if ix == 0 && !node_obj.name.is_empty() {
-                            node_obj.name.clone()
-                        } else {
-                            format!("{}:{}", node_obj.name, ix)
-                        };
-                        tract_names_to_shapes.push((name.clone(), shape_vec.clone()));
-                        shapes.insert(name, shape_vec);
-                    }
-                }
+        Err(_) => {
+            tracing::warn!("tract analysis panicked; extracting partial results");
+        }
+    }
+
+    for node_id in 0..model.nodes().len() {
+        let node_obj = model.node(node_id);
+        for (ix, outlet) in node_obj.outputs.iter().enumerate() {
+            let concrete = match outlet.fact.shape.concretize() {
+                Some(dims) => dims,
+                None => continue,
+            };
+            let shape_vec: Vec<i64> = concrete.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+            if shape_vec.iter().all(|&d| d > 0) {
+                let name = if ix == 0 && !node_obj.name.is_empty() {
+                    node_obj.name.clone()
+                } else {
+                    format!("{}:{}", node_obj.name, ix)
+                };
+                tract_names_to_shapes.push((name.clone(), shape_vec.clone()));
+                shapes.insert(name, shape_vec);
             }
         }
     }

@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use std::collections::{HashMap, HashSet};
 
 use super::onnx_proto::{self, ModelProto, NodeProto, TensorProto};
@@ -172,6 +173,13 @@ pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
             if let Some(out) = node.output.first()
                 && !out.is_empty()
                 && !known.contains_key(out)
+                && node.input.iter().all(|inp| {
+                    inp.is_empty()
+                        || matches!(
+                            known.get(inp),
+                            Some(ConstVal::I64(_, _, _) | ConstVal::F32(_, _, _))
+                        )
+                })
                 && let Some(shape) = infer_output_shape(node, &known, &graph.initializer)
             {
                 known.insert(out.clone(), ConstVal::ShapeOnly(shape));
@@ -606,6 +614,27 @@ fn infer_output_shape(
         }
         _ => None,
     }
+}
+
+fn can_evaluate_strict(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {
+    if node.output.is_empty() || node.output.iter().all(|o| o.is_empty()) {
+        return false;
+    }
+    if node
+        .output
+        .iter()
+        .filter(|o| !o.is_empty())
+        .all(|o| matches!(known.get(o), Some(v) if !matches!(v, ConstVal::ShapeOnly(_))))
+    {
+        return false;
+    }
+    node.input.iter().all(|inp| {
+        inp.is_empty()
+            || matches!(
+                known.get(inp),
+                Some(ConstVal::I64(_, _, _) | ConstVal::F32(_, _, _))
+            )
+    })
 }
 
 fn can_evaluate(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {

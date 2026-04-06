@@ -24,17 +24,14 @@ pub fn slice_model(
     onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape)?;
 
     onnx_proto::strip_symbolic_value_info(&mut model);
+    onnx_proto::fold_constant_nodes(&mut model);
 
     let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
     let tract_path = tmp_dir.path().join("tract_model.onnx");
     onnx_proto::save_model(&model, &tract_path)?;
 
-    tracing::info!("tracing shapes via tract");
-    let mut traced_shapes = trace_shapes_tract(&tract_path, &model)?;
-
-    let mut folded_constants = onnx_proto::fold_constant_nodes(&mut model);
-    let propagated_constants = super::const_prop::propagate_constants(&mut model);
-    folded_constants.extend(propagated_constants);
+    tracing::info!("folding constants and tracing shapes via tract");
+    let (folded_constants, mut traced_shapes) = fold_and_trace_via_tract(&tract_path, &mut model)?;
 
     if let Some(graph) = &model.graph {
         super::const_prop::fill_shapes_from_graph(graph, &mut traced_shapes);
@@ -552,6 +549,244 @@ fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     points.dedup();
 }
 
+#[allow(clippy::type_complexity)]
+fn fold_and_trace_via_tract(
+    onnx_path: &Path,
+    model: &mut ModelProto,
+) -> Result<(HashSet<String>, HashMap<String, Vec<i64>>)> {
+    use tract_onnx::prelude::*;
+    use tract_onnx::tract_hir::infer::Factoid;
+
+    let tract_model = tract_onnx::onnx()
+        .model_for_path(onnx_path)
+        .map_err(|e| DsperseError::Slicer(format!("tract load: {e}")))?;
+
+    let mut constants: HashMap<usize, TVec<TValue>> = HashMap::new();
+    let mut folded_names = HashSet::new();
+
+    for node_id in 0..tract_model.nodes().len() {
+        let node = tract_model.node(node_id);
+        if node.inputs.is_empty()
+            && node.op.is_stateless()
+            && let Ok(outputs) = node.op.eval(tvec![])
+            && !outputs.is_empty()
+        {
+            constants.insert(node_id, outputs);
+        }
+    }
+
+    let labeled = tract_model.outlet_labels.len();
+    tracing::info!(
+        seeded = constants.len(),
+        labeled,
+        total_nodes = tract_model.nodes().len(),
+        "seeded constants from initializer nodes"
+    );
+    if let Ok(eval_order) = tract_model.eval_order() {
+        for &node_id in &eval_order {
+            if constants.contains_key(&node_id) {
+                continue;
+            }
+            let node = tract_model.node(node_id);
+            if !node.op.is_stateless() || node.inputs.is_empty() {
+                continue;
+            }
+            let all_inputs_const = node
+                .inputs
+                .iter()
+                .all(|inp| constants.contains_key(&inp.node));
+            if !all_inputs_const {
+                continue;
+            }
+            let inputs: TVec<TValue> = node
+                .inputs
+                .iter()
+                .filter_map(|inp| {
+                    constants
+                        .get(&inp.node)
+                        .and_then(|outputs| outputs.get(inp.slot).cloned())
+                })
+                .collect();
+            if inputs.len() != node.inputs.len() {
+                continue;
+            }
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.op.eval(inputs))) {
+                Ok(Ok(outputs)) => {
+                    constants.insert(node_id, outputs);
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!(node = %node.name, error = %e, "constant eval failed");
+                }
+                Err(_) => {
+                    tracing::debug!(node = %node.name, "constant eval panicked");
+                }
+            }
+        }
+    }
+
+    let graph = model
+        .graph
+        .as_mut()
+        .ok_or_else(|| DsperseError::Slicer("model has no graph".into()))?;
+
+    let existing_inits: HashSet<String> =
+        graph.initializer.iter().map(|i| i.name.clone()).collect();
+
+    let node_name_to_outputs: HashMap<String, Vec<String>> = graph
+        .node
+        .iter()
+        .map(|n| (n.name.clone(), n.output.clone()))
+        .collect();
+
+    let mut new_inits = Vec::new();
+
+    for (&tract_node_id, outputs) in &constants {
+        let tract_node = tract_model.node(tract_node_id);
+        for (slot, tensor_value) in outputs.iter().enumerate() {
+            let outlet = tract_onnx::prelude::OutletId::new(tract_node_id, slot);
+            let label_name = tract_model.outlet_label(outlet);
+            let fallback_name = node_name_to_outputs
+                .get(&tract_node.name)
+                .and_then(|names| names.get(slot))
+                .map(String::as_str);
+            let name = match label_name.or(fallback_name) {
+                Some(n) if !n.is_empty() => n,
+                _ => continue,
+            };
+            if existing_inits.contains(name) {
+                continue;
+            }
+            let tensor = tensor_value.clone().into_tensor();
+            let dims: Vec<i64> = tensor.shape().iter().map(|&d| d as i64).collect();
+            let data_type = match tensor.datum_type() {
+                DatumType::F32 => onnx_proto::TensorProto::FLOAT,
+                DatumType::I64 => onnx_proto::TensorProto::INT64,
+                DatumType::I32 => onnx_proto::TensorProto::INT32,
+                DatumType::F64 => onnx_proto::TensorProto::DOUBLE,
+                DatumType::Bool => onnx_proto::TensorProto::BOOL,
+                _ => continue,
+            };
+            let raw_data = tensor.as_bytes().to_vec();
+            new_inits.push(onnx_proto::TensorProto {
+                name: name.to_string(),
+                data_type,
+                dims,
+                raw_data,
+                ..Default::default()
+            });
+            folded_names.insert(name.to_string());
+        }
+    }
+    graph.initializer.extend(new_inits);
+
+    let folded_count = folded_names.len();
+    tracing::info!(
+        folded_count,
+        total_constants = constants.len(),
+        "folded constant subgraphs via tract evaluation"
+    );
+
+    let tract_path_post = onnx_path.with_extension("folded.onnx");
+    onnx_proto::save_model(model, &tract_path_post)?;
+
+    let mut shapes = HashMap::new();
+    let mut tract_model2 = tract_onnx::onnx()
+        .model_for_path(&tract_path_post)
+        .map_err(|e| DsperseError::Slicer(format!("tract reload: {e}")))?;
+
+    for i in 0..tract_model2.inputs.len() {
+        if let Ok(fact) = tract_model2.input_fact(i).cloned()
+            && let Ok(tf) = fact.to_typed_fact()
+        {
+            let concrete: Vec<usize> = tf
+                .shape
+                .iter()
+                .map(|d| d.to_i64().unwrap_or(1) as usize)
+                .collect();
+            let _ =
+                tract_model2.set_input_fact(i, InferenceFact::dt_shape(tf.datum_type, &concrete));
+        }
+    }
+
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tract_model2.analyse(true))) {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "tract analysis encountered errors");
+        }
+        Err(_) => {
+            tracing::warn!("tract analysis panicked; extracting partial results");
+        }
+    }
+
+    for node_id in 0..tract_model2.nodes().len() {
+        let node_obj = tract_model2.node(node_id);
+        for (ix, outlet) in node_obj.outputs.iter().enumerate() {
+            if let Some(concrete) = outlet.fact.shape.concretize() {
+                let shape_vec: Vec<i64> =
+                    concrete.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+                if shape_vec.iter().all(|&d| d > 0) {
+                    let name = if ix == 0 && !node_obj.name.is_empty() {
+                        node_obj.name.clone()
+                    } else {
+                        format!("{}:{}", node_obj.name, ix)
+                    };
+                    shapes.insert(name, shape_vec);
+                }
+            }
+        }
+    }
+
+    if let Some(graph) = &model.graph {
+        let onnx_node_outputs: Vec<(String, Vec<String>)> = graph
+            .node
+            .iter()
+            .enumerate()
+            .map(|(idx, n)| {
+                let name = if n.name.is_empty() {
+                    format!("{}_{}", n.op_type, idx)
+                } else {
+                    n.name.clone()
+                };
+                (name, n.output.clone())
+            })
+            .collect();
+
+        let mut extra: Vec<(String, Vec<i64>)> = Vec::new();
+        for (onnx_name, onnx_outputs) in &onnx_node_outputs {
+            if let Some(shape) = shapes.get(onnx_name) {
+                for out in onnx_outputs {
+                    if !out.is_empty() && !shapes.contains_key(out) {
+                        extra.push((out.clone(), shape.clone()));
+                    }
+                }
+            }
+        }
+        for (name, shape) in extra {
+            shapes.entry(name).or_insert(shape);
+        }
+
+        for init in &graph.initializer {
+            if !init.dims.is_empty() {
+                shapes
+                    .entry(init.name.clone())
+                    .or_insert_with(|| init.dims.clone());
+            }
+        }
+    }
+
+    for shape in shapes.values_mut() {
+        for d in shape.iter_mut() {
+            if *d <= 0 {
+                *d = 1;
+            }
+        }
+    }
+
+    tracing::info!(tensors = shapes.len(), "shape trace complete");
+    Ok((folded_names, shapes))
+}
+
+#[allow(dead_code)]
 fn conv_pool_spatial(
     in_shape: &[i64],
     kernel: &[i64],
@@ -597,6 +832,7 @@ fn conv_pool_spatial(
     Some(vec![h, w])
 }
 
+#[allow(dead_code)]
 fn infer_conv_pool_shape(
     node: &NodeProto,
     shapes: &HashMap<String, Vec<i64>>,
@@ -704,6 +940,7 @@ fn infer_conv_pool_shape(
     }
 }
 
+#[allow(dead_code)]
 fn trace_shapes_tract(
     onnx_path: &Path,
     proto_model: &ModelProto,

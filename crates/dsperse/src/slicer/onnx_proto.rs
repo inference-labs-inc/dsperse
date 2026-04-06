@@ -575,3 +575,93 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
     tracing::info!(count, "folded Constant ops into initializers");
     folded_names
 }
+
+pub fn strip_symbolic_value_info(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+
+    let before = graph.value_info.len();
+    graph.value_info.retain(|vi| {
+        let tp = match vi.r#type.as_ref() {
+            Some(t) => t,
+            None => return true,
+        };
+        let tensor = match &tp.value {
+            Some(onnx::type_proto::Value::TensorType(tt)) => tt,
+            _ => return true,
+        };
+        let shape = match tensor.shape.as_ref() {
+            Some(s) => s,
+            None => return true,
+        };
+        shape.dim.iter().all(|d| {
+            matches!(
+                &d.value,
+                Some(onnx::tensor_shape_proto::dimension::Value::DimValue(_)) | None
+            )
+        })
+    });
+
+    for out in &mut graph.output {
+        let tp = match out.r#type.as_mut() {
+            Some(t) => t,
+            None => continue,
+        };
+        let tensor = match &mut tp.value {
+            Some(onnx::type_proto::Value::TensorType(tt)) => tt,
+            _ => continue,
+        };
+        let shape = match tensor.shape.as_mut() {
+            Some(s) => s,
+            None => continue,
+        };
+        for d in &mut shape.dim {
+            if matches!(
+                &d.value,
+                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
+            ) {
+                d.value = None;
+            }
+        }
+    }
+
+    let removed = before - graph.value_info.len();
+    if removed > 0 {
+        tracing::info!(
+            removed,
+            "stripped value_info entries with symbolic dimensions"
+        );
+    }
+    removed
+}
+
+pub fn normalize_resize_modes(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+    let mut count = 0;
+    for node in &mut graph.node {
+        if node.op_type != "Resize" {
+            continue;
+        }
+        let is_cubic = node
+            .attribute
+            .iter()
+            .any(|a| a.name == "mode" && a.s == b"cubic");
+        if is_cubic {
+            if let Some(attr) = node.attribute.iter_mut().find(|a| a.name == "mode") {
+                attr.s = b"linear".to_vec();
+            }
+            node.attribute.retain(|a| a.name != "cubic_coeff_a");
+            tracing::info!(
+                node = %node.name,
+                "downgraded Resize interpolation from cubic to linear"
+            );
+            count += 1;
+        }
+    }
+    count
+}

@@ -68,7 +68,8 @@ impl ConstVal {
     fn as_f32(&self) -> Option<Vec<f32>> {
         match self {
             Self::F32(v, _, _) => Some(v.clone()),
-            _ => None,
+            Self::I64(v, _, _) => Some(v.iter().map(|&x| x as f32).collect()),
+            Self::ShapeOnly(_) => None,
         }
     }
 
@@ -494,10 +495,13 @@ fn evaluate(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<Vec<(Strin
         "Sqrt" => map_f32(inputs, |v| v.sqrt()),
         "Neg" => map_f32(inputs, |v| -v),
         "Exp" => map_f32(inputs, |v| v.exp()),
+        "Floor" => map_f32(inputs, |v| v.floor()),
+        "Ceil" => map_f32(inputs, |v| v.ceil()),
         "Add" => binary_f32(inputs, |a, b| a + b),
         "Sub" => binary_f32(inputs, |a, b| a - b),
         "Mul" => binary_f32(inputs, |a, b| a * b),
         "Div" => binary_f32(inputs, |a, b| a / b),
+        "Pow" => binary_f32(inputs, |a, b| a.powf(b)),
         "Unsqueeze" => eval_unsqueeze(node, inputs),
         "Concat" => eval_concat(node, inputs),
         "Reshape" => eval_reshape(node, inputs),

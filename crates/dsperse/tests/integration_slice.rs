@@ -23,6 +23,7 @@ fn slice_net_model() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 
@@ -65,6 +66,7 @@ fn slice_doom_model() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 
@@ -94,6 +96,7 @@ fn slice_net_model_remainder() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Remainder.supported_ops(),
+        None,
     )
     .expect("slice_model with Remainder");
 
@@ -118,6 +121,7 @@ fn slice_with_tile_size() {
         Some(&output_dir),
         Some(8),
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 
@@ -144,6 +148,7 @@ fn slice_metadata_roundtrip_from_disk() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 
@@ -174,6 +179,7 @@ fn materialize_from_manifest() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 
@@ -217,6 +223,7 @@ fn resolve_onnx_points_to_existing_file_after_materialize() {
         Some(&output_dir),
         None,
         jstprove_circuits::ProofSystem::Expander.supported_ops(),
+        None,
     )
     .expect("slice_model");
 

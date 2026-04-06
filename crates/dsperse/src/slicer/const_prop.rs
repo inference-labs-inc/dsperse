@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::onnx_proto::{ModelProto, NodeProto, TensorProto};
+use super::onnx_proto::{self, ModelProto, NodeProto, TensorProto};
 
 #[derive(Clone, Debug)]
 enum ConstVal {
@@ -153,20 +153,27 @@ pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
             if evaluated.contains(&idx) {
                 continue;
             }
-            if !can_evaluate(node, &known) {
-                continue;
-            }
-            let inputs: Vec<Option<&ConstVal>> = node
-                .input
-                .iter()
-                .map(|inp| if inp.is_empty() { None } else { known.get(inp) })
-                .collect();
-
-            if let Some(outputs) = evaluate(node, &inputs) {
-                for (name, val) in outputs {
-                    known.insert(name, val);
+            if can_evaluate(node, &known) {
+                let inputs: Vec<Option<&ConstVal>> = node
+                    .input
+                    .iter()
+                    .map(|inp| if inp.is_empty() { None } else { known.get(inp) })
+                    .collect();
+                if let Some(outputs) = evaluate(node, &inputs) {
+                    for (name, val) in outputs {
+                        known.insert(name, val);
+                    }
+                    evaluated.insert(idx);
+                    progress = true;
+                    continue;
                 }
-                evaluated.insert(idx);
+            }
+            if let Some(out) = node.output.first()
+                && !out.is_empty()
+                && !known.contains_key(out)
+                && let Some(shape) = infer_output_shape(node, &known, &graph.initializer)
+            {
+                known.insert(out.clone(), ConstVal::ShapeOnly(shape));
                 progress = true;
             }
         }
@@ -205,6 +212,259 @@ pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
         tracing::info!(count, "propagated constant subgraphs into initializers");
     }
     propagated_names
+}
+
+fn get_shape(name: &str, known: &HashMap<String, ConstVal>) -> Option<Vec<i64>> {
+    match known.get(name)? {
+        ConstVal::F32(_, dims, _) | ConstVal::I64(_, dims, _) => Some(dims.clone()),
+        ConstVal::ShapeOnly(s) => Some(s.clone()),
+    }
+}
+
+fn infer_output_shape(
+    node: &NodeProto,
+    known: &HashMap<String, ConstVal>,
+    initializers: &[TensorProto],
+) -> Option<Vec<i64>> {
+    let input_shape =
+        |idx: usize| -> Option<Vec<i64>> { node.input.get(idx).and_then(|n| get_shape(n, known)) };
+
+    match node.op_type.as_str() {
+        "Conv" => {
+            let x = input_shape(0)?;
+            if x.len() != 4 {
+                return None;
+            }
+            let w_name = node.input.get(1)?;
+            let w_dims = initializers
+                .iter()
+                .find(|i| &i.name == w_name)
+                .map(|i| &i.dims)
+                .or_else(|| {
+                    known.get(w_name).map(|v| match v {
+                        ConstVal::F32(_, d, _)
+                        | ConstVal::I64(_, d, _)
+                        | ConstVal::ShapeOnly(d) => d,
+                    })
+                })?;
+            if w_dims.len() != 4 {
+                return None;
+            }
+            let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
+            let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+            let dilations = onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
+            let sh = strides.first().copied().unwrap_or(1);
+            let sw = strides.get(1).copied().unwrap_or(1);
+            let ph = if pads.len() >= 4 {
+                pads[0] + pads[2]
+            } else {
+                0
+            };
+            let pw = if pads.len() >= 4 {
+                pads[1] + pads[3]
+            } else {
+                0
+            };
+            let dh = dilations.first().copied().unwrap_or(1);
+            let dw = dilations.get(1).copied().unwrap_or(1);
+            let kh = (w_dims[2] - 1) * dh + 1;
+            let kw = (w_dims[3] - 1) * dw + 1;
+            Some(vec![
+                x[0],
+                w_dims[0],
+                (x[2] + ph - kh) / sh + 1,
+                (x[3] + pw - kw) / sw + 1,
+            ])
+        }
+        "Transpose" => {
+            let x = input_shape(0)?;
+            let perm = onnx_proto::get_attribute_ints(node, "perm")?;
+            if perm.len() != x.len() {
+                return None;
+            }
+            Some(perm.iter().map(|&p| x[p as usize]).collect())
+        }
+        "MatMul" => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            if a.len() < 2 || b.len() < 2 {
+                return None;
+            }
+            let mut out = a[..a.len() - 1].to_vec();
+            out.push(*b.last().unwrap());
+            Some(out)
+        }
+        "Gemm" => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            if a.len() != 2 || b.len() != 2 {
+                return None;
+            }
+            let trans_a = onnx_proto::get_attribute_int(node, "transA").unwrap_or(0);
+            let trans_b = onnx_proto::get_attribute_int(node, "transB").unwrap_or(0);
+            let m = if trans_a != 0 { a[1] } else { a[0] };
+            let n = if trans_b != 0 { b[0] } else { b[1] };
+            Some(vec![m, n])
+        }
+        "Concat" => {
+            let axis = onnx_proto::get_attribute_int(node, "axis")?;
+            let shapes: Vec<Vec<i64>> = node
+                .input
+                .iter()
+                .filter_map(|n| get_shape(n, known))
+                .collect();
+            if shapes.is_empty() || shapes.len() != node.input.len() {
+                return None;
+            }
+            let rank = shapes[0].len();
+            let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
+            if axis >= rank {
+                return None;
+            }
+            let mut out = shapes[0].clone();
+            for s in &shapes[1..] {
+                out[axis] += s[axis];
+            }
+            Some(out)
+        }
+        "Reshape" => {
+            let x = input_shape(0)?;
+            let target_name = node.input.get(1)?;
+            let target = match known.get(target_name)? {
+                ConstVal::I64(v, _, _) => v.clone(),
+                _ => return None,
+            };
+            let vol: i64 = x.iter().product();
+            let mut out = target;
+            let neg_idx = out.iter().position(|&v| v == -1);
+            let known_vol: i64 = out.iter().filter(|&&v| v != -1).product();
+            if let Some(idx) = neg_idx {
+                out[idx] = if known_vol != 0 { vol / known_vol } else { 0 };
+            }
+            for (i, d) in out.iter_mut().enumerate() {
+                if *d == 0 && i < x.len() {
+                    *d = x[i];
+                }
+            }
+            Some(out)
+        }
+        "Resize" => {
+            let x = input_shape(0)?;
+            if let Some(name) = node.input.get(3)
+                && let Some(ConstVal::I64(sizes, _, _)) = known.get(name)
+            {
+                return Some(sizes.clone());
+            }
+            if let Some(name) = node.input.get(2)
+                && let Some(ConstVal::F32(scales, _, _)) = known.get(name)
+                && scales.len() == x.len()
+            {
+                return Some(
+                    x.iter()
+                        .zip(scales.iter())
+                        .map(|(&d, &s)| (d as f32 * s).floor() as i64)
+                        .collect(),
+                );
+            }
+            None
+        }
+        "LayerNormalization" | "BatchNormalization" => input_shape(0),
+        "Flatten" => {
+            let x = input_shape(0)?;
+            let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(1) as usize;
+            let d0: i64 = x[..axis].iter().product();
+            let d1: i64 = x[axis..].iter().product();
+            Some(vec![d0, d1])
+        }
+        "Unsqueeze" => {
+            let x = input_shape(0)?;
+            let axes_name = node.input.get(1)?;
+            let axes = match known.get(axes_name)? {
+                ConstVal::I64(v, _, _) => v.clone(),
+                _ => return None,
+            };
+            let new_rank = x.len() + axes.len();
+            let mut out = vec![0i64; new_rank];
+            let normalized: Vec<usize> = axes
+                .iter()
+                .map(|&a| {
+                    if a < 0 {
+                        (new_rank as i64 + a) as usize
+                    } else {
+                        a as usize
+                    }
+                })
+                .collect();
+            for &a in &normalized {
+                if a < new_rank {
+                    out[a] = 1;
+                }
+            }
+            let mut xi = 0;
+            for d in &mut out {
+                if *d == 0 && xi < x.len() {
+                    *d = x[xi];
+                    xi += 1;
+                }
+            }
+            Some(out)
+        }
+        "Squeeze" => {
+            let x = input_shape(0)?;
+            let axes = if let Some(axes_name) = node.input.get(1) {
+                match known.get(axes_name)? {
+                    ConstVal::I64(v, _, _) => v.clone(),
+                    _ => return None,
+                }
+            } else {
+                x.iter()
+                    .enumerate()
+                    .filter(|&(_, &d)| d == 1)
+                    .map(|(i, _)| i as i64)
+                    .collect()
+            };
+            let rank = x.len() as i64;
+            let normalized: HashSet<usize> = axes
+                .iter()
+                .map(|&a| {
+                    if a < 0 {
+                        (rank + a) as usize
+                    } else {
+                        a as usize
+                    }
+                })
+                .collect();
+            Some(
+                x.iter()
+                    .enumerate()
+                    .filter(|(i, _)| !normalized.contains(i))
+                    .map(|(_, &d)| d)
+                    .collect(),
+            )
+        }
+        op if super::is_shape_preserving(op) || super::is_elementwise(op) => input_shape(0),
+        op if super::is_binary_arithmetic(op) => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            let rank = a.len().max(b.len());
+            let mut out = vec![1i64; rank];
+            for (i, d) in out.iter_mut().enumerate().rev() {
+                let ai = if i >= rank - a.len() {
+                    a[i - (rank - a.len())]
+                } else {
+                    1
+                };
+                let bi = if i >= rank - b.len() {
+                    b[i - (rank - b.len())]
+                } else {
+                    1
+                };
+                *d = ai.max(bi);
+            }
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 fn can_evaluate(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {

@@ -864,6 +864,7 @@ fn trace_shapes_tract(
                     }
                     if let Some(vi) = graph.value_info.iter().find(|v| v.name == *out)
                         && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+                        && shape.iter().all(|&d| d > 0)
                     {
                         shapes.insert(out.clone(), shape);
                     }

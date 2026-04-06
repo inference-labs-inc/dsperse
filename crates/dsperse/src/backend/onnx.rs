@@ -217,8 +217,7 @@ pub fn run_inference_named(
             zip_named_outputs(&output_names, &result)
         }
         Err(_) => {
-            let mut result =
-                run_inference_with_coercion(onnx_path, input_data, &concrete_shape)?;
+            let mut result = run_inference_with_coercion(onnx_path, input_data, &concrete_shape)?;
             let mut named = NamedOutputs::new();
             for (i, name) in output_names.iter().enumerate() {
                 let key = format!("output_{i}");
@@ -362,29 +361,29 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let dt = tv.datum_type();
     let data: Vec<f64> = if dt == f32::datum_type() {
         let arr = tv
-            .to_dense_array_view::<f32>()
+            .to_plain_array_view::<f32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == f64::datum_type() {
         let arr = tv
-            .to_dense_array_view::<f64>()
+            .to_plain_array_view::<f64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().copied().collect()
     } else if dt == i64::datum_type() {
         let arr = tv
-            .to_dense_array_view::<i64>()
+            .to_plain_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))
             .collect::<Result<Vec<_>>>()?
     } else if dt == i32::datum_type() {
         let arr = tv
-            .to_dense_array_view::<i32>()
+            .to_plain_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == bool::datum_type() {
         let arr = tv
-            .to_dense_array_view::<bool>()
+            .to_plain_array_view::<bool>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| if v { 1.0 } else { 0.0 }).collect()
     } else if dt.is_tdim() {
@@ -392,7 +391,7 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .cast_to::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: TDim->i64 cast: {e}")))?;
         let arr = casted
-            .to_dense_array_view::<i64>()
+            .to_plain_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))

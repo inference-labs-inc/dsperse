@@ -216,7 +216,18 @@ pub fn run_inference_named(
             let result = run_single(&plan, input_data, &concrete_shape)?;
             zip_named_outputs(&output_names, &result)
         }
-        Err(_) => run_inference_with_coercion(onnx_path, input_data, &concrete_shape),
+        Err(_) => {
+            let mut result =
+                run_inference_with_coercion(onnx_path, input_data, &concrete_shape)?;
+            let mut named = NamedOutputs::new();
+            for (i, name) in output_names.iter().enumerate() {
+                let key = format!("output_{i}");
+                if let Some(val) = result.remove(&key) {
+                    named.insert(name.clone(), val);
+                }
+            }
+            Ok(named)
+        }
     }
 }
 

@@ -21,18 +21,24 @@ pub fn slice_model(
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
     onnx_proto::normalize_resize_modes(&mut model);
-    onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape);
-    onnx_proto::concretize_symbolic_dims(&mut model);
+    onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape)?;
+
+    onnx_proto::strip_symbolic_value_info(&mut model);
+
+    let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
+    let tract_path = tmp_dir.path().join("tract_model.onnx");
+    onnx_proto::save_model(&model, &tract_path)?;
+
+    tracing::info!("tracing shapes via tract");
+    let mut traced_shapes = trace_shapes_tract(&tract_path, &model)?;
+
     let mut folded_constants = onnx_proto::fold_constant_nodes(&mut model);
     let propagated_constants = super::const_prop::propagate_constants(&mut model);
     folded_constants.extend(propagated_constants);
 
-    let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
-    let normalized_path = tmp_dir.path().join("model.onnx");
-    onnx_proto::save_model(&model, &normalized_path)?;
-
-    tracing::info!("tracing shapes via tract");
-    let traced_shapes = trace_shapes_tract(&normalized_path, &model)?;
+    if let Some(graph) = &model.graph {
+        super::const_prop::fill_shapes_from_graph(graph, &mut traced_shapes);
+    }
 
     let analysis = analyzer::analyze(&model, Some(onnx_path))?;
 
@@ -679,6 +685,21 @@ fn infer_conv_pool_shape(
             Some(vec![d0, d1])
         }
         "LayerNormalization" | "BatchNormalization" | "Resize" => Some(in_shape.clone()),
+        "Tile" => {
+            let repeats_name = node.input.get(1)?;
+            let repeats_tensor = graph.initializer.iter().find(|i| &i.name == repeats_name)?;
+            let repeats = onnx_proto::tensor_to_i64(repeats_tensor);
+            if repeats.len() != in_shape.len() {
+                return None;
+            }
+            Some(
+                in_shape
+                    .iter()
+                    .zip(repeats.iter())
+                    .map(|(&d, &r)| d * r)
+                    .collect(),
+            )
+        }
         _ => None,
     }
 }

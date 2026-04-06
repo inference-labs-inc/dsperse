@@ -215,6 +215,83 @@ pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
     propagated_names
 }
 
+pub fn fill_shapes_from_graph(
+    graph: &super::onnx_proto::GraphProto,
+    shapes: &mut HashMap<String, Vec<i64>>,
+) {
+    let mut known: HashMap<String, ConstVal> = HashMap::new();
+    for (name, shape) in shapes.iter() {
+        known.insert(name.clone(), ConstVal::ShapeOnly(shape.clone()));
+    }
+    for init in &graph.initializer {
+        if let Some(val) = ConstVal::from_tensor(init) {
+            known.insert(init.name.clone(), val);
+        } else if !init.dims.is_empty() {
+            known
+                .entry(init.name.clone())
+                .or_insert_with(|| ConstVal::ShapeOnly(init.dims.clone()));
+        }
+    }
+
+    let before = shapes.len();
+    let mut progress = true;
+    while progress {
+        progress = false;
+        for node in &graph.node {
+            let all_resolved = node.output.iter().all(|o| {
+                o.is_empty()
+                    || matches!(
+                        known.get(o),
+                        Some(ConstVal::I64(_, _, _) | ConstVal::F32(_, _, _))
+                    )
+            });
+            if all_resolved {
+                continue;
+            }
+            if can_evaluate(node, &known) {
+                let inputs: Vec<Option<&ConstVal>> = node
+                    .input
+                    .iter()
+                    .map(|inp| if inp.is_empty() { None } else { known.get(inp) })
+                    .collect();
+                if let Some(outputs) = evaluate(node, &inputs) {
+                    for (name, val) in outputs {
+                        if let Some(shape) = get_shape(
+                            &name,
+                            &std::iter::once((name.clone(), val.clone())).collect(),
+                        ) && shape.iter().all(|&d| d > 0)
+                        {
+                            shapes.entry(name.clone()).or_insert(shape);
+                        }
+                        known.insert(name, val);
+                        progress = true;
+                    }
+                    continue;
+                }
+            }
+            for out in &node.output {
+                if out.is_empty() || known.contains_key(out) {
+                    continue;
+                }
+                if let Some(shape) = infer_output_shape(node, &known, &graph.initializer)
+                    && shape.iter().all(|&d| d > 0)
+                {
+                    known.insert(out.clone(), ConstVal::ShapeOnly(shape.clone()));
+                    shapes.insert(out.clone(), shape);
+                    progress = true;
+                }
+            }
+        }
+    }
+    let added = shapes.len() - before;
+    if added > 0 {
+        tracing::info!(
+            added,
+            "filled additional shapes from post-propagation graph"
+        );
+    }
+}
+
 fn get_shape(name: &str, known: &HashMap<String, ConstVal>) -> Option<Vec<i64>> {
     match known.get(name)? {
         ConstVal::F32(_, dims, _) | ConstVal::I64(_, dims, _) => Some(dims.clone()),
@@ -318,6 +395,9 @@ fn infer_output_shape(
                 return None;
             }
             let rank = shapes[0].len();
+            if rank == 0 || shapes.iter().any(|s| s.len() != rank) {
+                return None;
+            }
             let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
             if axis >= rank {
                 return None;
@@ -368,6 +448,66 @@ fn infer_output_shape(
                 );
             }
             None
+        }
+        "Slice" => {
+            let x = input_shape(0)?;
+            let get_i64 = |idx: usize| -> Option<Vec<i64>> {
+                let name = node.input.get(idx)?;
+                match known.get(name)? {
+                    ConstVal::I64(v, _, _) => Some(v.clone()),
+                    ConstVal::F32(v, _, _) => Some(v.iter().map(|&f| f as i64).collect()),
+                    ConstVal::ShapeOnly(_) => None,
+                }
+            };
+            let starts = get_i64(1)?;
+            let ends = get_i64(2)?;
+            let axes = get_i64(3);
+            let steps = get_i64(4);
+            let rank = x.len() as i64;
+            let mut out = x.clone();
+            for i in 0..starts.len() {
+                let axis = axes
+                    .as_ref()
+                    .and_then(|a| a.get(i).copied())
+                    .unwrap_or(i as i64);
+                let axis = if axis < 0 { rank + axis } else { axis } as usize;
+                if axis >= out.len() {
+                    continue;
+                }
+                let dim = out[axis];
+                let step = steps.as_ref().and_then(|s| s.get(i).copied()).unwrap_or(1);
+                let mut s = starts[i];
+                let mut e = ends[i];
+                if s < 0 {
+                    s += dim;
+                }
+                if e < 0 {
+                    e += dim;
+                }
+                s = s.clamp(0, dim);
+                e = e.clamp(0, dim);
+                let len = if step > 0 {
+                    (e - s + step - 1) / step
+                } else if step < 0 {
+                    (s - e + (-step) - 1) / (-step)
+                } else {
+                    return None;
+                };
+                out[axis] = len.max(0);
+            }
+            Some(out)
+        }
+        "Tile" => {
+            let x = input_shape(0)?;
+            let repeats_name = node.input.get(1)?;
+            let repeats = match known.get(repeats_name)? {
+                ConstVal::I64(v, _, _) => v.clone(),
+                _ => return None,
+            };
+            if repeats.len() != x.len() {
+                return None;
+            }
+            Some(x.iter().zip(repeats.iter()).map(|(&d, &r)| d * r).collect())
         }
         "LayerNormalization" | "BatchNormalization" => input_shape(0),
         "Flatten" => {
@@ -772,30 +912,33 @@ fn eval_concat(node: &NodeProto, inputs: &[Option<&ConstVal>]) -> Option<ConstVa
     if first.dims().len() != 1 || axis != 0 {
         return None;
     }
-    match first {
-        ConstVal::I64(_, _, dt) => {
-            let mut result: Vec<i64> = Vec::new();
-            for i in inputs {
-                result.extend(i.as_ref()?.as_i64()?);
-            }
-            Some(ConstVal::I64(
-                result.clone(),
-                vec![result.len() as i64],
-                *dt,
-            ))
+    let has_i64 = inputs
+        .iter()
+        .any(|i| matches!(i, Some(ConstVal::I64(_, _, _))));
+    if has_i64 {
+        let mut result: Vec<i64> = Vec::new();
+        for i in inputs {
+            let v = i.as_ref()?;
+            let vals = v
+                .as_i64()
+                .or_else(|| v.as_f32().map(|f| f.iter().map(|&x| x as i64).collect()))?;
+            result.extend(vals);
         }
-        ConstVal::F32(_, _, dt) => {
-            let mut result: Vec<f32> = Vec::new();
-            for i in inputs {
-                result.extend(i.as_ref()?.as_f32()?);
-            }
-            Some(ConstVal::F32(
-                result.clone(),
-                vec![result.len() as i64],
-                *dt,
-            ))
+        Some(ConstVal::I64(
+            result.clone(),
+            vec![result.len() as i64],
+            TensorProto::INT64,
+        ))
+    } else {
+        let mut result: Vec<f32> = Vec::new();
+        for i in inputs {
+            result.extend(i.as_ref()?.as_f32()?);
         }
-        ConstVal::ShapeOnly(_) => None,
+        Some(ConstVal::F32(
+            result.clone(),
+            vec![result.len() as i64],
+            TensorProto::FLOAT,
+        ))
     }
 }
 

@@ -593,56 +593,66 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
     folded_names
 }
 
-pub fn concretize_symbolic_dims(model: &mut ModelProto) -> usize {
+pub fn strip_symbolic_value_info(model: &mut ModelProto) -> usize {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
         None => return 0,
     };
 
-    let mut count = 0;
-    let all_vi = graph.value_info.iter_mut().chain(graph.output.iter_mut());
-    for vi in all_vi {
-        let tp = match vi.r#type.as_mut() {
-            Some(t) => t,
-            None => continue,
-        };
-        let tensor = match &mut tp.value {
-            Some(onnx::type_proto::Value::TensorType(tt)) => tt,
-            _ => continue,
-        };
-        let shape = match tensor.shape.as_mut() {
-            Some(s) => s,
-            None => continue,
-        };
-        for d in &mut shape.dim {
-            if matches!(
-                &d.value,
-                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
-            ) {
-                d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(0));
-                count += 1;
+    let has_symbolic = |vi: &ValueInfoProto| -> bool {
+        vi.r#type
+            .as_ref()
+            .and_then(|t| match &t.value {
+                Some(onnx::type_proto::Value::TensorType(tt)) => tt.shape.as_ref(),
+                _ => None,
+            })
+            .is_some_and(|s| {
+                s.dim.iter().any(|d| {
+                    matches!(
+                        &d.value,
+                        Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
+                    )
+                })
+            })
+    };
+
+    let before = graph.value_info.len();
+    graph.value_info.retain(|vi| !has_symbolic(vi));
+    let removed = before - graph.value_info.len();
+
+    for out in &mut graph.output {
+        if let Some(ref mut tp) = out.r#type
+            && let Some(onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value
+            && let Some(ref mut shape) = tt.shape
+        {
+            for d in &mut shape.dim {
+                if matches!(
+                    &d.value,
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
+                ) {
+                    d.value = None;
+                }
             }
         }
     }
 
-    if count > 0 {
+    if removed > 0 {
         tracing::info!(
-            count,
-            "replaced symbolic dimension parameters with placeholder values"
+            removed,
+            "stripped value_info entries with symbolic dimensions"
         );
     }
-    count
+    removed
 }
 
 pub fn resolve_dynamic_input_shapes(
     model: &mut ModelProto,
     explicit_shape: Option<&[i64]>,
-) -> usize {
+) -> crate::error::Result<usize> {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
-        None => return 0,
+        None => return Ok(0),
     };
-    let inferred_spatial = infer_spatial_from_graph(graph);
     let mut resolved = 0;
     for inp in &mut graph.input {
         let tp = match inp.r#type.as_mut() {
@@ -667,112 +677,48 @@ pub fn resolve_dynamic_input_shapes(
             continue;
         }
         if let Some(explicit) = explicit_shape {
-            if explicit.len() == shape.dim.len() {
-                for (d, &v) in shape.dim.iter_mut().zip(explicit.iter()) {
-                    d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v));
-                }
-                tracing::info!(
-                    input = %inp.name,
-                    shape = ?explicit,
-                    "applied explicit input shape"
-                );
-                resolved += 1;
-                continue;
+            if explicit.len() != shape.dim.len() {
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "input '{}' has rank {} but --input-shape provides {} dims",
+                    inp.name,
+                    shape.dim.len(),
+                    explicit.len()
+                )));
             }
-            tracing::warn!(
-                input = %inp.name,
-                expected_rank = shape.dim.len(),
-                provided_rank = explicit.len(),
-                "explicit shape rank mismatch; falling back to heuristic resolution"
-            );
-        }
-        let rank = shape.dim.len();
-        for (i, d) in shape.dim.iter_mut().enumerate() {
-            let is_symbolic = matches!(
-                &d.value,
-                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
-            );
-            if !is_symbolic {
-                continue;
+            for (d, &v) in shape.dim.iter_mut().zip(explicit.iter()) {
+                d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v));
             }
-            let dim_name = match &d.value {
-                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(s)) => s.clone(),
-                _ => String::new(),
-            };
-            let inferred = if i == 0 {
-                1
-            } else if rank == 4
-                && (i == 2 || i == 3)
-                && let Some(spatial) = inferred_spatial
-            {
-                spatial
-            } else {
-                tracing::warn!(
-                    input = %inp.name,
-                    dim = i,
-                    dim_name = %dim_name,
-                    "could not infer symbolic dimension; defaulting to 1"
-                );
-                1
-            };
-            d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(
-                inferred,
-            ));
-        }
-        let final_shape: Vec<i64> = shape
-            .dim
-            .iter()
-            .filter_map(|d| match &d.value {
-                Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => Some(*v),
-                _ => None,
-            })
-            .collect();
-        tracing::info!(
-            input = %inp.name,
-            shape = ?final_shape,
-            "resolved dynamic input dimensions"
-        );
-        resolved += 1;
-    }
-    resolved
-}
-
-fn infer_spatial_from_graph(graph: &GraphProto) -> Option<i64> {
-    let init_names: std::collections::HashSet<&str> =
-        graph.initializer.iter().map(|i| i.name.as_str()).collect();
-
-    for node in &graph.node {
-        if node.op_type != "Conv" {
+            tracing::info!(input = %inp.name, shape = ?explicit, "applied explicit input shape");
+            resolved += 1;
             continue;
         }
-        let weight_name = match node.input.get(1) {
-            Some(n) if init_names.contains(n.as_str()) => n,
-            _ => continue,
-        };
-        let weight = match graph.initializer.iter().find(|t| &t.name == weight_name) {
-            Some(t) => t,
-            None => continue,
-        };
-        if weight.dims.len() == 4 {
-            let kernel_h = weight.dims[2];
-            let kernel_w = weight.dims[3];
-            let strides = get_attribute_ints(node, "strides").unwrap_or_default();
-            let stride = strides.first().copied().unwrap_or(1);
-            let spatial = if stride > 1 {
-                kernel_h.max(kernel_w) * stride * 14
-            } else {
-                kernel_h.max(kernel_w) * 224
-            };
-            tracing::info!(
-                kernel = ?[kernel_h, kernel_w],
-                stride,
-                inferred_spatial = spatial,
-                "inferred spatial dimensions from first Conv"
-            );
-            return Some(spatial);
+        let non_batch_symbolic = shape.dim.iter().skip(1).any(|d| {
+            matches!(
+                &d.value,
+                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
+            )
+        });
+        if non_batch_symbolic {
+            let dim_names: Vec<String> = shape
+                .dim
+                .iter()
+                .map(|d| match &d.value {
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimParam(s)) => s.clone(),
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => v.to_string(),
+                    None => "?".into(),
+                })
+                .collect();
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "model input '{}' has dynamic dimensions [{}]; provide --input-shape to set concrete values",
+                inp.name,
+                dim_names.join(", ")
+            )));
         }
+        shape.dim[0].value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(1));
+        tracing::info!(input = %inp.name, "defaulted batch dimension to 1");
+        resolved += 1;
     }
-    None
+    Ok(resolved)
 }
 
 pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {

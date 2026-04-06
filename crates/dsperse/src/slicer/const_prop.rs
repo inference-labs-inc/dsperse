@@ -517,7 +517,41 @@ fn infer_output_shape(
             }
             Some(x.iter().zip(repeats.iter()).map(|(&d, &r)| d * r).collect())
         }
-        "LayerNormalization" | "BatchNormalization" => input_shape(0),
+        "ConstantOfShape" => {
+            let shape_name = node.input.first()?;
+            let dims = match known.get(shape_name)? {
+                ConstVal::I64(v, _, _) => v.clone(),
+                _ => return None,
+            };
+            Some(dims)
+        }
+        "LayerNormalization" | "BatchNormalization" | "ScatterND" | "ScatterElements" => {
+            input_shape(0)
+        }
+        "Expand" => {
+            let x = input_shape(0)?;
+            let target_name = node.input.get(1)?;
+            let target_val = known.get(target_name)?;
+            let target = match target_val {
+                ConstVal::I64(v, _, _) => v.clone(),
+                ConstVal::ShapeOnly(s) => s.clone(),
+                _ => return None,
+            };
+            let rank = x.len().max(target.len());
+            let mut out = vec![1i64; rank];
+            for (i, d) in out.iter_mut().enumerate() {
+                let xi = x
+                    .get(i + x.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                let ti = target
+                    .get(i + target.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                *d = xi.max(ti);
+            }
+            Some(out)
+        }
         "Flatten" => {
             let x = input_shape(0)?;
             let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(1) as usize;

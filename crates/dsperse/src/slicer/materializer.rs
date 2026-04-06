@@ -540,10 +540,11 @@ fn get_segment_details(
                     .get(inp_name)
                     .cloned()
                     .or_else(|| resolve_shape_backward(inp_name, ctx.graph, ctx.traced_shapes))
-                    .unwrap_or_else(|| {
-                        tracing::warn!(tensor = %inp_name, "no traced shape; using placeholder");
-                        vec![1]
-                    });
+                    .ok_or_else(|| {
+                        DsperseError::Slicer(format!(
+                            "no traced shape for segment input tensor '{inp_name}'"
+                        ))
+                    })?;
                 inputs.push(onnx_proto::make_tensor_value_info(
                     inp_name,
                     ctx.resolve_elem_type(inp_name),
@@ -573,10 +574,11 @@ fn get_segment_details(
                     .get(out_name)
                     .cloned()
                     .or_else(|| resolve_shape_backward(out_name, ctx.graph, ctx.traced_shapes))
-                    .unwrap_or_else(|| {
-                        tracing::warn!(tensor = %out_name, "no traced shape; using placeholder");
-                        vec![1]
-                    });
+                    .ok_or_else(|| {
+                        DsperseError::Slicer(format!(
+                            "no traced shape for segment output tensor '{out_name}'"
+                        ))
+                    })?;
                 outputs.push(onnx_proto::make_tensor_value_info(
                     out_name,
                     ctx.resolve_elem_type(out_name),

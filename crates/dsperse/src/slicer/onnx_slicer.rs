@@ -916,6 +916,14 @@ fn trace_shapes_tract(
         }
     }
 
+    for shape in shapes.values_mut() {
+        for d in shape.iter_mut() {
+            if *d <= 0 {
+                *d = 1;
+            }
+        }
+    }
+
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok(shapes)
 }

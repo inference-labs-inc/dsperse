@@ -3,7 +3,7 @@ pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use prost::Message;
@@ -773,6 +773,228 @@ fn infer_spatial_from_graph(graph: &GraphProto) -> Option<i64> {
         }
     }
     None
+}
+
+pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+    let count = flatten_matmul_inputs(graph) + materialize_reshape_targets(graph);
+    if count > 0 {
+        tracing::info!(count, "normalized graph for circuit backend compatibility");
+    }
+    count
+}
+
+fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
+    let vi_shapes: HashMap<String, Vec<i64>> = graph
+        .input
+        .iter()
+        .chain(graph.value_info.iter())
+        .chain(graph.output.iter())
+        .filter_map(|vi| shape_from_value_info(vi).map(|s| (vi.name.clone(), s)))
+        .collect();
+
+    let init_shapes: HashMap<String, Vec<i64>> = graph
+        .initializer
+        .iter()
+        .map(|i| (i.name.clone(), i.dims.clone()))
+        .collect();
+
+    let shapes: HashMap<String, Vec<i64>> = vi_shapes.into_iter().chain(init_shapes).collect();
+
+    let mut new_nodes: Vec<(usize, Vec<NodeProto>)> = Vec::new();
+    let mut new_inits: Vec<TensorProto> = Vec::new();
+    let mut new_vis: Vec<ValueInfoProto> = Vec::new();
+    let mut count = 0;
+
+    for (idx, node) in graph.node.iter().enumerate() {
+        if node.op_type != "MatMul" {
+            continue;
+        }
+        let a_name = match node.input.first() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let b_name = match node.input.get(1) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let a_shape = match shapes.get(a_name) {
+            Some(s) if s.len() > 2 => s.clone(),
+            _ => continue,
+        };
+        let b_shape = match shapes.get(b_name) {
+            Some(s) => s.clone(),
+            None => continue,
+        };
+        let out_name = match node.output.first() {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => continue,
+        };
+
+        let batch_dims = &a_shape[..a_shape.len() - 2];
+        let batch_vol: i64 = batch_dims.iter().product();
+        let m = a_shape[a_shape.len() - 2];
+        let k = a_shape[a_shape.len() - 1];
+
+        let a_2d_name = format!("{a_name}__flat2d");
+        let a_2d_shape_name = format!("{a_name}__flat2d_shape");
+        let a_2d = vec![batch_vol * m, k];
+
+        let mut b_2d_name = b_name.clone();
+        let mut needs_b_reshape = false;
+        let n_dim;
+        if b_shape.len() > 2 {
+            let b_m = b_shape[b_shape.len() - 2];
+            n_dim = b_shape[b_shape.len() - 1];
+            b_2d_name = format!("{b_name}__flat2d");
+            let b_2d_shape_name = format!("{b_name}__flat2d_shape");
+            let b_batch: i64 = b_shape[..b_shape.len() - 2].iter().product();
+            let b_2d = vec![b_batch * b_m, n_dim];
+            new_inits.push(TensorProto {
+                name: b_2d_shape_name.clone(),
+                data_type: TensorProto::INT64,
+                dims: vec![2],
+                int64_data: b_2d.clone(),
+                ..Default::default()
+            });
+            new_vis.push(make_tensor_value_info(&b_2d_name, 1, &b_2d));
+            needs_b_reshape = true;
+        } else {
+            n_dim = *b_shape.last().unwrap_or(&1);
+        }
+
+        let matmul_out_name = format!("{out_name}__matmul2d");
+        let matmul_2d_shape = vec![batch_vol * m, n_dim];
+
+        let restore_shape_name = format!("{out_name}__restore_shape");
+        let mut restored: Vec<i64> = batch_dims.to_vec();
+        restored.push(m);
+        restored.push(n_dim);
+
+        new_inits.push(TensorProto {
+            name: a_2d_shape_name.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![2],
+            int64_data: a_2d.clone(),
+            ..Default::default()
+        });
+        new_inits.push(TensorProto {
+            name: restore_shape_name.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![restored.len() as i64],
+            int64_data: restored.clone(),
+            ..Default::default()
+        });
+
+        new_vis.push(make_tensor_value_info(&a_2d_name, 1, &a_2d));
+        new_vis.push(make_tensor_value_info(
+            &matmul_out_name,
+            1,
+            &matmul_2d_shape,
+        ));
+
+        let mut inserted = Vec::new();
+
+        inserted.push(NodeProto {
+            op_type: "Reshape".into(),
+            name: format!("{}_flatten_a", node.name),
+            input: vec![a_name.clone(), a_2d_shape_name],
+            output: vec![a_2d_name.clone()],
+            ..Default::default()
+        });
+
+        if needs_b_reshape {
+            let b_2d_shape_name = format!("{b_name}__flat2d_shape");
+            inserted.push(NodeProto {
+                op_type: "Reshape".into(),
+                name: format!("{}_flatten_b", node.name),
+                input: vec![b_name.clone(), b_2d_shape_name],
+                output: vec![b_2d_name.clone()],
+                ..Default::default()
+            });
+        }
+
+        inserted.push(NodeProto {
+            op_type: "MatMul".into(),
+            name: node.name.clone(),
+            input: vec![a_2d_name, b_2d_name],
+            output: vec![matmul_out_name.clone()],
+            attribute: node.attribute.clone(),
+            ..Default::default()
+        });
+
+        inserted.push(NodeProto {
+            op_type: "Reshape".into(),
+            name: format!("{}_restore", node.name),
+            input: vec![matmul_out_name, restore_shape_name],
+            output: vec![out_name],
+            ..Default::default()
+        });
+
+        new_nodes.push((idx, inserted));
+        count += 1;
+    }
+
+    for (offset, (idx, nodes)) in new_nodes.into_iter().enumerate() {
+        let pos = idx + offset * 2;
+        graph.node.remove(pos);
+        for (i, n) in nodes.into_iter().enumerate() {
+            graph.node.insert(pos + i, n);
+        }
+    }
+    graph.initializer.extend(new_inits);
+    graph.value_info.extend(new_vis);
+    count
+}
+
+fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
+    let init_names: HashSet<String> = graph.initializer.iter().map(|i| i.name.clone()).collect();
+    let input_names: HashSet<String> = graph.input.iter().map(|i| i.name.clone()).collect();
+
+    let vi_shapes: HashMap<String, Vec<i64>> = graph
+        .value_info
+        .iter()
+        .chain(graph.output.iter())
+        .filter_map(|vi| shape_from_value_info(vi).map(|s| (vi.name.clone(), s)))
+        .collect();
+
+    let mut new_inits: Vec<TensorProto> = Vec::new();
+    let mut count = 0;
+
+    for node in &graph.node {
+        if node.op_type != "Reshape" {
+            continue;
+        }
+        let shape_input = match node.input.get(1) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        if init_names.contains(shape_input) || input_names.contains(shape_input) {
+            continue;
+        }
+        let out_name = match node.output.first() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let out_shape = match vi_shapes.get(out_name) {
+            Some(s) if !s.is_empty() && s.iter().all(|&d| d > 0) => s,
+            _ => continue,
+        };
+        new_inits.push(TensorProto {
+            name: shape_input.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![out_shape.len() as i64],
+            int64_data: out_shape.clone(),
+            ..Default::default()
+        });
+        count += 1;
+    }
+
+    graph.initializer.extend(new_inits);
+    count
 }
 
 pub fn normalize_resize_modes(model: &mut ModelProto) -> usize {

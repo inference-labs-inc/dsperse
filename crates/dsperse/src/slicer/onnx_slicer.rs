@@ -4,7 +4,7 @@ use std::path::Path;
 use super::analyzer::{self, AnalysisResult, NodeAnalysis};
 use super::autotiler;
 use super::materializer;
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto};
+use super::onnx_proto::{self, ModelProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
     Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
@@ -614,6 +614,7 @@ fn fold_and_trace_via_tract(
                 .iter()
                 .map(|t| {
                     if t.datum_type() == DatumType::TDim {
+                        // Safety: datum_type() == TDim confirmed by outer if
                         let view = unsafe { t.as_slice_unchecked::<TDim>() };
                         let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
                         let shape = t.shape().to_vec();
@@ -632,7 +633,14 @@ fn fold_and_trace_via_tract(
             };
             let outputs = match eval_result {
                 Ok(o) => o,
-                Err(_) => {
+                Err(e) => {
+                    tracing::debug!(
+                        node = %node.name,
+                        op = %node.op.name(),
+                        n_outputs = node.outputs.len(),
+                        error = %e,
+                        "op eval failed, using input[0] shape as fallback"
+                    );
                     let fallback = inputs
                         .first()
                         .cloned()
@@ -682,6 +690,7 @@ fn fold_and_trace_via_tract(
         };
         let tensor = tv.clone().into_tensor();
         if tensor.datum_type() == DatumType::TDim {
+            // Safety: datum_type() == TDim confirmed by outer if
             let view = unsafe { tensor.as_slice_unchecked::<TDim>() };
             let i64_vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
             let dims: Vec<i64> = tensor.shape().iter().map(|&d| d as i64).collect();
@@ -764,388 +773,6 @@ fn fold_and_trace_via_tract(
 
     tracing::info!(tensors = shapes.len(), "shape trace complete");
     Ok((folded_names, shapes))
-}
-#[allow(dead_code)]
-fn conv_pool_spatial(
-    in_shape: &[i64],
-    kernel: &[i64],
-    node: &NodeProto,
-    ceil_mode: bool,
-) -> Option<Vec<i64>> {
-    if in_shape.len() != 4 || kernel.len() < 2 {
-        return None;
-    }
-    let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
-    let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-    let dilations = onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
-    let sh = strides.first().copied().unwrap_or(1);
-    let sw = strides.get(1).copied().unwrap_or(1);
-    if sh == 0 || sw == 0 {
-        return None;
-    }
-    let ph = if pads.len() >= 4 {
-        pads[0] + pads[2]
-    } else {
-        0
-    };
-    let pw = if pads.len() >= 4 {
-        pads[1] + pads[3]
-    } else {
-        0
-    };
-    let dh = dilations.first().copied().unwrap_or(1);
-    let dw = dilations.get(1).copied().unwrap_or(1);
-    let kh = (kernel[0] - 1) * dh + 1;
-    let kw = (kernel[1] - 1) * dw + 1;
-    let (h, w) = if ceil_mode {
-        (
-            (in_shape[2] + ph - kh + sh - 1) / sh + 1,
-            (in_shape[3] + pw - kw + sw - 1) / sw + 1,
-        )
-    } else {
-        (
-            (in_shape[2] + ph).saturating_sub(kh) / sh + 1,
-            (in_shape[3] + pw).saturating_sub(kw) / sw + 1,
-        )
-    };
-    Some(vec![h, w])
-}
-
-#[allow(dead_code)]
-fn infer_conv_pool_shape(
-    node: &NodeProto,
-    shapes: &HashMap<String, Vec<i64>>,
-    graph: &GraphProto,
-) -> Option<Vec<i64>> {
-    let inp = node.input.first()?;
-    let in_shape = shapes.get(inp)?;
-    match node.op_type.as_str() {
-        "Conv" => {
-            let w_name = node.input.get(1)?;
-            let w_dims: Vec<i64> = graph
-                .initializer
-                .iter()
-                .find(|i| &i.name == w_name)
-                .map(|i| i.dims.clone())?;
-            if w_dims.len() != 4 {
-                return None;
-            }
-            let hw = conv_pool_spatial(in_shape, &w_dims[2..], node, false)?;
-            Some(vec![in_shape[0], w_dims[0], hw[0], hw[1]])
-        }
-        "MaxPool" | "AveragePool" => {
-            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
-            let ceil = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0) != 0;
-            let hw = conv_pool_spatial(in_shape, &kernel, node, ceil)?;
-            Some(vec![in_shape[0], in_shape[1], hw[0], hw[1]])
-        }
-        "Transpose" => {
-            let perm = onnx_proto::get_attribute_ints(node, "perm")?;
-            if perm.len() != in_shape.len() {
-                return None;
-            }
-            Some(perm.iter().map(|&p| in_shape[p as usize]).collect())
-        }
-        "MatMul" => {
-            let b = shapes.get(node.input.get(1)?)?;
-            if in_shape.len() < 2 || b.len() < 2 {
-                return None;
-            }
-            let mut out = in_shape[..in_shape.len() - 1].to_vec();
-            out.push(*b.last().unwrap());
-            Some(out)
-        }
-        "Concat" => {
-            let axis = onnx_proto::get_attribute_int(node, "axis")?;
-            let all: Vec<&Vec<i64>> = node.input.iter().filter_map(|n| shapes.get(n)).collect();
-            if all.len() != node.input.len() || all.is_empty() {
-                return None;
-            }
-            let rank = all[0].len();
-            if rank == 0 {
-                return None;
-            }
-            let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
-            if axis >= rank || all.iter().any(|s| s.len() != rank) {
-                return None;
-            }
-            let mut out = all[0].clone();
-            for s in &all[1..] {
-                out[axis] += s[axis];
-            }
-            Some(out)
-        }
-        "Reshape" => {
-            let target_name = node.input.get(1)?;
-            let target_tensor = graph.initializer.iter().find(|i| &i.name == target_name)?;
-            let target = onnx_proto::tensor_to_i64(target_tensor);
-            let vol: i64 = in_shape.iter().product();
-            let mut out = target;
-            let neg_idx = out.iter().position(|&v| v == -1);
-            let known_vol: i64 = out.iter().filter(|&&v| v != -1).product();
-            if let Some(idx) = neg_idx {
-                out[idx] = if known_vol != 0 { vol / known_vol } else { 0 };
-            }
-            for (i, d) in out.iter_mut().enumerate() {
-                if *d == 0 && i < in_shape.len() {
-                    *d = in_shape[i];
-                }
-            }
-            Some(out)
-        }
-        "Flatten" => {
-            let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(1) as usize;
-            let d0: i64 = in_shape[..axis].iter().product();
-            let d1: i64 = in_shape[axis..].iter().product();
-            Some(vec![d0, d1])
-        }
-        "LayerNormalization" | "BatchNormalization" | "Resize" => Some(in_shape.clone()),
-        "Tile" => {
-            let repeats_name = node.input.get(1)?;
-            let repeats_tensor = graph.initializer.iter().find(|i| &i.name == repeats_name)?;
-            let repeats = onnx_proto::tensor_to_i64(repeats_tensor);
-            if repeats.len() != in_shape.len() {
-                return None;
-            }
-            Some(
-                in_shape
-                    .iter()
-                    .zip(repeats.iter())
-                    .map(|(&d, &r)| d * r)
-                    .collect(),
-            )
-        }
-        _ => None,
-    }
-}
-
-#[allow(dead_code)]
-fn trace_shapes_tract(
-    onnx_path: &Path,
-    proto_model: &ModelProto,
-) -> Result<HashMap<String, Vec<i64>>> {
-    use tract_onnx::prelude::*;
-    use tract_onnx::tract_hir::infer::Factoid;
-
-    let mut model = tract_onnx::onnx()
-        .model_for_path(onnx_path)
-        .map_err(|e| DsperseError::Slicer(format!("tract load: {e}")))?;
-
-    for i in 0..model.inputs.len() {
-        let input_fact = model
-            .input_fact(i)
-            .map_err(|e| DsperseError::Slicer(format!("input fact {i}: {e}")))?
-            .clone();
-        if let Ok(tf) = input_fact.to_typed_fact() {
-            let concrete: Vec<usize> = tf
-                .shape
-                .iter()
-                .map(|d| d.to_i64().unwrap_or(1) as usize)
-                .collect();
-            model
-                .set_input_fact(i, InferenceFact::dt_shape(tf.datum_type, &concrete))
-                .map_err(|e| {
-                    DsperseError::Slicer(format!("set_input_fact({i}, shape={concrete:?}): {e}"))
-                })?;
-        }
-    }
-
-    let mut shapes = HashMap::new();
-    let mut tract_names_to_shapes: Vec<(String, Vec<i64>)> = Vec::new();
-
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| model.analyse(true))) {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "tract obstinate analysis encountered errors");
-        }
-        Err(_) => {
-            tracing::warn!("tract analysis panicked; extracting partial results");
-        }
-    }
-
-    for node_id in 0..model.nodes().len() {
-        let node_obj = model.node(node_id);
-        for (ix, outlet) in node_obj.outputs.iter().enumerate() {
-            let concrete = match outlet.fact.shape.concretize() {
-                Some(dims) => dims,
-                None => continue,
-            };
-            let shape_vec: Vec<i64> = concrete.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
-            if shape_vec.iter().all(|&d| d > 0) {
-                let name = if ix == 0 && !node_obj.name.is_empty() {
-                    node_obj.name.clone()
-                } else {
-                    format!("{}:{}", node_obj.name, ix)
-                };
-                tract_names_to_shapes.push((name.clone(), shape_vec.clone()));
-                shapes.insert(name, shape_vec);
-            }
-        }
-    }
-
-    if let Some(graph) = &proto_model.graph {
-        for init in &graph.initializer {
-            if !shapes.contains_key(&init.name) {
-                let shape: Vec<i64> = init.dims.to_vec();
-                shapes.insert(init.name.clone(), shape);
-            }
-        }
-
-        let onnx_node_outputs: Vec<(String, Vec<String>)> = graph
-            .node
-            .iter()
-            .enumerate()
-            .map(|(idx, n)| {
-                let name = if n.name.is_empty() {
-                    format!("{}_{}", n.op_type, idx)
-                } else {
-                    n.name.clone()
-                };
-                (name, n.output.clone())
-            })
-            .collect();
-
-        for (onnx_name, onnx_outputs) in &onnx_node_outputs {
-            let mut matched_shape: Option<&Vec<i64>> = None;
-            for (tract_name, shape) in &tract_names_to_shapes {
-                if tract_name == onnx_name {
-                    matched_shape = Some(shape);
-                    break;
-                }
-            }
-            if matched_shape.is_none() {
-                let prefix = format!("{onnx_name}.");
-                let volume = |s: &[i64]| -> i64 { s.iter().copied().product() };
-                for (tract_name, shape) in &tract_names_to_shapes {
-                    if tract_name.starts_with(&prefix)
-                        && matched_shape.is_none_or(|s| {
-                            shape.len() > s.len()
-                                || (shape.len() == s.len() && volume(shape) > volume(s))
-                        })
-                    {
-                        matched_shape = Some(shape);
-                    }
-                }
-            }
-            if let Some(shape) = matched_shape {
-                for out in onnx_outputs {
-                    if !out.is_empty() && !shapes.contains_key(out) {
-                        shapes.insert(out.clone(), shape.clone());
-                    }
-                }
-            }
-        }
-
-        let mut prev_len = 0;
-        while shapes.len() != prev_len {
-            prev_len = shapes.len();
-
-            for node in &graph.node {
-                if super::is_shape_preserving(&node.op_type)
-                    && let Some(inp) = node.input.first()
-                    && let Some(in_shape) = shapes.get(inp).cloned()
-                {
-                    for out in &node.output {
-                        if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), in_shape.clone());
-                        }
-                    }
-                }
-            }
-
-            for node in &graph.node {
-                if node.op_type == "Shape"
-                    && let Some(inp) = node.input.first()
-                    && let Some(in_shape) = shapes.get(inp)
-                {
-                    let rank = in_shape.len() as i64;
-                    let start = onnx_proto::get_attribute_int(node, "start").unwrap_or(0);
-                    let end = onnx_proto::get_attribute_int(node, "end").unwrap_or(rank);
-                    let normalize = |idx: i64| {
-                        if idx < 0 {
-                            (rank + idx).max(0)
-                        } else {
-                            idx.min(rank)
-                        }
-                    };
-                    let len = (normalize(end) - normalize(start)).max(0);
-                    for out in &node.output {
-                        if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), vec![len]);
-                        }
-                    }
-                }
-            }
-
-            for node in &graph.node {
-                for out in &node.output {
-                    if out.is_empty() || shapes.contains_key(out) {
-                        continue;
-                    }
-                    if let Some(vi) = graph.value_info.iter().find(|v| v.name == *out)
-                        && let Some(shape) = onnx_proto::shape_from_value_info(vi)
-                        && shape.iter().all(|&d| d > 0)
-                    {
-                        shapes.insert(out.clone(), shape);
-                    }
-                }
-            }
-
-            for node in &graph.node {
-                if super::is_binary_arithmetic(&node.op_type) {
-                    let input_shapes: Vec<&Vec<i64>> = node
-                        .input
-                        .iter()
-                        .filter_map(|inp| shapes.get(inp))
-                        .collect();
-                    if let Some(broadcasted) = broadcast_shapes(&input_shapes) {
-                        for out in &node.output {
-                            if !out.is_empty() && !shapes.contains_key(out) {
-                                shapes.insert(out.clone(), broadcasted.clone());
-                            }
-                        }
-                    }
-                }
-            }
-
-            for node in &graph.node {
-                if let Some(out_shape) = infer_conv_pool_shape(node, &shapes, graph) {
-                    for out in &node.output {
-                        if !out.is_empty() && !shapes.contains_key(out) {
-                            shapes.insert(out.clone(), out_shape.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        for vi in graph
-            .input
-            .iter()
-            .chain(graph.output.iter())
-            .chain(graph.value_info.iter())
-        {
-            if !shapes.contains_key(&vi.name) {
-                let dims = onnx_proto::vi_shape(vi);
-                if !dims.is_empty() {
-                    let concrete: Vec<i64> =
-                        dims.iter().map(|&d| if d <= 0 { 1 } else { d }).collect();
-                    shapes.insert(vi.name.clone(), concrete);
-                }
-            }
-        }
-    }
-
-    for shape in shapes.values_mut() {
-        for d in shape.iter_mut() {
-            if *d <= 0 {
-                *d = 1;
-            }
-        }
-    }
-
-    tracing::info!(tensors = shapes.len(), "shape trace complete");
-    Ok(shapes)
 }
 
 pub(crate) fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {

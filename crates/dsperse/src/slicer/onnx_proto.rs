@@ -593,36 +593,16 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
     folded_names
 }
 
-pub fn strip_symbolic_value_info(model: &mut ModelProto) -> usize {
+pub fn concretize_symbolic_dims(model: &mut ModelProto) -> usize {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
         None => return 0,
     };
 
-    let before = graph.value_info.len();
-    graph.value_info.retain(|vi| {
-        let tp = match vi.r#type.as_ref() {
-            Some(t) => t,
-            None => return true,
-        };
-        let tensor = match &tp.value {
-            Some(onnx::type_proto::Value::TensorType(tt)) => tt,
-            _ => return true,
-        };
-        let shape = match tensor.shape.as_ref() {
-            Some(s) => s,
-            None => return true,
-        };
-        shape.dim.iter().all(|d| {
-            matches!(
-                &d.value,
-                Some(onnx::tensor_shape_proto::dimension::Value::DimValue(_)) | None
-            )
-        })
-    });
-
-    for out in &mut graph.output {
-        let tp = match out.r#type.as_mut() {
+    let mut count = 0;
+    let all_vi = graph.value_info.iter_mut().chain(graph.output.iter_mut());
+    for vi in all_vi {
+        let tp = match vi.r#type.as_mut() {
             Some(t) => t,
             None => continue,
         };
@@ -639,19 +619,19 @@ pub fn strip_symbolic_value_info(model: &mut ModelProto) -> usize {
                 &d.value,
                 Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
             ) {
-                d.value = None;
+                d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(0));
+                count += 1;
             }
         }
     }
 
-    let removed = before - graph.value_info.len();
-    if removed > 0 {
+    if count > 0 {
         tracing::info!(
-            removed,
-            "stripped value_info entries with symbolic dimensions"
+            count,
+            "replaced symbolic dimension parameters with placeholder values"
         );
     }
-    removed
+    count
 }
 
 pub fn resolve_dynamic_input_shapes(

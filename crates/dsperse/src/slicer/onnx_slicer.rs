@@ -22,7 +22,7 @@ pub fn slice_model(
     onnx_proto::normalize_opset(&mut model);
     onnx_proto::normalize_resize_modes(&mut model);
     onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape);
-    onnx_proto::strip_symbolic_value_info(&mut model);
+    onnx_proto::concretize_symbolic_dims(&mut model);
     let mut folded_constants = onnx_proto::fold_constant_nodes(&mut model);
     let propagated_constants = super::const_prop::propagate_constants(&mut model);
     folded_constants.extend(propagated_constants);
@@ -641,7 +641,13 @@ fn infer_conv_pool_shape(
                 return None;
             }
             let rank = all[0].len();
+            if rank == 0 {
+                return None;
+            }
             let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
+            if axis >= rank || all.iter().any(|s| s.len() != rank) {
+                return None;
+            }
             let mut out = all[0].clone();
             for s in &all[1..] {
                 out[axis] += s[axis];

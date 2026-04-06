@@ -4,7 +4,7 @@ use std::path::Path;
 use super::analyzer::{self, AnalysisResult, NodeAnalysis};
 use super::autotiler;
 use super::materializer;
-use super::onnx_proto::{self, ModelProto};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::{
     Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
@@ -546,6 +546,137 @@ fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     points.dedup();
 }
 
+fn conv_pool_spatial(
+    in_shape: &[i64],
+    kernel: &[i64],
+    node: &NodeProto,
+    ceil_mode: bool,
+) -> Option<Vec<i64>> {
+    if in_shape.len() != 4 || kernel.len() < 2 {
+        return None;
+    }
+    let strides = onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
+    let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
+    let dilations = onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
+    let sh = strides.first().copied().unwrap_or(1);
+    let sw = strides.get(1).copied().unwrap_or(1);
+    if sh == 0 || sw == 0 {
+        return None;
+    }
+    let ph = if pads.len() >= 4 {
+        pads[0] + pads[2]
+    } else {
+        0
+    };
+    let pw = if pads.len() >= 4 {
+        pads[1] + pads[3]
+    } else {
+        0
+    };
+    let dh = dilations.first().copied().unwrap_or(1);
+    let dw = dilations.get(1).copied().unwrap_or(1);
+    let kh = (kernel[0] - 1) * dh + 1;
+    let kw = (kernel[1] - 1) * dw + 1;
+    let (h, w) = if ceil_mode {
+        (
+            (in_shape[2] + ph - kh + sh - 1) / sh + 1,
+            (in_shape[3] + pw - kw + sw - 1) / sw + 1,
+        )
+    } else {
+        (
+            (in_shape[2] + ph).saturating_sub(kh) / sh + 1,
+            (in_shape[3] + pw).saturating_sub(kw) / sw + 1,
+        )
+    };
+    Some(vec![h, w])
+}
+
+fn infer_conv_pool_shape(
+    node: &NodeProto,
+    shapes: &HashMap<String, Vec<i64>>,
+    graph: &GraphProto,
+) -> Option<Vec<i64>> {
+    let inp = node.input.first()?;
+    let in_shape = shapes.get(inp)?;
+    match node.op_type.as_str() {
+        "Conv" => {
+            let w_name = node.input.get(1)?;
+            let w_dims: Vec<i64> = graph
+                .initializer
+                .iter()
+                .find(|i| &i.name == w_name)
+                .map(|i| i.dims.clone())?;
+            if w_dims.len() != 4 {
+                return None;
+            }
+            let hw = conv_pool_spatial(in_shape, &w_dims[2..], node, false)?;
+            Some(vec![in_shape[0], w_dims[0], hw[0], hw[1]])
+        }
+        "MaxPool" | "AveragePool" => {
+            let kernel = onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
+            let ceil = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0) != 0;
+            let hw = conv_pool_spatial(in_shape, &kernel, node, ceil)?;
+            Some(vec![in_shape[0], in_shape[1], hw[0], hw[1]])
+        }
+        "Transpose" => {
+            let perm = onnx_proto::get_attribute_ints(node, "perm")?;
+            if perm.len() != in_shape.len() {
+                return None;
+            }
+            Some(perm.iter().map(|&p| in_shape[p as usize]).collect())
+        }
+        "MatMul" => {
+            let b = shapes.get(node.input.get(1)?)?;
+            if in_shape.len() < 2 || b.len() < 2 {
+                return None;
+            }
+            let mut out = in_shape[..in_shape.len() - 1].to_vec();
+            out.push(*b.last().unwrap());
+            Some(out)
+        }
+        "Concat" => {
+            let axis = onnx_proto::get_attribute_int(node, "axis")?;
+            let all: Vec<&Vec<i64>> = node.input.iter().filter_map(|n| shapes.get(n)).collect();
+            if all.len() != node.input.len() || all.is_empty() {
+                return None;
+            }
+            let rank = all[0].len();
+            let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
+            let mut out = all[0].clone();
+            for s in &all[1..] {
+                out[axis] += s[axis];
+            }
+            Some(out)
+        }
+        "Reshape" => {
+            let target_name = node.input.get(1)?;
+            let target_tensor = graph.initializer.iter().find(|i| &i.name == target_name)?;
+            let target = onnx_proto::tensor_to_i64(target_tensor);
+            let vol: i64 = in_shape.iter().product();
+            let mut out = target;
+            let neg_idx = out.iter().position(|&v| v == -1);
+            let known_vol: i64 = out.iter().filter(|&&v| v != -1).product();
+            if let Some(idx) = neg_idx {
+                out[idx] = if known_vol != 0 { vol / known_vol } else { 0 };
+            }
+            for (i, d) in out.iter_mut().enumerate() {
+                if *d == 0 && i < in_shape.len() {
+                    *d = in_shape[i];
+                }
+            }
+            Some(out)
+        }
+        "Flatten" => {
+            let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(1) as usize;
+            let d0: i64 = in_shape[..axis].iter().product();
+            let d1: i64 = in_shape[axis..].iter().product();
+            Some(vec![d0, d1])
+        }
+        "LayerNormalization" | "BatchNormalization" | "Resize" => Some(in_shape.clone()),
+        _ => None,
+    }
+}
+
 fn trace_shapes_tract(
     onnx_path: &Path,
     proto_model: &ModelProto,
@@ -751,50 +882,10 @@ fn trace_shapes_tract(
             }
 
             for node in &graph.node {
-                if node.op_type == "MaxPool"
-                    && let Some(inp) = node.input.first()
-                    && let Some(in_shape) = shapes.get(inp).cloned()
-                    && in_shape.len() == 4
-                {
-                    let kernel =
-                        onnx_proto::get_attribute_ints(node, "kernel_shape").unwrap_or_default();
-                    let strides =
-                        onnx_proto::get_attribute_ints(node, "strides").unwrap_or_default();
-                    let pads = onnx_proto::get_attribute_ints(node, "pads").unwrap_or_default();
-                    let dilations =
-                        onnx_proto::get_attribute_ints(node, "dilations").unwrap_or_default();
-                    let ceil_mode = onnx_proto::get_attribute_int(node, "ceil_mode").unwrap_or(0);
-                    if kernel.len() >= 2 && strides.len() >= 2 && strides[0] > 0 && strides[1] > 0 {
-                        let pad_h = if pads.len() >= 4 {
-                            pads[0] + pads[2]
-                        } else {
-                            0
-                        };
-                        let pad_w = if pads.len() >= 4 {
-                            pads[1] + pads[3]
-                        } else {
-                            0
-                        };
-                        let dil_h = dilations.first().copied().unwrap_or(1);
-                        let dil_w = dilations.get(1).copied().unwrap_or(1);
-                        let eff_k_h = (kernel[0] - 1) * dil_h + 1;
-                        let eff_k_w = (kernel[1] - 1) * dil_w + 1;
-                        let (h, w) = if ceil_mode != 0 {
-                            (
-                                (in_shape[2] + pad_h - eff_k_h + strides[0] - 1) / strides[0] + 1,
-                                (in_shape[3] + pad_w - eff_k_w + strides[1] - 1) / strides[1] + 1,
-                            )
-                        } else {
-                            (
-                                (in_shape[2] + pad_h).saturating_sub(eff_k_h) / strides[0] + 1,
-                                (in_shape[3] + pad_w).saturating_sub(eff_k_w) / strides[1] + 1,
-                            )
-                        };
-                        let out_shape = vec![in_shape[0], in_shape[1], h, w];
-                        for out in &node.output {
-                            if !out.is_empty() && !shapes.contains_key(out) {
-                                shapes.insert(out.clone(), out_shape.clone());
-                            }
+                if let Some(out_shape) = infer_conv_pool_shape(node, &shapes, graph) {
+                    for out in &node.output {
+                        if !out.is_empty() && !shapes.contains_key(out) {
+                            shapes.insert(out.clone(), out_shape.clone());
                         }
                     }
                 }

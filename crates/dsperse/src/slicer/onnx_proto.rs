@@ -208,6 +208,23 @@ pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
         .unwrap_or_default()
 }
 
+pub fn tensor_to_i64(tensor: &TensorProto) -> Vec<i64> {
+    if !tensor.int64_data.is_empty() {
+        return tensor.int64_data.clone();
+    }
+    if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::INT64 {
+        return tensor
+            .raw_data
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect();
+    }
+    if !tensor.int32_data.is_empty() {
+        return tensor.int32_data.iter().map(|&v| v as i64).collect();
+    }
+    Vec::new()
+}
+
 pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     if !tensor.float_data.is_empty() {
         return tensor.float_data.clone();

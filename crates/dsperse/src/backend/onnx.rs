@@ -60,14 +60,43 @@ fn optimize_to_runnable(
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e:#}")))
 }
 
+fn optimize_to_runnable_with_coercion(
+    onnx_path: &Path,
+    concrete_shape: &[usize],
+) -> Result<Arc<TypedRunnableModel>> {
+    let model = load_onnx_model(onnx_path)?;
+    match optimize_to_runnable(model, concrete_shape) {
+        Ok(plan) => Ok(plan),
+        Err(first_err) => {
+            tracing::warn!(
+                error = %first_err,
+                "standard optimization failed; attempting constant folding workaround"
+            );
+            let mut proto = crate::slicer::onnx_proto::load_model(onnx_path)?;
+            crate::slicer::onnx_proto::strip_symbolic_value_info(&mut proto);
+            crate::slicer::onnx_proto::fold_constant_nodes(&mut proto);
+            let tmp = tempfile::NamedTempFile::with_suffix(".onnx")
+                .map_err(|e| DsperseError::Onnx(format!("create temp: {e}")))?;
+            crate::slicer::onnx_proto::save_model(&proto, tmp.path())?;
+            let model2 = load_onnx_model(tmp.path())?;
+            optimize_to_runnable(model2, concrete_shape)
+        }
+    }
+}
+
 fn load_runnable(
     onnx_path: &Path,
     input_shape: &[usize],
 ) -> Result<(Arc<TypedRunnableModel>, Vec<usize>)> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    let plan = optimize_to_runnable(model, &concrete_shape)?;
-    Ok((plan, concrete_shape))
+    match optimize_to_runnable(model, &concrete_shape) {
+        Ok(plan) => Ok((plan, concrete_shape)),
+        Err(_) => {
+            let plan = optimize_to_runnable_with_coercion(onnx_path, &concrete_shape)?;
+            Ok((plan, concrete_shape))
+        }
+    }
 }
 
 fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {

@@ -780,11 +780,311 @@ pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {
         Some(g) => g,
         None => return 0,
     };
-    let count = flatten_matmul_inputs(graph) + materialize_reshape_targets(graph);
+    let fixed = fix_zero_dims(graph);
+    let count = flatten_matmul_inputs(graph) + materialize_reshape_targets(graph) + fixed;
     if count > 0 {
         tracing::info!(count, "normalized graph for circuit backend compatibility");
     }
     count
+}
+
+fn fix_zero_dims(graph: &mut GraphProto) -> usize {
+    let mut shapes: HashMap<String, Vec<i64>> = HashMap::new();
+
+    for inp in &graph.input {
+        if let Some(s) = shape_from_value_info(inp)
+            && s.iter().all(|&d| d > 0)
+        {
+            shapes.insert(inp.name.clone(), s);
+        }
+    }
+    for init in &graph.initializer {
+        if !init.dims.is_empty() {
+            shapes.insert(init.name.clone(), init.dims.clone());
+        }
+    }
+    for vi in &graph.value_info {
+        if let Some(s) = shape_from_value_info(vi)
+            && s.iter().all(|&d| d > 0)
+            && !shapes.contains_key(&vi.name)
+        {
+            shapes.insert(vi.name.clone(), s);
+        }
+    }
+
+    let mut progress = true;
+    while progress {
+        progress = false;
+        for node in &graph.node {
+            for out in &node.output {
+                if out.is_empty() || shapes.contains_key(out) {
+                    continue;
+                }
+                let inferred = infer_node_output_shape(node, &shapes, graph);
+                if let Some(s) = inferred
+                    && s.iter().all(|&d| d > 0)
+                {
+                    shapes.insert(out.clone(), s);
+                    progress = true;
+                }
+            }
+        }
+    }
+
+    let mut count = 0;
+    for vi in graph.value_info.iter_mut().chain(graph.output.iter_mut()) {
+        if let Some(new_shape) = shapes.get(&vi.name)
+            && let Some(existing) = shape_from_value_info(vi)
+            && existing.contains(&0)
+        {
+            set_vi_shape(vi, new_shape);
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        tracing::info!(count, "resolved zero-valued placeholder dimensions");
+    }
+    count
+}
+
+fn set_vi_shape(vi: &mut ValueInfoProto, shape: &[i64]) {
+    if let Some(ref mut tp) = vi.r#type
+        && let Some(onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value
+    {
+        tt.shape = Some(onnx::TensorShapeProto {
+            dim: shape
+                .iter()
+                .map(|&d| onnx::tensor_shape_proto::Dimension {
+                    denotation: String::new(),
+                    value: Some(onnx::tensor_shape_proto::dimension::Value::DimValue(d)),
+                })
+                .collect(),
+        });
+    }
+}
+
+fn infer_node_output_shape(
+    node: &NodeProto,
+    shapes: &HashMap<String, Vec<i64>>,
+    graph: &GraphProto,
+) -> Option<Vec<i64>> {
+    let input_shape = |idx: usize| -> Option<Vec<i64>> {
+        node.input.get(idx).and_then(|n| shapes.get(n).cloned())
+    };
+
+    match node.op_type.as_str() {
+        "Conv" => {
+            let x = input_shape(0)?;
+            let w_name = node.input.get(1)?;
+            let w_dims = graph
+                .initializer
+                .iter()
+                .find(|i| &i.name == w_name)
+                .map(|i| &i.dims)
+                .or_else(|| shapes.get(w_name))?;
+            if x.len() != 4 || w_dims.len() != 4 {
+                return None;
+            }
+            let strides = get_attribute_ints(node, "strides").unwrap_or_default();
+            let pads = get_attribute_ints(node, "pads").unwrap_or_default();
+            let dilations = get_attribute_ints(node, "dilations").unwrap_or_default();
+            let sh = strides.first().copied().unwrap_or(1);
+            let sw = strides.get(1).copied().unwrap_or(1);
+            if sh == 0 || sw == 0 {
+                return None;
+            }
+            let ph = if pads.len() >= 4 {
+                pads[0] + pads[2]
+            } else {
+                0
+            };
+            let pw = if pads.len() >= 4 {
+                pads[1] + pads[3]
+            } else {
+                0
+            };
+            let dh = dilations.first().copied().unwrap_or(1);
+            let dw = dilations.get(1).copied().unwrap_or(1);
+            let kh = (w_dims[2] - 1) * dh + 1;
+            let kw = (w_dims[3] - 1) * dw + 1;
+            Some(vec![
+                x[0],
+                w_dims[0],
+                (x[2] + ph - kh) / sh + 1,
+                (x[3] + pw - kw) / sw + 1,
+            ])
+        }
+        "Transpose" => {
+            let x = input_shape(0)?;
+            let perm = get_attribute_ints(node, "perm")?;
+            if perm.len() != x.len() {
+                return None;
+            }
+            Some(perm.iter().map(|&p| x[p as usize]).collect())
+        }
+        "MatMul" => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            if a.len() < 2 || b.len() < 2 {
+                return None;
+            }
+            let mut out = a[..a.len() - 1].to_vec();
+            out.push(*b.last()?);
+            Some(out)
+        }
+        "Gemm" => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            if a.len() != 2 || b.len() != 2 {
+                return None;
+            }
+            let ta = get_attribute_int(node, "transA").unwrap_or(0);
+            let tb = get_attribute_int(node, "transB").unwrap_or(0);
+            let m = if ta != 0 { a[1] } else { a[0] };
+            let n = if tb != 0 { b[0] } else { b[1] };
+            Some(vec![m, n])
+        }
+        "Reshape" => {
+            let x = input_shape(0)?;
+            let target_name = node.input.get(1)?;
+            let target = graph
+                .initializer
+                .iter()
+                .find(|i| &i.name == target_name)
+                .map(tensor_to_i64)?;
+            if target.is_empty() {
+                return None;
+            }
+            let vol: i64 = x.iter().product();
+            let mut out = target;
+            if let Some(idx) = out.iter().position(|&v| v == -1) {
+                let known: i64 = out.iter().filter(|&&v| v != -1).product();
+                out[idx] = if known != 0 { vol / known } else { 0 };
+            }
+            for (i, d) in out.iter_mut().enumerate() {
+                if *d == 0 && i < x.len() {
+                    *d = x[i];
+                }
+            }
+            Some(out)
+        }
+        "Concat" => {
+            let axis = get_attribute_int(node, "axis")?;
+            let all: Vec<Vec<i64>> = node
+                .input
+                .iter()
+                .filter_map(|n| shapes.get(n).cloned())
+                .collect();
+            if all.len() != node.input.len() || all.is_empty() {
+                return None;
+            }
+            let rank = all[0].len();
+            if rank == 0 || all.iter().any(|s| s.len() != rank) {
+                return None;
+            }
+            let axis = if axis < 0 { rank as i64 + axis } else { axis } as usize;
+            let mut out = all[0].clone();
+            for s in &all[1..] {
+                out[axis] += s[axis];
+            }
+            Some(out)
+        }
+        "Flatten" => {
+            let x = input_shape(0)?;
+            let axis = get_attribute_int(node, "axis").unwrap_or(1) as usize;
+            Some(vec![x[..axis].iter().product(), x[axis..].iter().product()])
+        }
+        "Softmax" | "LayerNormalization" | "BatchNormalization" | "Sigmoid" | "Relu" | "Tanh"
+        | "Erf" | "Exp" | "Sqrt" | "Cast" | "Pow" | "Not" | "Sin" | "Cos" => input_shape(0),
+        "Add" | "Sub" | "Mul" | "Div" | "Equal" | "Greater" | "Less" | "And" | "Where" => {
+            let a = input_shape(0)?;
+            let b = input_shape(1)?;
+            let rank = a.len().max(b.len());
+            let mut out = vec![1i64; rank];
+            for (i, d) in out.iter_mut().enumerate() {
+                let ai = a
+                    .get(i + a.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                let bi = b
+                    .get(i + b.len().saturating_sub(rank))
+                    .copied()
+                    .unwrap_or(1);
+                *d = ai.max(bi);
+            }
+            Some(out)
+        }
+        "Squeeze" => {
+            let x = input_shape(0)?;
+            let axes: Vec<i64> = if let Some(name) = node.input.get(1) {
+                graph
+                    .initializer
+                    .iter()
+                    .find(|i| &i.name == name)
+                    .map(tensor_to_i64)?
+            } else {
+                x.iter()
+                    .enumerate()
+                    .filter(|&(_, &d)| d == 1)
+                    .map(|(i, _)| i as i64)
+                    .collect()
+            };
+            let rank = x.len() as i64;
+            let set: HashSet<usize> = axes
+                .iter()
+                .map(|&a| {
+                    if a < 0 {
+                        (rank + a) as usize
+                    } else {
+                        a as usize
+                    }
+                })
+                .collect();
+            Some(
+                x.iter()
+                    .enumerate()
+                    .filter(|(i, _)| !set.contains(i))
+                    .map(|(_, &d)| d)
+                    .collect(),
+            )
+        }
+        "Unsqueeze" => {
+            let x = input_shape(0)?;
+            let axes_name = node.input.get(1)?;
+            let axes = graph
+                .initializer
+                .iter()
+                .find(|i| &i.name == axes_name)
+                .map(tensor_to_i64)?;
+            let new_rank = x.len() + axes.len();
+            let mut out = vec![0i64; new_rank];
+            let norm: Vec<usize> = axes
+                .iter()
+                .map(|&a| {
+                    if a < 0 {
+                        (new_rank as i64 + a) as usize
+                    } else {
+                        a as usize
+                    }
+                })
+                .collect();
+            for &a in &norm {
+                if a < new_rank {
+                    out[a] = 1;
+                }
+            }
+            let mut xi = 0;
+            for d in &mut out {
+                if *d == 0 && xi < x.len() {
+                    *d = x[xi];
+                    xi += 1;
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {

@@ -61,7 +61,7 @@ pub struct SliceArgs {
     pub model_dir: PathBuf,
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, default_value = "512")]
     pub tile_size: Option<usize>,
     #[arg(
         long,

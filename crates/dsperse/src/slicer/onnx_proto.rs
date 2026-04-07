@@ -955,6 +955,8 @@ fn eval_const_node(
         "Unsqueeze" => eval_unsqueeze(node, inputs, &out_name),
         "Shape" => eval_shape(inputs[0], &out_name),
         "Gather" if inputs.len() >= 2 => eval_gather(node, inputs, &out_name),
+        "Slice" if inputs.len() >= 3 => eval_slice(inputs, &out_name),
+        "Concat" => eval_concat(node, inputs, &out_name),
         _ => None,
     }
 }
@@ -1216,6 +1218,109 @@ fn eval_gather(
         return Some(vec![(out_name.to_string(), t)]);
     }
     None
+}
+
+fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
+    let data = inputs[0];
+    let starts = tensor_to_i64(inputs[1]);
+    let ends = tensor_to_i64(inputs[2]);
+    if starts.is_empty() || ends.is_empty() {
+        return None;
+    }
+    let axes: Vec<i64> = if inputs.len() > 3 {
+        tensor_to_i64(inputs[3])
+    } else {
+        (0..starts.len() as i64).collect()
+    };
+    let steps: Vec<i64> = if inputs.len() > 4 {
+        tensor_to_i64(inputs[4])
+    } else {
+        vec![1; starts.len()]
+    };
+    if data.dims.len() == 1 && axes == [0] && steps.iter().all(|&s| s == 1) {
+        let dim = data.dims[0];
+        let start = if starts[0] < 0 {
+            (dim + starts[0]).max(0) as usize
+        } else {
+            (starts[0] as usize).min(dim as usize)
+        };
+        let end = if ends[0] < 0 {
+            (dim + ends[0]).max(0) as usize
+        } else {
+            (ends[0] as usize).min(dim as usize)
+        };
+        if start >= end {
+            return None;
+        }
+        if data.data_type == TensorProto::INT64 {
+            let vals = tensor_to_i64(data);
+            let sliced: Vec<i64> = vals.get(start..end)?.to_vec();
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::INT64,
+                dims: vec![(end - start) as i64],
+                int64_data: sliced,
+                ..Default::default()
+            };
+            return Some(vec![(out_name.to_string(), t)]);
+        }
+        let vals = tensor_to_f32(data);
+        let sliced: Vec<f32> = vals.get(start..end)?.to_vec();
+        let t = make_f32_tensor(out_name, &[(end - start) as i64], &sliced, data.data_type);
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+    None
+}
+
+fn eval_concat(
+    node: &NodeProto,
+    inputs: &[&TensorProto],
+    out_name: &str,
+) -> Option<Vec<(String, TensorProto)>> {
+    let _axis = node
+        .attribute
+        .iter()
+        .find(|a| a.name == "axis")
+        .map(|a| a.i)
+        .unwrap_or(0);
+    if inputs.is_empty() {
+        return None;
+    }
+    let all_1d = inputs.iter().all(|t| t.dims.len() <= 1);
+    if !all_1d {
+        return None;
+    }
+    if inputs[0].data_type == TensorProto::INT64
+        || inputs.iter().all(|t| !tensor_to_i64(t).is_empty())
+    {
+        let mut result = Vec::new();
+        for t in inputs {
+            result.extend(tensor_to_i64(t));
+        }
+        let t = TensorProto {
+            name: out_name.to_string(),
+            data_type: TensorProto::INT64,
+            dims: vec![result.len() as i64],
+            int64_data: result,
+            ..Default::default()
+        };
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+    let mut result = Vec::new();
+    for t in inputs {
+        let vals = tensor_to_f32(t);
+        if vals.is_empty() {
+            return None;
+        }
+        result.extend(vals);
+    }
+    let t = make_f32_tensor(
+        out_name,
+        &[result.len() as i64],
+        &result,
+        inputs[0].data_type,
+    );
+    Some(vec![(out_name.to_string(), t)])
 }
 
 fn make_f32_tensor(name: &str, dims: &[i64], vals: &[f32], target_type: i32) -> TensorProto {

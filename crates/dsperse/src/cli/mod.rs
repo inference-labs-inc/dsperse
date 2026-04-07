@@ -100,7 +100,12 @@ pub struct CompileArgs {
     pub layers: Option<String>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help = "Compile circuits with weights as inputs for shared circuit reuse (default: true)"
+    )]
     pub weights_as_inputs: bool,
     #[arg(
         long,
@@ -255,7 +260,12 @@ pub struct FullRunArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long)]
     pub layers: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help = "Compile circuits with weights as inputs for shared circuit reuse (default: true)"
+    )]
     pub weights_as_inputs: bool,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,

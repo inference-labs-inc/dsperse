@@ -95,7 +95,7 @@ fn slice_model(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
+#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=true, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
 fn compile_slices(
     py: Python<'_>,
     slices_dir: &str,

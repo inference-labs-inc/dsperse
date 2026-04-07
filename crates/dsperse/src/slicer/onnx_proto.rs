@@ -1075,17 +1075,15 @@ fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
             Some(s) if !s.is_empty() && s.iter().all(|&d| d > 0) => s,
             _ => continue,
         };
-        if !init_names.contains(shape_input) {
-            new_inits.push(TensorProto {
-                name: shape_input.clone(),
-                data_type: TensorProto::INT64,
-                dims: vec![out_shape.len() as i64],
-                int64_data: out_shape.clone(),
-                ..Default::default()
-            });
-            init_names.insert(shape_input.clone());
-            count += 1;
-        }
+        new_inits.push(TensorProto {
+            name: shape_input.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![out_shape.len() as i64],
+            int64_data: out_shape.clone(),
+            ..Default::default()
+        });
+        init_names.insert(shape_input.clone());
+        count += 1;
     }
 
     graph.initializer.extend(new_inits);

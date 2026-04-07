@@ -74,6 +74,12 @@ pub struct SliceArgs {
         help = "Comma-separated ONNX op names to compile via the proof backend (default: all supported)"
     )]
     pub circuit_ops: Option<String>,
+    #[arg(
+        long,
+        value_delimiter = ',',
+        help = "Concrete input shape as comma-separated dims (e.g. 1,3,560,560). Overrides dynamic dimensions."
+    )]
+    pub input_shape: Option<Vec<i64>>,
 }
 
 #[derive(Args)]
@@ -343,6 +349,7 @@ pub fn cmd_slice(args: SliceArgs) -> Result<()> {
         args.output_dir.as_deref(),
         args.tile_size,
         &ops.as_refs(),
+        args.input_shape.as_deref(),
     )?;
     tracing::info!(slices = metadata.slices.len(), "slicing complete");
     Ok(())

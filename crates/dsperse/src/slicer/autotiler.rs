@@ -629,6 +629,12 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     if total_elements <= seg_size {
         return None;
     }
+    for init in &graph.initializer {
+        let vol: i64 = init.dims.iter().product();
+        if vol > 1 && vol != seg_size {
+            return None;
+        }
+    }
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);
@@ -1626,20 +1632,41 @@ pub fn create_elementwise_tile_slice(
 
     let tile_shape: Vec<i64> = vec![segment_size];
 
+    let init_names: std::collections::HashSet<&str> =
+        graph.initializer.iter().map(|i| i.name.as_str()).collect();
+
     let mut orig_to_tile: Vec<(String, String)> = Vec::with_capacity(graph.input.len());
     let mut tile_inputs = Vec::with_capacity(graph.input.len());
-    for (idx, inp) in graph.input.iter().enumerate() {
-        let tile_name = if graph.input.len() == 1 {
-            "tile_in".to_string()
+    let mut tile_idx = 0usize;
+    for inp in &graph.input {
+        let inp_shape = onnx_proto::shape_from_value_info(inp);
+        let is_broadcast = init_names.contains(inp.name.as_str())
+            || inp_shape
+                .as_ref()
+                .is_some_and(|s| s.iter().product::<i64>() < segment_size);
+        if is_broadcast {
+            tile_inputs.push(inp.clone());
         } else {
-            format!("tile_in_{idx}")
-        };
-        tile_inputs.push(onnx_proto::make_tensor_value_info(
-            &tile_name,
-            TensorProto::FLOAT,
-            &tile_shape,
-        ));
-        orig_to_tile.push((inp.name.clone(), tile_name));
+            let tile_name = format!("tile_in_{tile_idx}");
+            tile_idx += 1;
+            tile_inputs.push(onnx_proto::make_tensor_value_info(
+                &tile_name,
+                onnx_proto::elem_type_from_value_info(inp).unwrap_or(TensorProto::FLOAT),
+                &tile_shape,
+            ));
+            orig_to_tile.push((inp.name.clone(), tile_name));
+        }
+    }
+    if tile_idx == 1
+        && let Some((_, tile_name)) = orig_to_tile.first_mut()
+    {
+        let old = tile_name.clone();
+        *tile_name = "tile_in".to_string();
+        for ti in &mut tile_inputs {
+            if ti.name == old {
+                ti.name = "tile_in".to_string();
+            }
+        }
     }
 
     let y = onnx_proto::make_tensor_value_info("tile_out", TensorProto::FLOAT, &tile_shape);
@@ -1647,7 +1674,7 @@ pub fn create_elementwise_tile_slice(
     let initializers: Vec<_> = graph.initializer.to_vec();
 
     let mut nodes = Vec::new();
-    for (i, orig_node) in graph.node.iter().enumerate() {
+    for orig_node in &graph.node {
         let new_inputs: Vec<String> = orig_node
             .input
             .iter()
@@ -1660,23 +1687,19 @@ pub fn create_elementwise_tile_slice(
                 name.clone()
             })
             .collect();
-        let is_last = i == graph.node.len() - 1;
-        let new_outputs = if is_last {
-            let mut remapped = orig_node.output.clone();
-            let mut mapped = false;
-            for out_name in &mut remapped {
-                if out_name == orig_output_name {
-                    *out_name = "tile_out".to_string();
-                    mapped = true;
-                }
-            }
-            if !mapped {
-                return Err(crate::error::DsperseError::Slicer(
-                    "create_elementwise_tile_slice: last node does not produce graph output"
-                        .to_string(),
-                ));
-            }
-            remapped
+        let produces_output = orig_node.output.contains(orig_output_name);
+        let new_outputs = if produces_output {
+            orig_node
+                .output
+                .iter()
+                .map(|o| {
+                    if o == orig_output_name {
+                        "tile_out".to_string()
+                    } else {
+                        o.clone()
+                    }
+                })
+                .collect()
         } else {
             orig_node.output.clone()
         };

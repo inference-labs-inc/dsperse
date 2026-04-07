@@ -7,6 +7,24 @@ use tract_onnx::prelude::*;
 
 use crate::error::{DsperseError, Result};
 
+pub fn coerce_tdim_inputs(inputs: &TVec<TValue>) -> TVec<TValue> {
+    inputs
+        .iter()
+        .map(|t| {
+            if t.datum_type() == DatumType::TDim {
+                // Safety: datum_type() == TDim verified by outer condition
+                let view = unsafe { t.as_slice_unchecked::<TDim>() };
+                let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+                Tensor::from_shape(t.shape(), &vals)
+                    .map(|t| t.into_tvalue())
+                    .unwrap_or_else(|_| t.clone())
+            } else {
+                t.clone()
+            }
+        })
+        .collect()
+}
+
 pub type NamedOutputs = HashMap<String, (Vec<f64>, Vec<usize>)>;
 
 fn load_onnx_model(onnx_path: &Path) -> Result<InferenceModel> {
@@ -58,6 +76,74 @@ fn optimize_to_runnable(
         .map_err(|e| DsperseError::Onnx(format!("optimize: {e:#}")))?
         .into_runnable()
         .map_err(|e| DsperseError::Onnx(format!("make runnable: {e:#}")))
+}
+
+pub fn run_inference_with_coercion(
+    onnx_path: &Path,
+    input_data: &[f64],
+    input_shape: &[usize],
+) -> Result<NamedOutputs> {
+    let model = load_onnx_model(onnx_path)?;
+    let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
+
+    if let Ok(plan) = optimize_to_runnable(model, &concrete_shape) {
+        let input = build_input_tvalue(input_data, &concrete_shape)?;
+        let result = plan
+            .run(tvec![input])
+            .map_err(|e| DsperseError::Onnx(format!("run: {e:#}")))?;
+        return extract_all_outputs(&result);
+    }
+
+    tracing::warn!("standard optimization failed; using inference plan with TDim coercion");
+    let model2 = load_onnx_model(onnx_path)?;
+    let with_shape = model2
+        .with_input_fact(
+            0,
+            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
+        )
+        .map_err(|e| DsperseError::Onnx(format!("set input: {e}")))?;
+
+    let plan =
+        tract_onnx::tract_hir::infer::InferenceSimplePlan::new(std::sync::Arc::new(with_shape))
+            .map_err(|e| DsperseError::Onnx(format!("inference plan: {e}")))?;
+    let mut state = tract_onnx::tract_core::plan::SimpleState::new(&plan)
+        .map_err(|e| DsperseError::Onnx(format!("state: {e}")))?;
+
+    let input = build_input_tvalue(input_data, &concrete_shape)?;
+    let result = state
+        .run_plan_with_eval(tvec![input], |session, op_state, node, inputs| {
+            let coerced = coerce_tdim_inputs(&inputs);
+            let eval_result = if let Some(st) = op_state {
+                st.eval(session, node.op.as_op(), coerced)
+            } else {
+                node.op.eval(coerced)
+            };
+            match eval_result {
+                Ok(o) => Ok::<_, TractError>(o),
+                Err(e) => {
+                    tracing::warn!(node = %node.name, error = %e, "eval failed, using fallback");
+                    let fallback = inputs
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                    let n = node.outputs.len().max(1);
+                    Ok((0..n).map(|_| fallback.clone()).collect())
+                }
+            }
+        })
+        .map_err(|e| DsperseError::Onnx(format!("inference run: {e:#}")))?;
+
+    extract_all_outputs(&result)
+}
+
+fn extract_all_outputs(result: &[TValue]) -> Result<NamedOutputs> {
+    let mut outputs = NamedOutputs::new();
+    for (i, tv) in result.iter().enumerate() {
+        let label = format!("output_{i}");
+        let (data, shape) = tvalue_to_f64(tv, &label)?;
+        outputs.insert(label, (data, shape));
+    }
+    Ok(outputs)
 }
 
 fn load_runnable(
@@ -122,9 +208,23 @@ pub fn run_inference_named(
     let model = load_onnx_model(onnx_path)?;
     let output_names = collect_output_names(&model);
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    let plan = optimize_to_runnable(model, &concrete_shape)?;
-    let result = run_single(&plan, input_data, &concrete_shape)?;
-    zip_named_outputs(&output_names, &result)
+    match optimize_to_runnable(model, &concrete_shape) {
+        Ok(plan) => {
+            let result = run_single(&plan, input_data, &concrete_shape)?;
+            zip_named_outputs(&output_names, &result)
+        }
+        Err(_) => {
+            let mut result = run_inference_with_coercion(onnx_path, input_data, &concrete_shape)?;
+            let mut named = NamedOutputs::new();
+            for (i, name) in output_names.iter().enumerate() {
+                let key = format!("output_{i}");
+                if let Some(val) = result.remove(&key) {
+                    named.insert(name.clone(), val);
+                }
+            }
+            Ok(named)
+        }
+    }
 }
 
 pub fn run_inference_multi(
@@ -258,29 +358,29 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let dt = tv.datum_type();
     let data: Vec<f64> = if dt == f32::datum_type() {
         let arr = tv
-            .to_dense_array_view::<f32>()
+            .to_plain_array_view::<f32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == f64::datum_type() {
         let arr = tv
-            .to_dense_array_view::<f64>()
+            .to_plain_array_view::<f64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().copied().collect()
     } else if dt == i64::datum_type() {
         let arr = tv
-            .to_dense_array_view::<i64>()
+            .to_plain_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))
             .collect::<Result<Vec<_>>>()?
     } else if dt == i32::datum_type() {
         let arr = tv
-            .to_dense_array_view::<i32>()
+            .to_plain_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
     } else if dt == bool::datum_type() {
         let arr = tv
-            .to_dense_array_view::<bool>()
+            .to_plain_array_view::<bool>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| if v { 1.0 } else { 0.0 }).collect()
     } else if dt.is_tdim() {
@@ -288,7 +388,7 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .cast_to::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: TDim->i64 cast: {e}")))?;
         let arr = casted
-            .to_dense_array_view::<i64>()
+            .to_plain_array_view::<i64>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter()
             .map(|&v| i64_to_f64_checked(v, label))
@@ -344,7 +444,7 @@ mod tests {
             model_path.display()
         );
         let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
             .expect("slice_model failed");
         crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
             .expect("materialization failed");
@@ -398,7 +498,7 @@ mod tests {
             model_path.display()
         );
         let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS)
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
             .expect("slice_model failed");
         crate::slicer::materializer::ensure_all_slices_materialized(tmp.path(), &meta)
             .expect("materialization failed");

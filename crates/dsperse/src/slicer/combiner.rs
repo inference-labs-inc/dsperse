@@ -197,8 +197,8 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let meta =
-            crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS).unwrap();
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
+            .unwrap();
 
         if meta.slices.len() <= 1 {
             return;
@@ -256,8 +256,8 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let meta =
-            crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS).unwrap();
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
+            .unwrap();
 
         let combined_path = materialize_combined_to_disk(tmp.path(), &meta).unwrap();
         assert!(combined_path.exists());
@@ -277,8 +277,8 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        let meta =
-            crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS).unwrap();
+        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
+            .unwrap();
 
         let p1 = ensure_combined_materialized(tmp.path(), &meta).unwrap();
         let p2 = ensure_combined_materialized(tmp.path(), &meta).unwrap();

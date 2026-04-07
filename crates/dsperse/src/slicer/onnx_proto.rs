@@ -3,7 +3,7 @@ pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use prost::Message;
@@ -206,6 +206,31 @@ pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn tensor_to_i64(tensor: &TensorProto) -> Vec<i64> {
+    if !tensor.int64_data.is_empty() {
+        return tensor.int64_data.clone();
+    }
+    if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::INT64 {
+        if !tensor.raw_data.len().is_multiple_of(8) {
+            tracing::warn!(
+                tensor = %tensor.name,
+                raw_len = tensor.raw_data.len(),
+                "misaligned INT64 raw_data, skipping"
+            );
+            return Vec::new();
+        }
+        return tensor
+            .raw_data
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+            .collect();
+    }
+    if !tensor.int32_data.is_empty() {
+        return tensor.int32_data.iter().map(|&v| v as i64).collect();
+    }
+    Vec::new()
 }
 
 pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
@@ -574,4 +599,493 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
 
     tracing::info!(count, "folded Constant ops into initializers");
     folded_names
+}
+
+pub fn strip_symbolic_value_info(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+
+    let has_symbolic = |vi: &ValueInfoProto| -> bool {
+        vi.r#type
+            .as_ref()
+            .and_then(|t| match &t.value {
+                Some(onnx::type_proto::Value::TensorType(tt)) => tt.shape.as_ref(),
+                _ => None,
+            })
+            .is_some_and(|s| {
+                s.dim.iter().any(|d| {
+                    matches!(
+                        &d.value,
+                        Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
+                    )
+                })
+            })
+    };
+
+    let before = graph.value_info.len();
+    graph.value_info.retain(|vi| !has_symbolic(vi));
+    let removed = before - graph.value_info.len();
+
+    for out in &mut graph.output {
+        if let Some(ref mut tp) = out.r#type
+            && let Some(onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value
+            && let Some(ref mut shape) = tt.shape
+        {
+            for d in &mut shape.dim {
+                if matches!(
+                    &d.value,
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_))
+                ) {
+                    d.value = None;
+                }
+            }
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!(
+            removed,
+            "stripped value_info entries with symbolic dimensions"
+        );
+    }
+    removed
+}
+
+pub fn resolve_dynamic_input_shapes(
+    model: &mut ModelProto,
+    explicit_shape: Option<&[i64]>,
+) -> crate::error::Result<usize> {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return Ok(0),
+    };
+    let symbolic_count = graph
+        .input
+        .iter()
+        .filter(|inp| {
+            inp.r#type
+                .as_ref()
+                .and_then(|t| match &t.value {
+                    Some(onnx::type_proto::Value::TensorType(tt)) => tt.shape.as_ref(),
+                    _ => None,
+                })
+                .is_some_and(|s| {
+                    s.dim.iter().any(|d| {
+                        matches!(
+                            &d.value,
+                            Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
+                        )
+                    })
+                })
+        })
+        .count();
+    if symbolic_count > 1 && explicit_shape.is_some() {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "model has {symbolic_count} inputs with dynamic dimensions; \
+             --input-shape applies to a single input. Per-input shapes not yet supported."
+        )));
+    }
+
+    let mut resolved = 0;
+    for inp in &mut graph.input {
+        let tp = match inp.r#type.as_mut() {
+            Some(t) => t,
+            None => continue,
+        };
+        let tensor = match &mut tp.value {
+            Some(onnx::type_proto::Value::TensorType(tt)) => tt,
+            _ => continue,
+        };
+        let shape = match tensor.shape.as_mut() {
+            Some(s) => s,
+            None => continue,
+        };
+        let has_symbolic = shape.dim.iter().any(|d| {
+            matches!(
+                &d.value,
+                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
+            )
+        });
+        if !has_symbolic {
+            continue;
+        }
+        if let Some(explicit) = explicit_shape {
+            if explicit.len() != shape.dim.len() {
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "input '{}' has rank {} but --input-shape provides {} dims",
+                    inp.name,
+                    shape.dim.len(),
+                    explicit.len()
+                )));
+            }
+            for (d, &v) in shape.dim.iter_mut().zip(explicit.iter()) {
+                if let Some(onnx::tensor_shape_proto::dimension::Value::DimValue(existing)) =
+                    &d.value
+                {
+                    if *existing != v {
+                        return Err(crate::error::DsperseError::Slicer(format!(
+                            "input '{}': --input-shape dim {} conflicts with fixed dim {}",
+                            inp.name, v, existing
+                        )));
+                    }
+                } else {
+                    d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v));
+                }
+            }
+            tracing::info!(input = %inp.name, shape = ?explicit, "applied explicit input shape");
+            resolved += 1;
+            continue;
+        }
+        let non_batch_symbolic = shape.dim.iter().skip(1).any(|d| {
+            matches!(
+                &d.value,
+                Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
+            )
+        });
+        if non_batch_symbolic {
+            let dim_names: Vec<String> = shape
+                .dim
+                .iter()
+                .map(|d| match &d.value {
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimParam(s)) => s.clone(),
+                    Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => v.to_string(),
+                    None => "?".into(),
+                })
+                .collect();
+            return Err(crate::error::DsperseError::Slicer(format!(
+                "model input '{}' has dynamic dimensions [{}]; provide --input-shape to set concrete values",
+                inp.name,
+                dim_names.join(", ")
+            )));
+        }
+        shape.dim[0].value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(1));
+        tracing::info!(input = %inp.name, "defaulted batch dimension to 1");
+        resolved += 1;
+    }
+    Ok(resolved)
+}
+
+pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {
+    let graph = match model.graph.as_mut() {
+        Some(g) => g,
+        None => return 0,
+    };
+    let fixed = fix_zero_dims(graph);
+    let count = flatten_matmul_inputs(graph) + materialize_reshape_targets(graph) + fixed;
+    if count > 0 {
+        tracing::info!(count, "normalized graph for circuit backend compatibility");
+    }
+    count
+}
+
+fn fix_zero_dims(graph: &mut GraphProto) -> usize {
+    let mut shapes: HashMap<String, Vec<i64>> = HashMap::new();
+    for inp in &graph.input {
+        if let Some(s) = shape_from_value_info(inp)
+            && s.iter().all(|&d| d > 0)
+        {
+            shapes.insert(inp.name.clone(), s);
+        }
+    }
+    for init in &graph.initializer {
+        if !init.dims.is_empty() {
+            shapes.insert(init.name.clone(), init.dims.clone());
+        }
+    }
+    for vi in &graph.value_info {
+        if let Some(s) = shape_from_value_info(vi)
+            && s.iter().all(|&d| d > 0)
+            && !shapes.contains_key(&vi.name)
+        {
+            shapes.insert(vi.name.clone(), s);
+        }
+    }
+
+    let mut count = 0;
+    for vi in graph.value_info.iter_mut().chain(graph.output.iter_mut()) {
+        if let Some(new_shape) = shapes.get(&vi.name)
+            && let Some(existing) = shape_from_value_info(vi)
+            && existing.contains(&0)
+        {
+            set_vi_shape(vi, new_shape);
+            count += 1;
+        }
+    }
+
+    if count > 0 {
+        tracing::info!(count, "resolved zero-valued placeholder dimensions");
+    }
+    count
+}
+
+fn set_vi_shape(vi: &mut ValueInfoProto, shape: &[i64]) {
+    if let Some(ref mut tp) = vi.r#type
+        && let Some(onnx::type_proto::Value::TensorType(ref mut tt)) = tp.value
+    {
+        tt.shape = Some(onnx::TensorShapeProto {
+            dim: shape
+                .iter()
+                .map(|&d| onnx::tensor_shape_proto::Dimension {
+                    denotation: String::new(),
+                    value: Some(onnx::tensor_shape_proto::dimension::Value::DimValue(d)),
+                })
+                .collect(),
+        });
+    }
+}
+
+fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
+    let vi_shapes: HashMap<String, Vec<i64>> = graph
+        .input
+        .iter()
+        .chain(graph.value_info.iter())
+        .chain(graph.output.iter())
+        .filter_map(|vi| shape_from_value_info(vi).map(|s| (vi.name.clone(), s)))
+        .collect();
+
+    let init_shapes: HashMap<String, Vec<i64>> = graph
+        .initializer
+        .iter()
+        .map(|i| (i.name.clone(), i.dims.clone()))
+        .collect();
+
+    let shapes: HashMap<String, Vec<i64>> = vi_shapes.into_iter().chain(init_shapes).collect();
+
+    let elem_types: HashMap<String, i32> = graph
+        .input
+        .iter()
+        .chain(graph.value_info.iter())
+        .chain(graph.output.iter())
+        .filter_map(|vi| elem_type_from_value_info(vi).map(|t| (vi.name.clone(), t)))
+        .chain(
+            graph
+                .initializer
+                .iter()
+                .map(|i| (i.name.clone(), i.data_type)),
+        )
+        .collect();
+
+    let mut new_nodes: Vec<(usize, Vec<NodeProto>)> = Vec::new();
+    let mut new_inits: Vec<TensorProto> = Vec::new();
+    let mut new_vis: Vec<ValueInfoProto> = Vec::new();
+    let mut count = 0;
+
+    for (idx, node) in graph.node.iter().enumerate() {
+        if node.op_type != "MatMul" {
+            continue;
+        }
+        let a_name = match node.input.first() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let b_name = match node.input.get(1) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let a_shape = match shapes.get(a_name) {
+            Some(s) if s.len() > 3 => s.clone(),
+            _ => continue,
+        };
+        let b_shape = match shapes.get(b_name) {
+            Some(s) => s.clone(),
+            None => continue,
+        };
+        let out_name = match node.output.first() {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => continue,
+        };
+
+        let batch_dims = &a_shape[..a_shape.len() - 2];
+        let batch_vol: i64 = batch_dims.iter().product();
+        let m = a_shape[a_shape.len() - 2];
+        let k = a_shape[a_shape.len() - 1];
+
+        let node_tag = if node.name.is_empty() {
+            format!("matmul_{idx}")
+        } else {
+            node.name.clone()
+        };
+        let a_2d_name = format!("{a_name}__flat2d_{node_tag}");
+        let a_2d_shape_name = format!("{a_name}__flat2d_shape_{node_tag}");
+        let a_2d = vec![batch_vol * m, k];
+
+        let mut b_2d_name = b_name.clone();
+        let mut needs_b_reshape = false;
+        let n_dim;
+        if b_shape.len() > 2 {
+            let b_m = b_shape[b_shape.len() - 2];
+            n_dim = b_shape[b_shape.len() - 1];
+            let b_batch: i64 = b_shape[..b_shape.len() - 2].iter().product();
+            if b_batch == 1 {
+                b_2d_name = format!("{b_name}__flat2d_{node_tag}");
+                let b_2d_shape_name = format!("{b_name}__flat2d_shape_{node_tag}");
+                let b_2d = vec![b_batch * b_m, n_dim];
+                new_inits.push(TensorProto {
+                    name: b_2d_shape_name.clone(),
+                    data_type: TensorProto::INT64,
+                    dims: vec![2],
+                    int64_data: b_2d.clone(),
+                    ..Default::default()
+                });
+                let b_elem = elem_types
+                    .get(b_name)
+                    .copied()
+                    .unwrap_or(TensorProto::FLOAT);
+                new_vis.push(make_tensor_value_info(&b_2d_name, b_elem, &b_2d));
+                needs_b_reshape = true;
+            }
+        } else {
+            n_dim = *b_shape.last().unwrap_or(&1);
+        }
+
+        let matmul_out_name = format!("{out_name}__matmul2d_{node_tag}");
+        let matmul_2d_shape = vec![batch_vol * m, n_dim];
+
+        let restore_shape_name = format!("{out_name}__restore_shape_{node_tag}");
+        let mut restored: Vec<i64> = batch_dims.to_vec();
+        restored.push(m);
+        if b_shape.len() > 1 {
+            restored.push(n_dim);
+        }
+
+        new_inits.push(TensorProto {
+            name: a_2d_shape_name.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![2],
+            int64_data: a_2d.clone(),
+            ..Default::default()
+        });
+        new_inits.push(TensorProto {
+            name: restore_shape_name.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![restored.len() as i64],
+            int64_data: restored.clone(),
+            ..Default::default()
+        });
+
+        let a_elem = elem_types
+            .get(a_name)
+            .copied()
+            .unwrap_or(TensorProto::FLOAT);
+        new_vis.push(make_tensor_value_info(&a_2d_name, a_elem, &a_2d));
+        new_vis.push(make_tensor_value_info(
+            &matmul_out_name,
+            a_elem,
+            &matmul_2d_shape,
+        ));
+
+        let mut inserted = Vec::new();
+
+        inserted.push(NodeProto {
+            op_type: "Reshape".into(),
+            name: format!("{}_flatten_a", node.name),
+            input: vec![a_name.clone(), a_2d_shape_name],
+            output: vec![a_2d_name.clone()],
+            ..Default::default()
+        });
+
+        if needs_b_reshape {
+            let b_2d_shape_name = format!("{b_name}__flat2d_shape_{node_tag}");
+            inserted.push(NodeProto {
+                op_type: "Reshape".into(),
+                name: format!("{}_flatten_b", node.name),
+                input: vec![b_name.clone(), b_2d_shape_name],
+                output: vec![b_2d_name.clone()],
+                ..Default::default()
+            });
+        }
+
+        inserted.push(NodeProto {
+            op_type: "MatMul".into(),
+            name: node.name.clone(),
+            input: vec![a_2d_name, b_2d_name],
+            output: vec![matmul_out_name.clone()],
+            attribute: node.attribute.clone(),
+            ..Default::default()
+        });
+
+        inserted.push(NodeProto {
+            op_type: "Reshape".into(),
+            name: format!("{}_restore", node.name),
+            input: vec![matmul_out_name, restore_shape_name],
+            output: vec![out_name],
+            ..Default::default()
+        });
+
+        new_nodes.push((idx, inserted));
+        count += 1;
+    }
+
+    let mut cumulative_offset: usize = 0;
+    for (idx, nodes) in new_nodes {
+        let pos = idx + cumulative_offset;
+        graph.node.remove(pos);
+        let inserted = nodes.len();
+        for (i, n) in nodes.into_iter().enumerate() {
+            graph.node.insert(pos + i, n);
+        }
+        cumulative_offset += inserted - 1;
+    }
+    graph.initializer.extend(new_inits);
+    graph.value_info.extend(new_vis);
+    count
+}
+
+fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
+    let mut init_names: HashSet<String> =
+        graph.initializer.iter().map(|i| i.name.clone()).collect();
+    let input_names: HashSet<String> = graph.input.iter().map(|i| i.name.clone()).collect();
+    let produced_names: HashSet<String> = graph
+        .node
+        .iter()
+        .flat_map(|n| n.output.iter().cloned())
+        .collect();
+
+    let vi_shapes: HashMap<String, Vec<i64>> = graph
+        .value_info
+        .iter()
+        .chain(graph.output.iter())
+        .filter_map(|vi| shape_from_value_info(vi).map(|s| (vi.name.clone(), s)))
+        .collect();
+
+    let mut new_inits: Vec<TensorProto> = Vec::new();
+    let mut count = 0;
+
+    for node in &graph.node {
+        if node.op_type != "Reshape" {
+            continue;
+        }
+        let shape_input = match node.input.get(1) {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        if init_names.contains(shape_input)
+            || input_names.contains(shape_input)
+            || produced_names.contains(shape_input)
+        {
+            continue;
+        }
+        let out_name = match node.output.first() {
+            Some(n) if !n.is_empty() => n,
+            _ => continue,
+        };
+        let out_shape = match vi_shapes.get(out_name) {
+            Some(s) if !s.is_empty() && s.iter().all(|&d| d > 0) => s,
+            _ => continue,
+        };
+        new_inits.push(TensorProto {
+            name: shape_input.clone(),
+            data_type: TensorProto::INT64,
+            dims: vec![out_shape.len() as i64],
+            int64_data: out_shape.clone(),
+            ..Default::default()
+        });
+        init_names.insert(shape_input.clone());
+        count += 1;
+    }
+
+    graph.initializer.extend(new_inits);
+    count
 }

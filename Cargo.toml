@@ -15,12 +15,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rayon = "1"
 ndarray = { version = "0.17", features = ["serde"] }
-tract-onnx = { git = "https://github.com/sonos/tract.git", rev = "bf9783c6" }
+tract-onnx = { git = "https://github.com/inference-labs-inc/tract.git", rev = "3cfae7f7" }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tempfile = "3"
 prost = "0.13"
 pyo3 = { version = "0.24" }
-jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "fc562a62" }
+jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "8e98b982" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt", "macros"] }

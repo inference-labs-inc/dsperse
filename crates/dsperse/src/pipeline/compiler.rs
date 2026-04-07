@@ -175,6 +175,17 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
     })
 }
 
+fn normalize_slice_for_backend(onnx_path: &Path) -> Result<Option<std::path::PathBuf>> {
+    let mut model = onnx_proto::load_model(onnx_path)?;
+    let changes = onnx_proto::normalize_for_circuit_backend(&mut model);
+    if changes == 0 {
+        return Ok(None);
+    }
+    let normalized = onnx_path.with_extension("backend.onnx");
+    onnx_proto::save_model(&model, &normalized)?;
+    Ok(Some(normalized))
+}
+
 fn compile_single_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
@@ -239,8 +250,10 @@ fn compile_single_slice(
 
     let effective_wai = weights_as_inputs;
 
+    let compile_onnx = normalize_slice_for_backend(&onnx_path)?;
+
     let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
-        &onnx_path,
+        compile_onnx.as_ref().unwrap_or(&onnx_path),
         effective_wai,
         exclude_from_wai,
     )?;

@@ -599,16 +599,14 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
 
     tracing::info!(count, "folded Constant ops into initializers");
 
-    let propagated = propagate_constants(graph);
-    for init in &graph.initializer {
-        folded_names.insert(init.name.clone());
-    }
-    if propagated > 0 {
+    let propagated_names = propagate_constants(graph);
+    if !propagated_names.is_empty() {
         tracing::info!(
-            propagated,
+            propagated = propagated_names.len(),
             "propagated constants after Constant-node folding"
         );
     }
+    folded_names.extend(propagated_names);
 
     folded_names
 }
@@ -784,7 +782,8 @@ pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {
         Some(g) => g,
         None => return 0,
     };
-    let folded = propagate_constants(graph);
+    let folded_names = propagate_constants(graph);
+    let folded = folded_names.len();
     let fixed = fix_zero_dims(graph);
     let count = flatten_matmul_inputs(graph) + materialize_reshape_targets(graph) + fixed;
     let total = folded + count;
@@ -805,16 +804,44 @@ pub fn propagate_constants_with_shapes(
     for node in &graph.node {
         if node.op_type == "Shape"
             && let Some(inp_name) = node.input.first()
-            && let Some(shape) = traced_shapes.get(inp_name)
+            && let Some(full_shape) = traced_shapes.get(inp_name)
             && let Some(out_name) = node.output.first()
             && !out_name.is_empty()
             && !graph.initializer.iter().any(|i| i.name == *out_name)
         {
+            let ndim = full_shape.len() as i64;
+            let start_attr = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "start")
+                .map(|a| a.i)
+                .unwrap_or(0);
+            let end_attr = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "end")
+                .map(|a| a.i)
+                .unwrap_or(ndim);
+            let start = if start_attr < 0 {
+                (ndim + start_attr).max(0) as usize
+            } else {
+                (start_attr as usize).min(full_shape.len())
+            };
+            let end = if end_attr < 0 {
+                (ndim + end_attr).max(0) as usize
+            } else {
+                (end_attr as usize).min(full_shape.len())
+            };
+            let sliced: Vec<i64> = if start < end {
+                full_shape[start..end].to_vec()
+            } else {
+                vec![]
+            };
             graph.initializer.push(TensorProto {
                 name: out_name.clone(),
                 data_type: TensorProto::INT64,
-                dims: vec![shape.len() as i64],
-                int64_data: shape.clone(),
+                dims: vec![sliced.len() as i64],
+                int64_data: sliced,
                 ..Default::default()
             });
         }
@@ -822,10 +849,11 @@ pub fn propagate_constants_with_shapes(
     graph.node.retain(|n| {
         n.op_type != "Shape" || !graph.initializer.iter().any(|i| n.output.contains(&i.name))
     });
-    propagate_constants(graph)
+    let folded = propagate_constants(graph);
+    folded.len()
 }
 
-fn propagate_constants(graph: &mut GraphProto) -> usize {
+fn propagate_constants(graph: &mut GraphProto) -> HashSet<String> {
     let mut constants: HashMap<String, TensorProto> = graph
         .initializer
         .iter()
@@ -867,10 +895,8 @@ fn propagate_constants(graph: &mut GraphProto) -> usize {
     }
 
     if folded_node_indices.is_empty() {
-        return 0;
+        return HashSet::new();
     }
-
-    let count = folded_node_indices.len();
 
     let mut new_init_names: HashSet<String> = HashSet::new();
     for idx in &folded_node_indices {
@@ -907,6 +933,7 @@ fn propagate_constants(graph: &mut GraphProto) -> usize {
         .input
         .retain(|vi| !removed_outputs.contains(&vi.name) || output_names.contains(&vi.name));
 
+    let count = folded_node_indices.len();
     let mut kept = Vec::with_capacity(graph.node.len() - count);
     for (idx, node) in graph.node.drain(..).enumerate() {
         if !folded_node_indices.contains(&idx) {
@@ -916,7 +943,7 @@ fn propagate_constants(graph: &mut GraphProto) -> usize {
     graph.node = kept;
 
     tracing::info!(count, "propagated constant subgraphs into initializers");
-    count
+    new_init_names
 }
 
 fn eval_const_node(
@@ -950,10 +977,10 @@ fn eval_const_node(
         "Mul" => eval_binary_f32(inputs, &out_name, |a, b| a * b),
         "Div" => eval_binary_f32(inputs, &out_name, |a, b| a / b),
         "Pow" => eval_binary_f32(inputs, &out_name, f32::powf),
-        "Reshape" => eval_reshape(inputs, &out_name),
-        "Squeeze" => eval_squeeze(node, inputs[0], &out_name),
+        "Reshape" => eval_reshape(node, inputs, &out_name),
+        "Squeeze" => eval_squeeze(node, inputs, &out_name),
         "Unsqueeze" => eval_unsqueeze(node, inputs, &out_name),
-        "Shape" => eval_shape(inputs[0], &out_name),
+        "Shape" => eval_shape(node, inputs[0], &out_name),
         "Gather" if inputs.len() >= 2 => eval_gather(node, inputs, &out_name),
         "Slice" if inputs.len() >= 3 => eval_slice(inputs, &out_name),
         "Concat" => eval_concat(node, inputs, &out_name),
@@ -971,12 +998,79 @@ fn eval_cast(
         .iter()
         .find(|a| a.name == "to")
         .map(|a| a.i as i32)?;
-    let vals = tensor_to_f32(input);
-    if vals.is_empty() {
-        return None;
+    match target_type {
+        TensorProto::INT64 => {
+            let vals = tensor_to_f32(input);
+            if vals.is_empty() {
+                return None;
+            }
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::INT64,
+                dims: input.dims.clone(),
+                int64_data: vals.iter().map(|&v| v as i64).collect(),
+                ..Default::default()
+            };
+            Some(vec![(out_name.to_string(), t)])
+        }
+        TensorProto::INT32 => {
+            let vals = tensor_to_f32(input);
+            if vals.is_empty() {
+                return None;
+            }
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::INT32,
+                dims: input.dims.clone(),
+                int32_data: vals.iter().map(|&v| v as i32).collect(),
+                ..Default::default()
+            };
+            Some(vec![(out_name.to_string(), t)])
+        }
+        TensorProto::FLOAT => {
+            let vals = tensor_to_f32(input);
+            if vals.is_empty() {
+                return None;
+            }
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::FLOAT,
+                dims: input.dims.clone(),
+                float_data: vals,
+                ..Default::default()
+            };
+            Some(vec![(out_name.to_string(), t)])
+        }
+        TensorProto::DOUBLE => {
+            let vals = tensor_to_f32(input);
+            if vals.is_empty() {
+                return None;
+            }
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::DOUBLE,
+                dims: input.dims.clone(),
+                double_data: vals.iter().map(|&v| v as f64).collect(),
+                ..Default::default()
+            };
+            Some(vec![(out_name.to_string(), t)])
+        }
+        TensorProto::BOOL => {
+            let vals = tensor_to_f32(input);
+            if vals.is_empty() {
+                return None;
+            }
+            let t = TensorProto {
+                name: out_name.to_string(),
+                data_type: TensorProto::BOOL,
+                dims: input.dims.clone(),
+                int32_data: vals.iter().map(|&v| (v != 0.0) as i32).collect(),
+                ..Default::default()
+            };
+            Some(vec![(out_name.to_string(), t)])
+        }
+        _ => None,
     }
-    let t = make_f32_tensor(out_name, &input.dims, &vals, target_type);
-    Some(vec![(out_name.to_string(), t)])
 }
 
 fn eval_unary_f32(
@@ -1032,7 +1126,11 @@ fn broadcast_binary(
     None
 }
 
-fn eval_reshape(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
+fn eval_reshape(
+    node: &NodeProto,
+    inputs: &[&TensorProto],
+    out_name: &str,
+) -> Option<Vec<(String, TensorProto)>> {
     if inputs.len() < 2 {
         return None;
     }
@@ -1041,57 +1139,95 @@ fn eval_reshape(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, 
     if vals.is_empty() || shape.is_empty() {
         return None;
     }
+    let allowzero = node
+        .attribute
+        .iter()
+        .find(|a| a.name == "allowzero")
+        .map(|a| a.i != 0)
+        .unwrap_or(false);
     let mut new_dims: Vec<i64> = shape
         .iter()
-        .map(|&d| {
+        .enumerate()
+        .map(|(i, &d)| {
             if d == 0 {
-                let idx = shape.iter().position(|&x| x == d).unwrap_or(0);
-                *inputs[0].dims.get(idx).unwrap_or(&1)
+                if allowzero {
+                    0
+                } else {
+                    *inputs[0].dims.get(i).unwrap_or(&1)
+                }
             } else {
                 d
             }
         })
         .collect();
     if let Some(neg_idx) = new_dims.iter().position(|&d| d == -1) {
-        let known: i64 = new_dims.iter().filter(|&&d| d > 0).product();
+        let known: i64 = new_dims
+            .iter()
+            .enumerate()
+            .filter(|&(i, &d)| i != neg_idx && d > 0)
+            .map(|(_, &d)| d)
+            .product();
         let total: i64 = vals.len() as i64;
         if known > 0 {
             new_dims[neg_idx] = total / known;
         }
     }
-    let t = make_f32_tensor(out_name, &new_dims, &vals, TensorProto::FLOAT);
+    let t = make_f32_tensor(out_name, &new_dims, &vals, inputs[0].data_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
 fn eval_squeeze(
     node: &NodeProto,
-    input: &TensorProto,
+    inputs: &[&TensorProto],
     out_name: &str,
 ) -> Option<Vec<(String, TensorProto)>> {
-    let axes: Vec<i64> = node
-        .attribute
+    let input = inputs[0];
+    let ndim = input.dims.len() as i64;
+    let raw_axes: Vec<i64> = if inputs.len() >= 2 {
+        tensor_to_i64(inputs[1])
+    } else {
+        node.attribute
+            .iter()
+            .find(|a| a.name == "axes")
+            .map(|a| a.ints.clone())
+            .unwrap_or_default()
+    };
+    let axes: Vec<usize> = raw_axes
         .iter()
-        .find(|a| a.name == "axes")
-        .map(|a| a.ints.clone())
-        .unwrap_or_default();
+        .map(|&a| {
+            if a < 0 {
+                (ndim + a) as usize
+            } else {
+                a as usize
+            }
+        })
+        .collect();
+    if axes.is_empty() {
+        let new_dims: Vec<i64> = input.dims.iter().copied().filter(|&d| d != 1).collect();
+        let vals = tensor_to_f32(input);
+        if vals.is_empty() {
+            return None;
+        }
+        let t = make_f32_tensor(out_name, &new_dims, &vals, input.data_type);
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+    for &ax in &axes {
+        if ax >= input.dims.len() || input.dims[ax] != 1 {
+            return None;
+        }
+    }
     let new_dims: Vec<i64> = input
         .dims
         .iter()
         .enumerate()
-        .filter(|(i, d)| {
-            if axes.is_empty() {
-                **d != 1
-            } else {
-                !axes.contains(&(*i as i64))
-            }
-        })
+        .filter(|(i, _)| !axes.contains(i))
         .map(|(_, &d)| d)
         .collect();
     let vals = tensor_to_f32(input);
     if vals.is_empty() {
         return None;
     }
-    let t = make_f32_tensor(out_name, &new_dims, &vals, TensorProto::FLOAT);
+    let t = make_f32_tensor(out_name, &new_dims, &vals, input.data_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
@@ -1135,16 +1271,48 @@ fn eval_unsqueeze(
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_shape(input: &TensorProto, out_name: &str) -> Option<Vec<(String, TensorProto)>> {
+fn eval_shape(
+    node: &NodeProto,
+    input: &TensorProto,
+    out_name: &str,
+) -> Option<Vec<(String, TensorProto)>> {
     let dims = &input.dims;
     if dims.is_empty() {
         return None;
     }
+    let ndim = dims.len() as i64;
+    let start_attr = node
+        .attribute
+        .iter()
+        .find(|a| a.name == "start")
+        .map(|a| a.i)
+        .unwrap_or(0);
+    let end_attr = node
+        .attribute
+        .iter()
+        .find(|a| a.name == "end")
+        .map(|a| a.i)
+        .unwrap_or(ndim);
+    let start = if start_attr < 0 {
+        (ndim + start_attr).max(0) as usize
+    } else {
+        (start_attr as usize).min(dims.len())
+    };
+    let end = if end_attr < 0 {
+        (ndim + end_attr).max(0) as usize
+    } else {
+        (end_attr as usize).min(dims.len())
+    };
+    let sliced: Vec<i64> = if start < end {
+        dims[start..end].to_vec()
+    } else {
+        vec![]
+    };
     let t = TensorProto {
         name: out_name.to_string(),
         data_type: TensorProto::INT64,
-        dims: vec![dims.len() as i64],
-        int64_data: dims.clone(),
+        dims: vec![sliced.len() as i64],
+        int64_data: sliced,
         ..Default::default()
     };
     Some(vec![(out_name.to_string(), t)])

@@ -605,30 +605,42 @@ fn fold_and_trace_via_tract(
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.run_plan_with_eval(input_tvs, |session, op_state, node, inputs| {
-            let coerced = crate::backend::onnx::coerce_tdim_inputs(&inputs);
-            let eval_result = if let Some(st) = op_state {
-                st.eval(session, node.op.as_op(), coerced)
+            let tainted = node
+                .inputs
+                .iter()
+                .any(|inp| failed_nodes.borrow().contains(&inp.node));
+            let outputs = if tainted {
+                failed_nodes.borrow_mut().insert(node.id);
+                let fallback = inputs
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                let n = node.outputs.len().max(1);
+                (0..n).map(|_| fallback.clone()).collect()
             } else {
-                node.op.eval(coerced)
-            };
-            let outputs = match eval_result {
-                Ok(o) => o,
-                Err(e) => {
-                    tracing::warn!(
-                        node = %node.name,
-                        op = %node.op.name(),
-                        error = %e,
-                        "op eval failed, using input[0] shape as fallback"
-                    );
-                    // TODO: also track transitive dependents of failed nodes
-                    // to exclude their shapes from the map
-                    failed_nodes.borrow_mut().insert(node.id);
-                    let fallback = inputs
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
-                    let n_outputs = node.outputs.len().max(1);
-                    (0..n_outputs).map(|_| fallback.clone()).collect()
+                let coerced = crate::backend::onnx::coerce_tdim_inputs(&inputs);
+                let eval_result = if let Some(st) = op_state {
+                    st.eval(session, node.op.as_op(), coerced)
+                } else {
+                    node.op.eval(coerced)
+                };
+                match eval_result {
+                    Ok(o) => o,
+                    Err(e) => {
+                        tracing::warn!(
+                            node = %node.name,
+                            op = %node.op.name(),
+                            error = %e,
+                            "op eval failed, using input[0] shape as fallback"
+                        );
+                        failed_nodes.borrow_mut().insert(node.id);
+                        let fallback = inputs
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                        let n = node.outputs.len().max(1);
+                        (0..n).map(|_| fallback.clone()).collect()
+                    }
                 }
             };
             let node_shapes: Vec<Vec<i64>> = outputs
@@ -679,11 +691,17 @@ fn fold_and_trace_via_tract(
     if let Some(graph) = &model.graph {
         let mut extra: Vec<(String, Vec<i64>)> = Vec::new();
         for n in &graph.node {
-            if let Some(shape) = shapes.get(&n.name) {
-                for out in &n.output {
-                    if !out.is_empty() && !shapes.contains_key(out) {
-                        extra.push((out.clone(), shape.clone()));
-                    }
+            for (slot, out) in n.output.iter().enumerate() {
+                if out.is_empty() || shapes.contains_key(out) {
+                    continue;
+                }
+                let key = if slot == 0 {
+                    n.name.clone()
+                } else {
+                    format!("{}:{}", n.name, slot)
+                };
+                if let Some(shape) = shapes.get(&key) {
+                    extra.push((out.clone(), shape.clone()));
                 }
             }
         }

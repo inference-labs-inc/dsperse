@@ -653,6 +653,33 @@ pub fn resolve_dynamic_input_shapes(
         Some(g) => g,
         None => return Ok(0),
     };
+    let symbolic_count = graph
+        .input
+        .iter()
+        .filter(|inp| {
+            inp.r#type
+                .as_ref()
+                .and_then(|t| match &t.value {
+                    Some(onnx::type_proto::Value::TensorType(tt)) => tt.shape.as_ref(),
+                    _ => None,
+                })
+                .is_some_and(|s| {
+                    s.dim.iter().any(|d| {
+                        matches!(
+                            &d.value,
+                            Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None
+                        )
+                    })
+                })
+        })
+        .count();
+    if symbolic_count > 1 && explicit_shape.is_some() {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "model has {symbolic_count} inputs with dynamic dimensions; \
+             --input-shape applies to a single input. Per-input shapes not yet supported."
+        )));
+    }
+
     let mut resolved = 0;
     for inp in &mut graph.input {
         let tp = match inp.r#type.as_mut() {

@@ -119,6 +119,11 @@ pub struct CompileArgs {
         help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
     )]
     pub curve: String,
+    #[arg(
+        long,
+        help = "Skip compilation of slices whose estimated constraint count exceeds this threshold"
+    )]
+    pub skip_compile_over_size: Option<u64>,
 }
 
 #[derive(Args)]
@@ -285,6 +290,11 @@ pub struct FullRunArgs {
         help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
     )]
     pub curve: String,
+    #[arg(
+        long,
+        help = "Skip compilation of slices whose estimated constraint count exceeds this threshold"
+    )]
+    pub skip_compile_over_size: Option<u64>,
 }
 
 struct CircuitOps(Vec<String>);
@@ -382,6 +392,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         args.weights_as_inputs,
         layers.as_deref(),
         &ops.as_refs(),
+        args.skip_compile_over_size,
     )
 }
 
@@ -527,6 +538,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         args.weights_as_inputs,
         layers.as_deref(),
         &ops.as_refs(),
+        args.skip_compile_over_size,
     )?;
 
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));

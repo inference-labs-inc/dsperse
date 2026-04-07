@@ -6,6 +6,7 @@ use crate::backend::jstprove::JstproveBackend;
 use crate::converter;
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
+use crate::slicer::autotiler::estimate_slice_constraints;
 use crate::slicer::onnx_proto;
 use crate::utils::paths::{find_metadata_path, slice_dir_path};
 
@@ -15,6 +16,10 @@ enum CompileOutcome {
         group_circuits: Vec<(usize, String)>,
     },
     Skipped,
+    SkippedOverSize {
+        estimated: u64,
+        threshold: u64,
+    },
 }
 
 pub fn compile_slices(
@@ -24,6 +29,7 @@ pub fn compile_slices(
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
     jstprove_ops: &[&str],
+    skip_compile_over_size: Option<u64>,
 ) -> Result<()> {
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!(
@@ -83,6 +89,7 @@ pub fn compile_slices(
                 weights_as_inputs,
                 jstprove_ops,
                 &exclude_from_wai,
+                skip_compile_over_size,
             );
             match r {
                 Ok(CompileOutcome::Compiled) => {
@@ -116,6 +123,17 @@ pub fn compile_slices(
                 }
                 Ok(CompileOutcome::Skipped) => {
                     tracing::info!(slice = slice.index, "skipped (unsupported ops)")
+                }
+                Ok(CompileOutcome::SkippedOverSize {
+                    estimated,
+                    threshold,
+                }) => {
+                    tracing::info!(
+                        slice = slice.index,
+                        estimated,
+                        threshold,
+                        "skipped (estimated constraints exceed threshold)"
+                    )
                 }
                 Err(e) => {
                     tracing::error!(slice = slice.index, error = %e, "compilation failed");
@@ -175,6 +193,67 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
     })
 }
 
+fn estimate_onnx_constraints(onnx_path: &Path) -> Result<u64> {
+    let model = onnx_proto::load_model(onnx_path)?;
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Slicer(format!("no graph in {}", onnx_path.display())))?;
+    let shapes = extract_graph_shapes(graph);
+    Ok(estimate_slice_constraints(&graph.node, &shapes))
+}
+
+fn extract_graph_shapes(
+    graph: &onnx_proto::GraphProto,
+) -> std::collections::HashMap<String, Vec<i64>> {
+    let mut shapes = std::collections::HashMap::new();
+
+    let extract_vi_shape = |vi: &onnx_proto::ValueInfoProto| -> Option<(String, Vec<i64>)> {
+        let tp = vi.r#type.as_ref()?;
+        if let Some(onnx_proto::onnx::type_proto::Value::TensorType(ref tt)) = tp.value {
+            let dims: Vec<i64> = tt
+                .shape
+                .as_ref()?
+                .dim
+                .iter()
+                .filter_map(|d| {
+                    if let Some(onnx_proto::onnx::tensor_shape_proto::dimension::Value::DimValue(
+                        v,
+                    )) = d.value
+                    {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !dims.is_empty() {
+                return Some((vi.name.clone(), dims));
+            }
+        }
+        None
+    };
+
+    for vi in graph
+        .input
+        .iter()
+        .chain(graph.output.iter())
+        .chain(graph.value_info.iter())
+    {
+        if let Some((name, dims)) = extract_vi_shape(vi) {
+            shapes.insert(name, dims);
+        }
+    }
+
+    for init in &graph.initializer {
+        if !init.name.is_empty() && !init.dims.is_empty() {
+            shapes.insert(init.name.clone(), init.dims.clone());
+        }
+    }
+
+    shapes
+}
+
 fn normalize_slice_for_backend(onnx_path: &Path) -> Result<Option<std::path::PathBuf>> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     let changes = onnx_proto::normalize_for_circuit_backend(&mut model);
@@ -193,6 +272,7 @@ fn compile_single_slice(
     weights_as_inputs: bool,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
+    skip_compile_over_size: Option<u64>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -212,6 +292,7 @@ fn compile_single_slice(
             backend,
             jstprove_ops,
             exclude_from_wai,
+            skip_compile_over_size,
         );
     }
 
@@ -227,6 +308,16 @@ fn compile_single_slice(
     let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
     if !analysis.compatible {
         return Ok(CompileOutcome::Skipped);
+    }
+
+    if let Some(threshold) = skip_compile_over_size {
+        let estimated = estimate_onnx_constraints(&onnx_path)?;
+        if estimated > threshold {
+            return Ok(CompileOutcome::SkippedOverSize {
+                estimated,
+                threshold,
+            });
+        }
     }
 
     let jst_dir = slice_dir.join("jstprove");
@@ -337,6 +428,7 @@ fn compile_channel_split_slice(
     backend: &JstproveBackend,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
+    skip_compile_over_size: Option<u64>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -363,6 +455,16 @@ fn compile_channel_split_slice(
                 "slice {} group 0 has unsupported ops for circuit compilation",
                 slice.index
             )));
+        }
+
+        if let Some(threshold) = skip_compile_over_size {
+            let estimated = estimate_onnx_constraints(&onnx_path)?;
+            if estimated > threshold {
+                return Ok(CompileOutcome::SkippedOverSize {
+                    estimated,
+                    threshold,
+                });
+            }
         }
 
         let shared_dir = shared_circuit_path

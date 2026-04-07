@@ -352,12 +352,7 @@ fn materialize_tiling_artifacts(
         }
     }
 
-    if let Some(ref ds) = slice_meta.dim_split
-        && matches!(
-            ds.split_kind,
-            crate::schema::tiling::DimSplitKind::MatMulOutputDim
-        )
-    {
+    if let Some(ref ds) = slice_meta.dim_split {
         let needs_materialization = ds.groups.is_empty()
             || ds.groups.iter().any(|g| {
                 let group_path = slices_dir.join(&g.path);

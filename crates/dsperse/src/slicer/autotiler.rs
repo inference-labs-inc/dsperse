@@ -1607,6 +1607,143 @@ pub fn apply_dim_splitting(
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
 ) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
+    match info.split_kind {
+        crate::schema::tiling::DimSplitKind::MatMulOutputDim => {
+            apply_matmul_dim_splitting(model, info, output_dir)
+        }
+        crate::schema::tiling::DimSplitKind::HeadDim
+        | crate::schema::tiling::DimSplitKind::BatchDim => {
+            apply_input_dim_splitting(model, info, output_dir)
+        }
+    }
+}
+
+fn apply_input_dim_splitting(
+    model: &ModelProto,
+    info: &crate::schema::tiling::DimSplitInfo,
+    output_dir: &Path,
+) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer("apply_input_dim_splitting: model has no graph".into())
+    })?;
+
+    let input_vi = graph.input.first().ok_or_else(|| {
+        crate::error::DsperseError::Slicer("apply_input_dim_splitting: no graph input".into())
+    })?;
+    let input_shape = onnx_proto::shape_from_value_info(input_vi).ok_or_else(|| {
+        crate::error::DsperseError::Slicer("apply_input_dim_splitting: no input shape".into())
+    })?;
+
+    if info.split_dim >= input_shape.len() {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "apply_input_dim_splitting: split_dim {} >= ndim {}",
+            info.split_dim,
+            input_shape.len()
+        )));
+    }
+
+    let groups_dir = output_dir.join("dim_groups");
+    std::fs::create_dir_all(&groups_dir)
+        .map_err(|e| crate::error::DsperseError::io(e, &groups_dir))?;
+
+    let epg = info.elements_per_group;
+    let opset = model_opset(model);
+    let mut groups = Vec::with_capacity(info.num_groups);
+
+    for g in 0..info.num_groups {
+        let dim_start = g * epg;
+        let dim_end = ((g + 1) * epg).min(info.dim_size);
+
+        let mut group_input_shape = input_shape.clone();
+        group_input_shape[info.split_dim] = epg as i64;
+
+        let group_input_name = format!("group_{g}_in");
+        let x = onnx_proto::make_tensor_value_info(
+            &group_input_name,
+            TensorProto::FLOAT,
+            &group_input_shape,
+        );
+
+        let mut new_nodes: Vec<onnx_proto::NodeProto> = graph.node.clone();
+        for node in &mut new_nodes {
+            for inp in &mut node.input {
+                if *inp == input_vi.name {
+                    *inp = group_input_name.clone();
+                }
+            }
+        }
+
+        let last_output_name = graph
+            .output
+            .first()
+            .map(|o| o.name.clone())
+            .unwrap_or_default();
+        let group_output_name = format!("group_{g}_out");
+        for node in &mut new_nodes {
+            for out in &mut node.output {
+                if *out == last_output_name {
+                    *out = group_output_name.clone();
+                }
+            }
+            for inp in &mut node.input {
+                if *inp == last_output_name {
+                    *inp = group_output_name.clone();
+                }
+            }
+        }
+
+        let mut output_shape = group_input_shape.clone();
+        if let Some(orig_out_shape) = graph
+            .output
+            .first()
+            .and_then(onnx_proto::shape_from_value_info)
+        {
+            output_shape = orig_out_shape;
+            if info.concat_axis < output_shape.len() {
+                output_shape[info.concat_axis] = epg as i64;
+            }
+        }
+        let y = onnx_proto::make_tensor_value_info(
+            &group_output_name,
+            TensorProto::FLOAT,
+            &output_shape,
+        );
+
+        let graph_proto = onnx_proto::make_graph(
+            &format!("dim_group_{}_{g}", info.slice_idx),
+            new_nodes,
+            vec![x],
+            vec![y],
+            graph.initializer.clone(),
+        );
+        let group_model = onnx_proto::make_model(graph_proto, opset);
+
+        let onnx_path = groups_dir.join(format!("group_{g}.onnx"));
+        onnx_proto::save_model(&group_model, &onnx_path)?;
+
+        groups.push(crate::schema::tiling::DimSplitGroupInfo {
+            group_idx: g,
+            dim_start,
+            dim_end,
+            path: format!("slice_{}/payload/dim_groups/group_{g}.onnx", info.slice_idx),
+            jstprove_circuit_path: None,
+        });
+    }
+
+    tracing::info!(
+        slice = info.slice_idx,
+        groups = groups.len(),
+        split_kind = ?info.split_kind,
+        "materialized dim-split groups (input dim)"
+    );
+    Ok(groups)
+}
+
+fn apply_matmul_dim_splitting(
+    model: &ModelProto,
+    info: &crate::schema::tiling::DimSplitInfo,
+    output_dir: &Path,
+) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
     let graph = model.graph.as_ref().ok_or_else(|| {
         crate::error::DsperseError::Slicer("apply_dim_splitting: model has no graph".into())
     })?;
@@ -1694,6 +1831,10 @@ pub fn apply_dim_splitting(
         let sliced_data: Vec<f32> = if trans_b {
             let mut out = Vec::with_capacity(epg * k_dim);
             for r in dim_start..dim_end {
+                if r >= rows {
+                    out.extend(std::iter::repeat_n(0.0f32, cols));
+                    continue;
+                }
                 let row_start = r * cols;
                 out.extend_from_slice(&weight_data[row_start..row_start + cols]);
             }
@@ -1705,9 +1846,11 @@ pub fn apply_dim_splitting(
             let mut out = Vec::with_capacity(rows * epg);
             for r in 0..rows {
                 let row_start = r * cols + dim_start;
-                out.extend_from_slice(&weight_data[row_start..row_start + actual_size]);
-                if pad_needed > 0 {
-                    out.extend(std::iter::repeat_n(0.0f32, pad_needed));
+                let row_end = (row_start + actual_size).min(weight_data.len());
+                let available = row_end.saturating_sub(row_start);
+                out.extend_from_slice(&weight_data[row_start..row_end]);
+                if available < epg {
+                    out.extend(std::iter::repeat_n(0.0f32, epg - available));
                 }
             }
             out

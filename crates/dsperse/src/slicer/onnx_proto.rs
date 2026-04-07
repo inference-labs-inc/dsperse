@@ -879,19 +879,21 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         if b_shape.len() > 2 {
             let b_m = b_shape[b_shape.len() - 2];
             n_dim = b_shape[b_shape.len() - 1];
-            b_2d_name = format!("{b_name}__flat2d");
-            let b_2d_shape_name = format!("{b_name}__flat2d_shape");
             let b_batch: i64 = b_shape[..b_shape.len() - 2].iter().product();
-            let b_2d = vec![b_batch * b_m, n_dim];
-            new_inits.push(TensorProto {
-                name: b_2d_shape_name.clone(),
-                data_type: TensorProto::INT64,
-                dims: vec![2],
-                int64_data: b_2d.clone(),
-                ..Default::default()
-            });
-            new_vis.push(make_tensor_value_info(&b_2d_name, 1, &b_2d));
-            needs_b_reshape = true;
+            if b_batch == 1 || b_batch == batch_vol {
+                b_2d_name = format!("{b_name}__flat2d");
+                let b_2d_shape_name = format!("{b_name}__flat2d_shape");
+                let b_2d = vec![b_batch * b_m, n_dim];
+                new_inits.push(TensorProto {
+                    name: b_2d_shape_name.clone(),
+                    data_type: TensorProto::INT64,
+                    dims: vec![2],
+                    int64_data: b_2d.clone(),
+                    ..Default::default()
+                });
+                new_vis.push(make_tensor_value_info(&b_2d_name, 1, &b_2d));
+                needs_b_reshape = true;
+            }
         } else {
             n_dim = *b_shape.last().unwrap_or(&1);
         }
@@ -984,7 +986,8 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
 }
 
 fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
-    let init_names: HashSet<String> = graph.initializer.iter().map(|i| i.name.clone()).collect();
+    let mut init_names: HashSet<String> =
+        graph.initializer.iter().map(|i| i.name.clone()).collect();
     let input_names: HashSet<String> = graph.input.iter().map(|i| i.name.clone()).collect();
 
     let vi_shapes: HashMap<String, Vec<i64>> = graph
@@ -1016,14 +1019,17 @@ fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
             Some(s) if !s.is_empty() && s.iter().all(|&d| d > 0) => s,
             _ => continue,
         };
-        new_inits.push(TensorProto {
-            name: shape_input.clone(),
-            data_type: TensorProto::INT64,
-            dims: vec![out_shape.len() as i64],
-            int64_data: out_shape.clone(),
-            ..Default::default()
-        });
-        count += 1;
+        if !init_names.contains(shape_input) {
+            new_inits.push(TensorProto {
+                name: shape_input.clone(),
+                data_type: TensorProto::INT64,
+                dims: vec![out_shape.len() as i64],
+                int64_data: out_shape.clone(),
+                ..Default::default()
+            });
+            init_names.insert(shape_input.clone());
+            count += 1;
+        }
     }
 
     graph.initializer.extend(new_inits);

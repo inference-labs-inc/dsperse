@@ -159,10 +159,10 @@ pub fn materialize_combined_to_disk(
 
     let mut model = onnx_proto::load_model(&model_path)?;
     onnx_proto::normalize_opset(&mut model);
-    let combined = materialize_combined_model(&model, metadata, traced_shapes)?;
+    let mut combined = materialize_combined_model(&model, metadata, traced_shapes)?;
 
     let output_path = slices_dir.join("combined.onnx");
-    onnx_proto::save_model(&combined, &output_path)?;
+    onnx_proto::save_model(&mut combined, &output_path)?;
 
     tracing::info!(path = %output_path.display(), "materialized combined ONNX");
 

@@ -27,7 +27,7 @@ pub fn slice_model(
 
     let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
     let tract_path = tmp_dir.path().join("tract_model.onnx");
-    onnx_proto::save_model(&model, &tract_path)?;
+    onnx_proto::save_model(&mut model, &tract_path)?;
 
     tracing::info!("folding constants and tracing shapes via tract");
     let traced_shapes = fold_and_trace_via_tract(&tract_path, &mut model)?;
@@ -74,7 +74,7 @@ pub fn slice_model(
     );
 
     let model_dest = output_dir.join("model.onnx");
-    onnx_proto::save_model(&model, &model_dest)?;
+    onnx_proto::save_model(&mut model, &model_dest)?;
 
     let segment_ranges = super::build_segment_ranges(&slice_points, None);
 

@@ -190,11 +190,11 @@ pub fn materialize_slice_to_disk(
     slice_idx: usize,
     output_path: &Path,
 ) -> Result<PathBuf> {
-    let slice_model = materialize_slice_model(model, slice_points, traced_shapes, slice_idx)?;
+    let mut slice_model = materialize_slice_model(model, slice_points, traced_shapes, slice_idx)?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }
-    onnx_proto::save_model(&slice_model, output_path)?;
+    onnx_proto::save_model(&mut slice_model, output_path)?;
     Ok(output_path.to_path_buf())
 }
 

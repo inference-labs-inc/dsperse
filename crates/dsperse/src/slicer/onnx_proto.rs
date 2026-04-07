@@ -35,8 +35,7 @@ fn canonicalize_node_attributes(nodes: &mut [NodeProto]) {
     }
 }
 
-pub fn save_model(model: &ModelProto, path: &Path) -> Result<()> {
-    let mut model = model.clone();
+pub fn save_model(model: &mut ModelProto, path: &Path) -> Result<()> {
     if let Some(graph) = model.graph.as_mut() {
         canonicalize_node_attributes(&mut graph.node);
     }
@@ -477,7 +476,7 @@ pub fn build_patched_onnx(
     replace_initializers(&mut model, donor_init_map)?;
     let tmp = tempfile::NamedTempFile::with_suffix(".onnx")
         .map_err(|e| DsperseError::Pipeline(format!("create temp file: {e}")))?;
-    save_model(&model, tmp.path())?;
+    save_model(&mut model, tmp.path())?;
     Ok(tmp)
 }
 

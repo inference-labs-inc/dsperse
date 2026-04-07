@@ -981,12 +981,12 @@ fn save_tile_model(
         vec![spec.output],
         spec.initializers,
     );
-    let tile_model = onnx_proto::make_model(graph, model_opset(model));
+    let mut tile_model = onnx_proto::make_model(graph, model_opset(model));
     let tiles_dir = output_dir.join("tiles");
     std::fs::create_dir_all(&tiles_dir)
         .map_err(|e| crate::error::DsperseError::io(e, &tiles_dir))?;
     let onnx_path = tiles_dir.join("tile.onnx");
-    onnx_proto::save_model(&tile_model, &onnx_path)?;
+    onnx_proto::save_model(&mut tile_model, &onnx_path)?;
     Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),
         conv_out: spec.out_hw,
@@ -1350,13 +1350,13 @@ fn create_channel_group_slice(
         vec![y],
         vec![w_tensor],
     );
-    let group_model = onnx_proto::make_model(graph_proto, model_opset(model));
+    let mut group_model = onnx_proto::make_model(graph_proto, model_opset(model));
 
     let groups_dir = output_dir.join("channel_groups");
     std::fs::create_dir_all(&groups_dir)
         .map_err(|e| crate::error::DsperseError::io(e, &groups_dir))?;
     let onnx_path = groups_dir.join(format!("group_{group_idx}.onnx"));
-    onnx_proto::save_model(&group_model, &onnx_path)?;
+    onnx_proto::save_model(&mut group_model, &onnx_path)?;
 
     Ok(ChannelGroupInfo {
         group_idx,
@@ -1902,13 +1902,13 @@ pub fn create_elementwise_tile_slice(
         vec![y],
         initializers,
     );
-    let tile_model = onnx_proto::make_model(tile_graph, model_opset(model));
+    let mut tile_model = onnx_proto::make_model(tile_graph, model_opset(model));
 
     let tiles_dir = output_dir.join("tiles");
     std::fs::create_dir_all(&tiles_dir)
         .map_err(|e| crate::error::DsperseError::io(e, &tiles_dir))?;
     let onnx_path = tiles_dir.join("tile.onnx");
-    onnx_proto::save_model(&tile_model, &onnx_path)?;
+    onnx_proto::save_model(&mut tile_model, &onnx_path)?;
 
     Ok(TileSliceResult {
         path: format!("slice_{slice_idx}/payload/tiles/tile.onnx"),

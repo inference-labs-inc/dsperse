@@ -368,7 +368,7 @@ fn normalize_slice_for_backend(onnx_path: &Path) -> Result<Option<std::path::Pat
         return Ok(None);
     }
     let normalized = onnx_path.with_extension("backend.onnx");
-    onnx_proto::save_model(&model, &normalized)?;
+    onnx_proto::save_model(&mut model, &normalized)?;
     Ok(Some(normalized))
 }
 
@@ -868,7 +868,7 @@ mod tests {
     fn analyze_slice_onnx_with_initializers() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("with_init.onnx");
-        let model = onnx_proto::ModelProto {
+        let mut model = onnx_proto::ModelProto {
             graph: Some(onnx_proto::GraphProto {
                 node: vec![onnx_proto::make_node("Conv", vec![], vec![], vec![])],
                 initializer: vec![onnx_proto::make_tensor(
@@ -881,7 +881,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        onnx_proto::save_model(&model, &path).unwrap();
+        onnx_proto::save_model(&mut model, &path).unwrap();
         let analysis = analyze_slice_onnx(&path, &["Conv"]).unwrap();
         assert!(analysis.compatible);
     }
@@ -890,7 +890,7 @@ mod tests {
     fn analyze_slice_onnx_without_initializers() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("no_init.onnx");
-        let model = onnx_proto::ModelProto {
+        let mut model = onnx_proto::ModelProto {
             graph: Some(onnx_proto::GraphProto {
                 node: vec![onnx_proto::make_node("Relu", vec![], vec![], vec![])],
                 initializer: vec![],
@@ -898,7 +898,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        onnx_proto::save_model(&model, &path).unwrap();
+        onnx_proto::save_model(&mut model, &path).unwrap();
         let analysis = analyze_slice_onnx(&path, &["Relu"]).unwrap();
         assert!(analysis.compatible);
     }

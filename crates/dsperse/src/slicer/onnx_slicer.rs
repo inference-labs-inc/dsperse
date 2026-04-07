@@ -20,7 +20,8 @@ pub fn slice_model(
 ) -> Result<ModelMetadata> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
-    onnx_proto::normalize_resize_modes(&mut model);
+    // Resize cubic now supported via tract fork; downgrade no longer needed
+    // onnx_proto::normalize_resize_modes(&mut model);
     onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape)?;
 
     onnx_proto::strip_symbolic_value_info(&mut model);

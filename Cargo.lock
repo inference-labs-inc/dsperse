@@ -1081,7 +1081,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1923,7 +1923,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2911,7 +2911,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "once_cell",
@@ -2931,7 +2931,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -2944,7 +2944,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -3433,7 +3433,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3950,7 +3950,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4261,7 +4261,7 @@ dependencies = [
 [[package]]
 name = "tract-core"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "anyhow",
  "anymap3",
@@ -4290,7 +4290,7 @@ dependencies = [
 [[package]]
 name = "tract-data"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "anyhow",
  "downcast-rs",
@@ -4316,7 +4316,7 @@ dependencies = [
 [[package]]
 name = "tract-extra"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "tract-nnef",
  "tract-pulse",
@@ -4325,7 +4325,7 @@ dependencies = [
 [[package]]
 name = "tract-hir"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "derive-new",
  "log",
@@ -4335,7 +4335,7 @@ dependencies = [
 [[package]]
 name = "tract-linalg"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "byteorder",
  "cc",
@@ -4363,7 +4363,7 @@ dependencies = [
 [[package]]
 name = "tract-nnef"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "byteorder",
  "erased-serde",
@@ -4385,7 +4385,7 @@ dependencies = [
 [[package]]
 name = "tract-onnx"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "bytes",
  "derive-new",
@@ -4404,7 +4404,7 @@ dependencies = [
 [[package]]
 name = "tract-onnx-opl"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "dyn-eq",
  "getrandom 0.4.2",
@@ -4419,7 +4419,7 @@ dependencies = [
 [[package]]
 name = "tract-pulse"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "downcast-rs",
  "dyn-eq",
@@ -4433,7 +4433,7 @@ dependencies = [
 [[package]]
 name = "tract-pulse-opl"
 version = "0.23.0-pre"
-source = "git+https://github.com/inference-labs-inc/tract.git?rev=2bcee10e#2bcee10ed9fe74949429dfb9dee69f36e2ba29ea"
+source = "git+https://github.com/inference-labs-inc/tract.git?rev=3cfae7f7#3cfae7f79151d9b5b1c9e157e559be3bdd2a019b"
 dependencies = [
  "downcast-rs",
  "dyn-eq",
@@ -4863,7 +4863,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

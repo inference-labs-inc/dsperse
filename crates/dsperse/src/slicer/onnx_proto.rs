@@ -1280,7 +1280,7 @@ fn eval_unsqueeze(
     if vals.is_empty() {
         return None;
     }
-    let t = make_f32_tensor(out_name, &new_dims, &vals, TensorProto::FLOAT);
+    let t = make_f32_tensor(out_name, &new_dims, &vals, inputs[0].data_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
@@ -1395,7 +1395,7 @@ fn eval_gather(
         } else {
             inputs[1].dims.clone()
         };
-        let t = make_f32_tensor(out_name, &out_dims, &result, TensorProto::FLOAT);
+        let t = make_f32_tensor(out_name, &out_dims, &result, data.data_type);
         return Some(vec![(out_name.to_string(), t)]);
     }
     None

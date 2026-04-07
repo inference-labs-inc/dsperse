@@ -95,7 +95,7 @@ fn slice_model(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None))]
+#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=false, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
 fn compile_slices(
     py: Python<'_>,
     slices_dir: &str,
@@ -104,6 +104,7 @@ fn compile_slices(
     layers: Option<Vec<usize>>,
     proof_system: &str,
     circuit_ops: Option<Vec<String>>,
+    skip_compile_over_size: Option<u64>,
 ) -> PyResult<()> {
     require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
@@ -118,6 +119,7 @@ fn compile_slices(
             weights_as_inputs,
             layers.as_deref(),
             &ops_refs,
+            skip_compile_over_size,
         )
     })
     .map_err(to_py_err)

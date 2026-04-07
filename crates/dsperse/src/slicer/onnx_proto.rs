@@ -598,6 +598,18 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<
     graph.initializer.extend(folded_tensors);
 
     tracing::info!(count, "folded Constant ops into initializers");
+
+    let propagated = propagate_constants(graph);
+    for init in &graph.initializer {
+        folded_names.insert(init.name.clone());
+    }
+    if propagated > 0 {
+        tracing::info!(
+            propagated,
+            "propagated constants after Constant-node folding"
+        );
+    }
+
     folded_names
 }
 

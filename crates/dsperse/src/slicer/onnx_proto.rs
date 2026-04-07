@@ -1113,7 +1113,13 @@ fn eval_binary_f32(
         return None;
     }
     let (result, dims) = broadcast_binary(&a, &inputs[0].dims, &b, &inputs[1].dims, f)?;
-    let t = make_f32_tensor(out_name, &dims, &result, TensorProto::FLOAT);
+    let out_type =
+        if inputs[0].data_type == TensorProto::INT64 && inputs[1].data_type == TensorProto::INT64 {
+            TensorProto::INT64
+        } else {
+            TensorProto::FLOAT
+        };
+    let t = make_f32_tensor(out_name, &dims, &result, out_type);
     Some(vec![(out_name.to_string(), t)])
 }
 

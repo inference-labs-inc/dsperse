@@ -213,6 +213,14 @@ pub fn tensor_to_i64(tensor: &TensorProto) -> Vec<i64> {
         return tensor.int64_data.clone();
     }
     if !tensor.raw_data.is_empty() && tensor.data_type == TensorProto::INT64 {
+        if !tensor.raw_data.len().is_multiple_of(8) {
+            tracing::warn!(
+                tensor = %tensor.name,
+                raw_len = tensor.raw_data.len(),
+                "misaligned INT64 raw_data, skipping"
+            );
+            return Vec::new();
+        }
         return tensor
             .raw_data
             .chunks_exact(8)
@@ -713,7 +721,18 @@ pub fn resolve_dynamic_input_shapes(
                 )));
             }
             for (d, &v) in shape.dim.iter_mut().zip(explicit.iter()) {
-                d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v));
+                if let Some(onnx::tensor_shape_proto::dimension::Value::DimValue(existing)) =
+                    &d.value
+                {
+                    if *existing != v {
+                        return Err(crate::error::DsperseError::Slicer(format!(
+                            "input '{}': --input-shape dim {} conflicts with fixed dim {}",
+                            inp.name, v, existing
+                        )));
+                    }
+                } else {
+                    d.value = Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v));
+                }
             }
             tracing::info!(input = %inp.name, shape = ?explicit, "applied explicit input shape");
             resolved += 1;
@@ -834,6 +853,20 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
 
     let shapes: HashMap<String, Vec<i64>> = vi_shapes.into_iter().chain(init_shapes).collect();
 
+    let elem_types: HashMap<String, i32> = graph
+        .input
+        .iter()
+        .chain(graph.value_info.iter())
+        .chain(graph.output.iter())
+        .filter_map(|vi| elem_type_from_value_info(vi).map(|t| (vi.name.clone(), t)))
+        .chain(
+            graph
+                .initializer
+                .iter()
+                .map(|i| (i.name.clone(), i.data_type)),
+        )
+        .collect();
+
     let mut new_nodes: Vec<(usize, Vec<NodeProto>)> = Vec::new();
     let mut new_inits: Vec<TensorProto> = Vec::new();
     let mut new_vis: Vec<ValueInfoProto> = Vec::new();
@@ -869,8 +902,9 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         let m = a_shape[a_shape.len() - 2];
         let k = a_shape[a_shape.len() - 1];
 
-        let a_2d_name = format!("{a_name}__flat2d");
-        let a_2d_shape_name = format!("{a_name}__flat2d_shape");
+        let node_tag = &node.name;
+        let a_2d_name = format!("{a_name}__flat2d_{node_tag}");
+        let a_2d_shape_name = format!("{a_name}__flat2d_shape_{node_tag}");
         let a_2d = vec![batch_vol * m, k];
 
         let mut b_2d_name = b_name.clone();
@@ -881,8 +915,8 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
             n_dim = b_shape[b_shape.len() - 1];
             let b_batch: i64 = b_shape[..b_shape.len() - 2].iter().product();
             if b_batch == 1 || b_batch == batch_vol {
-                b_2d_name = format!("{b_name}__flat2d");
-                let b_2d_shape_name = format!("{b_name}__flat2d_shape");
+                b_2d_name = format!("{b_name}__flat2d_{node_tag}");
+                let b_2d_shape_name = format!("{b_name}__flat2d_shape_{node_tag}");
                 let b_2d = vec![b_batch * b_m, n_dim];
                 new_inits.push(TensorProto {
                     name: b_2d_shape_name.clone(),
@@ -891,17 +925,21 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
                     int64_data: b_2d.clone(),
                     ..Default::default()
                 });
-                new_vis.push(make_tensor_value_info(&b_2d_name, 1, &b_2d));
+                let b_elem = elem_types
+                    .get(b_name)
+                    .copied()
+                    .unwrap_or(TensorProto::FLOAT);
+                new_vis.push(make_tensor_value_info(&b_2d_name, b_elem, &b_2d));
                 needs_b_reshape = true;
             }
         } else {
             n_dim = *b_shape.last().unwrap_or(&1);
         }
 
-        let matmul_out_name = format!("{out_name}__matmul2d");
+        let matmul_out_name = format!("{out_name}__matmul2d_{node_tag}");
         let matmul_2d_shape = vec![batch_vol * m, n_dim];
 
-        let restore_shape_name = format!("{out_name}__restore_shape");
+        let restore_shape_name = format!("{out_name}__restore_shape_{node_tag}");
         let mut restored: Vec<i64> = batch_dims.to_vec();
         restored.push(m);
         restored.push(n_dim);
@@ -921,10 +959,14 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
             ..Default::default()
         });
 
-        new_vis.push(make_tensor_value_info(&a_2d_name, 1, &a_2d));
+        let a_elem = elem_types
+            .get(a_name)
+            .copied()
+            .unwrap_or(TensorProto::FLOAT);
+        new_vis.push(make_tensor_value_info(&a_2d_name, a_elem, &a_2d));
         new_vis.push(make_tensor_value_info(
             &matmul_out_name,
-            1,
+            a_elem,
             &matmul_2d_shape,
         ));
 
@@ -989,6 +1031,11 @@ fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
     let mut init_names: HashSet<String> =
         graph.initializer.iter().map(|i| i.name.clone()).collect();
     let input_names: HashSet<String> = graph.input.iter().map(|i| i.name.clone()).collect();
+    let produced_names: HashSet<String> = graph
+        .node
+        .iter()
+        .flat_map(|n| n.output.iter().cloned())
+        .collect();
 
     let vi_shapes: HashMap<String, Vec<i64>> = graph
         .value_info
@@ -1008,7 +1055,10 @@ fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
             Some(n) if !n.is_empty() => n,
             _ => continue,
         };
-        if init_names.contains(shape_input) || input_names.contains(shape_input) {
+        if init_names.contains(shape_input)
+            || input_names.contains(shape_input)
+            || produced_names.contains(shape_input)
+        {
             continue;
         }
         let out_name = match node.output.first() {

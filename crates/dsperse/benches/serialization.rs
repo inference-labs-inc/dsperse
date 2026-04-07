@@ -78,6 +78,7 @@ fn make_run_metadata(num_slices: usize) -> RunMetadata {
                 },
                 tiling: None,
                 channel_split: None,
+                dim_split: None,
                 backend: BackendKind::Jstprove,
                 jstprove_circuit_path: Some(format!("slice_{i}/jstprove/circuit.bin")),
                 jstprove_settings_path: None,

@@ -941,12 +941,15 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         count += 1;
     }
 
-    for (offset, (idx, nodes)) in new_nodes.into_iter().enumerate() {
-        let pos = idx + offset * 2;
+    let mut cumulative_offset: usize = 0;
+    for (idx, nodes) in new_nodes {
+        let pos = idx + cumulative_offset;
         graph.node.remove(pos);
+        let inserted = nodes.len();
         for (i, n) in nodes.into_iter().enumerate() {
             graph.node.insert(pos + i, n);
         }
+        cumulative_offset += inserted - 1;
     }
     graph.initializer.extend(new_inits);
     graph.value_info.extend(new_vis);

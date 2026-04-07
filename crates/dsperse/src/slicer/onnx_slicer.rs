@@ -620,6 +620,8 @@ fn fold_and_trace_via_tract(
                         error = %e,
                         "op eval failed, using input[0] shape as fallback"
                     );
+                    // TODO: also track transitive dependents of failed nodes
+                    // to exclude their shapes from the map
                     failed_nodes.borrow_mut().insert(node.id);
                     let fallback = inputs
                         .first()

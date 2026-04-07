@@ -121,7 +121,7 @@ pub fn run_inference_with_coercion(
             match eval_result {
                 Ok(o) => Ok::<_, TractError>(o),
                 Err(e) => {
-                    tracing::debug!(node = %node.name, error = %e, "eval failed, using fallback");
+                    tracing::warn!(node = %node.name, error = %e, "eval failed, using fallback");
                     let fallback = inputs
                         .first()
                         .cloned()
@@ -147,6 +147,11 @@ fn extract_all_outputs(result: &[TValue]) -> Result<NamedOutputs> {
                 .map(|&v| v as f64)
                 .collect()
         } else {
+            tracing::warn!(
+                output = i,
+                dtype = ?tensor.datum_type(),
+                "non-f32 output in fallback inference path, zero-filling"
+            );
             vec![0.0; tensor.len()]
         };
         outputs.insert(format!("output_{i}"), (data, shape));

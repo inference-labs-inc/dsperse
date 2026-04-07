@@ -15,6 +15,9 @@ enum CompileOutcome {
     CompiledChannelSplit {
         group_circuits: Vec<(usize, String)>,
     },
+    CompiledDimSplit {
+        group_circuits: Vec<(usize, String)>,
+    },
     Skipped,
     SkippedOverSize {
         estimated: u64,
@@ -53,10 +56,18 @@ pub fn compile_slices(
                 metadata_dirty = true;
             }
         }
+        if let Some(ref mut ds) = slice.dim_split
+            && ds.groups.is_empty()
+        {
+            let populated = populate_dim_split_groups(slices_dir, slice.index, ds)?;
+            if populated {
+                metadata_dirty = true;
+            }
+        }
     }
     if metadata_dirty {
         metadata.save(&meta_path)?;
-        tracing::info!("persisted materialized channel split groups to metadata");
+        tracing::info!("persisted materialized split groups to metadata");
     }
 
     let slices: Vec<_> = metadata
@@ -121,6 +132,30 @@ pub fn compile_slices(
                         *dirty = true;
                     }
                 }
+                Ok(CompileOutcome::CompiledDimSplit { group_circuits }) => {
+                    let count =
+                        compiled_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    tracing::info!(
+                        slice = slice.index,
+                        groups = group_circuits.len(),
+                        count,
+                        "compiled dim-split groups"
+                    );
+                    let mut guard = meta_mutex.lock().unwrap();
+                    let (ref mut meta, ref mut dirty) = *guard;
+                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index)
+                        && let Some(ref mut ds) = s.dim_split
+                    {
+                        for (group_idx, circuit_path) in &group_circuits {
+                            if let Some(group) =
+                                ds.groups.iter_mut().find(|g| g.group_idx == *group_idx)
+                            {
+                                group.jstprove_circuit_path = Some(circuit_path.clone());
+                            }
+                        }
+                        *dirty = true;
+                    }
+                }
                 Ok(CompileOutcome::Skipped) => {
                     tracing::info!(slice = slice.index, "skipped (unsupported ops)")
                 }
@@ -147,9 +182,9 @@ pub fn compile_slices(
     let (metadata, cs_dirty) = meta_mutex.into_inner().unwrap();
     if cs_dirty {
         if let Err(e) = metadata.save(&meta_path) {
-            tracing::error!(error = %e, "failed to persist channel split circuit paths");
+            tracing::error!(error = %e, "failed to persist split circuit paths");
         } else {
-            tracing::info!("persisted channel split circuit paths to metadata");
+            tracing::info!("persisted split circuit paths to metadata");
         }
     }
     let compiled_count = compiled_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -289,6 +324,20 @@ fn compile_single_slice(
             slices_dir,
             slice,
             cs,
+            backend,
+            jstprove_ops,
+            exclude_from_wai,
+            skip_compile_over_size,
+        );
+    }
+
+    if let Some(ref ds) = slice.dim_split
+        && ds.num_groups > 0
+    {
+        return compile_dim_split_slice(
+            slices_dir,
+            slice,
+            ds,
             backend,
             jstprove_ops,
             exclude_from_wai,
@@ -517,6 +566,150 @@ fn compile_channel_split_slice(
         .collect();
 
     Ok(CompileOutcome::CompiledChannelSplit { group_circuits })
+}
+
+fn populate_dim_split_groups(
+    slices_dir: &Path,
+    slice_idx: usize,
+    ds: &mut crate::schema::tiling::DimSplitInfo,
+) -> Result<bool> {
+    let groups_dir = slices_dir
+        .join(format!("slice_{slice_idx}"))
+        .join("payload")
+        .join("dim_groups");
+    if !groups_dir.exists() {
+        return Ok(false);
+    }
+
+    let epg = ds.elements_per_group;
+    let mut groups = Vec::with_capacity(ds.num_groups);
+    for g in 0..ds.num_groups {
+        let dim_start = g * epg;
+        let dim_end = ((g + 1) * epg).min(ds.dim_size);
+        let rel_path = format!("slice_{slice_idx}/payload/dim_groups/group_{g}.onnx");
+        let abs_path = slices_dir.join(&rel_path);
+        if !abs_path.exists() {
+            tracing::warn!(
+                slice = slice_idx,
+                group = g,
+                "expected dim-split group ONNX not found, skipping population"
+            );
+            return Ok(false);
+        }
+        groups.push(crate::schema::tiling::DimSplitGroupInfo {
+            group_idx: g,
+            dim_start,
+            dim_end,
+            path: rel_path,
+            jstprove_circuit_path: None,
+        });
+    }
+
+    tracing::info!(
+        slice = slice_idx,
+        groups = groups.len(),
+        "populated dim-split groups from materialized files"
+    );
+    ds.groups = groups;
+    Ok(true)
+}
+
+fn compile_dim_split_slice(
+    slices_dir: &Path,
+    slice: &crate::schema::metadata::SliceMetadata,
+    ds: &crate::schema::tiling::DimSplitInfo,
+    backend: &JstproveBackend,
+    jstprove_ops: &[&str],
+    exclude_from_wai: &std::collections::HashSet<String>,
+    skip_compile_over_size: Option<u64>,
+) -> Result<CompileOutcome> {
+    let slice_dir = slice_dir_path(slices_dir, slice.index);
+    let jst_dir = slice_dir.join("jstprove");
+    std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
+
+    let shared_circuit_rel = format!("slice_{}/jstprove/dim_split/circuit.bundle", slice.index);
+    let shared_circuit_path = jst_dir.join("dim_split").join("circuit.bundle");
+
+    if !shared_circuit_path.is_dir() {
+        let first_group = ds.groups.first().ok_or_else(|| {
+            DsperseError::Pipeline(format!("slice {} dim_split has no groups", slice.index))
+        })?;
+        let onnx_path = slices_dir.join(&first_group.path);
+        if !onnx_path.exists() {
+            return Err(DsperseError::Pipeline(format!(
+                "dim-split group ONNX not found: {}",
+                onnx_path.display()
+            )));
+        }
+
+        let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
+        if !analysis.compatible {
+            return Err(DsperseError::Pipeline(format!(
+                "slice {} dim-split group 0 has unsupported ops for circuit compilation",
+                slice.index
+            )));
+        }
+
+        if let Some(threshold) = skip_compile_over_size {
+            let estimated = estimate_onnx_constraints(&onnx_path)?;
+            if estimated > threshold {
+                return Ok(CompileOutcome::SkippedOverSize {
+                    estimated,
+                    threshold,
+                });
+            }
+        }
+
+        let shared_dir = shared_circuit_path
+            .parent()
+            .ok_or_else(|| DsperseError::Pipeline("shared circuit path has no parent".into()))?;
+        std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
+
+        tracing::info!(
+            slice = slice.index,
+            groups = ds.num_groups,
+            "compiling shared dim-split circuit (weights-as-inputs)"
+        );
+
+        let (params, architecture, wandb) =
+            converter::prepare_jstprove_artifacts_filtered(&onnx_path, true, exclude_from_wai)?;
+
+        std::panic::catch_unwind(|| {
+            backend.compile(&shared_circuit_path, params, architecture, wandb)
+        })
+        .map_err(|p| {
+            let msg = p
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            DsperseError::Backend(format!(
+                "jstprove panicked on slice {} dim-split shared circuit: {msg}",
+                slice.index
+            ))
+        })??;
+
+        tracing::info!(slice = slice.index, "dim-split shared circuit compiled");
+    } else {
+        backend.load_params(&shared_circuit_path).map_err(|e| {
+            DsperseError::Pipeline(format!(
+                "slice {} cached dim-split shared circuit invalid: {e}",
+                slice.index
+            ))
+        })?;
+        tracing::info!(
+            slice = slice.index,
+            "dim-split shared circuit already compiled, reusing"
+        );
+    }
+
+    let group_circuits: Vec<(usize, String)> = ds
+        .groups
+        .iter()
+        .map(|g| (g.group_idx, shared_circuit_rel.clone()))
+        .collect();
+
+    Ok(CompileOutcome::CompiledDimSplit { group_circuits })
 }
 
 fn resolve_compile_onnx(

@@ -121,11 +121,8 @@ pub fn slice_model(
                     slice = seg_idx,
                     estimated = detection.estimated_constraints,
                     num_groups = detection.num_groups,
-                    "dim-split candidate detected"
-                );
-                tracing::warn!(
-                    slice = seg_idx,
-                    "dim-split detected but compilation support pending"
+                    split_kind = ?detection.split_kind,
+                    "dim-split detected"
                 );
                 dim_split_info.insert(seg_idx, detection);
             }

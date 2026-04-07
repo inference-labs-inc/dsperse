@@ -189,6 +189,19 @@ pub fn get_attribute_int(node: &NodeProto, name: &str) -> Option<i64> {
     node.attribute.iter().find(|a| a.name == name).map(|a| a.i)
 }
 
+pub fn get_attribute_float(node: &NodeProto, name: &str) -> Option<f32> {
+    node.attribute.iter().find(|a| a.name == name).map(|a| a.f)
+}
+
+pub fn make_attribute_float(name: &str, val: f32) -> AttributeProto {
+    AttributeProto {
+        name: name.to_string(),
+        f: val,
+        r#type: 1,
+        ..Default::default()
+    }
+}
+
 pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
     vi.r#type
         .as_ref()

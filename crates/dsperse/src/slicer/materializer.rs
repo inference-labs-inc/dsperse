@@ -352,6 +352,25 @@ fn materialize_tiling_artifacts(
         }
     }
 
+    if let Some(ref ds) = slice_meta.dim_split {
+        let needs_materialization = ds.groups.is_empty()
+            || ds.groups.iter().any(|g| {
+                let group_path = slices_dir.join(&g.path);
+                !group_path.exists()
+            });
+
+        if needs_materialization && ds.num_groups > 0 {
+            let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
+            let slice_model = onnx_proto::load_model(&onnx_path)?;
+            let _groups = autotiler::apply_dim_splitting(&slice_model, ds, &payload_dir)?;
+            tracing::info!(
+                slice = slice_idx,
+                groups = ds.num_groups,
+                "materialized dim-split groups"
+            );
+        }
+    }
+
     Ok(())
 }
 

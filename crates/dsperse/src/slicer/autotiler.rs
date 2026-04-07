@@ -1652,6 +1652,9 @@ fn apply_input_dim_splitting(
 
     for g in 0..info.num_groups {
         let dim_start = g * epg;
+        if dim_start >= info.dim_size {
+            break;
+        }
         let dim_end = ((g + 1) * epg).min(info.dim_size);
 
         let mut group_input_shape = input_shape.clone();
@@ -1824,6 +1827,9 @@ fn apply_matmul_dim_splitting(
 
     for g in 0..info.num_groups {
         let dim_start = g * epg;
+        if dim_start >= info.dim_size {
+            break;
+        }
         let dim_end = ((g + 1) * epg).min(info.dim_size);
         let actual_size = dim_end - dim_start;
         let pad_needed = epg - actual_size;

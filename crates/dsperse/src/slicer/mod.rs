@@ -1,7 +1,6 @@
 pub mod analyzer;
 pub mod autotiler;
 pub mod combiner;
-pub(crate) mod const_prop;
 pub mod materializer;
 pub mod onnx_proto;
 pub mod onnx_slicer;

@@ -30,11 +30,8 @@ pub fn slice_model(
     onnx_proto::save_model(&model, &tract_path)?;
 
     tracing::info!("folding constants and tracing shapes via tract");
-    let mut traced_shapes = fold_and_trace_via_tract(&tract_path, &mut model)?;
+    let traced_shapes = fold_and_trace_via_tract(&tract_path, &mut model)?;
 
-    if let Some(graph) = &model.graph {
-        super::const_prop::fill_shapes_from_graph(graph, &mut traced_shapes);
-    }
     let missing: Vec<String> = if let Some(graph) = &model.graph {
         let mut missing = Vec::new();
         for n in &graph.node {

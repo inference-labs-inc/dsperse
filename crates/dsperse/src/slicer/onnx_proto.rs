@@ -902,7 +902,11 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         let m = a_shape[a_shape.len() - 2];
         let k = a_shape[a_shape.len() - 1];
 
-        let node_tag = &node.name;
+        let node_tag = if node.name.is_empty() {
+            format!("matmul_{idx}")
+        } else {
+            node.name.clone()
+        };
         let a_2d_name = format!("{a_name}__flat2d_{node_tag}");
         let a_2d_shape_name = format!("{a_name}__flat2d_shape_{node_tag}");
         let a_2d = vec![batch_vol * m, k];
@@ -914,7 +918,7 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
             let b_m = b_shape[b_shape.len() - 2];
             n_dim = b_shape[b_shape.len() - 1];
             let b_batch: i64 = b_shape[..b_shape.len() - 2].iter().product();
-            if b_batch == 1 || b_batch == batch_vol {
+            if b_batch == 1 {
                 b_2d_name = format!("{b_name}__flat2d_{node_tag}");
                 let b_2d_shape_name = format!("{b_name}__flat2d_shape_{node_tag}");
                 let b_2d = vec![b_batch * b_m, n_dim];
@@ -942,7 +946,9 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         let restore_shape_name = format!("{out_name}__restore_shape_{node_tag}");
         let mut restored: Vec<i64> = batch_dims.to_vec();
         restored.push(m);
-        restored.push(n_dim);
+        if b_shape.len() > 1 {
+            restored.push(n_dim);
+        }
 
         new_inits.push(TensorProto {
             name: a_2d_shape_name.clone(),
@@ -981,7 +987,7 @@ fn flatten_matmul_inputs(graph: &mut GraphProto) -> usize {
         });
 
         if needs_b_reshape {
-            let b_2d_shape_name = format!("{b_name}__flat2d_shape");
+            let b_2d_shape_name = format!("{b_name}__flat2d_shape_{node_tag}");
             inserted.push(NodeProto {
                 op_type: "Reshape".into(),
                 name: format!("{}_flatten_b", node.name),

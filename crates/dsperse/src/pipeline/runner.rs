@@ -1771,22 +1771,17 @@ fn execute_dim_split(
     use ndarray::Axis;
 
     let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
-    let input_shape = input_tensor.shape().to_vec();
-
-    if ds.groups.is_empty() {
-        return Err(DsperseError::Pipeline(format!(
-            "{slice_id}: dim_split has no groups"
-        )));
-    }
-
-    let split_dim = ds.split_dim;
     let concat_axis = ds.concat_axis;
     let epg = ds.elements_per_group;
 
-    if split_dim >= input_shape.len() {
+    let tmpl_rel = ds.template_path.as_ref().ok_or_else(|| {
+        DsperseError::Pipeline(format!("{slice_id}: dim_split has no template_path"))
+    })?;
+    let tmpl_path = slices_dir.join(tmpl_rel);
+    if !tmpl_path.exists() {
         return Err(DsperseError::Pipeline(format!(
-            "{slice_id}: split_dim {split_dim} >= input ndim {}",
-            input_shape.len()
+            "{slice_id}: dim-split template not found: {}",
+            tmpl_path.display()
         )));
     }
 
@@ -1795,60 +1790,135 @@ fn execute_dim_split(
         crate::schema::tiling::DimSplitKind::MatMulOutputDim
     );
 
-    let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::with_capacity(ds.groups.len());
+    let slice_onnx_path = slices_dir
+        .join(format!("slice_{}", ds.slice_idx))
+        .join("payload")
+        .join(format!("slice_{}.onnx", ds.slice_idx));
 
-    for group in &ds.groups {
-        let group_onnx = slices_dir.join(&group.path);
-        if !group_onnx.exists() {
-            return Err(DsperseError::Pipeline(format!(
-                "{slice_id}: dim-split group {} ONNX not found: {}",
-                group.group_idx,
-                group_onnx.display()
-            )));
+    let original_weights = if use_matmul_split {
+        if let Some(ref wn) = ds.weight_name {
+            let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+            let graph = model.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
+            })?;
+            let tensor = graph
+                .initializer
+                .iter()
+                .find(|i| i.name == *wn)
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: weight {wn:?} not found in slice ONNX"
+                    ))
+                })?;
+            Some(crate::slicer::onnx_proto::tensor_to_f32(tensor))
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    let mut tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
+
+    let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::new();
+
+    for g in 0..ds.num_groups {
+        let dim_start = g * epg;
+        if dim_start >= ds.dim_size {
+            break;
+        }
+        let dim_end = ((g + 1) * epg).min(ds.dim_size);
+        let actual_size = dim_end - dim_start;
 
         let group_input = if use_matmul_split {
             input_tensor.clone()
         } else {
-            let dim_start = group.dim_start;
-            let dim_end = group.dim_end.min(input_shape[split_dim]);
-            let actual_size = dim_end - dim_start;
-            let mut sliced = input_tensor
+            let split_dim = ds.split_dim;
+            let sliced = input_tensor
                 .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
                 .to_owned();
             if actual_size < epg {
                 let mut padded_shape = sliced.shape().to_vec();
                 padded_shape[split_dim] = epg;
                 let mut padded = ndarray::ArrayD::zeros(padded_shape);
-                let ranges: Vec<ndarray::SliceInfoElem> = sliced
-                    .shape()
-                    .iter()
-                    .map(|&s| ndarray::SliceInfoElem::Slice {
-                        start: 0,
-                        end: Some(s as isize),
-                        step: 1,
-                    })
-                    .collect();
+                for (mut dst, src) in padded
+                    .axis_iter_mut(Axis(split_dim))
+                    .zip(sliced.axis_iter(Axis(split_dim)))
+                {
+                    dst.assign(&src);
+                }
                 padded
-                    .slice_mut(
-                        ndarray::SliceInfo::<_, ndarray::IxDyn, ndarray::IxDyn>::try_from(ranges)
-                            .unwrap(),
-                    )
-                    .assign(&sliced);
-                sliced = padded;
+            } else {
+                sliced
             }
-            sliced
         };
 
-        let group_output = run_onnx_inference(&group_onnx, &group_input)?;
+        if use_matmul_split
+            && let Some(ref weights) = original_weights
+            && let Some(graph) = tmpl_model.graph.as_mut()
+        {
+            let matmul_node = graph
+                .node
+                .iter()
+                .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"));
+            let trans_b = matmul_node.is_some_and(|n| {
+                n.op_type == "Gemm"
+                    && crate::slicer::onnx_proto::get_attribute_int(n, "transB").unwrap_or(0) == 1
+            });
 
-        let actual_dim_end = group.dim_end.min(ds.dim_size);
-        let actual_size = actual_dim_end - group.dim_start;
-        let trimmed = if !use_matmul_split && actual_size < epg {
-            group_output
-                .slice_axis(Axis(split_dim), ndarray::Slice::from(0..actual_size))
-                .to_owned()
-        } else if use_matmul_split && actual_size < epg && concat_axis < group_output.ndim() {
+            if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W") {
+                let (rows, cols) = (w_init.dims[0] as usize, w_init.dims[1] as usize);
+                let k = if trans_b { cols } else { rows };
+                let orig_cols = ds.dim_size;
+                let mut chunk = Vec::with_capacity(k * epg);
+                if trans_b {
+                    for r in dim_start..dim_end.min(ds.dim_size) {
+                        let start = r * k;
+                        chunk.extend_from_slice(&weights[start..start + k]);
+                    }
+                    chunk.resize(epg * k, 0.0);
+                } else {
+                    for r in 0..k {
+                        let start = r * orig_cols + dim_start;
+                        let end = (start + actual_size).min(weights.len());
+                        chunk.extend_from_slice(&weights[start..end]);
+                        if actual_size < epg {
+                            chunk.resize(chunk.len() + epg - actual_size, 0.0);
+                        }
+                    }
+                }
+                w_init.float_data = chunk;
+                w_init.raw_data.clear();
+            }
+
+            if let Some(bias_init) = graph.initializer.iter_mut().find(|i| i.name == "C") {
+                let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+                if let Some(orig_graph) = orig_model.graph.as_ref() {
+                    let bias_name = matmul_node.and_then(|n| n.input.get(2).cloned());
+                    if let Some(ref bn) = bias_name
+                        && let Some(orig_bias) =
+                            orig_graph.initializer.iter().find(|i| i.name == *bn)
+                    {
+                        let bias_data = crate::slicer::onnx_proto::tensor_to_f32(orig_bias);
+                        if bias_data.len() == ds.dim_size {
+                            let mut sliced = bias_data[dim_start..dim_end].to_vec();
+                            sliced.resize(epg, 0.0);
+                            bias_init.float_data = sliced;
+                            bias_init.raw_data.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        let tmp_dir = tempfile::tempdir()
+            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
+        let patched_path = tmp_dir.path().join("dim_chunk.onnx");
+        crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
+
+        let group_output = run_onnx_inference(&patched_path, &group_input)?;
+
+        let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
             group_output
                 .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
                 .to_owned()
@@ -1884,7 +1954,7 @@ fn execute_dim_split(
 
     tracing::info!(
         slice = %slice_id,
-        groups = ds.groups.len(),
+        groups = ds.num_groups,
         "executed dim-split"
     );
 

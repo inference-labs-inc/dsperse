@@ -803,19 +803,17 @@ pub fn detect_dim_split(
         }
     }
 
-    let first_input_shape = nodes
-        .first()
-        .and_then(|n| n.input.first())
-        .and_then(|name| shapes.get(name))?;
+    let first_non_init_input = nodes.first().and_then(|n| {
+        n.input
+            .iter()
+            .find(|name| !name.is_empty() && !initializer_names.contains(name.as_str()))
+    });
+    let first_input_shape = first_non_init_input.and_then(|name| shapes.get(name))?;
     if !first_input_shape.is_empty() && first_input_shape[0] > 1 {
         let batch_dim = first_input_shape[0] as usize;
         let num_groups = target_groups.min(batch_dim);
         let elements_per_group = batch_dim.div_ceil(num_groups);
-        let input_name = nodes
-            .first()
-            .and_then(|n| n.input.first())
-            .filter(|s| !s.is_empty())
-            .cloned()?;
+        let input_name = first_non_init_input.cloned()?;
         let output_name = nodes
             .last()
             .and_then(|n| n.output.first())
@@ -1602,166 +1600,136 @@ pub fn apply_channel_splitting(
     })
 }
 
-pub fn apply_dim_splitting(
+pub fn create_dim_split_template(
     model: &ModelProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
-) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
+) -> Result<std::path::PathBuf> {
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer("create_dim_split_template: model has no graph".into())
+    })?;
+
     match info.split_kind {
         crate::schema::tiling::DimSplitKind::MatMulOutputDim => {
-            apply_matmul_dim_splitting(model, info, output_dir)
+            create_matmul_dim_template(model, graph, info, output_dir)
         }
         crate::schema::tiling::DimSplitKind::HeadDim
         | crate::schema::tiling::DimSplitKind::BatchDim => {
-            apply_input_dim_splitting(model, info, output_dir)
+            create_input_dim_template(model, graph, info, output_dir)
         }
     }
 }
 
-fn apply_input_dim_splitting(
+fn create_input_dim_template(
     model: &ModelProto,
+    graph: &GraphProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
-) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
-    let graph = model.graph.as_ref().ok_or_else(|| {
-        crate::error::DsperseError::Slicer("apply_input_dim_splitting: model has no graph".into())
-    })?;
-
-    let input_vi = graph.input.first().ok_or_else(|| {
-        crate::error::DsperseError::Slicer("apply_input_dim_splitting: no graph input".into())
-    })?;
-    let input_shape = onnx_proto::shape_from_value_info(input_vi).ok_or_else(|| {
-        crate::error::DsperseError::Slicer("apply_input_dim_splitting: no input shape".into())
+) -> Result<std::path::PathBuf> {
+    let target_vi = graph
+        .input
+        .iter()
+        .find(|vi| vi.name == info.input_name)
+        .or_else(|| graph.input.first())
+        .ok_or_else(|| {
+            crate::error::DsperseError::Slicer("create_input_dim_template: no graph input".into())
+        })?;
+    let input_shape = onnx_proto::shape_from_value_info(target_vi).ok_or_else(|| {
+        crate::error::DsperseError::Slicer("create_input_dim_template: no input shape".into())
     })?;
 
     if info.split_dim >= input_shape.len() {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "apply_input_dim_splitting: split_dim {} >= ndim {}",
+            "create_input_dim_template: split_dim {} >= ndim {}",
             info.split_dim,
             input_shape.len()
         )));
     }
 
-    let groups_dir = output_dir.join("dim_groups");
-    std::fs::create_dir_all(&groups_dir)
-        .map_err(|e| crate::error::DsperseError::io(e, &groups_dir))?;
-
     let epg = info.elements_per_group;
-    let opset = model_opset(model);
-    let mut groups = Vec::with_capacity(info.num_groups);
+    let mut tmpl_input_shape = input_shape;
+    tmpl_input_shape[info.split_dim] = epg as i64;
 
-    for g in 0..info.num_groups {
-        let dim_start = g * epg;
-        if dim_start >= info.dim_size {
-            break;
-        }
-        let dim_end = ((g + 1) * epg).min(info.dim_size);
+    let tmpl_input_name = "dim_tmpl_in".to_string();
+    let tmpl_output_name = "dim_tmpl_out".to_string();
 
-        let mut group_input_shape = input_shape.clone();
-        group_input_shape[info.split_dim] = epg as i64;
-
-        let group_input_name = format!("group_{g}_in");
-        let x = onnx_proto::make_tensor_value_info(
-            &group_input_name,
-            TensorProto::FLOAT,
-            &group_input_shape,
-        );
-
-        let mut new_nodes: Vec<onnx_proto::NodeProto> = graph.node.clone();
-        for node in &mut new_nodes {
-            for inp in &mut node.input {
-                if *inp == input_vi.name {
-                    *inp = group_input_name.clone();
-                }
+    let mut nodes = graph.node.clone();
+    for n in &mut nodes {
+        for inp in &mut n.input {
+            if *inp == target_vi.name {
+                *inp = tmpl_input_name.clone();
             }
         }
-
-        let last_output_name = graph
-            .output
-            .first()
-            .map(|o| o.name.clone())
-            .unwrap_or_default();
-        let group_output_name = format!("group_{g}_out");
-        for node in &mut new_nodes {
-            for out in &mut node.output {
-                if *out == last_output_name {
-                    *out = group_output_name.clone();
-                }
-            }
-            for inp in &mut node.input {
-                if *inp == last_output_name {
-                    *inp = group_output_name.clone();
-                }
+    }
+    for n in &mut nodes {
+        for out in &mut n.output {
+            if *out == info.output_name {
+                *out = tmpl_output_name.clone();
             }
         }
-
-        let mut output_shape = group_input_shape.clone();
-        if let Some(orig_out_shape) = graph
-            .output
-            .first()
-            .and_then(onnx_proto::shape_from_value_info)
-        {
-            output_shape = orig_out_shape;
-            if info.concat_axis < output_shape.len() {
-                output_shape[info.concat_axis] = epg as i64;
+        for inp in &mut n.input {
+            if *inp == info.output_name {
+                *inp = tmpl_output_name.clone();
             }
         }
-        let y = onnx_proto::make_tensor_value_info(
-            &group_output_name,
-            TensorProto::FLOAT,
-            &output_shape,
-        );
-
-        let graph_proto = onnx_proto::make_graph(
-            &format!("dim_group_{}_{g}", info.slice_idx),
-            new_nodes,
-            vec![x],
-            vec![y],
-            graph.initializer.clone(),
-        );
-        let group_model = onnx_proto::make_model(graph_proto, opset);
-
-        let onnx_path = groups_dir.join(format!("group_{g}.onnx"));
-        onnx_proto::save_model(&group_model, &onnx_path)?;
-
-        groups.push(crate::schema::tiling::DimSplitGroupInfo {
-            group_idx: g,
-            dim_start,
-            dim_end,
-            path: format!("slice_{}/payload/dim_groups/group_{g}.onnx", info.slice_idx),
-            jstprove_circuit_path: None,
-        });
     }
 
-    tracing::info!(
-        slice = info.slice_idx,
-        groups = groups.len(),
-        split_kind = ?info.split_kind,
-        "materialized dim-split groups (input dim)"
+    let mut inputs = graph.input.clone();
+    if let Some(pos) = inputs.iter().position(|vi| vi.name == target_vi.name) {
+        inputs[pos] = onnx_proto::make_tensor_value_info(
+            &tmpl_input_name,
+            TensorProto::FLOAT,
+            &tmpl_input_shape,
+        );
+    }
+
+    let mut outputs = graph.output.clone();
+    if let Some(pos) = outputs.iter().position(|vi| vi.name == info.output_name) {
+        let mut out_shape = tmpl_input_shape.clone();
+        if let Some(orig) = onnx_proto::shape_from_value_info(&graph.output[pos]) {
+            out_shape = orig;
+            if info.concat_axis < out_shape.len() {
+                out_shape[info.concat_axis] = epg as i64;
+            }
+        }
+        outputs[pos] =
+            onnx_proto::make_tensor_value_info(&tmpl_output_name, TensorProto::FLOAT, &out_shape);
+    }
+
+    let graph_proto = onnx_proto::make_graph(
+        &format!("dim_template_{}", info.slice_idx),
+        nodes,
+        inputs,
+        outputs,
+        graph.initializer.clone(),
     );
-    Ok(groups)
+    let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
+
+    let tmpl_path = output_dir.join("dim_template.onnx");
+    onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+    Ok(tmpl_path)
 }
 
-fn apply_matmul_dim_splitting(
+fn create_matmul_dim_template(
     model: &ModelProto,
+    graph: &GraphProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
-) -> Result<Vec<crate::schema::tiling::DimSplitGroupInfo>> {
-    let graph = model.graph.as_ref().ok_or_else(|| {
-        crate::error::DsperseError::Slicer("apply_dim_splitting: model has no graph".into())
-    })?;
+) -> Result<std::path::PathBuf> {
     let matmul_node = graph
         .node
         .iter()
         .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"))
         .ok_or_else(|| {
             crate::error::DsperseError::Slicer(
-                "apply_dim_splitting: no MatMul/Gemm node found".into(),
+                "create_matmul_dim_template: no MatMul/Gemm node found".into(),
             )
         })?;
 
     let weight_name = matmul_node.input.get(1).ok_or_else(|| {
-        crate::error::DsperseError::Slicer("apply_dim_splitting: MatMul has no weight input".into())
+        crate::error::DsperseError::Slicer(
+            "create_matmul_dim_template: MatMul has no weight input".into(),
+        )
     })?;
     let weight_tensor = graph
         .initializer
@@ -1769,18 +1737,12 @@ fn apply_matmul_dim_splitting(
         .find(|i| i.name == *weight_name)
         .ok_or_else(|| {
             crate::error::DsperseError::Slicer(format!(
-                "apply_dim_splitting: weight {weight_name:?} not in initializers"
+                "create_matmul_dim_template: weight {weight_name:?} not in initializers"
             ))
         })?;
-    let weight_data = onnx_proto::tensor_to_f32(weight_tensor);
-    if weight_data.is_empty() {
-        return Err(crate::error::DsperseError::Slicer(
-            "apply_dim_splitting: unable to read weight data".into(),
-        ));
-    }
     if weight_tensor.dims.len() != 2 {
         return Err(crate::error::DsperseError::Slicer(format!(
-            "apply_dim_splitting: expected 2D weights, got {:?}",
+            "create_matmul_dim_template: expected 2D weights, got {:?}",
             weight_tensor.dims
         )));
     }
@@ -1792,22 +1754,17 @@ fn apply_matmul_dim_splitting(
         weight_tensor.dims[0] as usize,
         weight_tensor.dims[1] as usize,
     );
-    let (k_dim, n_dim, _split_axis) = if trans_b {
-        (cols, rows, 0)
-    } else {
-        (rows, cols, 1)
-    };
+    let k_dim = if trans_b { cols } else { rows };
+    let epg = info.elements_per_group;
 
-    if n_dim != info.dim_size {
-        return Err(crate::error::DsperseError::Slicer(format!(
-            "apply_dim_splitting: weight output dim {n_dim} != info.dim_size {}",
-            info.dim_size
-        )));
-    }
+    let tmpl_weight_dims: Vec<i64> = if trans_b {
+        vec![epg as i64, k_dim as i64]
+    } else {
+        vec![k_dim as i64, epg as i64]
+    };
+    let tmpl_weight_data = vec![0.0f32; k_dim * epg];
 
     let input_name_orig = matmul_node.input.first().cloned().unwrap_or_default();
-    let _output_name_orig = matmul_node.output.first().cloned().unwrap_or_default();
-
     let input_shape: Vec<i64> = graph
         .input
         .iter()
@@ -1816,132 +1773,71 @@ fn apply_matmul_dim_splitting(
         .and_then(onnx_proto::shape_from_value_info)
         .unwrap_or_default();
 
-    let groups_dir = output_dir.join("dim_groups");
-    std::fs::create_dir_all(&groups_dir)
-        .map_err(|e| crate::error::DsperseError::io(e, &groups_dir))?;
+    let tmpl_input_name = "dim_tmpl_in".to_string();
+    let tmpl_output_name = "dim_tmpl_out".to_string();
+    let tmpl_weight_name = "W".to_string();
 
-    let opset = model_opset(model);
-    let mut groups = Vec::with_capacity(info.num_groups);
-
-    let epg = info.elements_per_group;
-
-    for g in 0..info.num_groups {
-        let dim_start = g * epg;
-        if dim_start >= info.dim_size {
-            break;
-        }
-        let dim_end = ((g + 1) * epg).min(info.dim_size);
-        let actual_size = dim_end - dim_start;
-        let pad_needed = epg - actual_size;
-
-        let sliced_data: Vec<f32> = if trans_b {
-            let mut out = Vec::with_capacity(epg * k_dim);
-            for r in dim_start..dim_end {
-                if r >= rows {
-                    out.extend(std::iter::repeat_n(0.0f32, cols));
-                    continue;
-                }
-                let row_start = r * cols;
-                out.extend_from_slice(&weight_data[row_start..row_start + cols]);
-            }
-            if pad_needed > 0 {
-                out.resize(epg * k_dim, 0.0);
-            }
-            out
-        } else {
-            let mut out = Vec::with_capacity(rows * epg);
-            for r in 0..rows {
-                let row_start = r * cols + dim_start;
-                let row_end = (row_start + actual_size).min(weight_data.len());
-                let available = row_end.saturating_sub(row_start);
-                out.extend_from_slice(&weight_data[row_start..row_end]);
-                if available < epg {
-                    out.extend(std::iter::repeat_n(0.0f32, epg - available));
-                }
-            }
-            out
-        };
-
-        let sliced_dims: Vec<i64> = if trans_b {
-            vec![epg as i64, k_dim as i64]
-        } else {
-            vec![k_dim as i64, epg as i64]
-        };
-
-        let group_input_name = format!("group_{g}_in");
-        let group_output_name = format!("group_{g}_out");
-        let group_weight_name = "W".to_string();
-
-        let mut output_shape = input_shape.clone();
-        if let Some(last) = output_shape.last_mut() {
-            *last = epg as i64;
-        }
-
-        let x =
-            onnx_proto::make_tensor_value_info(&group_input_name, TensorProto::FLOAT, &input_shape);
-        let y = onnx_proto::make_tensor_value_info(
-            &group_output_name,
-            TensorProto::FLOAT,
-            &output_shape,
-        );
-        let w = onnx_proto::make_tensor(
-            &group_weight_name,
-            TensorProto::FLOAT,
-            &sliced_dims,
-            sliced_data,
-        );
-
-        let mut attrs = Vec::new();
-        if matmul_node.op_type == "Gemm" {
-            if let Some(alpha) = onnx_proto::get_attribute_float(matmul_node, "alpha") {
-                attrs.push(onnx_proto::make_attribute_float("alpha", alpha));
-            }
-            if let Some(beta) = onnx_proto::get_attribute_float(matmul_node, "beta") {
-                attrs.push(onnx_proto::make_attribute_float("beta", beta));
-            }
-            if let Some(trans_a) = onnx_proto::get_attribute_int(matmul_node, "transA") {
-                attrs.push(onnx_proto::make_attribute_int("transA", trans_a));
-            }
-            if trans_b {
-                attrs.push(onnx_proto::make_attribute_int("transB", 1));
-            }
-        }
-
-        let node = onnx_proto::make_node(
-            &matmul_node.op_type,
-            vec![group_input_name, group_weight_name],
-            vec![group_output_name],
-            attrs,
-        );
-
-        let graph_proto = onnx_proto::make_graph(
-            &format!("dim_group_{}_{g}", info.slice_idx),
-            vec![node],
-            vec![x],
-            vec![y],
-            vec![w],
-        );
-        let group_model = onnx_proto::make_model(graph_proto, opset);
-
-        let onnx_path = groups_dir.join(format!("group_{g}.onnx"));
-        onnx_proto::save_model(&group_model, &onnx_path)?;
-
-        groups.push(crate::schema::tiling::DimSplitGroupInfo {
-            group_idx: g,
-            dim_start,
-            dim_end,
-            path: format!("slice_{}/payload/dim_groups/group_{g}.onnx", info.slice_idx),
-            jstprove_circuit_path: None,
-        });
+    let mut output_shape = input_shape.clone();
+    if let Some(last) = output_shape.last_mut() {
+        *last = epg as i64;
     }
 
-    tracing::info!(
-        slice = info.slice_idx,
-        groups = groups.len(),
-        split_kind = ?info.split_kind,
-        "materialized dim-split groups"
+    let x = onnx_proto::make_tensor_value_info(&tmpl_input_name, TensorProto::FLOAT, &input_shape);
+    let y =
+        onnx_proto::make_tensor_value_info(&tmpl_output_name, TensorProto::FLOAT, &output_shape);
+    let w = onnx_proto::make_tensor(
+        &tmpl_weight_name,
+        TensorProto::FLOAT,
+        &tmpl_weight_dims,
+        tmpl_weight_data,
     );
-    Ok(groups)
+
+    let mut attrs = Vec::new();
+    let mut node_inputs = vec![tmpl_input_name, tmpl_weight_name];
+    let mut initializers = vec![w];
+
+    if matmul_node.op_type == "Gemm" {
+        if let Some(alpha) = onnx_proto::get_attribute_float(matmul_node, "alpha") {
+            attrs.push(onnx_proto::make_attribute_float("alpha", alpha));
+        }
+        if let Some(beta) = onnx_proto::get_attribute_float(matmul_node, "beta") {
+            attrs.push(onnx_proto::make_attribute_float("beta", beta));
+        }
+        if let Some(trans_a) = onnx_proto::get_attribute_int(matmul_node, "transA") {
+            attrs.push(onnx_proto::make_attribute_int("transA", trans_a));
+        }
+        if trans_b {
+            attrs.push(onnx_proto::make_attribute_int("transB", 1));
+        }
+        if let Some(bias_name) = matmul_node.input.get(2).filter(|s| !s.is_empty())
+            && graph.initializer.iter().any(|i| i.name == *bias_name)
+        {
+            let tmpl_bias =
+                onnx_proto::make_tensor("C", TensorProto::FLOAT, &[epg as i64], vec![0.0f32; epg]);
+            node_inputs.push("C".to_string());
+            initializers.push(tmpl_bias);
+        }
+    }
+
+    let node = onnx_proto::make_node(
+        &matmul_node.op_type,
+        node_inputs,
+        vec![tmpl_output_name],
+        attrs,
+    );
+
+    let graph_proto = onnx_proto::make_graph(
+        &format!("dim_template_{}", info.slice_idx),
+        vec![node],
+        vec![x],
+        vec![y],
+        initializers,
+    );
+    let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
+
+    let tmpl_path = output_dir.join("dim_template.onnx");
+    onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+    Ok(tmpl_path)
 }
 
 pub fn create_elementwise_tile_slice(

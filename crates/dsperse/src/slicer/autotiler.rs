@@ -629,6 +629,12 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     if total_elements <= seg_size {
         return None;
     }
+    for init in &graph.initializer {
+        let vol: i64 = init.dims.iter().product();
+        if vol > 1 && seg_size % vol != 0 {
+            return None;
+        }
+    }
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);

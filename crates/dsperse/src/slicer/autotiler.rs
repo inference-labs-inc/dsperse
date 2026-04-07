@@ -1647,8 +1647,9 @@ fn create_input_dim_template(
     }
 
     let epg = info.elements_per_group;
-    let mut tmpl_input_shape = input_shape;
-    tmpl_input_shape[info.split_dim] = epg as i64;
+    let orig_dim = info.dim_size as i64;
+    let new_dim = epg as i64;
+    let split_dim = info.split_dim;
 
     let tmpl_input_name = "dim_tmpl_in".to_string();
     let tmpl_output_name = "dim_tmpl_out".to_string();
@@ -1674,26 +1675,80 @@ fn create_input_dim_template(
         }
     }
 
-    let mut inputs = graph.input.clone();
-    if let Some(pos) = inputs.iter().position(|vi| vi.name == target_vi.name) {
-        inputs[pos] = onnx_proto::make_tensor_value_info(
-            &tmpl_input_name,
-            TensorProto::FLOAT,
-            &tmpl_input_shape,
-        );
-    }
+    let init_names: std::collections::HashSet<String> =
+        graph.initializer.iter().map(|i| i.name.clone()).collect();
 
-    let mut outputs = graph.output.clone();
-    if let Some(pos) = outputs.iter().position(|vi| vi.name == info.output_name) {
-        let mut out_shape = tmpl_input_shape.clone();
-        if let Some(orig) = onnx_proto::shape_from_value_info(&graph.output[pos]) {
-            out_shape = orig;
-            if info.concat_axis < out_shape.len() {
-                out_shape[info.concat_axis] = epg as i64;
+    let inputs: Vec<onnx_proto::ValueInfoProto> = graph
+        .input
+        .iter()
+        .map(|vi| {
+            if init_names.contains(&vi.name) {
+                return vi.clone();
+            }
+            if let Some(shape) = onnx_proto::shape_from_value_info(vi)
+                && split_dim < shape.len()
+                && shape[split_dim] == orig_dim
+            {
+                let mut new_shape = shape;
+                new_shape[split_dim] = new_dim;
+                let name = if vi.name == target_vi.name {
+                    tmpl_input_name.clone()
+                } else {
+                    vi.name.clone()
+                };
+                return onnx_proto::make_tensor_value_info(&name, TensorProto::FLOAT, &new_shape);
+            }
+            if vi.name == target_vi.name {
+                let mut tmpl_shape = input_shape.clone();
+                tmpl_shape[split_dim] = new_dim;
+                return onnx_proto::make_tensor_value_info(
+                    &tmpl_input_name,
+                    TensorProto::FLOAT,
+                    &tmpl_shape,
+                );
+            }
+            vi.clone()
+        })
+        .collect();
+
+    let outputs: Vec<onnx_proto::ValueInfoProto> = graph
+        .output
+        .iter()
+        .map(|vi| {
+            if vi.name == info.output_name
+                && let Some(shape) = onnx_proto::shape_from_value_info(vi)
+            {
+                let mut new_shape = shape;
+                if info.concat_axis < new_shape.len() {
+                    new_shape[info.concat_axis] = new_dim;
+                }
+                return onnx_proto::make_tensor_value_info(
+                    &tmpl_output_name,
+                    TensorProto::FLOAT,
+                    &new_shape,
+                );
+            }
+            vi.clone()
+        })
+        .collect();
+
+    let mut initializers = graph.initializer.clone();
+    for init in &mut initializers {
+        if init.data_type == TensorProto::INT64 {
+            let vals = onnx_proto::tensor_to_i64(init);
+            if vals.contains(&orig_dim) {
+                let patched: Vec<i64> = vals
+                    .iter()
+                    .map(|&v| if v == orig_dim { new_dim } else { v })
+                    .collect();
+                let product: i64 = patched.iter().product();
+                let orig_product: i64 = vals.iter().product();
+                if product > 0 && orig_product > 0 {
+                    init.int64_data = patched;
+                    init.raw_data.clear();
+                }
             }
         }
-        outputs[pos] =
-            onnx_proto::make_tensor_value_info(&tmpl_output_name, TensorProto::FLOAT, &out_shape);
     }
 
     let graph_proto = onnx_proto::make_graph(
@@ -1701,7 +1756,7 @@ fn create_input_dim_template(
         nodes,
         inputs,
         outputs,
-        graph.initializer.clone(),
+        initializers,
     );
     let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
 

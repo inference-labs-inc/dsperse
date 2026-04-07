@@ -834,6 +834,33 @@ mod tests {
     }
 
     #[test]
+    fn cli_compile_wai_default_true() {
+        let cli = Cli::parse_from(["dsperse", "compile", "--model-dir", "/tmp"]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(args.weights_as_inputs);
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
+    fn cli_compile_wai_explicit_false() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "compile",
+            "--model-dir",
+            "/tmp",
+            "--weights-as-inputs",
+            "false",
+        ]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(!args.weights_as_inputs);
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
     fn resolve_circuit_ops_invalid_proof_system() {
         let result = resolve_circuit_ops("nonexistent", None);
         assert!(result.is_err());

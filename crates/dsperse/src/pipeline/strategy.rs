@@ -20,10 +20,6 @@ impl<'a> ExecutionStrategy<'a> {
         if let Some(ref cs) = meta.channel_split {
             Ok(Self::ChannelSplit(cs))
         } else if let Some(ref ds) = meta.dim_split
-            && matches!(
-                ds.split_kind,
-                crate::schema::tiling::DimSplitKind::MatMulOutputDim
-            )
             && ds.template_path.is_some()
         {
             Ok(Self::DimSplit(ds))

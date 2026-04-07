@@ -1770,7 +1770,6 @@ fn execute_dim_split(
 ) -> Result<ExecutionInfo> {
     use ndarray::Axis;
 
-    let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
     let concat_axis = ds.concat_axis;
     let epg = ds.elements_per_group;
 
@@ -1831,10 +1830,11 @@ fn execute_dim_split(
         let actual_size = dim_end - dim_start;
 
         let group_input = if use_matmul_split {
-            input_tensor.clone()
+            tensor_cache.get(&ds.input_name)?.clone()
         } else {
             let split_dim = ds.split_dim;
-            let sliced = input_tensor
+            let full = tensor_cache.get(&ds.input_name)?;
+            let sliced = full
                 .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
                 .to_owned();
             if actual_size < epg {
@@ -1916,7 +1916,53 @@ fn execute_dim_split(
         let patched_path = tmp_dir.path().join("dim_chunk.onnx");
         crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
 
-        let group_output = run_onnx_inference(&patched_path, &group_input)?;
+        let group_output = if use_matmul_split {
+            run_onnx_inference(&patched_path, &group_input)?
+        } else {
+            let tmpl_graph = tmpl_model.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline(format!("{slice_id}: template has no graph"))
+            })?;
+            let tmpl_init_names: std::collections::HashSet<&str> = tmpl_graph
+                .initializer
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            let mut group_cache = TensorStore::new();
+            for vi in &tmpl_graph.input {
+                if tmpl_init_names.contains(vi.name.as_str()) {
+                    continue;
+                }
+                if vi.name == "dim_tmpl_in" {
+                    group_cache.put(vi.name.clone(), group_input.clone());
+                } else if let Some(arr) = tensor_cache.try_get(&vi.name) {
+                    let shape = arr.shape();
+                    if ds.split_dim < shape.len() && shape[ds.split_dim] == ds.dim_size {
+                        let sliced = arr
+                            .slice_axis(
+                                Axis(ds.split_dim),
+                                ndarray::Slice::from(dim_start..dim_end),
+                            )
+                            .to_owned();
+                        group_cache.put(vi.name.clone(), sliced);
+                    } else {
+                        group_cache.put(vi.name.clone(), arr.clone());
+                    }
+                }
+            }
+            let input_names: Vec<String> = tmpl_graph
+                .input
+                .iter()
+                .filter(|vi| !tmpl_init_names.contains(vi.name.as_str()))
+                .map(|vi| vi.name.clone())
+                .collect();
+            let named = run_onnx_inference_multi_named(&patched_path, &group_cache, &input_names)?;
+            let (data, shape) = named.into_values().next().ok_or_else(|| {
+                DsperseError::Pipeline(format!("{slice_id}: dim-split group produced no output"))
+            })?;
+            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data).map_err(|e| {
+                DsperseError::Pipeline(format!("{slice_id}: dim-split array reshape: {e}"))
+            })?
+        };
 
         let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
             group_output

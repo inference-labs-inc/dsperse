@@ -551,6 +551,12 @@ fn run_combined_inference(
             )));
         }
 
+        if let ExecutionStrategy::DimSplit(_) = &strategy {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: combined mode does not support dim-split circuit slices; use --combined false"
+            )));
+        }
+
         if let ExecutionStrategy::Tiled(tiling) = &strategy {
             let exec_info = execute_combined_tiled(
                 slices_dir,
@@ -809,6 +815,25 @@ fn execute_slice(
                 tensor_cache,
                 backend,
                 config,
+                donor_init_map,
+            )
+        }
+        ExecutionStrategy::DimSplit(ds) => {
+            let target_shape = meta
+                .dependencies
+                .output
+                .iter()
+                .position(|name| name == &ds.output_name)
+                .and_then(|idx| meta.output_shape.get(idx))
+                .map(|v| v.as_slice());
+            execute_dim_split(
+                slices_dir,
+                slice_run_dir,
+                slice_id,
+                ds,
+                target_shape,
+                tensor_cache,
+                backend,
                 donor_init_map,
             )
         }
@@ -1732,6 +1757,144 @@ fn execute_channel_group(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn execute_dim_split(
+    slices_dir: &Path,
+    _slice_run_dir: &Path,
+    slice_id: &str,
+    ds: &crate::schema::tiling::DimSplitInfo,
+    target_shape: Option<&[i64]>,
+    tensor_cache: &mut TensorStore,
+    _backend: &JstproveBackend,
+    _donor_init_map: Option<&HashMap<String, &TensorProto>>,
+) -> Result<ExecutionInfo> {
+    use ndarray::Axis;
+
+    let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
+    let input_shape = input_tensor.shape().to_vec();
+
+    if ds.groups.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: dim_split has no groups"
+        )));
+    }
+
+    let split_dim = ds.split_dim;
+    let concat_axis = ds.concat_axis;
+    let epg = ds.elements_per_group;
+
+    if split_dim >= input_shape.len() {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: split_dim {split_dim} >= input ndim {}",
+            input_shape.len()
+        )));
+    }
+
+    let use_matmul_split = matches!(
+        ds.split_kind,
+        crate::schema::tiling::DimSplitKind::MatMulOutputDim
+    );
+
+    let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::with_capacity(ds.groups.len());
+
+    for group in &ds.groups {
+        let group_onnx = slices_dir.join(&group.path);
+        if !group_onnx.exists() {
+            return Err(DsperseError::Pipeline(format!(
+                "{slice_id}: dim-split group {} ONNX not found: {}",
+                group.group_idx,
+                group_onnx.display()
+            )));
+        }
+
+        let group_input = if use_matmul_split {
+            input_tensor.clone()
+        } else {
+            let dim_start = group.dim_start;
+            let dim_end = group.dim_end.min(input_shape[split_dim]);
+            let actual_size = dim_end - dim_start;
+            let mut sliced = input_tensor
+                .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
+                .to_owned();
+            if actual_size < epg {
+                let mut padded_shape = sliced.shape().to_vec();
+                padded_shape[split_dim] = epg;
+                let mut padded = ndarray::ArrayD::zeros(padded_shape);
+                let ranges: Vec<ndarray::SliceInfoElem> = sliced
+                    .shape()
+                    .iter()
+                    .map(|&s| ndarray::SliceInfoElem::Slice {
+                        start: 0,
+                        end: Some(s as isize),
+                        step: 1,
+                    })
+                    .collect();
+                padded
+                    .slice_mut(
+                        ndarray::SliceInfo::<_, ndarray::IxDyn, ndarray::IxDyn>::try_from(ranges)
+                            .unwrap(),
+                    )
+                    .assign(&sliced);
+                sliced = padded;
+            }
+            sliced
+        };
+
+        let group_output = run_onnx_inference(&group_onnx, &group_input)?;
+
+        let actual_dim_end = group.dim_end.min(ds.dim_size);
+        let actual_size = actual_dim_end - group.dim_start;
+        let trimmed = if !use_matmul_split && actual_size < epg {
+            group_output
+                .slice_axis(Axis(split_dim), ndarray::Slice::from(0..actual_size))
+                .to_owned()
+        } else if use_matmul_split && actual_size < epg && concat_axis < group_output.ndim() {
+            group_output
+                .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
+                .to_owned()
+        } else {
+            group_output
+        };
+
+        group_outputs.push(trimmed);
+    }
+
+    let result = ndarray::concatenate(
+        Axis(concat_axis),
+        &group_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
+    )
+    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: dim-split concat failed: {e}")))?;
+
+    let final_result = if let Some(target) = target_shape {
+        let target_usize: Vec<usize> = target.iter().map(|&d| d as usize).collect();
+        result
+            .into_shape_with_order(ndarray::IxDyn(&target_usize))
+            .map_err(|e| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: dim-split reshape to target failed: {e}"
+                ))
+            })?
+    } else {
+        result
+    };
+
+    tensor_cache.put(ds.output_name.clone(), final_result);
+
+    tracing::info!(
+        slice = %slice_id,
+        groups = ds.groups.len(),
+        "executed dim-split"
+    );
+
+    Ok(ExecutionInfo {
+        method: crate::schema::execution::ExecutionMethod::DimSplit,
+        success: true,
+        error: None,
+        witness_file: None,
+        tile_exec_infos: Vec::new(),
+    })
+}
+
 fn prepare_tiles_from_cache(
     tiling: &TilingInfo,
     tensor_cache: &TensorStore,
@@ -2243,6 +2406,7 @@ pub(crate) fn build_run_metadata(
             dependencies: slice.dependencies.clone(),
             tiling: slice.tiling.clone(),
             channel_split: slice.channel_split.clone(),
+            dim_split: slice.dim_split.clone(),
             backend: if has_circuit {
                 BackendKind::Jstprove
             } else {

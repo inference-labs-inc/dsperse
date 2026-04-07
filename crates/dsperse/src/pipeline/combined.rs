@@ -109,6 +109,10 @@ impl CombinedRun {
                     let t = self.tensor_cache.get(&cs.input_name)?.clone();
                     (t, Vec::new())
                 }
+                ExecutionStrategy::DimSplit(ds) => {
+                    let t = self.tensor_cache.get(&ds.input_name)?.clone();
+                    (t, Vec::new())
+                }
                 ExecutionStrategy::Tiled(tiling) => {
                     let t = self.tensor_cache.get(&tiling.input_name)?.clone();
                     (t, Vec::new())

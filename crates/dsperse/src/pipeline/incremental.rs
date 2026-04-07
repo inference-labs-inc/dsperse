@@ -93,6 +93,10 @@ impl IncrementalRun {
                 let t = self.tensor_cache.get(&cs.input_name)?.clone();
                 (t, Vec::new())
             }
+            ExecutionStrategy::DimSplit(ds) => {
+                let t = self.tensor_cache.get(&ds.input_name)?.clone();
+                (t, Vec::new())
+            }
             ExecutionStrategy::Tiled(tiling) => {
                 let t = self.tensor_cache.get(&tiling.input_name)?.clone();
                 (t, Vec::new())
@@ -150,6 +154,9 @@ impl IncrementalRun {
         match strategy {
             ExecutionStrategy::ChannelSplit(cs) => {
                 self.tensor_cache.put(cs.output_name.clone(), result.output);
+            }
+            ExecutionStrategy::DimSplit(ds) => {
+                self.tensor_cache.put(ds.output_name.clone(), result.output);
             }
             ExecutionStrategy::Tiled(tiling) => {
                 self.tensor_cache

@@ -631,7 +631,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     }
     for init in &graph.initializer {
         let vol: i64 = init.dims.iter().product();
-        if vol > 1 && seg_size % vol != 0 {
+        if vol > 1 && vol != seg_size {
             return None;
         }
     }

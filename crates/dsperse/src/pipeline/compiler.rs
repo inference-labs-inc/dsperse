@@ -658,7 +658,12 @@ fn compile_dim_split_template(
     }
 
     if let Some(threshold) = skip_compile_over_size {
-        let estimated = estimate_onnx_constraints(tmpl_path)?;
+        let estimated = slice
+            .dim_split
+            .as_ref()
+            .map(|ds| ds.estimated_group_constraints)
+            .filter(|&e| e > 0)
+            .unwrap_or_else(|| estimate_onnx_constraints(tmpl_path).unwrap_or(0));
         if estimated > threshold {
             return Ok(CompileOutcome::SkippedOverSize {
                 estimated,

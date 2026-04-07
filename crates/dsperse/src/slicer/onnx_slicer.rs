@@ -308,6 +308,7 @@ fn build_slice_metadata(
             input_name: d.input_name.clone(),
             output_name: d.output_name.clone(),
             concat_axis: d.concat_axis,
+            estimated_group_constraints: d.estimated_constraints / d.num_groups as u64,
             weight_name: d.weight_name.clone(),
             template_path: None,
             jstprove_circuit_path: None,

@@ -176,6 +176,8 @@ pub struct DimSplitInfo {
     pub output_name: String,
     #[serde(default)]
     pub concat_axis: usize,
+    #[serde(default)]
+    pub estimated_group_constraints: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

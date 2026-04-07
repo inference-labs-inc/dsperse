@@ -1242,32 +1242,3 @@ fn materialize_reshape_targets(graph: &mut GraphProto) -> usize {
     graph.initializer.extend(new_inits);
     count
 }
-
-pub fn normalize_resize_modes(model: &mut ModelProto) -> usize {
-    let graph = match model.graph.as_mut() {
-        Some(g) => g,
-        None => return 0,
-    };
-    let mut count = 0;
-    for node in &mut graph.node {
-        if node.op_type != "Resize" {
-            continue;
-        }
-        let is_cubic = node
-            .attribute
-            .iter()
-            .any(|a| a.name == "mode" && a.s == b"cubic");
-        if is_cubic {
-            if let Some(attr) = node.attribute.iter_mut().find(|a| a.name == "mode") {
-                attr.s = b"linear".to_vec();
-            }
-            node.attribute.retain(|a| a.name != "cubic_coeff_a");
-            tracing::info!(
-                node = %node.name,
-                "downgraded Resize interpolation from cubic to linear"
-            );
-            count += 1;
-        }
-    }
-    count
-}

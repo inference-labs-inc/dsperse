@@ -20,19 +20,17 @@ pub fn slice_model(
 ) -> Result<ModelMetadata> {
     let mut model = onnx_proto::load_model(onnx_path)?;
     onnx_proto::normalize_opset(&mut model);
-    // Resize cubic now supported via tract fork; downgrade no longer needed
-    // onnx_proto::normalize_resize_modes(&mut model);
     onnx_proto::resolve_dynamic_input_shapes(&mut model, input_shape)?;
 
     onnx_proto::strip_symbolic_value_info(&mut model);
-    onnx_proto::fold_constant_nodes(&mut model);
+    let folded_constants = onnx_proto::fold_constant_nodes(&mut model);
 
     let tmp_dir = tempfile::tempdir().map_err(|e| DsperseError::io(e, onnx_path))?;
     let tract_path = tmp_dir.path().join("tract_model.onnx");
     onnx_proto::save_model(&model, &tract_path)?;
 
     tracing::info!("folding constants and tracing shapes via tract");
-    let (folded_constants, mut traced_shapes) = fold_and_trace_via_tract(&tract_path, &mut model)?;
+    let mut traced_shapes = fold_and_trace_via_tract(&tract_path, &mut model)?;
 
     if let Some(graph) = &model.graph {
         super::const_prop::fill_shapes_from_graph(graph, &mut traced_shapes);
@@ -566,11 +564,10 @@ fn complete_slice_points(points: &mut Vec<usize>, analysis: &AnalysisResult) {
     points.dedup();
 }
 
-#[allow(clippy::type_complexity)]
 fn fold_and_trace_via_tract(
     onnx_path: &Path,
     model: &mut ModelProto,
-) -> Result<(HashSet<String>, HashMap<String, Vec<i64>>)> {
+) -> Result<HashMap<String, Vec<i64>>> {
     use tract_onnx::prelude::*;
     use tract_onnx::tract_hir::infer::InferenceSimplePlan;
 
@@ -607,25 +604,11 @@ fn fold_and_trace_via_tract(
     }
 
     let shapes_cell = std::cell::RefCell::new(HashMap::<usize, Vec<Vec<i64>>>::new());
+    let failed_nodes = std::cell::RefCell::new(HashSet::<usize>::new());
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         state.run_plan_with_eval(input_tvs, |session, op_state, node, inputs| {
-            let coerced: TVec<TValue> = inputs
-                .iter()
-                .map(|t| {
-                    if t.datum_type() == DatumType::TDim {
-                        // Safety: datum_type() == TDim confirmed by outer if
-                        let view = unsafe { t.as_slice_unchecked::<TDim>() };
-                        let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
-                        let shape = t.shape().to_vec();
-                        Tensor::from_shape(&shape, &vals)
-                            .map(|t| t.into_tvalue())
-                            .unwrap_or_else(|_| t.clone())
-                    } else {
-                        t.clone()
-                    }
-                })
-                .collect();
+            let coerced = crate::backend::onnx::coerce_tdim_inputs(&inputs);
             let eval_result = if let Some(st) = op_state {
                 st.eval(session, node.op.as_op(), coerced)
             } else {
@@ -634,13 +617,13 @@ fn fold_and_trace_via_tract(
             let outputs = match eval_result {
                 Ok(o) => o,
                 Err(e) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         node = %node.name,
                         op = %node.op.name(),
-                        n_outputs = node.outputs.len(),
                         error = %e,
                         "op eval failed, using input[0] shape as fallback"
                     );
+                    failed_nodes.borrow_mut().insert(node.id);
                     let fallback = inputs
                         .first()
                         .cloned()
@@ -665,7 +648,7 @@ fn fold_and_trace_via_tract(
     }
 
     let run_shapes = shapes_cell.into_inner();
-    let folded_names = HashSet::<String>::new();
+    let failed = failed_nodes.into_inner();
 
     tracing::info!(
         traced_nodes = run_shapes.len(),
@@ -674,6 +657,9 @@ fn fold_and_trace_via_tract(
 
     let mut shapes: HashMap<String, Vec<i64>> = HashMap::new();
     for (node_id, node_shapes) in &run_shapes {
+        if failed.contains(node_id) {
+            continue;
+        }
         for (slot, shape) in node_shapes.iter().enumerate() {
             let outlet = OutletId::new(*node_id, slot);
             if let Some(label) = tract_model.outlet_label(outlet)
@@ -715,7 +701,7 @@ fn fold_and_trace_via_tract(
     }
 
     tracing::info!(tensors = shapes.len(), "shape trace complete");
-    Ok((folded_names, shapes))
+    Ok(shapes)
 }
 
 pub(crate) fn broadcast_shapes(shapes: &[&Vec<i64>]) -> Option<Vec<i64>> {

@@ -1,7 +1,6 @@
-#[allow(dead_code)]
 use std::collections::{HashMap, HashSet};
 
-use super::onnx_proto::{self, ModelProto, NodeProto, TensorProto};
+use super::onnx_proto::{self, NodeProto, TensorProto};
 
 #[derive(Clone, Debug)]
 enum ConstVal {
@@ -33,6 +32,7 @@ impl ConstVal {
         None
     }
 
+    #[cfg(test)]
     fn into_tensor(self, name: &str) -> Option<TensorProto> {
         match self {
             Self::F32(data, dims, dt) => Some(TensorProto {
@@ -123,6 +123,7 @@ impl ConstVal {
     }
 }
 
+#[cfg(test)]
 pub fn propagate_constants(model: &mut ModelProto) -> HashSet<String> {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
@@ -744,27 +745,6 @@ fn infer_output_shape(
         }
         _ => None,
     }
-}
-
-fn can_evaluate_strict(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {
-    if node.output.is_empty() || node.output.iter().all(|o| o.is_empty()) {
-        return false;
-    }
-    if node
-        .output
-        .iter()
-        .filter(|o| !o.is_empty())
-        .all(|o| matches!(known.get(o), Some(v) if !matches!(v, ConstVal::ShapeOnly(_))))
-    {
-        return false;
-    }
-    node.input.iter().all(|inp| {
-        inp.is_empty()
-            || matches!(
-                known.get(inp),
-                Some(ConstVal::I64(_, _, _) | ConstVal::F32(_, _, _))
-            )
-    })
 }
 
 fn can_evaluate(node: &NodeProto, known: &HashMap<String, ConstVal>) -> bool {

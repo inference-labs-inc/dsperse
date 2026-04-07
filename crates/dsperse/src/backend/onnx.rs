@@ -7,6 +7,24 @@ use tract_onnx::prelude::*;
 
 use crate::error::{DsperseError, Result};
 
+pub fn coerce_tdim_inputs(inputs: &TVec<TValue>) -> TVec<TValue> {
+    inputs
+        .iter()
+        .map(|t| {
+            if t.datum_type() == DatumType::TDim {
+                // Safety: datum_type() == TDim verified by outer condition
+                let view = unsafe { t.as_slice_unchecked::<TDim>() };
+                let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
+                Tensor::from_shape(t.shape(), &vals)
+                    .map(|t| t.into_tvalue())
+                    .unwrap_or_else(|_| t.clone())
+            } else {
+                t.clone()
+            }
+        })
+        .collect()
+}
+
 pub type NamedOutputs = HashMap<String, (Vec<f64>, Vec<usize>)>;
 
 fn load_onnx_model(onnx_path: &Path) -> Result<InferenceModel> {
@@ -94,20 +112,7 @@ pub fn run_inference_with_coercion(
     let input = build_input_tvalue(input_data, &concrete_shape)?;
     let result = state
         .run_plan_with_eval(tvec![input], |session, op_state, node, inputs| {
-            let coerced: TVec<TValue> = inputs
-                .iter()
-                .map(|t| {
-                    if t.datum_type() == DatumType::TDim {
-                        let view = unsafe { t.as_slice_unchecked::<TDim>() };
-                        let vals: Vec<i64> = view.iter().map(|d| d.to_i64().unwrap_or(0)).collect();
-                        Tensor::from_shape(t.shape(), &vals)
-                            .map(|t| t.into_tvalue())
-                            .unwrap_or_else(|_| t.clone())
-                    } else {
-                        t.clone()
-                    }
-                })
-                .collect();
+            let coerced = coerce_tdim_inputs(&inputs);
             let eval_result = if let Some(st) = op_state {
                 st.eval(session, node.op.as_op(), coerced)
             } else {

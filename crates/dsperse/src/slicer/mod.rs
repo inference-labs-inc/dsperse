@@ -1,7 +1,6 @@
 pub mod analyzer;
 pub mod autotiler;
 pub mod combiner;
-#[allow(dead_code)]
 pub(crate) mod const_prop;
 pub mod materializer;
 pub mod onnx_proto;

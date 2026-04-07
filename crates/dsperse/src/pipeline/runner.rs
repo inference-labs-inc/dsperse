@@ -1868,6 +1868,8 @@ fn execute_dim_split(
     let final_result = if let Some(target) = target_shape {
         let target_usize: Vec<usize> = target.iter().map(|&d| d as usize).collect();
         result
+            .as_standard_layout()
+            .into_owned()
             .into_shape_with_order(ndarray::IxDyn(&target_usize))
             .map_err(|e| {
                 DsperseError::Pipeline(format!(

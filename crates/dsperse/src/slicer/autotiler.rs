@@ -1751,13 +1751,35 @@ fn create_input_dim_template(
         }
     }
 
-    let graph_proto = onnx_proto::make_graph(
+    let mut graph_proto = onnx_proto::make_graph(
         &format!("dim_template_{}", info.slice_idx),
         nodes,
         inputs,
         outputs,
         initializers,
     );
+
+    let patched_vi: Vec<onnx_proto::ValueInfoProto> = graph
+        .value_info
+        .iter()
+        .map(|vi| {
+            if let Some(shape) = onnx_proto::shape_from_value_info(vi)
+                && split_dim < shape.len()
+                && shape[split_dim] == orig_dim
+            {
+                let mut new_shape = shape;
+                new_shape[split_dim] = new_dim;
+                return onnx_proto::make_tensor_value_info(
+                    &vi.name,
+                    TensorProto::FLOAT,
+                    &new_shape,
+                );
+            }
+            vi.clone()
+        })
+        .collect();
+    graph_proto.value_info = patched_vi;
+
     let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
 
     let tmpl_path = output_dir.join("dim_template.onnx");

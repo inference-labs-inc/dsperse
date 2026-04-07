@@ -32,6 +32,13 @@ pub fn slice_model(
     tracing::info!("folding constants and tracing shapes via tract");
     let traced_shapes = fold_and_trace_via_tract(&tract_path, &mut model)?;
 
+    if let Some(graph) = model.graph.as_mut() {
+        let folded = onnx_proto::propagate_constants_with_shapes(graph, &traced_shapes);
+        if folded > 0 {
+            tracing::info!(folded, "propagated shape-derived constants in parent graph");
+        }
+    }
+
     let missing: Vec<String> = if let Some(graph) = &model.graph {
         let mut missing = Vec::new();
         for n in &graph.node {

@@ -798,6 +798,33 @@ pub fn normalize_for_circuit_backend(model: &mut ModelProto) -> usize {
     total
 }
 
+pub fn propagate_constants_with_shapes(
+    graph: &mut GraphProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+) -> usize {
+    for node in &graph.node {
+        if node.op_type == "Shape"
+            && let Some(inp_name) = node.input.first()
+            && let Some(shape) = traced_shapes.get(inp_name)
+            && let Some(out_name) = node.output.first()
+            && !out_name.is_empty()
+            && !graph.initializer.iter().any(|i| i.name == *out_name)
+        {
+            graph.initializer.push(TensorProto {
+                name: out_name.clone(),
+                data_type: TensorProto::INT64,
+                dims: vec![shape.len() as i64],
+                int64_data: shape.clone(),
+                ..Default::default()
+            });
+        }
+    }
+    graph.node.retain(|n| {
+        n.op_type != "Shape" || !graph.initializer.iter().any(|i| n.output.contains(&i.name))
+    });
+    propagate_constants(graph)
+}
+
 fn propagate_constants(graph: &mut GraphProto) -> usize {
     let mut constants: HashMap<String, TensorProto> = graph
         .initializer

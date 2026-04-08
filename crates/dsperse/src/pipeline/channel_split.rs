@@ -31,12 +31,15 @@ pub(crate) fn reshape_channel_split_output(
     if arr.shape() == target.as_slice() {
         return Ok(arr);
     }
-    let actual_elems: usize = arr.shape().iter().product();
+    let actual_shape: Vec<usize> = arr.shape().to_vec();
+    let actual_elems: usize = actual_shape.iter().product();
     let target_elems: usize = target.iter().product();
     if actual_elems != target_elems {
-        return Ok(arr);
+        return Err(DsperseError::Pipeline(format!(
+            "channel_split output element count mismatch: \
+             actual {actual_elems} (shape {actual_shape:?}) vs target {target_elems} (shape {target:?})"
+        )));
     }
-    let actual_shape: Vec<usize> = arr.shape().to_vec();
     arr.into_shape_with_order(ndarray::IxDyn(&target))
         .map_err(|e| {
             DsperseError::Pipeline(format!(

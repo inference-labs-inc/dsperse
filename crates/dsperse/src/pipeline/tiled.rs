@@ -901,6 +901,11 @@ pub(crate) fn prepare_fixed_segments_from_cache(
     let segment_size = tiling.segment_size.ok_or_else(|| {
         DsperseError::Pipeline("fixed segment tiling missing segment_size".into())
     })?;
+    if segment_size == 0 {
+        return Err(DsperseError::Pipeline(
+            "fixed segment tiling has segment_size=0".into(),
+        ));
+    }
     let total_elements = tiling.total_elements.ok_or_else(|| {
         DsperseError::Pipeline("fixed segment tiling missing total_elements".into())
     })?;
@@ -921,7 +926,7 @@ pub(crate) fn prepare_fixed_segments_from_cache(
         let mut segments = Vec::with_capacity(num_segments);
         for i in 0..num_segments {
             let start = i * segment_size;
-            let end = (start + segment_size).min(flat.len());
+            let end = (start + segment_size).min(total_elements);
             let mut seg_data = vec![0.0f64; segment_size];
             seg_data[..end - start].copy_from_slice(&flat[start..end]);
             let seg = ArrayD::from_shape_vec(IxDyn(&[segment_size]), seg_data)

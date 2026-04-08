@@ -125,7 +125,15 @@ pub(crate) fn execute_dim_split(
                 if trans_b {
                     for r in dim_start..dim_end.min(ds.dim_size) {
                         let start = r * k;
-                        chunk.extend_from_slice(&weights[start..start + k]);
+                        let end = start + k;
+                        let slice = weights.get(start..end).ok_or_else(|| {
+                            DsperseError::Pipeline(format!(
+                                "{slice_id}: weight slice [{start}..{end}] out of bounds \
+                                 (weights len={})",
+                                weights.len()
+                            ))
+                        })?;
+                        chunk.extend_from_slice(slice);
                     }
                     chunk.resize(epg * k, 0.0);
                 } else {

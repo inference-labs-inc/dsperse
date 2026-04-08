@@ -2054,6 +2054,71 @@ fn prepare_tiles_from_cache(
     Ok(all_tiles)
 }
 
+pub fn split_for_tiling(input: &ArrayD<f64>, tiling: &TilingInfo) -> Result<Vec<ArrayD<f64>>> {
+    let is_fixed_segment = tiling.ndim == 1;
+    if is_fixed_segment {
+        let segment_size = tiling.segment_size.ok_or_else(|| {
+            DsperseError::Pipeline("split_for_tiling: fixed segment missing segment_size".into())
+        })?;
+        if segment_size == 0 {
+            return Err(DsperseError::Pipeline(
+                "split_for_tiling: segment_size must be > 0".into(),
+            ));
+        }
+        let total_elements = tiling.total_elements.ok_or_else(|| {
+            DsperseError::Pipeline("split_for_tiling: fixed segment missing total_elements".into())
+        })?;
+        let flat: Vec<f64> = input.iter().copied().collect();
+        if flat.len() < total_elements {
+            return Err(DsperseError::Pipeline(format!(
+                "split_for_tiling: input has {} elements, expected at least {}",
+                flat.len(),
+                total_elements
+            )));
+        }
+        let num_segments = total_elements.div_ceil(segment_size);
+        let mut segments = Vec::with_capacity(num_segments);
+        for i in 0..num_segments {
+            let start = i * segment_size;
+            if start >= flat.len() {
+                break;
+            }
+            let end = (start + segment_size).min(flat.len());
+            let mut seg_data = vec![0.0f64; segment_size];
+            seg_data[..end - start].copy_from_slice(&flat[start..end]);
+            segments.push(
+                ArrayD::from_shape_vec(IxDyn(&[segment_size]), seg_data)
+                    .map_err(|e| DsperseError::Pipeline(format!("segment reshape: {e}")))?,
+            );
+        }
+        return Ok(segments);
+    }
+    let is_1d = tiling.ndim == 3;
+    if is_1d {
+        return split_into_tiles_1d(input, tiling);
+    }
+    let input_4d = if input.ndim() == 4 {
+        let s = input.shape();
+        Array4::from_shape_vec((s[0], s[1], s[2], s[3]), input.iter().copied().collect())
+            .map_err(|e| DsperseError::Pipeline(format!("tiling input reshape: {e}")))?
+    } else {
+        let flat: Vec<f64> = input.iter().copied().collect();
+        let h = if tiling.h > 0 {
+            tiling.h
+        } else {
+            tiling.tiles_y * tiling.tile_size
+        };
+        let w = if tiling.w > 0 {
+            tiling.w
+        } else {
+            tiling.tiles_x * tiling.tile_size
+        };
+        reshape_to_4d(&flat, tiling.c_in, h, w)?
+    };
+    let tiles = split_into_tiles(&input_4d, tiling)?;
+    Ok(tiles.into_iter().map(|t| t.into_dyn()).collect())
+}
+
 pub fn split_into_tiles(input: &Array4<f64>, tiling: &TilingInfo) -> Result<Vec<Array4<f64>>> {
     if tiling.halo.iter().any(|&v| v < 0) {
         return Err(DsperseError::Pipeline(format!(

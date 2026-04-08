@@ -17,7 +17,8 @@ pub use compiler::compile_slices;
 pub use incremental::{IncrementalRun, SliceExecutionResult, SliceWork};
 pub use prover::prove_run;
 pub use runner::{
-    RunConfig, extract_onnx_initializers, reconstruct_from_tiles, run_inference, split_into_tiles,
+    RunConfig, extract_onnx_initializers, reconstruct_from_tiles, run_inference, split_for_tiling,
+    split_into_tiles,
 };
 pub use slice_cache::SliceAssets;
 pub use strategy::ExecutionStrategy;

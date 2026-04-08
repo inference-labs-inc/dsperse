@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
@@ -10,11 +11,14 @@ use crate::slicer::autotiler::estimate_slice_constraints;
 use crate::slicer::onnx_proto;
 use crate::utils::paths::{find_metadata_path, slice_dir_path};
 
+type CircuitCache = std::sync::Mutex<HashMap<String, PathBuf>>;
+
 enum CompileOutcome {
     Compiled,
     CompiledChannelSplit {
         group_circuits: Vec<(usize, String)>,
     },
+    CompiledDimSplit,
     Skipped,
     SkippedOverSize {
         estimated: u64,
@@ -53,10 +57,19 @@ pub fn compile_slices(
                 metadata_dirty = true;
             }
         }
+        if let Some(ref mut ds) = slice.dim_split
+            && ds.template_path.is_none()
+        {
+            let tmpl_rel = format!("slice_{}/payload/dim_template.onnx", slice.index);
+            if slices_dir.join(&tmpl_rel).exists() {
+                ds.template_path = Some(tmpl_rel);
+                metadata_dirty = true;
+            }
+        }
     }
     if metadata_dirty {
         metadata.save(&meta_path)?;
-        tracing::info!("persisted materialized channel split groups to metadata");
+        tracing::info!("persisted materialized split groups to metadata");
     }
 
     let slices: Vec<_> = metadata
@@ -79,6 +92,7 @@ pub fn compile_slices(
     let compiled_count = std::sync::atomic::AtomicUsize::new(0);
     let meta_mutex = std::sync::Mutex::new((&mut metadata, false));
     let errors: std::sync::Mutex<Vec<(usize, DsperseError)>> = std::sync::Mutex::new(Vec::new());
+    let dim_split_cache: CircuitCache = std::sync::Mutex::new(HashMap::new());
 
     pool.install(|| {
         slices.par_iter().for_each(|slice| {
@@ -90,6 +104,7 @@ pub fn compile_slices(
                 jstprove_ops,
                 &exclude_from_wai,
                 skip_compile_over_size,
+                &dim_split_cache,
             );
             match r {
                 Ok(CompileOutcome::Compiled) => {
@@ -121,6 +136,22 @@ pub fn compile_slices(
                         *dirty = true;
                     }
                 }
+                Ok(CompileOutcome::CompiledDimSplit) => {
+                    let count =
+                        compiled_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    tracing::info!(slice = slice.index, count, "compiled dim-split template");
+                    let mut guard = meta_mutex.lock().unwrap();
+                    let (ref mut meta, ref mut dirty) = *guard;
+                    if let Some(s) = meta.slices.iter_mut().find(|s| s.index == slice.index)
+                        && let Some(ref mut ds) = s.dim_split
+                    {
+                        ds.jstprove_circuit_path = Some(format!(
+                            "slice_{}/jstprove/dim_split/circuit.bundle",
+                            slice.index
+                        ));
+                        *dirty = true;
+                    }
+                }
                 Ok(CompileOutcome::Skipped) => {
                     tracing::info!(slice = slice.index, "skipped (unsupported ops)")
                 }
@@ -147,9 +178,9 @@ pub fn compile_slices(
     let (metadata, cs_dirty) = meta_mutex.into_inner().unwrap();
     if cs_dirty {
         if let Err(e) = metadata.save(&meta_path) {
-            tracing::error!(error = %e, "failed to persist channel split circuit paths");
+            tracing::error!(error = %e, "failed to persist split circuit paths");
         } else {
-            tracing::info!("persisted channel split circuit paths to metadata");
+            tracing::info!("persisted split circuit paths to metadata");
         }
     }
     let compiled_count = compiled_count.load(std::sync::atomic::Ordering::Relaxed);
@@ -177,7 +208,24 @@ pub fn compile_slices(
 
 struct SliceAnalysis {
     compatible: bool,
+    data_movement_only: bool,
 }
+
+const DATA_MOVEMENT_OPS: &[&str] = &[
+    "Reshape",
+    "Transpose",
+    "Flatten",
+    "Squeeze",
+    "Unsqueeze",
+    "Identity",
+    "Concat",
+    "Split",
+    "Gather",
+    "Slice",
+    "Expand",
+    "Tile",
+    "Cast",
+];
 
 fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAnalysis> {
     let model = onnx_proto::load_model(onnx_path)?;
@@ -185,12 +233,67 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
         .graph
         .as_ref()
         .ok_or_else(|| DsperseError::Slicer(format!("no graph in {}", onnx_path.display())))?;
-    Ok(SliceAnalysis {
-        compatible: graph
+    let compatible = graph
+        .node
+        .iter()
+        .all(|n| jstprove_ops.contains(&n.op_type.as_str()));
+    let data_movement_only = !graph.node.is_empty()
+        && graph
             .node
             .iter()
-            .all(|n| jstprove_ops.contains(&n.op_type.as_str())),
+            .all(|n| DATA_MOVEMENT_OPS.contains(&n.op_type.as_str()));
+    Ok(SliceAnalysis {
+        compatible,
+        data_movement_only,
     })
+}
+
+fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let model = onnx_proto::load_model(tmpl_path)?;
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Slicer("no graph for signature".into()))?;
+    let mut hasher = Sha256::new();
+    for node in &graph.node {
+        hasher.update(node.op_type.as_bytes());
+        for attr in &node.attribute {
+            hasher.update(attr.name.as_bytes());
+            hasher.update(attr.i.to_le_bytes());
+            hasher.update(attr.f.to_le_bytes());
+            for v in &attr.ints {
+                hasher.update(v.to_le_bytes());
+            }
+        }
+    }
+    let init_names: std::collections::HashSet<&str> =
+        graph.initializer.iter().map(|i| i.name.as_str()).collect();
+    for vi in &graph.input {
+        if init_names.contains(vi.name.as_str()) {
+            continue;
+        }
+        if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            for d in &shape {
+                hasher.update(d.to_le_bytes());
+            }
+        }
+    }
+    for vi in &graph.output {
+        if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            for d in &shape {
+                hasher.update(d.to_le_bytes());
+            }
+        }
+    }
+    for init in &graph.initializer {
+        for d in &init.dims {
+            hasher.update(d.to_le_bytes());
+        }
+        hasher.update(init.data_type.to_le_bytes());
+    }
+    let hash = hasher.finalize();
+    Ok(format!("{:x}", hash).chars().take(16).collect())
 }
 
 fn estimate_onnx_constraints(onnx_path: &Path) -> Result<u64> {
@@ -265,6 +368,7 @@ fn normalize_slice_for_backend(onnx_path: &Path) -> Result<Option<std::path::Pat
     Ok(Some(normalized))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_single_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
@@ -273,6 +377,7 @@ fn compile_single_slice(
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
+    circuit_cache: &CircuitCache,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -296,6 +401,24 @@ fn compile_single_slice(
         );
     }
 
+    if let Some(ref ds) = slice.dim_split
+        && let Some(ref tmpl_rel) = ds.template_path
+    {
+        let tmpl_path = slices_dir.join(tmpl_rel);
+        if tmpl_path.exists() {
+            return compile_dim_split_template(
+                slices_dir,
+                slice,
+                &tmpl_path,
+                backend,
+                jstprove_ops,
+                exclude_from_wai,
+                skip_compile_over_size,
+                circuit_cache,
+            );
+        }
+    }
+
     let onnx_path = resolve_compile_onnx(slices_dir, slice)?;
     if !onnx_path.exists() {
         return Err(DsperseError::Pipeline(format!(
@@ -307,6 +430,10 @@ fn compile_single_slice(
 
     let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
     if !analysis.compatible {
+        return Ok(CompileOutcome::Skipped);
+    }
+    if analysis.data_movement_only {
+        tracing::info!(slice = slice.index, "skipped (data movement only)");
         return Ok(CompileOutcome::Skipped);
     }
 
@@ -517,6 +644,129 @@ fn compile_channel_split_slice(
         .collect();
 
     Ok(CompileOutcome::CompiledChannelSplit { group_circuits })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_dim_split_template(
+    slices_dir: &Path,
+    slice: &crate::schema::metadata::SliceMetadata,
+    tmpl_path: &Path,
+    backend: &JstproveBackend,
+    jstprove_ops: &[&str],
+    exclude_from_wai: &std::collections::HashSet<String>,
+    skip_compile_over_size: Option<u64>,
+    circuit_cache: &CircuitCache,
+) -> Result<CompileOutcome> {
+    let slice_dir = slice_dir_path(slices_dir, slice.index);
+    let jst_dir = slice_dir.join("jstprove");
+    std::fs::create_dir_all(&jst_dir).map_err(|e| DsperseError::io(e, &jst_dir))?;
+
+    let circuit_path = jst_dir.join("dim_split").join("circuit.bundle");
+
+    if circuit_path.is_dir() {
+        match backend.load_params(&circuit_path) {
+            Ok(_) => {
+                tracing::info!(
+                    slice = slice.index,
+                    "dim-split template already compiled, reusing"
+                );
+                return Ok(CompileOutcome::CompiledDimSplit);
+            }
+            Err(e) => {
+                tracing::warn!(slice = slice.index, error = %e, "cached dim-split circuit invalid, recompiling");
+                std::fs::remove_dir_all(&circuit_path)
+                    .map_err(|e| DsperseError::io(e, &circuit_path))?;
+            }
+        }
+    }
+
+    let analysis = analyze_slice_onnx(tmpl_path, jstprove_ops)?;
+    if !analysis.compatible {
+        return Ok(CompileOutcome::Skipped);
+    }
+
+    if let Some(threshold) = skip_compile_over_size {
+        let estimated = slice
+            .dim_split
+            .as_ref()
+            .map(|ds| ds.estimated_group_constraints)
+            .filter(|&e| e > 0)
+            .unwrap_or_else(|| estimate_onnx_constraints(tmpl_path).unwrap_or(0));
+        if estimated > threshold {
+            return Ok(CompileOutcome::SkippedOverSize {
+                estimated,
+                threshold,
+            });
+        }
+    }
+
+    let sig = compute_template_signature(tmpl_path)?;
+
+    let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
+    if let Some(ref cached_path) = cached
+        && cached_path.is_dir()
+    {
+        let shared_dir = circuit_path
+            .parent()
+            .ok_or_else(|| DsperseError::Pipeline("dim-split circuit path has no parent".into()))?;
+        std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
+        copy_dir_recursive(cached_path, &circuit_path)?;
+        tracing::info!(
+            slice = slice.index,
+            sig = %sig,
+            "reused cached dim-split circuit"
+        );
+        return Ok(CompileOutcome::CompiledDimSplit);
+    }
+
+    let shared_dir = circuit_path
+        .parent()
+        .ok_or_else(|| DsperseError::Pipeline("dim-split circuit path has no parent".into()))?;
+    std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
+
+    tracing::info!(
+        slice = slice.index,
+        sig = %sig,
+        "compiling dim-split template (weights-as-inputs)"
+    );
+
+    let (params, architecture, wandb) =
+        converter::prepare_jstprove_artifacts_filtered(tmpl_path, true, exclude_from_wai)?;
+
+    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
+        .map_err(|p| {
+            let msg = p
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("unknown panic");
+            DsperseError::Backend(format!(
+                "jstprove panicked on slice {} dim-split template: {msg}",
+                slice.index
+            ))
+        })??;
+
+    circuit_cache
+        .lock()
+        .unwrap()
+        .insert(sig.clone(), circuit_path.clone());
+    tracing::info!(slice = slice.index, sig = %sig, "dim-split template compiled");
+    Ok(CompileOutcome::CompiledDimSplit)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst).map_err(|e| DsperseError::io(e, dst))?;
+    for entry in std::fs::read_dir(src).map_err(|e| DsperseError::io(e, src))? {
+        let entry = entry.map_err(|e| DsperseError::io(e, src))?;
+        let ty = entry.file_type().map_err(|e| DsperseError::io(e, src))?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path).map_err(|e| DsperseError::io(e, &dst_path))?;
+        }
+    }
+    Ok(())
 }
 
 fn resolve_compile_onnx(

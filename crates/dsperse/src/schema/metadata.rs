@@ -138,6 +138,8 @@ pub struct RunSliceMetadata {
     pub tiling: Option<TilingInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_split: Option<ChannelSplitInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_split: Option<DimSplitInfo>,
     #[serde(default)]
     pub backend: BackendKind,
     #[serde(

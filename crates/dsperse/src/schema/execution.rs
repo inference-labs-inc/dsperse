@@ -11,6 +11,7 @@ pub enum ExecutionMethod {
     OnnxOnly,
     Tiled,
     ChannelSplit,
+    DimSplit,
     JstproveProve,
     JstproveVerify,
 }
@@ -22,6 +23,7 @@ impl std::fmt::Display for ExecutionMethod {
             Self::OnnxOnly => write!(f, "onnx_only"),
             Self::Tiled => write!(f, "tiled"),
             Self::ChannelSplit => write!(f, "channel_split"),
+            Self::DimSplit => write!(f, "dim_split"),
             Self::JstproveProve => write!(f, "jstprove_prove"),
             Self::JstproveVerify => write!(f, "jstprove_verify"),
         }

@@ -121,11 +121,8 @@ pub fn slice_model(
                     slice = seg_idx,
                     estimated = detection.estimated_constraints,
                     num_groups = detection.num_groups,
-                    "dim-split candidate detected"
-                );
-                tracing::warn!(
-                    slice = seg_idx,
-                    "dim-split detected but compilation support pending"
+                    split_kind = ?detection.split_kind,
+                    "dim-split detected"
                 );
                 dim_split_info.insert(seg_idx, detection);
             }
@@ -311,7 +308,10 @@ fn build_slice_metadata(
             input_name: d.input_name.clone(),
             output_name: d.output_name.clone(),
             concat_axis: d.concat_axis,
-            groups: Vec::new(),
+            estimated_group_constraints: d.estimated_constraints / d.num_groups as u64,
+            weight_name: d.weight_name.clone(),
+            template_path: None,
+            jstprove_circuit_path: None,
         });
 
         slices.push(SliceMetadata {

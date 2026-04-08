@@ -157,20 +157,6 @@ pub enum DimSplitKind {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DimSplitGroupInfo {
-    #[serde(default)]
-    pub group_idx: usize,
-    #[serde(default)]
-    pub dim_start: usize,
-    #[serde(default)]
-    pub dim_end: usize,
-    #[serde(default)]
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jstprove_circuit_path: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DimSplitInfo {
     #[serde(default)]
     pub slice_idx: usize,
@@ -191,7 +177,13 @@ pub struct DimSplitInfo {
     #[serde(default)]
     pub concat_axis: usize,
     #[serde(default)]
-    pub groups: Vec<DimSplitGroupInfo>,
+    pub estimated_group_constraints: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jstprove_circuit_path: Option<String>,
 }
 
 fn default_input_name() -> String {

@@ -189,6 +189,19 @@ pub fn get_attribute_int(node: &NodeProto, name: &str) -> Option<i64> {
     node.attribute.iter().find(|a| a.name == name).map(|a| a.i)
 }
 
+pub fn get_attribute_float(node: &NodeProto, name: &str) -> Option<f32> {
+    node.attribute.iter().find(|a| a.name == name).map(|a| a.f)
+}
+
+pub fn make_attribute_float(name: &str, val: f32) -> AttributeProto {
+    AttributeProto {
+        name: name.to_string(),
+        f: val,
+        r#type: 1,
+        ..Default::default()
+    }
+}
+
 pub fn vi_shape(vi: &ValueInfoProto) -> Vec<i64> {
     vi.r#type
         .as_ref()
@@ -1100,7 +1113,13 @@ fn eval_binary_f32(
         return None;
     }
     let (result, dims) = broadcast_binary(&a, &inputs[0].dims, &b, &inputs[1].dims, f)?;
-    let t = make_f32_tensor(out_name, &dims, &result, TensorProto::FLOAT);
+    let out_type =
+        if inputs[0].data_type == TensorProto::INT64 && inputs[1].data_type == TensorProto::INT64 {
+            TensorProto::INT64
+        } else {
+            TensorProto::FLOAT
+        };
+    let t = make_f32_tensor(out_name, &dims, &result, out_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
@@ -1267,7 +1286,7 @@ fn eval_unsqueeze(
     if vals.is_empty() {
         return None;
     }
-    let t = make_f32_tensor(out_name, &new_dims, &vals, TensorProto::FLOAT);
+    let t = make_f32_tensor(out_name, &new_dims, &vals, inputs[0].data_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
@@ -1382,7 +1401,7 @@ fn eval_gather(
         } else {
             inputs[1].dims.clone()
         };
-        let t = make_f32_tensor(out_name, &out_dims, &result, TensorProto::FLOAT);
+        let t = make_f32_tensor(out_name, &out_dims, &result, data.data_type);
         return Some(vec![(out_name.to_string(), t)]);
     }
     None

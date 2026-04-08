@@ -100,7 +100,12 @@ pub struct CompileArgs {
     pub layers: Option<String>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help = "Compile circuits with weights as inputs for shared circuit reuse (default: true)"
+    )]
     pub weights_as_inputs: bool,
     #[arg(
         long,
@@ -255,7 +260,12 @@ pub struct FullRunArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long)]
     pub layers: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help = "Compile circuits with weights as inputs for shared circuit reuse (default: true)"
+    )]
     pub weights_as_inputs: bool,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
@@ -820,6 +830,33 @@ mod tests {
             assert!(!args.combined);
         } else {
             panic!("expected Run");
+        }
+    }
+
+    #[test]
+    fn cli_compile_wai_default_true() {
+        let cli = Cli::parse_from(["dsperse", "compile", "--model-dir", "/tmp"]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(args.weights_as_inputs);
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
+    fn cli_compile_wai_explicit_false() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "compile",
+            "--model-dir",
+            "/tmp",
+            "--weights-as-inputs",
+            "false",
+        ]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(!args.weights_as_inputs);
+        } else {
+            panic!("expected Compile");
         }
     }
 

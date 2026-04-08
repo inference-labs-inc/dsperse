@@ -1,5 +1,12 @@
 use serde::{self, Deserialize, Deserializer, Serialize};
 
+#[derive(Debug, Clone)]
+pub enum SplitStrategy<'a> {
+    Tiled(&'a TilingInfo),
+    ChannelSplit(&'a ChannelSplitInfo),
+    DimSplit(&'a DimSplitInfo),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TileInfo {
     #[serde(default)]

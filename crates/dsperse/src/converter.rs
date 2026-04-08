@@ -24,7 +24,8 @@ pub fn prepare_jstprove_artifacts_filtered(
 
     let mut params = meta.circuit_params;
     if weights_as_inputs {
-        api::populate_wai_inputs(&mut params, &meta.wandb, exclude_from_wai);
+        api::populate_wai_inputs(&mut params, &meta.wandb, exclude_from_wai)
+            .map_err(|e| DsperseError::Pipeline(format!("WAI input population: {e}")))?;
     }
 
     Ok((params, meta.architecture, meta.wandb))

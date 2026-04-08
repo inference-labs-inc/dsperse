@@ -84,6 +84,9 @@ pub fn compile_slices(
     let exclude_from_wai: std::collections::HashSet<String> =
         metadata.folded_constant_names.iter().cloned().collect();
 
+    let traced_shapes = metadata.traced_shapes.clone();
+    let traced_ref = traced_shapes.as_ref();
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(parallel)
         .build()
@@ -105,6 +108,7 @@ pub fn compile_slices(
                 &exclude_from_wai,
                 skip_compile_over_size,
                 &dim_split_cache,
+                traced_ref,
             );
             match r {
                 Ok(CompileOutcome::Compiled) => {
@@ -378,6 +382,7 @@ fn compile_single_slice(
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
+    traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -398,6 +403,7 @@ fn compile_single_slice(
             jstprove_ops,
             exclude_from_wai,
             skip_compile_over_size,
+            traced_shapes,
         );
     }
 
@@ -415,6 +421,7 @@ fn compile_single_slice(
                 exclude_from_wai,
                 skip_compile_over_size,
                 circuit_cache,
+                traced_shapes,
             );
         }
     }
@@ -474,6 +481,7 @@ fn compile_single_slice(
         compile_onnx.as_ref().unwrap_or(&onnx_path),
         effective_wai,
         exclude_from_wai,
+        traced_shapes,
     )?;
 
     std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
@@ -548,6 +556,7 @@ fn populate_channel_split_groups(
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_channel_split_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
@@ -556,6 +565,7 @@ fn compile_channel_split_slice(
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
+    traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -605,8 +615,12 @@ fn compile_channel_split_slice(
             "compiling shared channel group circuit (weights-as-inputs)"
         );
 
-        let (params, architecture, wandb) =
-            converter::prepare_jstprove_artifacts_filtered(&onnx_path, true, exclude_from_wai)?;
+        let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
+            &onnx_path,
+            true,
+            exclude_from_wai,
+            traced_shapes,
+        )?;
 
         std::panic::catch_unwind(|| {
             backend.compile(&shared_circuit_path, params, architecture, wandb)
@@ -656,6 +670,7 @@ fn compile_dim_split_template(
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
+    traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -730,8 +745,12 @@ fn compile_dim_split_template(
         "compiling dim-split template (weights-as-inputs)"
     );
 
-    let (params, architecture, wandb) =
-        converter::prepare_jstprove_artifacts_filtered(tmpl_path, true, exclude_from_wai)?;
+    let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
+        tmpl_path,
+        true,
+        exclude_from_wai,
+        traced_shapes,
+    )?;
 
     std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
         .map_err(|p| {

@@ -1772,10 +1772,10 @@ fn create_matmul_dim_template(
         vec![y],
         initializers,
     );
-    let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
+    let mut tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
 
     let tmpl_path = output_dir.join("dim_template.onnx");
-    onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+    onnx_proto::save_model(&mut tmpl_model, &tmpl_path)?;
     Ok(tmpl_path)
 }
 

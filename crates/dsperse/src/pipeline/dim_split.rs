@@ -235,7 +235,7 @@ pub(crate) fn execute_dim_split(
         let tmp_dir = tempfile::tempdir()
             .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
         let patched_path = tmp_dir.path().join("dim_chunk.onnx");
-        crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
+        crate::slicer::onnx_proto::save_model(&mut tmpl_model, &patched_path)?;
 
         let group_output = if use_matmul_split {
             run_onnx_inference(&patched_path, &group_input)?

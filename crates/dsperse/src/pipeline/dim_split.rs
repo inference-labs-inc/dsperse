@@ -45,6 +45,12 @@ pub(crate) fn execute_dim_split(
         .join("payload")
         .join(format!("slice_{}.onnx", ds.slice_idx));
 
+    let fallback_model = if use_matmul_split && donor_init_map.is_none() {
+        Some(crate::slicer::onnx_proto::load_model(&slice_onnx_path)?)
+    } else {
+        None
+    };
+
     let original_weights = if use_matmul_split {
         let wn = ds.weight_name.as_ref().ok_or_else(|| {
             DsperseError::Pipeline(format!(
@@ -56,10 +62,12 @@ pub(crate) fn execute_dim_split(
         {
             (*t).clone()
         } else {
-            let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-            let graph = model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
-            })?;
+            let graph = fallback_model
+                .as_ref()
+                .and_then(|m| m.graph.as_ref())
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
+                })?;
             graph
                 .initializer
                 .iter()
@@ -132,7 +140,24 @@ pub(crate) fn execute_dim_split(
             });
 
             if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W") {
-                let (rows, cols) = (w_init.dims[0] as usize, w_init.dims[1] as usize);
+                if w_init.dims.len() < 2 {
+                    return Err(DsperseError::Pipeline(format!(
+                        "{slice_id}: weight initializer 'W' has {} dims, expected at least 2",
+                        w_init.dims.len()
+                    )));
+                }
+                let rows = usize::try_from(w_init.dims[0]).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: weight dim[0]={} is negative",
+                        w_init.dims[0]
+                    ))
+                })?;
+                let cols = usize::try_from(w_init.dims[1]).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: weight dim[1]={} is negative",
+                        w_init.dims[1]
+                    ))
+                })?;
                 let k = if trans_b { cols } else { rows };
                 let orig_cols = ds.dim_size;
                 let mut chunk = Vec::with_capacity(k * epg);
@@ -178,14 +203,15 @@ pub(crate) fn execute_dim_split(
                     {
                         return Some(crate::slicer::onnx_proto::tensor_to_f32(t));
                     }
-                    let orig_model =
-                        crate::slicer::onnx_proto::load_model(&slice_onnx_path).ok()?;
-                    orig_model.graph.as_ref().and_then(|g| {
-                        g.initializer
-                            .iter()
-                            .find(|i| i.name == *bn)
-                            .map(crate::slicer::onnx_proto::tensor_to_f32)
-                    })
+                    fallback_model
+                        .as_ref()
+                        .and_then(|m| m.graph.as_ref())
+                        .and_then(|g| {
+                            g.initializer
+                                .iter()
+                                .find(|i| i.name == *bn)
+                                .map(crate::slicer::onnx_proto::tensor_to_f32)
+                        })
                 });
                 if let Some(bd) = bias_data {
                     if bd.len() == ds.dim_size {

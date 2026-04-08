@@ -1,7 +1,6 @@
-use crate::error::{DsperseError, Result};
 use crate::schema::execution::ExecutionMethod;
 use crate::schema::metadata::RunSliceMetadata;
-use crate::schema::tiling::{ChannelSplitInfo, DimSplitInfo, TilingInfo};
+use crate::schema::tiling::{ChannelSplitInfo, DimSplitInfo, SplitStrategy, TilingInfo};
 
 pub enum ExecutionStrategy<'a> {
     ChannelSplit(&'a ChannelSplitInfo),
@@ -11,26 +10,12 @@ pub enum ExecutionStrategy<'a> {
 }
 
 impl<'a> ExecutionStrategy<'a> {
-    pub fn from_metadata(meta: &'a RunSliceMetadata, use_circuit: bool) -> Result<Self> {
-        let has_cs = meta.channel_split.is_some();
-        let has_ds = meta.dim_split.is_some();
-        let has_tiling = meta.tiling.is_some();
-        let count = has_cs as u8 + has_ds as u8 + has_tiling as u8;
-        if count > 1 {
-            return Err(DsperseError::Metadata(format!(
-                "slice has multiple split metadata (channel_split={has_cs}, dim_split={has_ds}, tiling={has_tiling})"
-            )));
-        }
-        if let Some(ref cs) = meta.channel_split {
-            Ok(Self::ChannelSplit(cs))
-        } else if let Some(ref ds) = meta.dim_split
-            && ds.template_path.is_some()
-        {
-            Ok(Self::DimSplit(ds))
-        } else if let Some(ref tiling) = meta.tiling {
-            Ok(Self::Tiled(tiling))
-        } else {
-            Ok(Self::Single { use_circuit })
+    pub fn from_metadata(meta: &'a RunSliceMetadata, use_circuit: bool) -> Self {
+        match meta.split_strategy() {
+            Some(SplitStrategy::ChannelSplit(cs)) => Self::ChannelSplit(cs),
+            Some(SplitStrategy::DimSplit(ds)) if ds.template_path.is_some() => Self::DimSplit(ds),
+            Some(SplitStrategy::Tiled(t)) => Self::Tiled(t),
+            _ => Self::Single { use_circuit },
         }
     }
 

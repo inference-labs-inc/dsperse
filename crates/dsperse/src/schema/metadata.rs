@@ -108,6 +108,15 @@ pub struct SliceMetadata {
 }
 
 impl SliceMetadata {
+    pub fn split_strategy(&self) -> Option<super::tiling::SplitStrategy<'_>> {
+        use super::tiling::SplitStrategy;
+        self.tiling
+            .as_ref()
+            .map(SplitStrategy::Tiled)
+            .or_else(|| self.channel_split.as_ref().map(SplitStrategy::ChannelSplit))
+            .or_else(|| self.dim_split.as_ref().map(SplitStrategy::DimSplit))
+    }
+
     pub fn output_names(&self) -> &[String] {
         &self.dependencies.output
     }
@@ -154,6 +163,17 @@ pub struct RunSliceMetadata {
         alias = "settings_path"
     )]
     pub jstprove_settings_path: Option<String>,
+}
+
+impl RunSliceMetadata {
+    pub fn split_strategy(&self) -> Option<super::tiling::SplitStrategy<'_>> {
+        use super::tiling::SplitStrategy;
+        self.tiling
+            .as_ref()
+            .map(SplitStrategy::Tiled)
+            .or_else(|| self.channel_split.as_ref().map(SplitStrategy::ChannelSplit))
+            .or_else(|| self.dim_split.as_ref().map(SplitStrategy::DimSplit))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -7,12 +7,12 @@ use crate::backend::jstprove::{Curve, JstproveBackend};
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
 
-use jstprove_circuits::ProofSystem;
+use jstprove_circuits::api::{CurveParseError, ProofSystemType as ProofSystem};
 
 fn build_backend(curve: &str) -> Result<JstproveBackend> {
     let c: Curve = curve
         .parse()
-        .map_err(|e: jstprove_circuits::CurveParseError| DsperseError::Other(e.to_string()))?;
+        .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))?;
     Ok(JstproveBackend::new().with_curve(c))
 }
 
@@ -309,7 +309,7 @@ fn resolve_circuit_ops(proof_system_str: &str, circuit_ops: Option<&str>) -> Res
     let ps: ProofSystem =
         proof_system_str
             .parse()
-            .map_err(|e: jstprove_circuits::ProofSystemParseError| {
+            .map_err(|e: jstprove_circuits::api::ProofSystemParseError| {
                 DsperseError::Other(e.to_string())
             })?;
 

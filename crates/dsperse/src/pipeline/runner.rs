@@ -5,7 +5,7 @@ use std::sync::Arc;
 use ndarray::{Array4, ArrayD, IxDyn, s};
 use rayon::prelude::*;
 
-use jstprove_circuits::circuit_functions::utils::onnx_model::CircuitParams;
+use jstprove_circuits::api::CircuitParamsType as CircuitParams;
 
 use super::strategy::ExecutionStrategy;
 use super::tensor_store::TensorStore;

@@ -9,7 +9,7 @@ pub struct DsperseVersion {
 }
 
 pub fn dsperse_artifact_version() -> DsperseVersion {
-    let jst_ver = jstprove_circuits::jstprove_artifact_version();
+    let jst_ver = jstprove_circuits::api::jstprove_artifact_version();
     DsperseVersion {
         dsperse_version: env!("CARGO_PKG_VERSION").to_string(),
         dsperse_rev: option_env!("DSPERSE_GIT_REV").map(String::from),

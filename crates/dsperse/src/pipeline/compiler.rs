@@ -208,7 +208,24 @@ pub fn compile_slices(
 
 struct SliceAnalysis {
     compatible: bool,
+    data_movement_only: bool,
 }
+
+const DATA_MOVEMENT_OPS: &[&str] = &[
+    "Reshape",
+    "Transpose",
+    "Flatten",
+    "Squeeze",
+    "Unsqueeze",
+    "Identity",
+    "Concat",
+    "Split",
+    "Gather",
+    "Slice",
+    "Expand",
+    "Tile",
+    "Cast",
+];
 
 fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAnalysis> {
     let model = onnx_proto::load_model(onnx_path)?;
@@ -216,11 +233,18 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
         .graph
         .as_ref()
         .ok_or_else(|| DsperseError::Slicer(format!("no graph in {}", onnx_path.display())))?;
-    Ok(SliceAnalysis {
-        compatible: graph
+    let compatible = graph
+        .node
+        .iter()
+        .all(|n| jstprove_ops.contains(&n.op_type.as_str()));
+    let data_movement_only = !graph.node.is_empty()
+        && graph
             .node
             .iter()
-            .all(|n| jstprove_ops.contains(&n.op_type.as_str())),
+            .all(|n| DATA_MOVEMENT_OPS.contains(&n.op_type.as_str()));
+    Ok(SliceAnalysis {
+        compatible,
+        data_movement_only,
     })
 }
 
@@ -406,6 +430,10 @@ fn compile_single_slice(
 
     let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops)?;
     if !analysis.compatible {
+        return Ok(CompileOutcome::Skipped);
+    }
+    if analysis.data_movement_only {
+        tracing::info!(slice = slice.index, "skipped (data movement only)");
         return Ok(CompileOutcome::Skipped);
     }
 

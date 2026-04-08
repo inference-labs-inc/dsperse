@@ -629,12 +629,20 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     if total_elements <= seg_size {
         return None;
     }
+    let last_dim = *first_dims.last().unwrap_or(&0);
+    let mut effective_seg_size = seg_size;
     for init in &graph.initializer {
         let vol: i64 = init.dims.iter().product();
-        if vol > 1 && vol != seg_size {
-            return None;
+        if vol <= 1 || vol == seg_size {
+            continue;
         }
+        if init.dims.len() == 1 && init.dims[0] == last_dim && last_dim > 0 {
+            effective_seg_size = last_dim;
+            continue;
+        }
+        return None;
     }
+    let seg_size = effective_seg_size;
     let mut input_names = Vec::with_capacity(graph.input.len());
     for inp in &graph.input {
         let d = onnx_proto::vi_shape(inp);
@@ -674,6 +682,16 @@ pub struct DimSplitDetection {
     pub concat_axis: usize,
     pub estimated_constraints: u64,
     pub weight_name: Option<String>,
+}
+
+fn normalize_dim_split_size(raw_epg: usize, dim_size: usize) -> usize {
+    const BUCKETS: &[usize] = &[1, 2, 4, 8, 16, 32, 64, 128, 256];
+    for &b in BUCKETS {
+        if b >= raw_epg {
+            return b.min(dim_size);
+        }
+    }
+    raw_epg.min(dim_size)
 }
 
 pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
@@ -744,8 +762,9 @@ pub fn detect_dim_split(
             if n_dim <= 1 {
                 continue;
             }
-            let num_groups = target_groups.min(n_dim);
-            let elements_per_group = n_dim.div_ceil(num_groups);
+            let raw_epg = n_dim.div_ceil(target_groups.min(n_dim));
+            let elements_per_group = normalize_dim_split_size(raw_epg, n_dim);
+            let num_groups = n_dim.div_ceil(elements_per_group);
             let Some(output_shape) = node.output.first().and_then(|name| shapes.get(name)) else {
                 continue;
             };

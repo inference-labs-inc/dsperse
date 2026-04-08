@@ -998,8 +998,14 @@ fn collect_named_outputs(
     output_names: &[String],
     mut named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
 ) -> Result<Vec<(String, ArrayD<f64>)>> {
+    let mut seen = std::collections::HashSet::new();
     let mut result = Vec::new();
     for name in output_names {
+        if !seen.insert(name) {
+            return Err(DsperseError::Pipeline(format!(
+                "duplicate declared output '{name}'"
+            )));
+        }
         let (data, shape) = named_outputs
             .remove(name)
             .ok_or_else(|| DsperseError::Pipeline(format!("missing declared output '{name}'")))?;
@@ -1452,6 +1458,22 @@ mod tests {
         let named = HashMap::new();
         let result = store_named_outputs(&mut cache, &names, named);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn store_named_outputs_partial_write_errors() {
+        let mut cache = TensorStore::new();
+        cache.put(
+            "pre_existing".into(),
+            ArrayD::from_shape_vec(ndarray::IxDyn(&[1]), vec![99.0]).unwrap(),
+        );
+        let names = vec!["present".to_string(), "missing".to_string()];
+        let mut named = HashMap::new();
+        named.insert("present".to_string(), (vec![1.0, 2.0], vec![2]));
+        let result = store_named_outputs(&mut cache, &names, named);
+        assert!(result.is_err());
+        assert!(cache.contains("pre_existing"));
+        assert!(!cache.contains("present"));
     }
 
     #[test]

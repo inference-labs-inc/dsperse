@@ -160,7 +160,9 @@ impl CombinedRun {
 
     pub fn mark_slice_failed(&mut self, slice_id: &str) -> bool {
         let was_pending = self.pending_slices.remove(slice_id);
-        self.failed_slices.insert(slice_id.to_string());
+        if was_pending {
+            self.failed_slices.insert(slice_id.to_string());
+        }
         was_pending
     }
 

@@ -7,7 +7,7 @@ use crate::backend::jstprove::JstproveBackend;
 use crate::error::DsperseError;
 use crate::pipeline::{self, RunConfig};
 
-use jstprove_circuits::{ProofSystem, ProofSystemParseError};
+use jstprove_circuits::api::{ProofSystemParseError, ProofSystemType as ProofSystem};
 
 fn to_py_err(e: DsperseError) -> PyErr {
     let msg = e.to_string();

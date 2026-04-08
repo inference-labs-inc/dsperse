@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use jstprove_circuits::circuit_functions::utils::onnx_model::{Architecture, CircuitParams, WANDB};
-use jstprove_circuits::expander_metadata;
+use jstprove_circuits::api::{
+    self, ArchitectureType as Architecture, CircuitParamsType as CircuitParams, WANDBType as WANDB,
+};
 
 use crate::error::{DsperseError, Result};
 
@@ -18,31 +19,13 @@ pub fn prepare_jstprove_artifacts_filtered(
     weights_as_inputs: bool,
     exclude_from_wai: &HashSet<String>,
 ) -> Result<(CircuitParams, Architecture, WANDB)> {
-    let meta = expander_metadata::generate_from_onnx(onnx_path)
+    let meta = api::generate_metadata(onnx_path)
         .map_err(|e| DsperseError::Pipeline(format!("ONNX metadata generation: {e:#}")))?;
 
     let mut params = meta.circuit_params;
     if weights_as_inputs {
-        params.weights_as_inputs = true;
-        for wb in &meta.wandb.w_and_b {
-            if exclude_from_wai.contains(&wb.name) {
-                tracing::debug!(name = %wb.name, "excluding folded constant from WAI inputs");
-                continue;
-            }
-            let shape = wb.shape.get(&wb.name).cloned().ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "wandb entry '{}' missing shape for WAI input population",
-                    wb.name
-                ))
-            })?;
-            params.inputs.push(
-                jstprove_circuits::circuit_functions::utils::onnx_types::ONNXIO {
-                    name: wb.name.clone(),
-                    elem_type: 1,
-                    shape,
-                },
-            );
-        }
+        api::populate_wai_inputs(&mut params, &meta.wandb, exclude_from_wai)
+            .map_err(|e| DsperseError::Pipeline(format!("WAI input population: {e}")))?;
     }
 
     Ok((params, meta.architecture, meta.wandb))

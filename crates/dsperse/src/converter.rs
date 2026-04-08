@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use jstprove_circuits::api::{
@@ -11,16 +11,33 @@ pub fn prepare_jstprove_artifacts(
     onnx_path: &Path,
     weights_as_inputs: bool,
 ) -> Result<(CircuitParams, Architecture, WANDB)> {
-    prepare_jstprove_artifacts_filtered(onnx_path, weights_as_inputs, &HashSet::new())
+    prepare_jstprove_artifacts_filtered(onnx_path, weights_as_inputs, &HashSet::new(), None)
 }
 
 pub fn prepare_jstprove_artifacts_filtered(
     onnx_path: &Path,
     weights_as_inputs: bool,
     exclude_from_wai: &HashSet<String>,
+    traced_shapes: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<(CircuitParams, Architecture, WANDB)> {
-    let meta = api::generate_metadata(onnx_path)
-        .map_err(|e| DsperseError::Pipeline(format!("ONNX metadata generation: {e:#}")))?;
+    let meta = match traced_shapes {
+        Some(shapes) => {
+            let converted: HashMap<String, Vec<usize>> = shapes
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.iter()
+                            .map(|&d| if d < 0 { 1 } else { d as usize })
+                            .collect(),
+                    )
+                })
+                .collect();
+            api::generate_metadata_with_shapes(onnx_path, converted)
+        }
+        None => api::generate_metadata(onnx_path),
+    }
+    .map_err(|e| DsperseError::Pipeline(format!("ONNX metadata generation: {e:#}")))?;
 
     let mut params = meta.circuit_params;
     if weights_as_inputs {

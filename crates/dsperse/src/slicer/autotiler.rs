@@ -1626,6 +1626,25 @@ fn create_input_dim_template(
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
 ) -> Result<std::path::PathBuf> {
+    let shape_dependent_ops = ["Reshape", "Expand", "Tile", "Flatten"];
+    let has_shape_ops = graph
+        .node
+        .iter()
+        .any(|n| shape_dependent_ops.contains(&n.op_type.as_str()));
+    if has_shape_ops {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_input_dim_template: slice {} contains shape-dependent ops ({}) that cannot be reliably patched for dim-split",
+            info.slice_idx,
+            graph
+                .node
+                .iter()
+                .filter(|n| shape_dependent_ops.contains(&n.op_type.as_str()))
+                .map(|n| n.op_type.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )));
+    }
+
     let target_vi = graph
         .input
         .iter()
@@ -1802,6 +1821,13 @@ fn create_matmul_dim_template(
                 "create_matmul_dim_template: no MatMul/Gemm node found".into(),
             )
         })?;
+
+    if matmul_node.op_type == "Gemm" && matmul_node.input.len() > 2 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_matmul_dim_template: slice {} Gemm with bias not supported for dim-split",
+            info.slice_idx
+        )));
+    }
 
     let weight_name = matmul_node.input.get(1).ok_or_else(|| {
         crate::error::DsperseError::Slicer(

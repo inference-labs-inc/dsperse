@@ -360,8 +360,18 @@ fn materialize_tiling_artifacts(
         if !tmpl_path.exists() {
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
-            autotiler::create_dim_split_template(&slice_model, ds, &payload_dir)?;
-            tracing::info!(slice = slice_idx, "materialized dim-split template");
+            match autotiler::create_dim_split_template(&slice_model, ds, &payload_dir) {
+                Ok(_) => {
+                    tracing::info!(slice = slice_idx, "materialized dim-split template");
+                }
+                Err(e) => {
+                    tracing::info!(
+                        slice = slice_idx,
+                        error = %e,
+                        "dim-split template skipped, will compile as single slice"
+                    );
+                }
+            }
         }
     }
 

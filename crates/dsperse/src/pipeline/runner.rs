@@ -1782,6 +1782,8 @@ fn execute_dim_split(
     let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
     let input_shape = input_tensor.shape().to_vec();
     let k_dim = *input_shape.last().unwrap_or(&0);
+    let k_chunks = ds.k_chunks.max(1);
+    let k_chunk_size = k_dim.div_ceil(k_chunks);
 
     let total_rows: usize = input_shape
         .iter()
@@ -1798,50 +1800,106 @@ fn execute_dim_split(
         .join("payload")
         .join(format!("slice_{}.onnx", ds.slice_idx));
 
-    let mut tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
+    let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+    let orig_graph = orig_model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph")))?;
 
-    if let Some(ref wn) = ds.weight_name
-        && let Some(graph) = tmpl_model.graph.as_mut()
-    {
-        let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-        if let Some(orig_graph) = orig_model.graph.as_ref() {
-            if let Some(orig_w) = orig_graph.initializer.iter().find(|i| i.name == *wn) {
-                let weight_data = crate::slicer::onnx_proto::tensor_to_f32(orig_w);
-                if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W") {
-                    w_init.float_data = weight_data;
-                    w_init.raw_data.clear();
-                }
-            }
-            let matmul_node = orig_graph
-                .node
+    let full_weight: Vec<f32> = ds
+        .weight_name
+        .as_ref()
+        .and_then(|wn| {
+            orig_graph
+                .initializer
                 .iter()
-                .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"));
-            if let Some(bias_name) = matmul_node.and_then(|n| n.input.get(2).cloned())
-                && let Some(orig_bias) = orig_graph.initializer.iter().find(|i| i.name == bias_name)
-                && let Some(b_init) = graph.initializer.iter_mut().find(|i| i.name == "C")
-            {
-                b_init.float_data = crate::slicer::onnx_proto::tensor_to_f32(orig_bias);
-                b_init.raw_data.clear();
-            }
-        }
-    }
+                .find(|i| i.name == *wn)
+                .map(crate::slicer::onnx_proto::tensor_to_f32)
+        })
+        .unwrap_or_default();
+
+    let matmul_node = orig_graph
+        .node
+        .iter()
+        .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"));
+    let trans_b = matmul_node.is_some_and(|n| {
+        n.op_type == "Gemm"
+            && crate::slicer::onnx_proto::get_attribute_int(n, "transB").unwrap_or(0) == 1
+    });
+
+    let n_dim = ds.n_dim;
+    let tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
 
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
-    let patched_path = tmp_dir.path().join("dim_tmpl.onnx");
-    crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
 
     let mut row_outputs: Vec<ndarray::ArrayD<f64>> = Vec::with_capacity(total_rows);
 
     for r in 0..total_rows {
-        let row = flat_input
-            .slice(ndarray::s![r..r + 1, ..])
-            .into_shape_with_order(ndarray::IxDyn(&[1, 1, k_dim]))
-            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row extract: {e}")))?
-            .to_owned();
+        let full_row: Vec<f64> = flat_input
+            .slice(ndarray::s![r, ..])
+            .iter()
+            .copied()
+            .collect();
 
-        let out = run_onnx_inference(&patched_path, &row)?;
-        row_outputs.push(out);
+        let mut row_accum = vec![0.0f64; n_dim];
+
+        for kc in 0..k_chunks {
+            let k_start = kc * k_chunk_size;
+            let k_end = (k_start + k_chunk_size).min(k_dim);
+            let actual_k = k_end - k_start;
+
+            let mut input_chunk = vec![0.0f64; k_chunk_size];
+            input_chunk[..actual_k].copy_from_slice(&full_row[k_start..k_end]);
+
+            let weight_chunk: Vec<f32> = if trans_b {
+                let mut w = Vec::with_capacity(n_dim * k_chunk_size);
+                for row_idx in 0..n_dim {
+                    let row_start = row_idx * k_dim + k_start;
+                    let avail = actual_k.min(full_weight.len().saturating_sub(row_start));
+                    w.extend_from_slice(&full_weight[row_start..row_start + avail]);
+                    if avail < k_chunk_size {
+                        w.resize(w.len() + k_chunk_size - avail, 0.0);
+                    }
+                }
+                w
+            } else {
+                let mut w = Vec::with_capacity(k_chunk_size * n_dim);
+                for ki in k_start..k_start + actual_k {
+                    let start = ki * n_dim;
+                    w.extend_from_slice(&full_weight[start..start + n_dim]);
+                }
+                if actual_k < k_chunk_size {
+                    w.resize(k_chunk_size * n_dim, 0.0);
+                }
+                w
+            };
+
+            let mut patched = tmpl_model.clone();
+            if let Some(graph) = patched.graph.as_mut()
+                && let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W")
+            {
+                w_init.float_data = weight_chunk;
+                w_init.raw_data.clear();
+            }
+
+            let patched_path = tmp_dir.path().join(format!("chunk_{kc}.onnx"));
+            crate::slicer::onnx_proto::save_model(&patched, &patched_path)?;
+
+            let input_arr =
+                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, 1, k_chunk_size]), input_chunk)
+                    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: input chunk: {e}")))?;
+
+            let out = run_onnx_inference(&patched_path, &input_arr)?;
+            let out_flat: Vec<f64> = out.iter().copied().collect();
+            for (acc, &v) in row_accum.iter_mut().zip(out_flat.iter()) {
+                *acc += v;
+            }
+        }
+
+        let row_arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, 1, n_dim]), row_accum)
+            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row output: {e}")))?;
+        row_outputs.push(row_arr);
     }
 
     let stacked = ndarray::concatenate(
@@ -1853,7 +1911,6 @@ fn execute_dim_split(
     let output_shape = if let Some(target) = target_shape {
         target.iter().map(|&d| d as usize).collect::<Vec<_>>()
     } else {
-        let n_dim = stacked.shape().last().copied().unwrap_or(0);
         let mut s = input_shape.clone();
         if let Some(last) = s.last_mut() {
             *last = n_dim;
@@ -1865,14 +1922,15 @@ fn execute_dim_split(
         .as_standard_layout()
         .into_owned()
         .into_shape_with_order(ndarray::IxDyn(&output_shape))
-        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: reshape to output: {e}")))?;
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: reshape: {e}")))?;
 
     tensor_cache.put(ds.output_name.clone(), final_result);
 
     tracing::info!(
         slice = %slice_id,
         rows = total_rows,
-        "executed dim-split (sequence tiled)"
+        k_chunks = k_chunks,
+        "executed dim-split (sequence + K tiled)"
     );
 
     Ok(ExecutionInfo {
@@ -1883,7 +1941,6 @@ fn execute_dim_split(
         tile_exec_infos: Vec::new(),
     })
 }
-
 fn prepare_tiles_from_cache(
     tiling: &TilingInfo,
     tensor_cache: &TensorStore,

@@ -682,6 +682,9 @@ pub struct DimSplitDetection {
     pub concat_axis: usize,
     pub estimated_constraints: u64,
     pub weight_name: Option<String>,
+    pub k_dim: usize,
+    pub n_dim: usize,
+    pub k_chunks: usize,
 }
 
 pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
@@ -742,6 +745,18 @@ pub fn detect_dim_split(
             if weight_shape.len() != 2 {
                 continue;
             }
+            let trans_b = node.op_type == "Gemm"
+                && super::onnx_proto::get_attribute_int(node, "transB").unwrap_or(0) == 1;
+            let k_dim = if trans_b {
+                weight_shape[1] as usize
+            } else {
+                weight_shape[0] as usize
+            };
+            let n_dim = if trans_b {
+                weight_shape[0] as usize
+            } else {
+                weight_shape[1] as usize
+            };
             let Some(inp_shape) = node.input.first().and_then(|name| shapes.get(name)) else {
                 continue;
             };
@@ -753,6 +768,12 @@ pub fn detect_dim_split(
             if total_rows <= 1 {
                 continue;
             }
+            let row_cost = k_dim * n_dim * 2;
+            let k_chunks = if row_cost > MAX_ESTIMATED_CONSTRAINTS as usize {
+                row_cost.div_ceil(MAX_ESTIMATED_CONSTRAINTS as usize)
+            } else {
+                1
+            };
             let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
                 continue;
             };
@@ -770,6 +791,9 @@ pub fn detect_dim_split(
                 concat_axis: 0,
                 estimated_constraints: estimated,
                 weight_name: Some(weight_name.clone()),
+                k_dim,
+                n_dim,
+                k_chunks,
             });
         }
     }
@@ -801,6 +825,9 @@ pub fn detect_dim_split(
                     concat_axis: 1,
                     estimated_constraints: estimated,
                     weight_name: None,
+                    k_dim: 0,
+                    n_dim: 0,
+                    k_chunks: 1,
                 });
             }
         }
@@ -833,6 +860,9 @@ pub fn detect_dim_split(
             concat_axis: 0,
             estimated_constraints: estimated,
             weight_name: None,
+            k_dim: 0,
+            n_dim: 0,
+            k_chunks: 1,
         });
     }
 
@@ -1678,23 +1708,29 @@ fn create_matmul_dim_template(
         weight_tensor.dims[1] as usize,
     );
     let (k_dim, n_dim) = if trans_b { (cols, rows) } else { (rows, cols) };
+    let k_chunk_size = k_dim.div_ceil(info.k_chunks.max(1));
 
     let tmpl_input_name = "dim_tmpl_in".to_string();
     let tmpl_output_name = "dim_tmpl_out".to_string();
     let tmpl_weight_name = "W".to_string();
 
-    let tmpl_input_shape: Vec<i64> = vec![1, 1, k_dim as i64];
+    let tmpl_input_shape: Vec<i64> = vec![1, 1, k_chunk_size as i64];
     let output_shape: Vec<i64> = vec![1, 1, n_dim as i64];
 
     let x =
         onnx_proto::make_tensor_value_info(&tmpl_input_name, TensorProto::FLOAT, &tmpl_input_shape);
     let y =
         onnx_proto::make_tensor_value_info(&tmpl_output_name, TensorProto::FLOAT, &output_shape);
+    let tmpl_weight_dims: Vec<i64> = if trans_b {
+        vec![n_dim as i64, k_chunk_size as i64]
+    } else {
+        vec![k_chunk_size as i64, n_dim as i64]
+    };
     let w = onnx_proto::make_tensor(
         &tmpl_weight_name,
         TensorProto::FLOAT,
-        &weight_tensor.dims,
-        vec![0.0f32; k_dim * n_dim],
+        &tmpl_weight_dims,
+        vec![0.0f32; k_chunk_size * n_dim],
     );
 
     let mut attrs = Vec::new();

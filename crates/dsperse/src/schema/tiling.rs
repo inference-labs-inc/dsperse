@@ -180,6 +180,12 @@ pub struct DimSplitInfo {
     pub estimated_group_constraints: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight_name: Option<String>,
+    #[serde(default)]
+    pub k_dim: usize,
+    #[serde(default)]
+    pub n_dim: usize,
+    #[serde(default = "default_one")]
+    pub k_chunks: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

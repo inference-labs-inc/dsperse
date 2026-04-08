@@ -308,8 +308,15 @@ fn build_slice_metadata(
             input_name: d.input_name.clone(),
             output_name: d.output_name.clone(),
             concat_axis: d.concat_axis,
-            estimated_group_constraints: d.estimated_constraints / d.num_groups as u64,
+            estimated_group_constraints: if d.k_chunks > 1 {
+                (d.k_dim.div_ceil(d.k_chunks) * d.n_dim * 2) as u64
+            } else {
+                d.estimated_constraints / d.num_groups as u64
+            },
             weight_name: d.weight_name.clone(),
+            k_dim: d.k_dim,
+            n_dim: d.n_dim,
+            k_chunks: d.k_chunks,
             template_path: None,
             jstprove_circuit_path: None,
         });

@@ -30,7 +30,7 @@ pub fn slice_model(
     onnx_proto::save_model(&model, &tract_path)?;
 
     tracing::info!("folding constants and tracing shapes via tract");
-    let traced_shapes = super::trace::fold_and_trace_via_tract(&tract_path, &mut model)?;
+    let traced_shapes = super::trace::fold_and_trace_via_tract(&tract_path, &model)?;
 
     if let Some(graph) = model.graph.as_mut() {
         let folded = super::onnx_fold::propagate_constants_with_shapes(graph, &traced_shapes);

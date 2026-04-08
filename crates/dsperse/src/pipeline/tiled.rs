@@ -372,7 +372,7 @@ pub(crate) fn execute_combined_tiled(
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let is_fixed_segment = tiling.ndim == 1;
     let is_1d = tiling.ndim == 3;
     let all_tiles_dyn = if is_fixed_segment {
@@ -404,14 +404,17 @@ pub(crate) fn execute_combined_tiled(
     let circuit_path = match circuit_path {
         Some(p) => p,
         None => {
-            return Ok(ExecutionInfo {
-                method: ExecutionMethod::Tiled,
-                success: true,
-                error: None,
-                witness_file: None,
-                tile_exec_infos: (0..num_tiles)
-                    .map(|i| TileResult::success(i, Some(ExecutionMethod::OnnxOnly), 0.0))
-                    .collect(),
+            return Ok(crate::schema::execution::StrategyOutput {
+                info: ExecutionInfo {
+                    method: ExecutionMethod::Tiled,
+                    success: true,
+                    error: None,
+                    witness_file: None,
+                    tile_exec_infos: (0..num_tiles)
+                        .map(|i| TileResult::success(i, Some(ExecutionMethod::OnnxOnly), 0.0))
+                        .collect(),
+                },
+                outputs: vec![],
             });
         }
     };
@@ -537,12 +540,15 @@ pub(crate) fn execute_combined_tiled(
         "tiled witness generation from combined outputs complete"
     );
 
-    Ok(ExecutionInfo {
-        method: ExecutionMethod::Tiled,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: collected,
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: ExecutionMethod::Tiled,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: collected,
+        },
+        outputs: vec![],
     })
 }
 

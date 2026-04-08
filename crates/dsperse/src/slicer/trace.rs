@@ -6,7 +6,7 @@ use crate::error::{DsperseError, Result};
 
 pub(crate) fn fold_and_trace_via_tract(
     onnx_path: &Path,
-    model: &mut ModelProto,
+    model: &ModelProto,
 ) -> Result<HashMap<String, Vec<i64>>> {
     use tract_onnx::prelude::*;
     use tract_onnx::tract_hir::infer::InferenceSimplePlan;
@@ -31,16 +31,18 @@ pub(crate) fn fold_and_trace_via_tract(
         let fact = tract_model
             .outlet_fact(*outlet)
             .map_err(|e| DsperseError::Slicer(format!("input fact: {e}")))?;
-        if let Ok(tf) = fact.to_typed_fact() {
+        let tensor = if let Ok(tf) = fact.to_typed_fact() {
             let shape: Vec<usize> = tf
                 .shape
                 .iter()
                 .map(|d| d.to_i64().unwrap_or(1).max(1) as usize)
                 .collect();
-            let tensor = Tensor::zero_dt(tf.datum_type, &shape)
-                .map_err(|e| DsperseError::Slicer(format!("zero tensor: {e}")))?;
-            input_tvs.push(tensor.into_tvalue());
-        }
+            Tensor::zero_dt(tf.datum_type, &shape)
+                .map_err(|e| DsperseError::Slicer(format!("zero tensor: {e}")))?
+        } else {
+            Tensor::zero::<f32>(&[1]).expect("scalar f32 allocation")
+        };
+        input_tvs.push(tensor.into_tvalue());
     }
 
     let shapes_cell = std::cell::RefCell::new(HashMap::<usize, Vec<Vec<i64>>>::new());
@@ -99,8 +101,14 @@ pub(crate) fn fold_and_trace_via_tract(
 
     match &result {
         Ok(Ok(_)) => tracing::info!("tract inference run succeeded"),
-        Ok(Err(e)) => tracing::warn!(error = %e, "tract inference run failed"),
-        Err(_) => tracing::warn!("tract inference run panicked"),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "tract inference run produced errors; partial shapes may be available")
+        }
+        Err(_) => {
+            return Err(DsperseError::Slicer(
+                "tract inference panicked; no shape data recovered".into(),
+            ));
+        }
     }
 
     let run_shapes = shapes_cell.into_inner();

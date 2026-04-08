@@ -353,7 +353,6 @@ fn materialize_tiling_artifacts(
     }
 
     if let Some(ref ds) = slice_meta.dim_split
-        && ds.template_path.is_none()
         && ds.num_groups > 0
     {
         let tmpl_path = payload_dir.join("dim_template.onnx");

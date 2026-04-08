@@ -55,10 +55,10 @@ pub(crate) fn execute_channel_split(
     slice_id: &str,
     cs: &ChannelSplitInfo,
     target_shape: Option<&[i64]>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let input_arr = tensor_cache.get(&cs.input_name)?.clone();
 
     let (input_4d, n, h) = if input_arr.ndim() == 4 {
@@ -218,25 +218,25 @@ pub(crate) fn execute_channel_split(
         }
     }
 
-    match accumulated {
-        Some(acc) => {
-            let output = reshape_channel_split_output(acc.into_dyn(), target_shape)?;
-            tensor_cache.put(cs.output_name.clone(), output);
-        }
+    let output = match accumulated {
+        Some(acc) => reshape_channel_split_output(acc.into_dyn(), target_shape)?,
         None => {
             return Err(DsperseError::Pipeline(format!(
                 "channel_split produced no output for '{}'",
                 cs.output_name
             )));
         }
-    }
+    };
 
-    Ok(ExecutionInfo {
-        method: ExecutionMethod::ChannelSplit,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: Vec::new(),
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: ExecutionMethod::ChannelSplit,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: Vec::new(),
+        },
+        outputs: vec![(cs.output_name.clone(), output)],
     })
 }
 

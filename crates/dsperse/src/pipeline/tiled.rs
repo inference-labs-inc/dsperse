@@ -25,11 +25,11 @@ pub(crate) fn execute_tiled(
     slice_id: &str,
     tiling: &TilingInfo,
     slice_circuit_path: Option<&Path>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let all_names = tiling.all_input_names();
     let multi_input = all_names.len() > 1;
     let is_fixed_segment = tiling.ndim == 1;
@@ -349,14 +349,15 @@ pub(crate) fn execute_tiled(
         let r = reconstruct_from_tiles(&tile_outputs, tiling)?;
         trim_to_original_dims(r, tiling)?
     };
-    tensor_cache.put(tiling.output_name.clone(), reconstructed);
-
-    Ok(ExecutionInfo {
-        method: ExecutionMethod::Tiled,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: tile_results,
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: ExecutionMethod::Tiled,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: tile_results,
+        },
+        outputs: vec![(tiling.output_name.clone(), reconstructed)],
     })
 }
 

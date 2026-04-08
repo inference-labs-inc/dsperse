@@ -789,7 +789,7 @@ fn execute_slice(
                     "target_shape lookup failed; output will not be reshaped"
                 );
             }
-            super::channel_split::execute_channel_split(
+            let result = super::channel_split::execute_channel_split(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -798,12 +798,16 @@ fn execute_slice(
                 tensor_cache,
                 backend,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::Tiled(tiling) => {
             let slice_circuit =
                 resolve_circuit_path_optional(slices_dir, meta.jstprove_circuit_path.as_deref())?;
-            super::tiled::execute_tiled(
+            let result = super::tiled::execute_tiled(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -813,7 +817,11 @@ fn execute_slice(
                 backend,
                 config,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::DimSplit(ds) => {
             let target_shape = meta
@@ -823,7 +831,7 @@ fn execute_slice(
                 .position(|name| name == &ds.output_name)
                 .and_then(|idx| meta.output_shape.get(idx))
                 .map(|v| v.as_slice());
-            super::dim_split::execute_dim_split(
+            let result = super::dim_split::execute_dim_split(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -832,7 +840,11 @@ fn execute_slice(
                 tensor_cache,
                 backend,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::Single { .. } => execute_single(
             slices_dir,

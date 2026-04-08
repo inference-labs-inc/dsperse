@@ -930,6 +930,8 @@ fn execute_single(
             run_onnx_inference_named(effective_onnx, &input_tensor)?
         };
 
+        let outputs = collect_named_outputs(&meta.dependencies.output, named)?;
+
         let flat_activations = flatten_cached_inputs(tensor_cache, &inputs)?;
         let witness_bytes = if is_wai {
             generate_wai_witness(
@@ -947,8 +949,6 @@ fn execute_single(
         let witness_path = slice_run_dir.join(crate::utils::paths::WITNESS_FILE);
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
-
-        let outputs = collect_named_outputs(&meta.dependencies.output, named)?;
 
         Ok(crate::schema::execution::StrategyOutput {
             info: ExecutionInfo {
@@ -996,14 +996,14 @@ fn store_named_outputs(
 
 fn collect_named_outputs(
     output_names: &[String],
-    named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
+    mut named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
 ) -> Result<Vec<(String, ArrayD<f64>)>> {
     let mut result = Vec::new();
     for name in output_names {
         let (data, shape) = named_outputs
-            .get(name)
+            .remove(name)
             .ok_or_else(|| DsperseError::Pipeline(format!("missing declared output '{name}'")))?;
-        let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
+        let arr = ArrayD::from_shape_vec(IxDyn(&shape), data)
             .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
         result.push((name.clone(), arr));
     }

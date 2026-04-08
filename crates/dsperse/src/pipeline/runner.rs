@@ -265,7 +265,8 @@ pub fn run_inference(
             Err(e) => {
                 tracing::error!(slice = %slice_id, error = %e, "execution failed");
                 let method = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)
-                    .execution_method();
+                    .map(|s| s.execution_method())
+                    .unwrap_or(ExecutionMethod::OnnxOnly);
                 results.push(ExecutionResultEntry {
                     slice_id: slice_id.clone(),
                     witness_execution: Some(ExecutionInfo {
@@ -329,7 +330,7 @@ pub fn run_inference(
                 .nodes
                 .get(&last_slice_id)
                 .is_some_and(|n| n.use_circuit);
-            Some(ExecutionStrategy::from_metadata(m, use_circuit))
+            ExecutionStrategy::from_metadata(m, use_circuit).ok()
         }
         None => None,
     };
@@ -539,7 +540,7 @@ fn run_combined_inference(
             continue;
         }
 
-        let strategy = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit);
+        let strategy = ExecutionStrategy::from_metadata(slice_meta, node.use_circuit)?;
 
         if let ExecutionStrategy::ChannelSplit(_) = &strategy {
             return Err(DsperseError::Pipeline(format!(
@@ -771,7 +772,7 @@ fn execute_slice(
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit);
+    let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
     match strategy {
         ExecutionStrategy::ChannelSplit(cs) => {
             let target_shape = meta

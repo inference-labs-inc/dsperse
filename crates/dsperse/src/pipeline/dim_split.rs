@@ -17,7 +17,7 @@ pub(crate) fn execute_dim_split(
     target_shape: Option<&[i64]>,
     tensor_cache: &mut TensorStore,
     _backend: &JstproveBackend,
-    _donor_init_map: Option<&HashMap<String, &TensorProto>>,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
     use ndarray::Axis;
 
@@ -47,20 +47,27 @@ pub(crate) fn execute_dim_split(
 
     let original_weights = if use_matmul_split {
         if let Some(ref wn) = ds.weight_name {
-            let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-            let graph = model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
-            })?;
-            let tensor = graph
-                .initializer
-                .iter()
-                .find(|i| i.name == *wn)
-                .ok_or_else(|| {
-                    DsperseError::Pipeline(format!(
-                        "{slice_id}: weight {wn:?} not found in slice ONNX"
-                    ))
+            let tensor = if let Some(map) = donor_init_map
+                && let Some(t) = map.get(wn.as_str())
+            {
+                (*t).clone()
+            } else {
+                let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+                let graph = model.graph.as_ref().ok_or_else(|| {
+                    DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
                 })?;
-            Some(crate::slicer::onnx_proto::tensor_to_f32(tensor))
+                graph
+                    .initializer
+                    .iter()
+                    .find(|i| i.name == *wn)
+                    .ok_or_else(|| {
+                        DsperseError::Pipeline(format!(
+                            "{slice_id}: weight {wn:?} not found in slice ONNX"
+                        ))
+                    })?
+                    .clone()
+            };
+            Some(crate::slicer::onnx_proto::tensor_to_f32(&tensor))
         } else {
             None
         }
@@ -151,21 +158,29 @@ pub(crate) fn execute_dim_split(
             }
 
             if let Some(bias_init) = graph.initializer.iter_mut().find(|i| i.name == "C") {
-                let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-                if let Some(orig_graph) = orig_model.graph.as_ref() {
-                    let bias_name = matmul_node.and_then(|n| n.input.get(2).cloned());
-                    if let Some(ref bn) = bias_name
-                        && let Some(orig_bias) =
-                            orig_graph.initializer.iter().find(|i| i.name == *bn)
+                let bias_name = matmul_node.and_then(|n| n.input.get(2).cloned());
+                let bias_data: Option<Vec<f32>> = bias_name.as_ref().and_then(|bn| {
+                    if let Some(map) = donor_init_map
+                        && let Some(t) = map.get(bn.as_str())
                     {
-                        let bias_data = crate::slicer::onnx_proto::tensor_to_f32(orig_bias);
-                        if bias_data.len() == ds.dim_size {
-                            let mut sliced = bias_data[dim_start..dim_end].to_vec();
-                            sliced.resize(epg, 0.0);
-                            bias_init.float_data = sliced;
-                            bias_init.raw_data.clear();
-                        }
+                        return Some(crate::slicer::onnx_proto::tensor_to_f32(t));
                     }
+                    let orig_model =
+                        crate::slicer::onnx_proto::load_model(&slice_onnx_path).ok()?;
+                    orig_model.graph.as_ref().and_then(|g| {
+                        g.initializer
+                            .iter()
+                            .find(|i| i.name == *bn)
+                            .map(crate::slicer::onnx_proto::tensor_to_f32)
+                    })
+                });
+                if let Some(bd) = bias_data
+                    && bd.len() == ds.dim_size
+                {
+                    let mut sliced = bd[dim_start..dim_end].to_vec();
+                    sliced.resize(epg, 0.0);
+                    bias_init.float_data = sliced;
+                    bias_init.raw_data.clear();
                 }
             }
         }

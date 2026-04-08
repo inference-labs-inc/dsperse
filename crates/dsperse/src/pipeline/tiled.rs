@@ -62,23 +62,14 @@ pub(crate) fn execute_tiled(
     }
 
     let first_tile_info = tile_infos.first().or(single_tile);
-    let tile_onnx = first_tile_info
+    let first_tile_onnx = first_tile_info
         .map(|ti| resolve_relative_path(slices_dir, &ti.path))
         .transpose()?;
-
-    let patched_tile_onnx = match (&tile_onnx, donor_init_map) {
-        (Some(onnx_path), Some(map)) => Some(crate::slicer::onnx_proto::build_patched_onnx(
-            onnx_path, map,
-        )?),
-        _ => None,
-    };
-    let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
-    let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
 
     let warm_model = if multi_input || is_1d || is_fixed_segment {
         None
     } else {
-        match (effective_tile_onnx_ref, all_tiles_dyn[0].first()) {
+        match (first_tile_onnx.as_deref(), all_tiles_dyn[0].first()) {
             (Some(onnx_path), Some(sample)) => {
                 let shape = sample.shape().to_vec();
                 let model = crate::backend::onnx::WarmModel::load(onnx_path, &shape)?;
@@ -95,7 +86,7 @@ pub(crate) fn execute_tiled(
     )?
     .or_else(|| slice_circuit_path.map(|p| p.to_path_buf()));
 
-    let warm_circuit = match (&circuit_path, &tile_onnx) {
+    let warm_circuit = match (&circuit_path, &first_tile_onnx) {
         (Some(cp), Some(onnx_path)) => {
             let params = backend.load_params(cp)?;
             let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);
@@ -159,6 +150,25 @@ pub(crate) fn execute_tiled(
 
                 let tile_info = tile_infos.get(tile_idx).or(single_tile);
                 let tile_dyn = all_tiles_dyn[0][tile_idx].clone();
+
+                let per_tile_onnx = tile_info
+                    .map(|ti| resolve_relative_path(slices_dir, &ti.path))
+                    .transpose();
+                let per_tile_onnx = match per_tile_onnx {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return (
+                            TileResult::failure(
+                                tile_idx,
+                                format!("resolve tile path: {e}"),
+                                None,
+                                start.elapsed().as_secs_f64(),
+                            ),
+                            None,
+                        );
+                    }
+                };
+                let effective_tile_onnx_ref = per_tile_onnx.as_deref();
 
                 if tile_info.is_none() {
                     return (
@@ -405,18 +415,20 @@ pub(crate) fn execute_combined_tiled(
         }
     };
 
-    let tile_onnx = first_tile_info
+    let first_tile_onnx = first_tile_info
         .map(|ti| resolve_relative_path(slices_dir, &ti.path))
         .transpose()?;
 
-    let patched_tile_onnx = match (&tile_onnx, donor_init_map) {
+    let patched_tile_onnx = match (&first_tile_onnx, donor_init_map) {
         (Some(onnx_path), Some(map)) => Some(crate::slicer::onnx_proto::build_patched_onnx(
             onnx_path, map,
         )?),
         _ => None,
     };
     let effective_tile_onnx = patched_tile_onnx.as_ref().map(|t| t.path().to_path_buf());
-    let effective_tile_onnx_ref = effective_tile_onnx.as_deref().or(tile_onnx.as_deref());
+    let effective_tile_onnx_ref = effective_tile_onnx
+        .as_deref()
+        .or(first_tile_onnx.as_deref());
 
     let params = backend.load_params(&circuit_path)?;
     let is_wai = params.as_ref().is_some_and(|p| p.weights_as_inputs);

@@ -1,3 +1,4 @@
+use crate::error::{DsperseError, Result};
 use crate::schema::execution::ExecutionMethod;
 use crate::schema::metadata::RunSliceMetadata;
 use crate::schema::tiling::{ChannelSplitInfo, DimSplitInfo, SplitStrategy, TilingInfo};
@@ -10,12 +11,20 @@ pub enum ExecutionStrategy<'a> {
 }
 
 impl<'a> ExecutionStrategy<'a> {
-    pub fn from_metadata(meta: &'a RunSliceMetadata, use_circuit: bool) -> Self {
+    pub fn from_metadata(meta: &'a RunSliceMetadata, use_circuit: bool) -> Result<Self> {
         match meta.split_strategy() {
-            Some(SplitStrategy::ChannelSplit(cs)) => Self::ChannelSplit(cs),
-            Some(SplitStrategy::DimSplit(ds)) if ds.template_path.is_some() => Self::DimSplit(ds),
-            Some(SplitStrategy::Tiled(t)) => Self::Tiled(t),
-            _ => Self::Single { use_circuit },
+            Some(SplitStrategy::ChannelSplit(cs)) => Ok(Self::ChannelSplit(cs)),
+            Some(SplitStrategy::DimSplit(ds)) => {
+                if ds.template_path.is_none() {
+                    return Err(DsperseError::Metadata(format!(
+                        "dim_split present but template_path is missing (slice path: {:?})",
+                        meta.path
+                    )));
+                }
+                Ok(Self::DimSplit(ds))
+            }
+            Some(SplitStrategy::Tiled(t)) => Ok(Self::Tiled(t)),
+            None => Ok(Self::Single { use_circuit }),
         }
     }
 

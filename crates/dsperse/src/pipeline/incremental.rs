@@ -87,7 +87,7 @@ impl IncrementalRun {
             DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
         })?;
 
-        let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit);
+        let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
         let (input, named_inputs) = match strategy {
             ExecutionStrategy::ChannelSplit(cs) => {
                 let t = self.tensor_cache.get(&cs.input_name)?.clone();
@@ -150,7 +150,7 @@ impl IncrementalRun {
             .get(slice_id)
             .ok_or_else(|| DsperseError::Pipeline(format!("unknown slice {slice_id}")))?;
 
-        let strategy = ExecutionStrategy::from_metadata(meta, false);
+        let strategy = ExecutionStrategy::from_metadata(meta, false)?;
         match strategy {
             ExecutionStrategy::ChannelSplit(cs) => {
                 self.tensor_cache.put(cs.output_name.clone(), result.output);
@@ -200,7 +200,7 @@ impl IncrementalRun {
         let slice_id = format!("slice_{}", last_slice.index);
         let meta = self.run_meta.slices.get(&slice_id)?;
 
-        let strategy = ExecutionStrategy::from_metadata(meta, false);
+        let strategy = ExecutionStrategy::from_metadata(meta, false).ok()?;
         match strategy.output_name() {
             Some(name) => self.tensor_cache.try_get(name),
             None => {

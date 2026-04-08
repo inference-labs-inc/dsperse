@@ -1850,18 +1850,21 @@ pub fn create_elementwise_tile_slice(
 
     let initializers: Vec<_> = graph.initializer.to_vec();
 
+    let input_remap: std::collections::HashMap<&str, &str> = orig_to_tile
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
     let mut nodes = Vec::new();
     for orig_node in &graph.node {
         let new_inputs: Vec<String> = orig_node
             .input
             .iter()
             .map(|name| {
-                for (orig, tile) in &orig_to_tile {
-                    if name == orig {
-                        return tile.clone();
-                    }
-                }
-                name.clone()
+                input_remap
+                    .get(name.as_str())
+                    .map(|s| (*s).to_string())
+                    .unwrap_or_else(|| name.clone())
             })
             .collect();
         let produces_output = orig_node.output.contains(orig_output_name);

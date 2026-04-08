@@ -46,31 +46,32 @@ pub(crate) fn execute_dim_split(
         .join(format!("slice_{}.onnx", ds.slice_idx));
 
     let original_weights = if use_matmul_split {
-        if let Some(ref wn) = ds.weight_name {
-            let tensor = if let Some(map) = donor_init_map
-                && let Some(t) = map.get(wn.as_str())
-            {
-                (*t).clone()
-            } else {
-                let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-                let graph = model.graph.as_ref().ok_or_else(|| {
-                    DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
-                })?;
-                graph
-                    .initializer
-                    .iter()
-                    .find(|i| i.name == *wn)
-                    .ok_or_else(|| {
-                        DsperseError::Pipeline(format!(
-                            "{slice_id}: weight {wn:?} not found in slice ONNX"
-                        ))
-                    })?
-                    .clone()
-            };
-            Some(crate::slicer::onnx_proto::tensor_to_f32(&tensor))
+        let wn = ds.weight_name.as_ref().ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "{slice_id}: MatMulOutputDim split requires weight_name in metadata"
+            ))
+        })?;
+        let tensor = if let Some(map) = donor_init_map
+            && let Some(t) = map.get(wn.as_str())
+        {
+            (*t).clone()
         } else {
-            None
-        }
+            let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+            let graph = model.graph.as_ref().ok_or_else(|| {
+                DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
+            })?;
+            graph
+                .initializer
+                .iter()
+                .find(|i| i.name == *wn)
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: weight {wn:?} not found in slice ONNX"
+                    ))
+                })?
+                .clone()
+        };
+        Some(crate::slicer::onnx_proto::tensor_to_f32(&tensor))
     } else {
         None
     };
@@ -92,6 +93,12 @@ pub(crate) fn execute_dim_split(
         } else {
             let split_dim = ds.split_dim;
             let full = tensor_cache.get(&ds.input_name)?;
+            if split_dim >= full.ndim() {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: split_dim {split_dim} out of range for tensor with {} dimensions",
+                    full.ndim()
+                )));
+            }
             let sliced = full
                 .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
                 .to_owned();
@@ -147,7 +154,14 @@ pub(crate) fn execute_dim_split(
                     for r in 0..k {
                         let start = r * orig_cols + dim_start;
                         let end = (start + actual_size).min(weights.len());
-                        chunk.extend_from_slice(&weights[start..end]);
+                        let slice = weights.get(start..end).ok_or_else(|| {
+                            DsperseError::Pipeline(format!(
+                                "{slice_id}: weight slice [{start}..{end}] out of bounds \
+                                 (weights len={})",
+                                weights.len()
+                            ))
+                        })?;
+                        chunk.extend_from_slice(slice);
                         if actual_size < epg {
                             chunk.resize(chunk.len() + epg - actual_size, 0.0);
                         }
@@ -230,6 +244,12 @@ pub(crate) fn execute_dim_split(
                 .map(|vi| vi.name.clone())
                 .collect();
             let named = run_onnx_inference_multi_named(&patched_path, &group_cache, &input_names)?;
+            if named.len() != 1 {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: dim-split group produced {} outputs, expected exactly 1",
+                    named.len()
+                )));
+            }
             let (data, shape) = named.into_values().next().ok_or_else(|| {
                 DsperseError::Pipeline(format!("{slice_id}: dim-split group produced no output"))
             })?;

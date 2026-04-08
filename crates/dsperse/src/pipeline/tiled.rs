@@ -615,7 +615,7 @@ pub fn split_for_tiling(input: &ArrayD<f64>, tiling: &TilingInfo) -> Result<Vec<
             if start >= flat.len() {
                 break;
             }
-            let end = (start + segment_size).min(flat.len());
+            let end = (start + segment_size).min(total_elements);
             let mut seg_data = vec![0.0f64; segment_size];
             seg_data[..end - start].copy_from_slice(&flat[start..end]);
             segments.push(

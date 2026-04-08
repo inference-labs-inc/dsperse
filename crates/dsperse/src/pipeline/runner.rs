@@ -555,22 +555,25 @@ fn run_combined_inference(
         }
 
         if let ExecutionStrategy::Tiled(tiling) = &strategy {
-            let exec_info = super::tiled::execute_combined_tiled(
+            let result = super::tiled::execute_combined_tiled(
                 slices_dir,
                 &slice_run_dir,
                 &slice_id,
                 tiling,
                 slice_meta.jstprove_circuit_path.as_deref(),
-                &mut tensor_cache,
+                &tensor_cache,
                 backend,
                 config,
                 donor_map.as_ref(),
             )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
 
-            let success = exec_info.success;
+            let success = result.info.success;
             results.push(ExecutionResultEntry {
                 slice_id: slice_id.clone(),
-                witness_execution: Some(exec_info),
+                witness_execution: Some(result.info),
                 proof_execution: None,
                 verification_execution: None,
             });
@@ -789,7 +792,7 @@ fn execute_slice(
                     "target_shape lookup failed; output will not be reshaped"
                 );
             }
-            super::channel_split::execute_channel_split(
+            let result = super::channel_split::execute_channel_split(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -798,12 +801,16 @@ fn execute_slice(
                 tensor_cache,
                 backend,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::Tiled(tiling) => {
             let slice_circuit =
                 resolve_circuit_path_optional(slices_dir, meta.jstprove_circuit_path.as_deref())?;
-            super::tiled::execute_tiled(
+            let result = super::tiled::execute_tiled(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -813,7 +820,11 @@ fn execute_slice(
                 backend,
                 config,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::DimSplit(ds) => {
             let target_shape = meta
@@ -823,7 +834,7 @@ fn execute_slice(
                 .position(|name| name == &ds.output_name)
                 .and_then(|idx| meta.output_shape.get(idx))
                 .map(|v| v.as_slice());
-            super::dim_split::execute_dim_split(
+            let result = super::dim_split::execute_dim_split(
                 slices_dir,
                 slice_run_dir,
                 slice_id,
@@ -832,7 +843,11 @@ fn execute_slice(
                 tensor_cache,
                 backend,
                 donor_init_map,
-            )
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
         }
         ExecutionStrategy::Single { .. } => execute_single(
             slices_dir,

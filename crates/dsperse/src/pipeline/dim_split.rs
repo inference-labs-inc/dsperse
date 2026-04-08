@@ -15,10 +15,10 @@ pub(crate) fn execute_dim_split(
     slice_id: &str,
     ds: &crate::schema::tiling::DimSplitInfo,
     target_shape: Option<&[i64]>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     _backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     use ndarray::Axis;
 
     let concat_axis = ds.concat_axis;
@@ -338,19 +338,20 @@ pub(crate) fn execute_dim_split(
         result
     };
 
-    tensor_cache.put(ds.output_name.clone(), final_result);
-
     tracing::info!(
         slice = %slice_id,
         groups = ds.num_groups,
         "executed dim-split"
     );
 
-    Ok(ExecutionInfo {
-        method: crate::schema::execution::ExecutionMethod::DimSplit,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: Vec::new(),
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: crate::schema::execution::ExecutionMethod::DimSplit,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: Vec::new(),
+        },
+        outputs: vec![(ds.output_name.clone(), final_result)],
     })
 }

@@ -25,11 +25,11 @@ pub(crate) fn execute_tiled(
     slice_id: &str,
     tiling: &TilingInfo,
     slice_circuit_path: Option<&Path>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let all_names = tiling.all_input_names();
     let multi_input = all_names.len() > 1;
     let is_fixed_segment = tiling.ndim == 1;
@@ -349,17 +349,27 @@ pub(crate) fn execute_tiled(
         let r = reconstruct_from_tiles(&tile_outputs, tiling)?;
         trim_to_original_dims(r, tiling)?
     };
-    tensor_cache.put(tiling.output_name.clone(), reconstructed);
-
-    Ok(ExecutionInfo {
-        method: ExecutionMethod::Tiled,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: tile_results,
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: ExecutionMethod::Tiled,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: tile_results,
+        },
+        outputs: vec![(tiling.output_name.clone(), reconstructed)],
     })
 }
 
+/// Witness-only tiled execution for combined inference mode.
+///
+/// The full-model ONNX inference has already run and populated the tensor
+/// cache with all intermediate activations. This function splits those
+/// cached activations into tiles, generates per-tile ZK witnesses via the
+/// circuit backend, and returns tile-level execution results. It does NOT
+/// reconstruct output tensors — those already exist in the cache from the
+/// monolithic inference pass — hence the empty `outputs` vec in the
+/// returned `StrategyOutput`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_combined_tiled(
     slices_dir: &Path,
@@ -367,11 +377,11 @@ pub(crate) fn execute_combined_tiled(
     slice_id: &str,
     tiling: &TilingInfo,
     slice_circuit_path: Option<&str>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let is_fixed_segment = tiling.ndim == 1;
     let is_1d = tiling.ndim == 3;
     let all_tiles_dyn = if is_fixed_segment {
@@ -403,14 +413,17 @@ pub(crate) fn execute_combined_tiled(
     let circuit_path = match circuit_path {
         Some(p) => p,
         None => {
-            return Ok(ExecutionInfo {
-                method: ExecutionMethod::Tiled,
-                success: true,
-                error: None,
-                witness_file: None,
-                tile_exec_infos: (0..num_tiles)
-                    .map(|i| TileResult::success(i, Some(ExecutionMethod::OnnxOnly), 0.0))
-                    .collect(),
+            return Ok(crate::schema::execution::StrategyOutput {
+                info: ExecutionInfo {
+                    method: ExecutionMethod::Tiled,
+                    success: true,
+                    error: None,
+                    witness_file: None,
+                    tile_exec_infos: (0..num_tiles)
+                        .map(|i| TileResult::success(i, Some(ExecutionMethod::OnnxOnly), 0.0))
+                        .collect(),
+                },
+                outputs: vec![],
             });
         }
     };
@@ -536,12 +549,17 @@ pub(crate) fn execute_combined_tiled(
         "tiled witness generation from combined outputs complete"
     );
 
-    Ok(ExecutionInfo {
-        method: ExecutionMethod::Tiled,
-        success: true,
-        error: None,
-        witness_file: None,
-        tile_exec_infos: collected,
+    // No output tensors: combined mode already has activations in cache
+    // from the monolithic ONNX run. Only witness artifacts are produced here.
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: ExecutionMethod::Tiled,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: collected,
+        },
+        outputs: vec![],
     })
 }
 

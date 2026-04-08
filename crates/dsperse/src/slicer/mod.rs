@@ -2,8 +2,10 @@ pub mod analyzer;
 pub mod autotiler;
 pub mod combiner;
 pub mod materializer;
+pub(crate) mod onnx_fold;
 pub mod onnx_proto;
 pub mod onnx_slicer;
+pub(crate) mod trace;
 
 pub use onnx_slicer::slice_model;
 

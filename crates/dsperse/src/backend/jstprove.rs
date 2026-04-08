@@ -233,7 +233,7 @@ fn load_bundle(circuit_path: &Path) -> Result<CompiledCircuit> {
         .ok_or_else(|| DsperseError::Backend("non-UTF8 circuit path".into()))?;
 
     api::read_circuit_bundle(path_str)
-        .map_err(|e| DsperseError::Backend(format!("read circuit msgpack: {e}")))
+        .map_err(|e| DsperseError::Backend(format!("read circuit bundle: {e}")))
 }
 
 pub struct WarmCircuit {

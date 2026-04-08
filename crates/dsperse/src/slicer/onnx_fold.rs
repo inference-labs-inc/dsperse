@@ -432,6 +432,20 @@ fn broadcast_index(out_idx: usize, out_dims: &[i64], src_dims: &[i64]) -> usize 
     idx
 }
 
+const MAX_BROADCAST_ELEMENTS: usize = 100_000_000;
+
+fn broadcast_total(out_dims: &[i64]) -> Option<usize> {
+    let mut total: usize = 1;
+    for &d in out_dims {
+        let d = usize::try_from(d).ok()?;
+        total = total.checked_mul(d)?;
+        if total > MAX_BROADCAST_ELEMENTS {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 fn broadcast_binary(
     a: &[f32],
     a_dims: &[i64],
@@ -440,7 +454,7 @@ fn broadcast_binary(
     f: fn(f32, f32) -> f32,
 ) -> Option<(Vec<f32>, Vec<i64>)> {
     let out_dims = broadcast_shape(a_dims, b_dims)?;
-    let total: usize = out_dims.iter().map(|&d| d as usize).product();
+    let total = broadcast_total(&out_dims)?;
     let mut result = Vec::with_capacity(total);
     for i in 0..total {
         let ai = broadcast_index(i, &out_dims, a_dims);
@@ -458,7 +472,7 @@ fn broadcast_binary_i64(
     f: impl Fn(i64, i64) -> i64,
 ) -> Option<(Vec<i64>, Vec<i64>)> {
     let out_dims = broadcast_shape(a_dims, b_dims)?;
-    let total: usize = out_dims.iter().map(|&d| d as usize).product();
+    let total = broadcast_total(&out_dims)?;
     let mut result = Vec::with_capacity(total);
     for i in 0..total {
         let ai = broadcast_index(i, &out_dims, a_dims);

@@ -1000,11 +1000,12 @@ fn collect_named_outputs(
 ) -> Result<Vec<(String, ArrayD<f64>)>> {
     let mut result = Vec::new();
     for name in output_names {
-        if let Some((data, shape)) = named_outputs.get(name) {
-            let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
-                .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
-            result.push((name.clone(), arr));
-        }
+        let (data, shape) = named_outputs
+            .get(name)
+            .ok_or_else(|| DsperseError::Pipeline(format!("missing declared output '{name}'")))?;
+        let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
+            .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
+        result.push((name.clone(), arr));
     }
     Ok(result)
 }
@@ -1445,12 +1446,12 @@ mod tests {
     }
 
     #[test]
-    fn store_named_outputs_missing_name_ignored() {
+    fn store_named_outputs_missing_name_errors() {
         let mut cache = TensorStore::new();
         let names = vec!["missing".to_string()];
         let named = HashMap::new();
-        store_named_outputs(&mut cache, &names, named).unwrap();
-        assert!(!cache.contains("missing"));
+        let result = store_named_outputs(&mut cache, &names, named);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -389,10 +389,49 @@ fn eval_binary_f32(
     Some(vec![(out_name.to_string(), t)])
 }
 
-// Handles equal-shape and scalar broadcasting only.
-// Full numpy-style broadcasting (right-aligned dimension matching)
-// is not implemented; mismatched non-scalar shapes return None,
-// falling through to tract inference for evaluation.
+fn broadcast_shape(a_dims: &[i64], b_dims: &[i64]) -> Option<Vec<i64>> {
+    let rank = a_dims.len().max(b_dims.len());
+    let mut out = Vec::with_capacity(rank);
+    for i in 0..rank {
+        let da = if i < rank - a_dims.len() {
+            1
+        } else {
+            a_dims[i - (rank - a_dims.len())]
+        };
+        let db = if i < rank - b_dims.len() {
+            1
+        } else {
+            b_dims[i - (rank - b_dims.len())]
+        };
+        if da == db {
+            out.push(da);
+        } else if da == 1 {
+            out.push(db);
+        } else if db == 1 {
+            out.push(da);
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+fn broadcast_index(out_idx: usize, out_dims: &[i64], src_dims: &[i64]) -> usize {
+    let rank = out_dims.len();
+    let src_rank = src_dims.len();
+    let mut idx = 0;
+    let mut stride = 1;
+    for i in (0..src_rank).rev() {
+        let out_i = rank - src_rank + i;
+        let coord = (out_idx / out_dims[out_i + 1..].iter().product::<i64>().max(1) as usize)
+            % out_dims[out_i] as usize;
+        let src_coord = if src_dims[i] == 1 { 0 } else { coord };
+        idx += src_coord * stride;
+        stride *= src_dims[i] as usize;
+    }
+    idx
+}
+
 fn broadcast_binary(
     a: &[f32],
     a_dims: &[i64],
@@ -400,19 +439,15 @@ fn broadcast_binary(
     b_dims: &[i64],
     f: fn(f32, f32) -> f32,
 ) -> Option<(Vec<f32>, Vec<i64>)> {
-    if a_dims == b_dims {
-        let result: Vec<f32> = a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect();
-        return Some((result, a_dims.to_vec()));
+    let out_dims = broadcast_shape(a_dims, b_dims)?;
+    let total: usize = out_dims.iter().map(|&d| d as usize).product();
+    let mut result = Vec::with_capacity(total);
+    for i in 0..total {
+        let ai = broadcast_index(i, &out_dims, a_dims);
+        let bi = broadcast_index(i, &out_dims, b_dims);
+        result.push(f(a[ai], b[bi]));
     }
-    if a.len() == 1 {
-        let result: Vec<f32> = b.iter().map(|&y| f(a[0], y)).collect();
-        return Some((result, b_dims.to_vec()));
-    }
-    if b.len() == 1 {
-        let result: Vec<f32> = a.iter().map(|&x| f(x, b[0])).collect();
-        return Some((result, a_dims.to_vec()));
-    }
-    None
+    Some((result, out_dims))
 }
 
 fn broadcast_binary_i64(
@@ -422,19 +457,15 @@ fn broadcast_binary_i64(
     b_dims: &[i64],
     f: impl Fn(i64, i64) -> i64,
 ) -> Option<(Vec<i64>, Vec<i64>)> {
-    if a_dims == b_dims {
-        let result: Vec<i64> = a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect();
-        return Some((result, a_dims.to_vec()));
+    let out_dims = broadcast_shape(a_dims, b_dims)?;
+    let total: usize = out_dims.iter().map(|&d| d as usize).product();
+    let mut result = Vec::with_capacity(total);
+    for i in 0..total {
+        let ai = broadcast_index(i, &out_dims, a_dims);
+        let bi = broadcast_index(i, &out_dims, b_dims);
+        result.push(f(a[ai], b[bi]));
     }
-    if a.len() == 1 {
-        let result: Vec<i64> = b.iter().map(|&y| f(a[0], y)).collect();
-        return Some((result, b_dims.to_vec()));
-    }
-    if b.len() == 1 {
-        let result: Vec<i64> = a.iter().map(|&x| f(x, b[0])).collect();
-        return Some((result, a_dims.to_vec()));
-    }
-    None
+    Some((result, out_dims))
 }
 
 fn eval_reshape(

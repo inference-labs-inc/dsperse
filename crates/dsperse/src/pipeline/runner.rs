@@ -849,16 +849,22 @@ fn execute_slice(
             }
             Ok(result.info)
         }
-        ExecutionStrategy::Single { .. } => execute_single(
-            slices_dir,
-            slice_run_dir,
-            slice_id,
-            node,
-            meta,
-            tensor_cache,
-            backend,
-            donor_init_map,
-        ),
+        ExecutionStrategy::Single { .. } => {
+            let result = execute_single(
+                slices_dir,
+                slice_run_dir,
+                slice_id,
+                node,
+                meta,
+                tensor_cache,
+                backend,
+                donor_init_map,
+            )?;
+            for (name, tensor) in result.outputs {
+                tensor_cache.put(name, tensor);
+            }
+            Ok(result.info)
+        }
     }
 }
 
@@ -869,10 +875,10 @@ fn execute_single(
     slice_id: &str,
     node: &ExecutionNode,
     meta: &RunSliceMetadata,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,
-) -> Result<ExecutionInfo> {
+) -> Result<crate::schema::execution::StrategyOutput> {
     let inputs: Vec<String> = meta
         .dependencies
         .filtered_inputs
@@ -942,14 +948,17 @@ fn execute_single(
         std::fs::write(&witness_path, &witness_bytes)
             .map_err(|e| DsperseError::io(e, &witness_path))?;
 
-        store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
+        let outputs = collect_named_outputs(&meta.dependencies.output, named)?;
 
-        Ok(ExecutionInfo {
-            method: ExecutionMethod::JstproveGenWitness,
-            success: true,
-            error: None,
-            witness_file: Some(witness_path.to_string_lossy().into_owned()),
-            tile_exec_infos: Vec::new(),
+        Ok(crate::schema::execution::StrategyOutput {
+            info: ExecutionInfo {
+                method: ExecutionMethod::JstproveGenWitness,
+                success: true,
+                error: None,
+                witness_file: Some(witness_path.to_string_lossy().into_owned()),
+                tile_exec_infos: Vec::new(),
+            },
+            outputs,
         })
     } else {
         let named = if multi_input {
@@ -958,31 +967,46 @@ fn execute_single(
             let input_tensor = tensor_cache.gather(&inputs)?;
             run_onnx_inference_named(effective_onnx, &input_tensor)?
         };
-        store_named_outputs(tensor_cache, &meta.dependencies.output, named)?;
+        let outputs = collect_named_outputs(&meta.dependencies.output, named)?;
 
-        Ok(ExecutionInfo {
-            method: ExecutionMethod::OnnxOnly,
-            success: true,
-            error: None,
-            witness_file: None,
-            tile_exec_infos: Vec::new(),
+        Ok(crate::schema::execution::StrategyOutput {
+            info: ExecutionInfo {
+                method: ExecutionMethod::OnnxOnly,
+                success: true,
+                error: None,
+                witness_file: None,
+                tile_exec_infos: Vec::new(),
+            },
+            outputs,
         })
     }
 }
 
-pub(crate) fn store_named_outputs(
+#[cfg(test)]
+fn store_named_outputs(
     tensor_cache: &mut TensorStore,
     output_names: &[String],
     named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
 ) -> Result<()> {
+    for (name, tensor) in collect_named_outputs(output_names, named_outputs)? {
+        tensor_cache.put(name, tensor);
+    }
+    Ok(())
+}
+
+fn collect_named_outputs(
+    output_names: &[String],
+    named_outputs: HashMap<String, (Vec<f64>, Vec<usize>)>,
+) -> Result<Vec<(String, ArrayD<f64>)>> {
+    let mut result = Vec::new();
     for name in output_names {
         if let Some((data, shape)) = named_outputs.get(name) {
             let arr = ArrayD::from_shape_vec(IxDyn(shape), data.clone())
                 .map_err(|e| DsperseError::Pipeline(format!("output reshape '{name}': {e}")))?;
-            tensor_cache.put(name.clone(), arr);
+            result.push((name.clone(), arr));
         }
     }
-    Ok(())
+    Ok(result)
 }
 
 pub(crate) fn run_onnx_inference(onnx_path: &Path, input: &ArrayD<f64>) -> Result<ArrayD<f64>> {

@@ -153,18 +153,17 @@ pub(crate) fn execute_dim_split(
                 } else {
                     for r in 0..k {
                         let start = r * orig_cols + dim_start;
-                        let end = (start + actual_size).min(weights.len());
-                        let slice = weights.get(start..end).ok_or_else(|| {
+                        let end = start + actual_size;
+                        let row = weights.get(start..end).ok_or_else(|| {
                             DsperseError::Pipeline(format!(
                                 "{slice_id}: weight slice [{start}..{end}] out of bounds \
                                  (weights len={})",
                                 weights.len()
                             ))
                         })?;
-                        chunk.extend_from_slice(slice);
-                        if actual_size < epg {
-                            chunk.resize(chunk.len() + epg - actual_size, 0.0);
-                        }
+                        chunk.extend_from_slice(row);
+                        let row_target = (r + 1) * epg;
+                        chunk.resize(row_target, 0.0);
                     }
                 }
                 w_init.float_data = chunk;
@@ -188,13 +187,21 @@ pub(crate) fn execute_dim_split(
                             .map(crate::slicer::onnx_proto::tensor_to_f32)
                     })
                 });
-                if let Some(bd) = bias_data
-                    && bd.len() == ds.dim_size
-                {
-                    let mut sliced = bd[dim_start..dim_end].to_vec();
-                    sliced.resize(epg, 0.0);
-                    bias_init.float_data = sliced;
-                    bias_init.raw_data.clear();
+                if let Some(bd) = bias_data {
+                    if bd.len() == ds.dim_size {
+                        let mut sliced = bd[dim_start..dim_end].to_vec();
+                        sliced.resize(epg, 0.0);
+                        bias_init.float_data = sliced;
+                        bias_init.raw_data.clear();
+                    } else {
+                        tracing::warn!(
+                            slice = %slice_id,
+                            bias_len = bd.len(),
+                            dim_size = ds.dim_size,
+                            group = g,
+                            "bias length mismatch; skipping bias patching for this group"
+                        );
+                    }
                 }
             }
         }
@@ -222,7 +229,13 @@ pub(crate) fn execute_dim_split(
                 }
                 if vi.name == "dim_tmpl_in" {
                     group_cache.put(vi.name.clone(), group_input.clone());
-                } else if let Some(arr) = tensor_cache.try_get(&vi.name) {
+                } else {
+                    let arr = tensor_cache.try_get(&vi.name).ok_or_else(|| {
+                        DsperseError::Pipeline(format!(
+                            "{slice_id}: template input {:?} not found in tensor cache",
+                            vi.name
+                        ))
+                    })?;
                     let shape = arr.shape();
                     if ds.split_dim < shape.len() && shape[ds.split_dim] == ds.dim_size {
                         let sliced = arr
@@ -276,7 +289,16 @@ pub(crate) fn execute_dim_split(
     .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: dim-split concat failed: {e}")))?;
 
     let final_result = if let Some(target) = target_shape {
-        let target_usize: Vec<usize> = target.iter().map(|&d| d as usize).collect();
+        let target_usize: Vec<usize> = target
+            .iter()
+            .map(|&d| {
+                usize::try_from(d).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: invalid target dimension {d} in dim-split reshape"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         result
             .as_standard_layout()
             .into_owned()

@@ -19,6 +19,7 @@ pub struct CombinedRun {
     execution_chain: ExecutionChain,
     slices_dir: PathBuf,
     pending_slices: HashSet<String>,
+    failed_slices: HashSet<String>,
 }
 
 impl CombinedRun {
@@ -83,6 +84,7 @@ impl CombinedRun {
             execution_chain: chain,
             slices_dir: slices_dir.to_path_buf(),
             pending_slices,
+            failed_slices: HashSet::new(),
         })
     }
 
@@ -154,6 +156,16 @@ impl CombinedRun {
 
     pub fn mark_slice_done(&mut self, slice_id: &str) -> bool {
         self.pending_slices.remove(slice_id)
+    }
+
+    pub fn mark_slice_failed(&mut self, slice_id: &str) -> bool {
+        let was_pending = self.pending_slices.remove(slice_id);
+        self.failed_slices.insert(slice_id.to_string());
+        was_pending
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.failed_slices.len()
     }
 
     pub fn is_complete(&self) -> bool {

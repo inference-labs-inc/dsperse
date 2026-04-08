@@ -361,6 +361,15 @@ pub(crate) fn execute_tiled(
     })
 }
 
+/// Witness-only tiled execution for combined inference mode.
+///
+/// The full-model ONNX inference has already run and populated the tensor
+/// cache with all intermediate activations. This function splits those
+/// cached activations into tiles, generates per-tile ZK witnesses via the
+/// circuit backend, and returns tile-level execution results. It does NOT
+/// reconstruct output tensors — those already exist in the cache from the
+/// monolithic inference pass — hence the empty `outputs` vec in the
+/// returned `StrategyOutput`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_combined_tiled(
     slices_dir: &Path,
@@ -540,6 +549,8 @@ pub(crate) fn execute_combined_tiled(
         "tiled witness generation from combined outputs complete"
     );
 
+    // No output tensors: combined mode already has activations in cache
+    // from the monolithic ONNX run. Only witness artifacts are produced here.
     Ok(crate::schema::execution::StrategyOutput {
         info: ExecutionInfo {
             method: ExecutionMethod::Tiled,

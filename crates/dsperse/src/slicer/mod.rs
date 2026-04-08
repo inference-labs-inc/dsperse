@@ -5,7 +5,7 @@ pub mod materializer;
 pub(crate) mod onnx_fold;
 pub mod onnx_proto;
 pub mod onnx_slicer;
-pub mod trace;
+pub(crate) mod trace;
 
 pub use onnx_slicer::slice_model;
 

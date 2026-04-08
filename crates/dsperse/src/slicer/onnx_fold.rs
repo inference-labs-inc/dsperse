@@ -4,14 +4,14 @@ use super::onnx_proto::{
     GraphProto, ModelProto, NodeProto, TensorProto, tensor_to_f32, tensor_to_i64,
 };
 
-pub fn fold_constant_nodes(model: &mut ModelProto) -> std::collections::HashSet<String> {
+pub fn fold_constant_nodes(model: &mut ModelProto) -> HashSet<String> {
     let graph = match model.graph.as_mut() {
         Some(g) => g,
-        None => return std::collections::HashSet::new(),
+        None => return HashSet::new(),
     };
 
     let mut folded_tensors: Vec<TensorProto> = Vec::new();
-    let mut folded_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut folded_names: HashSet<String> = HashSet::new();
 
     for node in &graph.node {
         if node.op_type != "Constant" {
@@ -108,9 +108,10 @@ pub fn propagate_constants_with_shapes(
             });
         }
     }
-    graph.node.retain(|n| {
-        n.op_type != "Shape" || !graph.initializer.iter().any(|i| n.output.contains(&i.name))
-    });
+    let init_names: HashSet<String> = graph.initializer.iter().map(|i| i.name.clone()).collect();
+    graph
+        .node
+        .retain(|n| n.op_type != "Shape" || !n.output.iter().any(|o| init_names.contains(o)));
     let folded = propagate_constants(graph);
     folded.len()
 }
@@ -344,7 +345,8 @@ fn eval_unary_f32(
     if vals.is_empty() {
         return None;
     }
-    let t = make_f32_tensor(out_name, &input.dims, &vals, TensorProto::FLOAT);
+    let out_type = input.data_type;
+    let t = make_f32_tensor(out_name, &input.dims, &vals, out_type);
     Some(vec![(out_name.to_string(), t)])
 }
 
@@ -356,22 +358,41 @@ fn eval_binary_f32(
     if inputs.len() < 2 {
         return None;
     }
+    let both_int64 =
+        inputs[0].data_type == TensorProto::INT64 && inputs[1].data_type == TensorProto::INT64;
+    if both_int64 {
+        let a = tensor_to_i64(inputs[0]);
+        let b = tensor_to_i64(inputs[1]);
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        let (result, dims) =
+            broadcast_binary_i64(&a, &inputs[0].dims, &b, &inputs[1].dims, |x, y| {
+                f(x as f32, y as f32) as i64
+            })?;
+        let t = TensorProto {
+            name: out_name.to_string(),
+            dims,
+            data_type: TensorProto::INT64,
+            int64_data: result,
+            ..Default::default()
+        };
+        return Some(vec![(out_name.to_string(), t)]);
+    }
     let a = tensor_to_f32(inputs[0]);
     let b = tensor_to_f32(inputs[1]);
     if a.is_empty() || b.is_empty() {
         return None;
     }
     let (result, dims) = broadcast_binary(&a, &inputs[0].dims, &b, &inputs[1].dims, f)?;
-    let out_type =
-        if inputs[0].data_type == TensorProto::INT64 && inputs[1].data_type == TensorProto::INT64 {
-            TensorProto::INT64
-        } else {
-            TensorProto::FLOAT
-        };
-    let t = make_f32_tensor(out_name, &dims, &result, out_type);
+    let t = make_f32_tensor(out_name, &dims, &result, TensorProto::FLOAT);
     Some(vec![(out_name.to_string(), t)])
 }
 
+// Handles equal-shape and scalar broadcasting only.
+// Full numpy-style broadcasting (right-aligned dimension matching)
+// is not implemented; mismatched non-scalar shapes return None,
+// falling through to tract inference for evaluation.
 fn broadcast_binary(
     a: &[f32],
     a_dims: &[i64],
@@ -389,6 +410,28 @@ fn broadcast_binary(
     }
     if b.len() == 1 {
         let result: Vec<f32> = a.iter().map(|&x| f(x, b[0])).collect();
+        return Some((result, a_dims.to_vec()));
+    }
+    None
+}
+
+fn broadcast_binary_i64(
+    a: &[i64],
+    a_dims: &[i64],
+    b: &[i64],
+    b_dims: &[i64],
+    f: impl Fn(i64, i64) -> i64,
+) -> Option<(Vec<i64>, Vec<i64>)> {
+    if a_dims == b_dims {
+        let result: Vec<i64> = a.iter().zip(b.iter()).map(|(&x, &y)| f(x, y)).collect();
+        return Some((result, a_dims.to_vec()));
+    }
+    if a.len() == 1 {
+        let result: Vec<i64> = b.iter().map(|&y| f(a[0], y)).collect();
+        return Some((result, b_dims.to_vec()));
+    }
+    if b.len() == 1 {
+        let result: Vec<i64> = a.iter().map(|&x| f(x, b[0])).collect();
         return Some((result, a_dims.to_vec()));
     }
     None
@@ -713,6 +756,8 @@ fn eval_concat(
     inputs: &[&TensorProto],
     out_name: &str,
 ) -> Option<Vec<(String, TensorProto)>> {
+    // axis attribute is read but only 1-D concat is evaluated below;
+    // multi-dimensional concat returns None and falls through to tract.
     let _axis = node
         .attribute
         .iter()

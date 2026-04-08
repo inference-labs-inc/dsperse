@@ -54,10 +54,11 @@ pub(crate) fn fold_and_trace_via_tract(
                 .any(|inp| failed_nodes.borrow().contains(&inp.node));
             let outputs = if tainted {
                 failed_nodes.borrow_mut().insert(node.id);
-                let fallback = inputs
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                let fallback = inputs.first().cloned().unwrap_or_else(|| {
+                    Tensor::zero::<f32>(&[1])
+                        .expect("scalar f32 allocation")
+                        .into_tvalue()
+                });
                 let n = node.outputs.len().max(1);
                 (0..n).map(|_| fallback.clone()).collect()
             } else {
@@ -77,10 +78,11 @@ pub(crate) fn fold_and_trace_via_tract(
                             "op eval failed, using input[0] shape as fallback"
                         );
                         failed_nodes.borrow_mut().insert(node.id);
-                        let fallback = inputs
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                        let fallback = inputs.first().cloned().unwrap_or_else(|| {
+                            Tensor::zero::<f32>(&[1])
+                                .expect("scalar f32 allocation")
+                                .into_tvalue()
+                        });
                         let n = node.outputs.len().max(1);
                         (0..n).map(|_| fallback.clone()).collect()
                     }

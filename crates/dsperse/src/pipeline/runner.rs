@@ -561,7 +561,7 @@ fn run_combined_inference(
                 &slice_id,
                 tiling,
                 slice_meta.jstprove_circuit_path.as_deref(),
-                &mut tensor_cache,
+                &tensor_cache,
                 backend,
                 config,
                 donor_map.as_ref(),

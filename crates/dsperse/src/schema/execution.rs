@@ -86,6 +86,7 @@ pub struct ExecutionInfo {
     pub tile_exec_infos: Vec<TileResult>,
 }
 
+#[derive(Debug)]
 pub struct StrategyOutput {
     pub info: ExecutionInfo,
     pub outputs: Vec<(String, ndarray::ArrayD<f64>)>,

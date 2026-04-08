@@ -368,7 +368,7 @@ pub(crate) fn execute_combined_tiled(
     slice_id: &str,
     tiling: &TilingInfo,
     slice_circuit_path: Option<&str>,
-    tensor_cache: &mut TensorStore,
+    tensor_cache: &TensorStore,
     backend: &JstproveBackend,
     config: &RunConfig,
     donor_init_map: Option<&HashMap<String, &TensorProto>>,

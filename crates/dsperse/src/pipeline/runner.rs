@@ -1768,11 +1768,6 @@ fn execute_dim_split(
     _backend: &JstproveBackend,
     _donor_init_map: Option<&HashMap<String, &TensorProto>>,
 ) -> Result<ExecutionInfo> {
-    use ndarray::Axis;
-
-    let concat_axis = ds.concat_axis;
-    let epg = ds.elements_per_group;
-
     let tmpl_rel = ds.template_path.as_ref().ok_or_else(|| {
         DsperseError::Pipeline(format!("{slice_id}: dim_split has no template_path"))
     })?;
@@ -1784,224 +1779,100 @@ fn execute_dim_split(
         )));
     }
 
-    let use_matmul_split = matches!(
-        ds.split_kind,
-        crate::schema::tiling::DimSplitKind::MatMulOutputDim
-    );
+    let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
+    let input_shape = input_tensor.shape().to_vec();
+    let k_dim = *input_shape.last().unwrap_or(&0);
+
+    let total_rows: usize = input_shape
+        .iter()
+        .take(input_shape.len().saturating_sub(1))
+        .product();
+    let flat_input = input_tensor
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order(ndarray::IxDyn(&[total_rows, k_dim]))
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: flatten input: {e}")))?;
 
     let slice_onnx_path = slices_dir
         .join(format!("slice_{}", ds.slice_idx))
         .join("payload")
         .join(format!("slice_{}.onnx", ds.slice_idx));
 
-    let original_weights = if use_matmul_split {
-        if let Some(ref wn) = ds.weight_name {
-            let model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-            let graph = model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph"))
-            })?;
-            let tensor = graph
-                .initializer
-                .iter()
-                .find(|i| i.name == *wn)
-                .ok_or_else(|| {
-                    DsperseError::Pipeline(format!(
-                        "{slice_id}: weight {wn:?} not found in slice ONNX"
-                    ))
-                })?;
-            Some(crate::slicer::onnx_proto::tensor_to_f32(tensor))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
     let mut tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
 
-    let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::new();
-
-    for g in 0..ds.num_groups {
-        let dim_start = g * epg;
-        if dim_start >= ds.dim_size {
-            break;
-        }
-        let dim_end = ((g + 1) * epg).min(ds.dim_size);
-        let actual_size = dim_end - dim_start;
-
-        let group_input = if use_matmul_split {
-            tensor_cache.get(&ds.input_name)?.clone()
-        } else {
-            let split_dim = ds.split_dim;
-            let full = tensor_cache.get(&ds.input_name)?;
-            let sliced = full
-                .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
-                .to_owned();
-            if actual_size < epg {
-                let mut padded_shape = sliced.shape().to_vec();
-                padded_shape[split_dim] = epg;
-                let mut padded = ndarray::ArrayD::zeros(padded_shape);
-                for (mut dst, src) in padded
-                    .axis_iter_mut(Axis(split_dim))
-                    .zip(sliced.axis_iter(Axis(split_dim)))
-                {
-                    dst.assign(&src);
+    if let Some(ref wn) = ds.weight_name
+        && let Some(graph) = tmpl_model.graph.as_mut()
+    {
+        let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
+        if let Some(orig_graph) = orig_model.graph.as_ref() {
+            if let Some(orig_w) = orig_graph.initializer.iter().find(|i| i.name == *wn) {
+                let weight_data = crate::slicer::onnx_proto::tensor_to_f32(orig_w);
+                if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W") {
+                    w_init.float_data = weight_data;
+                    w_init.raw_data.clear();
                 }
-                padded
-            } else {
-                sliced
             }
-        };
-
-        if use_matmul_split
-            && let Some(ref weights) = original_weights
-            && let Some(graph) = tmpl_model.graph.as_mut()
-        {
-            let matmul_node = graph
+            let matmul_node = orig_graph
                 .node
                 .iter()
                 .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"));
-            let trans_b = matmul_node.is_some_and(|n| {
-                n.op_type == "Gemm"
-                    && crate::slicer::onnx_proto::get_attribute_int(n, "transB").unwrap_or(0) == 1
-            });
-
-            if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W") {
-                let (rows, cols) = (w_init.dims[0] as usize, w_init.dims[1] as usize);
-                let k = if trans_b { cols } else { rows };
-                let orig_cols = ds.dim_size;
-                let mut chunk = Vec::with_capacity(k * epg);
-                if trans_b {
-                    for r in dim_start..dim_end.min(ds.dim_size) {
-                        let start = r * k;
-                        chunk.extend_from_slice(&weights[start..start + k]);
-                    }
-                    chunk.resize(epg * k, 0.0);
-                } else {
-                    for r in 0..k {
-                        let start = r * orig_cols + dim_start;
-                        let end = (start + actual_size).min(weights.len());
-                        chunk.extend_from_slice(&weights[start..end]);
-                        if actual_size < epg {
-                            chunk.resize(chunk.len() + epg - actual_size, 0.0);
-                        }
-                    }
-                }
-                w_init.float_data = chunk;
-                w_init.raw_data.clear();
-            }
-
-            if let Some(bias_init) = graph.initializer.iter_mut().find(|i| i.name == "C") {
-                let orig_model = crate::slicer::onnx_proto::load_model(&slice_onnx_path)?;
-                if let Some(orig_graph) = orig_model.graph.as_ref() {
-                    let bias_name = matmul_node.and_then(|n| n.input.get(2).cloned());
-                    if let Some(ref bn) = bias_name
-                        && let Some(orig_bias) =
-                            orig_graph.initializer.iter().find(|i| i.name == *bn)
-                    {
-                        let bias_data = crate::slicer::onnx_proto::tensor_to_f32(orig_bias);
-                        if bias_data.len() == ds.dim_size {
-                            let mut sliced = bias_data[dim_start..dim_end].to_vec();
-                            sliced.resize(epg, 0.0);
-                            bias_init.float_data = sliced;
-                            bias_init.raw_data.clear();
-                        }
-                    }
-                }
+            if let Some(bias_name) = matmul_node.and_then(|n| n.input.get(2).cloned())
+                && let Some(orig_bias) = orig_graph.initializer.iter().find(|i| i.name == bias_name)
+                && let Some(b_init) = graph.initializer.iter_mut().find(|i| i.name == "C")
+            {
+                b_init.float_data = crate::slicer::onnx_proto::tensor_to_f32(orig_bias);
+                b_init.raw_data.clear();
             }
         }
-
-        let tmp_dir = tempfile::tempdir()
-            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
-        let patched_path = tmp_dir.path().join("dim_chunk.onnx");
-        crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
-
-        let group_output = if use_matmul_split {
-            run_onnx_inference(&patched_path, &group_input)?
-        } else {
-            let tmpl_graph = tmpl_model.graph.as_ref().ok_or_else(|| {
-                DsperseError::Pipeline(format!("{slice_id}: template has no graph"))
-            })?;
-            let tmpl_init_names: std::collections::HashSet<&str> = tmpl_graph
-                .initializer
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
-            let mut group_cache = TensorStore::new();
-            for vi in &tmpl_graph.input {
-                if tmpl_init_names.contains(vi.name.as_str()) {
-                    continue;
-                }
-                if vi.name == "dim_tmpl_in" {
-                    group_cache.put(vi.name.clone(), group_input.clone());
-                } else if let Some(arr) = tensor_cache.try_get(&vi.name) {
-                    let shape = arr.shape();
-                    if ds.split_dim < shape.len() && shape[ds.split_dim] == ds.dim_size {
-                        let sliced = arr
-                            .slice_axis(
-                                Axis(ds.split_dim),
-                                ndarray::Slice::from(dim_start..dim_end),
-                            )
-                            .to_owned();
-                        group_cache.put(vi.name.clone(), sliced);
-                    } else {
-                        group_cache.put(vi.name.clone(), arr.clone());
-                    }
-                }
-            }
-            let input_names: Vec<String> = tmpl_graph
-                .input
-                .iter()
-                .filter(|vi| !tmpl_init_names.contains(vi.name.as_str()))
-                .map(|vi| vi.name.clone())
-                .collect();
-            let named = run_onnx_inference_multi_named(&patched_path, &group_cache, &input_names)?;
-            let (data, shape) = named.into_values().next().ok_or_else(|| {
-                DsperseError::Pipeline(format!("{slice_id}: dim-split group produced no output"))
-            })?;
-            ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data).map_err(|e| {
-                DsperseError::Pipeline(format!("{slice_id}: dim-split array reshape: {e}"))
-            })?
-        };
-
-        let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
-            group_output
-                .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
-                .to_owned()
-        } else {
-            group_output
-        };
-
-        group_outputs.push(trimmed);
     }
 
-    let result = ndarray::concatenate(
-        Axis(concat_axis),
-        &group_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
-    )
-    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: dim-split concat failed: {e}")))?;
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
+    let patched_path = tmp_dir.path().join("dim_tmpl.onnx");
+    crate::slicer::onnx_proto::save_model(&tmpl_model, &patched_path)?;
 
-    let final_result = if let Some(target) = target_shape {
-        let target_usize: Vec<usize> = target.iter().map(|&d| d as usize).collect();
-        result
-            .as_standard_layout()
-            .into_owned()
-            .into_shape_with_order(ndarray::IxDyn(&target_usize))
-            .map_err(|e| {
-                DsperseError::Pipeline(format!(
-                    "{slice_id}: dim-split reshape to target failed: {e}"
-                ))
-            })?
+    let mut row_outputs: Vec<ndarray::ArrayD<f64>> = Vec::with_capacity(total_rows);
+
+    for r in 0..total_rows {
+        let row = flat_input
+            .slice(ndarray::s![r..r + 1, ..])
+            .into_shape_with_order(ndarray::IxDyn(&[1, 1, k_dim]))
+            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row extract: {e}")))?
+            .to_owned();
+
+        let out = run_onnx_inference(&patched_path, &row)?;
+        row_outputs.push(out);
+    }
+
+    let stacked = ndarray::concatenate(
+        ndarray::Axis(0),
+        &row_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
+    )
+    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row concat: {e}")))?;
+
+    let output_shape = if let Some(target) = target_shape {
+        target.iter().map(|&d| d as usize).collect::<Vec<_>>()
     } else {
-        result
+        let n_dim = stacked.shape().last().copied().unwrap_or(0);
+        let mut s = input_shape.clone();
+        if let Some(last) = s.last_mut() {
+            *last = n_dim;
+        }
+        s
     };
+
+    let final_result = stacked
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order(ndarray::IxDyn(&output_shape))
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: reshape to output: {e}")))?;
 
     tensor_cache.put(ds.output_name.clone(), final_result);
 
     tracing::info!(
         slice = %slice_id,
-        groups = ds.num_groups,
-        "executed dim-split"
+        rows = total_rows,
+        "executed dim-split (sequence tiled)"
     );
 
     Ok(ExecutionInfo {

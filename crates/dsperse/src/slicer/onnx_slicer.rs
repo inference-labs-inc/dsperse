@@ -35,9 +35,20 @@ pub fn slice_model(
     let traced_types = trace_result.types;
 
     if let Some(graph) = model.graph.as_mut() {
-        let folded = super::onnx_fold::propagate_constants_with_shapes(graph, &traced_shapes);
-        if folded > 0 {
-            tracing::info!(folded, "propagated shape-derived constants in parent graph");
+        let mut total_folded = 0usize;
+        for pass in 0..4 {
+            let folded = super::onnx_fold::propagate_constants_with_shapes(graph, &traced_shapes);
+            if folded == 0 {
+                break;
+            }
+            total_folded += folded;
+            tracing::info!(pass, folded, "shape-constant propagation pass");
+        }
+        if total_folded > 0 {
+            tracing::info!(
+                total_folded,
+                "propagated shape-derived constants in parent graph"
+            );
         }
     }
 

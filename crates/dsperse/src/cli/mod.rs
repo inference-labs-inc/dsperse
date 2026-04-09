@@ -10,9 +10,9 @@ use crate::pipeline::{self, RunConfig};
 use jstprove_circuits::api::{CurveParseError, ProofSystemType as ProofSystem};
 
 fn parse_curve(curve: &str) -> Result<Curve> {
-    curve
-        .parse()
-        .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))
+    curve.parse().map_err(|e: CurveParseError| {
+        DsperseError::Other(format!("invalid --curve '{curve}': {e}"))
+    })
 }
 
 pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");

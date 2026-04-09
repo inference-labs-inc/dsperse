@@ -611,7 +611,7 @@ fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
                 let mut end = pos + 1;
                 while end < sorted_nodes.len() {
                     let candidate = sorted_nodes[end];
-                    if !super::is_shape_preserving(&candidate.node_type) {
+                    if !super::is_slice_passthrough(&candidate.node_type) {
                         break;
                     }
                     let consumes_produced = candidate.dependencies.input.iter().any(|inp| {

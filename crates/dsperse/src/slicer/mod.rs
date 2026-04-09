@@ -36,6 +36,15 @@ pub(crate) const BINARY_ARITHMETIC: &[&str] = &["Add", "Sub", "Mul", "Div", "Pow
 pub(crate) const NORMALIZATION_OPS: &[&str] =
     &["BatchNormalization", "Softmax", "LayerNormalization"];
 
+pub(crate) const LAYOUT_OPS: &[&str] = &[
+    "Reshape",
+    "Transpose",
+    "Flatten",
+    "Squeeze",
+    "Unsqueeze",
+    "Gather",
+];
+
 pub(crate) const CONTROL_FLOW_OPS: &[&str] = &["Loop", "If", "Scan"];
 
 pub(crate) fn is_control_flow(op: &str) -> bool {
@@ -106,6 +115,24 @@ pub(crate) fn is_shape_preserving(op: &str) -> bool {
     UNARY_ACTIVATIONS.contains(&op)
         || UNARY_STRUCTURAL.contains(&op)
         || NORMALIZATION_OPS.contains(&op)
+}
+
+/// Ops the slicer may absorb into an adjacent activation slice
+/// without creating a new compile boundary.  This is a superset of
+/// `is_shape_preserving`: it additionally covers the layout ops
+/// (Reshape / Transpose / Flatten / Squeeze / Unsqueeze / Gather)
+/// which CHANGE the tensor shape but do not introduce heavy
+/// compute -- grouping them with the producer keeps transformer
+/// reshape-transpose chains from shattering into N one-op slices.
+///
+/// Do NOT reuse this for shape-fallback decisions:
+/// `is_shape_preserving` is consumed by the trace / materializer
+/// to assume `output_shape == input_shape`, which is FALSE for
+/// every op in LAYOUT_OPS by definition.  Keep that predicate
+/// strict and route slicer-grouping checks through this function
+/// instead.
+pub(crate) fn is_slice_passthrough(op: &str) -> bool {
+    is_shape_preserving(op) || LAYOUT_OPS.contains(&op)
 }
 
 pub(crate) fn is_elementwise(op: &str) -> bool {

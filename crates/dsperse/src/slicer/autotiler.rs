@@ -765,15 +765,28 @@ pub fn detect_dim_split(
                 .take(inp_shape.len().saturating_sub(1))
                 .map(|&d| d.max(1) as usize)
                 .product();
-            if total_rows <= 1 {
+            if total_rows == 0 || k_dim == 0 || n_dim == 0 {
                 continue;
             }
             let row_cost = k_dim.saturating_mul(n_dim).saturating_mul(2);
-            let k_chunks = if row_cost > MAX_ESTIMATED_CONSTRAINTS as usize {
-                row_cost.div_ceil(MAX_ESTIMATED_CONSTRAINTS as usize)
+            let max_per_chunk = MAX_ESTIMATED_CONSTRAINTS as usize;
+            let mut k_chunks = if row_cost > max_per_chunk {
+                row_cost.div_ceil(max_per_chunk).max(1)
             } else {
                 1
             };
+            while k_chunks < k_dim
+                && k_dim
+                    .div_ceil(k_chunks)
+                    .saturating_mul(n_dim)
+                    .saturating_mul(2)
+                    > max_per_chunk
+            {
+                k_chunks += 1;
+            }
+            if total_rows == 1 && k_chunks == 1 {
+                continue;
+            }
             let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
                 continue;
             };
@@ -1714,8 +1727,8 @@ fn create_matmul_dim_template(
     let tmpl_output_name = "dim_tmpl_out".to_string();
     let tmpl_weight_name = "W".to_string();
 
-    let tmpl_input_shape: Vec<i64> = vec![1, 1, k_chunk_size as i64];
-    let output_shape: Vec<i64> = vec![1, 1, n_dim as i64];
+    let tmpl_input_shape: Vec<i64> = vec![1, k_chunk_size as i64];
+    let output_shape: Vec<i64> = vec![1, n_dim as i64];
 
     let x =
         onnx_proto::make_tensor_value_info(&tmpl_input_name, TensorProto::FLOAT, &tmpl_input_shape);
@@ -2316,6 +2329,92 @@ mod tests {
         assert_eq!(d.k_dim, 384);
         assert_eq!(d.n_dim, 1536);
         assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
+    }
+
+    #[test]
+    fn detect_dim_split_k_chunks_saturate_budget() {
+        // k_dim=10, n_dim=100_000: row_cost=2M, naive k_chunks=4 yields
+        // chunk_size=3 -> per-chunk=600K > 500K. Loop should bump k_chunks
+        // until per-chunk <= MAX_ESTIMATED_CONSTRAINTS.
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 10]);
+        shapes.insert("weight".to_string(), vec![10, 100_000]);
+        shapes.insert("output".to_string(), vec![4, 100_000]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
+        assert_eq!(d.k_dim, 10);
+        assert_eq!(d.n_dim, 100_000);
+        let chunk_size = d.k_dim.div_ceil(d.k_chunks);
+        assert!(
+            chunk_size * d.n_dim * 2 <= MAX_ESTIMATED_CONSTRAINTS as usize,
+            "per-chunk cost {} exceeds MAX {}",
+            chunk_size * d.n_dim * 2,
+            MAX_ESTIMATED_CONSTRAINTS
+        );
+    }
+
+    #[test]
+    fn detect_dim_split_single_row_with_k_chunking() {
+        // total_rows=1 but k*n*2 > MAX: still detect, K-chunk it.
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![1, 2048]);
+        shapes.insert("weight".to_string(), vec![2048, 2048]);
+        shapes.insert("output".to_string(), vec![1, 2048]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
+        assert_eq!(d.dim_size, 1);
+        assert_eq!(d.num_groups, 1);
+        assert!(d.k_chunks > 1, "expected K-chunking for single row");
+        let chunk_size = d.k_dim.div_ceil(d.k_chunks);
+        assert!(chunk_size * d.n_dim * 2 <= MAX_ESTIMATED_CONSTRAINTS as usize);
+    }
+
+    #[test]
+    fn detect_dim_split_skips_single_row_single_chunk() {
+        // total_rows=1 and k*n*2 <= MAX: nothing to split via MatMul path.
+        // The slice is still over budget (forced via a second MatMul), but
+        // dim-split should decline and let the caller fall through.
+        let node1 = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "w1".to_string()],
+            output: vec!["mid".to_string()],
+            ..Default::default()
+        };
+        let node2 = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["mid".to_string(), "w2".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![1, 64]);
+        shapes.insert("w1".to_string(), vec![64, 64]);
+        shapes.insert("mid".to_string(), vec![1, 64]);
+        shapes.insert("w2".to_string(), vec![64, 64]);
+        shapes.insert("output".to_string(), vec![1, 64]);
+        let mut init_names = HashSet::new();
+        init_names.insert("w1".to_string());
+        init_names.insert("w2".to_string());
+        // Tiny per-op cost; slice estimate stays under MAX so detect_dim_split
+        // returns None at the outer gate, which is what we want for a
+        // single-row single-chunk MatMul.
+        assert!(detect_dim_split(&[node1, node2], &shapes, &init_names).is_none());
     }
 
     fn make_maxpool_node(

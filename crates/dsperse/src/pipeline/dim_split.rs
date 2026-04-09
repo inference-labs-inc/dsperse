@@ -64,22 +64,37 @@ pub(crate) fn execute_dim_split(
         n.op_type == "Gemm"
             && crate::slicer::onnx_proto::get_attribute_int(n, "transB").unwrap_or(0) == 1
     });
-    let full_weight: Vec<f32> = ds
-        .weight_name
-        .as_ref()
-        .and_then(|wn| {
-            if let Some(map) = donor_init_map
-                && let Some(t) = map.get(wn.as_str())
-            {
-                return Some(crate::slicer::onnx_proto::tensor_to_f32(t));
-            }
-            orig_graph
-                .initializer
-                .iter()
-                .find(|i| i.name == *wn)
-                .map(crate::slicer::onnx_proto::tensor_to_f32)
-        })
-        .unwrap_or_default();
+    let weight_name = ds.weight_name.as_ref().ok_or_else(|| {
+        DsperseError::Pipeline(format!(
+            "{slice_id}: dim_split missing weight_name in metadata"
+        ))
+    })?;
+    let full_weight: Vec<f32> = if let Some(map) = donor_init_map
+        && let Some(t) = map.get(weight_name.as_str())
+    {
+        crate::slicer::onnx_proto::tensor_to_f32(t)
+    } else {
+        let init = orig_graph
+            .initializer
+            .iter()
+            .find(|i| i.name == *weight_name)
+            .ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: weight {weight_name:?} not found in slice ONNX initializers"
+                ))
+            })?;
+        crate::slicer::onnx_proto::tensor_to_f32(init)
+    };
+    let expected_weight_len = ds.k_dim.saturating_mul(ds.n_dim);
+    if expected_weight_len > 0 && full_weight.len() != expected_weight_len {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: weight {weight_name:?} length {} does not match expected k_dim*n_dim = {}*{} = {}",
+            full_weight.len(),
+            ds.k_dim,
+            ds.n_dim,
+            expected_weight_len
+        )));
+    }
 
     let n_dim = ds.n_dim;
     let tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
@@ -148,16 +163,22 @@ pub(crate) fn execute_dim_split(
             crate::slicer::onnx_proto::save_model(&patched, &patched_path)?;
 
             let input_arr =
-                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, 1, k_chunk_size]), input_chunk)
+                ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, k_chunk_size]), input_chunk)
                     .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: input chunk: {e}")))?;
 
             let out = run_onnx_inference(&patched_path, &input_arr)?;
+            if out.len() != n_dim {
+                return Err(DsperseError::Pipeline(format!(
+                    "{slice_id}: dim-split k-chunk {kc} produced {} outputs, expected n_dim={n_dim}",
+                    out.len()
+                )));
+            }
             for (acc, v) in row_accum.iter_mut().zip(out.iter().copied()) {
                 *acc += v;
             }
         }
 
-        let row_arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, 1, n_dim]), row_accum)
+        let row_arr = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, n_dim]), row_accum)
             .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row output: {e}")))?;
         row_outputs.push(row_arr);
     }

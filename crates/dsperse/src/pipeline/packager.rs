@@ -14,7 +14,6 @@ use crate::utils::paths::resolve_relative_path;
 
 pub struct PackageConfig {
     pub output_dir: PathBuf,
-    pub cleanup: bool,
     pub author: Option<String>,
     pub model_version: Option<String>,
     pub model_name: Option<String>,
@@ -132,10 +131,6 @@ pub fn package_content_addressed(
     }
 
     let curve = normalize_curve(config.curve.as_deref())?;
-
-    if config.cleanup {
-        validate_output_dir_not_under_slice(&config.output_dir)?;
-    }
 
     let model_meta = load_model_metadata(slices_dir)?;
 
@@ -292,15 +287,6 @@ pub fn package_content_addressed(
     fs::write(&manifest_path, &manifest_bytes).map_err(|e| DsperseError::io(e, &manifest_path))?;
     total_size += manifest_bytes.len() as u64;
 
-    if config.cleanup {
-        for slice in &model_meta.slices {
-            let slice_dir = slices_dir.join(format!("slice_{}", slice.index));
-            if slice_dir.is_dir() {
-                fs::remove_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
-            }
-        }
-    }
-
     Ok(PackageResult {
         component_count: written_components.len(),
         wb_count: written_wbs.len(),
@@ -421,20 +407,6 @@ fn collect_payload_blobs(
     }
 
     Ok(blobs)
-}
-
-fn validate_output_dir_not_under_slice(output_dir: &Path) -> Result<()> {
-    for ancestor in output_dir.ancestors() {
-        if let Some(name) = ancestor.file_name()
-            && name.to_string_lossy().starts_with("slice_")
-        {
-            return Err(DsperseError::Other(format!(
-                "output directory {} is inside a slice directory that would be removed by cleanup",
-                output_dir.display()
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn reject_symlink_path(path: &Path) -> Result<()> {
@@ -685,7 +657,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: Some("test-author".to_string()),
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
@@ -727,7 +699,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir,
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -753,7 +725,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir,
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -774,7 +746,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: Some("test-author".to_string()),
             model_version: Some("1.0.0".to_string()),
             model_name: Some("test-model".to_string()),
@@ -820,7 +792,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -851,7 +823,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -885,7 +857,7 @@ mod tests {
 
         let config1 = PackageConfig {
             output_dir: out1.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -894,7 +866,7 @@ mod tests {
         };
         let config2 = PackageConfig {
             output_dir: out2.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -928,7 +900,7 @@ mod tests {
 
         let config_none = PackageConfig {
             output_dir: out_none.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -937,7 +909,7 @@ mod tests {
         };
         let config_bn = PackageConfig {
             output_dir: out_bn.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -946,7 +918,7 @@ mod tests {
         };
         let config_gl = PackageConfig {
             output_dir: out_gl.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1032,7 +1004,7 @@ mod tests {
 
         let config_none = PackageConfig {
             output_dir: out_none.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1041,7 +1013,7 @@ mod tests {
         };
         let config_bn = PackageConfig {
             output_dir: out_bn.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1050,7 +1022,7 @@ mod tests {
         };
         let config_gl = PackageConfig {
             output_dir: out_gl.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1086,7 +1058,7 @@ mod tests {
 
         let config_typo = PackageConfig {
             output_dir: tmp.path().join("output"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1098,7 +1070,7 @@ mod tests {
 
         let config_empty = PackageConfig {
             output_dir: tmp.path().join("output2"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1122,7 +1094,7 @@ mod tests {
 
         let config1 = PackageConfig {
             output_dir: out1.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1131,7 +1103,7 @@ mod tests {
         };
         let config2 = PackageConfig {
             output_dir: out2.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1140,7 +1112,7 @@ mod tests {
         };
         let config3 = PackageConfig {
             output_dir: out3.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1161,31 +1133,6 @@ mod tests {
 
         assert_eq!(m1["components"][0]["sha256"], m2["components"][0]["sha256"]);
         assert_eq!(m1["components"][0]["sha256"], m3["components"][0]["sha256"]);
-    }
-
-    #[test]
-    fn test_cleanup_removes_slice_dirs() {
-        let tmp = TempDir::new().unwrap();
-        let slices_dir = tmp.path().join("model").join("slices");
-        fs::create_dir_all(&slices_dir).unwrap();
-        create_test_model_metadata(&slices_dir, 2);
-
-        let output_dir = tmp.path().join("output");
-        let config = PackageConfig {
-            output_dir,
-            cleanup: true,
-            author: None,
-            model_version: None,
-            model_name: None,
-            timeout: None,
-            curve: None,
-        };
-
-        package_content_addressed(&slices_dir, &config).unwrap();
-
-        for i in 0..2 {
-            assert!(!slices_dir.join(format!("slice_{}", i)).exists());
-        }
     }
 
     #[test]
@@ -1255,7 +1202,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1332,7 +1279,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1408,7 +1355,7 @@ mod tests {
         ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1478,7 +1425,7 @@ mod tests {
         ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1499,7 +1446,7 @@ mod tests {
     fn test_nonexistent_dir() {
         let config = PackageConfig {
             output_dir: PathBuf::from("/tmp/nonexistent_output"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1508,32 +1455,6 @@ mod tests {
         };
         let result = package_content_addressed(Path::new("/nonexistent/path"), &config);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_cleanup_rejects_output_under_slice_dir() {
-        let tmp = TempDir::new().unwrap();
-        let slices_dir = tmp.path().join("model").join("slices");
-        fs::create_dir_all(&slices_dir).unwrap();
-        create_test_model_metadata(&slices_dir, 1);
-
-        let config = PackageConfig {
-            output_dir: slices_dir.join("slice_0").join("output"),
-            cleanup: true,
-            author: None,
-            model_version: None,
-            model_name: None,
-            timeout: None,
-            curve: None,
-        };
-
-        let result = package_content_addressed(&slices_dir, &config);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("slice directory"),
-            "expected slice dir error, got: {err}"
-        );
     }
 
     #[test]
@@ -1601,7 +1522,7 @@ mod tests {
         let output_dir = tmp.path().join("output");
         let config = PackageConfig {
             output_dir: output_dir.clone(),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,
@@ -1687,7 +1608,7 @@ mod tests {
         ensure_test_artifacts(&slices_dir);
         let config = PackageConfig {
             output_dir: tmp.path().join("output"),
-            cleanup: false,
+
             author: None,
             model_version: None,
             model_name: None,

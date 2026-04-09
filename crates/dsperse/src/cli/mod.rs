@@ -209,8 +209,6 @@ pub struct PackageArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long)]
     pub output_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = false)]
-    pub no_cleanup: bool,
     #[arg(long)]
     pub author: Option<String>,
     #[arg(long)]
@@ -456,7 +454,6 @@ pub fn cmd_package(args: PackageArgs) -> Result<()> {
 
     let config = pipeline::packager::PackageConfig {
         output_dir,
-        cleanup: !args.no_cleanup,
         author: args.author,
         model_version: args.model_version,
         model_name: args.model_name,

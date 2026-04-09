@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub use jstprove_circuits::api::CurveType as Curve;
+pub use jstprove_circuits::api::VerifiedOutputType as VerifiedOutput;
 use jstprove_circuits::api::{
     self, ArchitectureType as Architecture, CircuitParamsType as CircuitParams,
     CompiledCircuitType as CompiledCircuit, WANDBType as WANDB,
@@ -16,7 +17,6 @@ use super::traits::ProofBackend;
 #[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
-    curve: Curve,
     bundle_cache: Mutex<HashMap<PathBuf, Arc<CompiledCircuit>>>,
 }
 
@@ -24,7 +24,6 @@ impl Default for JstproveBackend {
     fn default() -> Self {
         Self {
             compress: true,
-            curve: Curve::default(),
             bundle_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -40,8 +39,11 @@ impl JstproveBackend {
         self
     }
 
-    pub fn with_curve(mut self, curve: Curve) -> Self {
-        self.curve = curve;
+    /// Deprecated: the curve is now resolved per-bundle from the manifest
+    /// at load time. This setter is a no-op retained for source
+    /// compatibility; it will be removed in a future release.
+    #[deprecated(note = "curve is now resolved per-bundle via CompiledCircuit::resolved_curve")]
+    pub fn with_curve(self, _curve: Curve) -> Self {
         self
     }
 
@@ -49,8 +51,12 @@ impl JstproveBackend {
         self.compress
     }
 
-    pub fn curve(&self) -> Curve {
-        self.curve
+    fn resolve_curve(bundle: &CompiledCircuit) -> Result<Curve> {
+        bundle.resolved_curve().ok_or_else(|| {
+            DsperseError::Backend(
+                "circuit bundle has no curve in metadata and field detection failed".into(),
+            )
+        })
     }
 
     pub fn load_bundle_cached(&self, path: &Path) -> Result<Arc<CompiledCircuit>> {
@@ -82,9 +88,34 @@ impl JstproveBackend {
         tracing::debug!(cleared = count, "bundle cache cleared");
     }
 
+    /// Evict cached bundles whose canonical path starts with the given
+    /// prefix. Used by callers that want to drop a model's entries
+    /// without clearing the entire cache.
+    pub fn evict_cache_by_prefix(&self, prefix: &Path) {
+        let mut cache = match self.bundle_cache.lock() {
+            Ok(cache) => cache,
+            Err(e) => {
+                tracing::warn!("bundle cache lock poisoned on evict: {e}");
+                e.into_inner()
+            }
+        };
+        let before = cache.len();
+        cache.retain(|k, _| !k.starts_with(prefix));
+        let evicted = before - cache.len();
+        if evicted > 0 {
+            tracing::info!(
+                prefix = %prefix.display(),
+                evicted,
+                remaining = cache.len(),
+                "evicted bundle cache entries"
+            );
+        }
+    }
+
     pub fn compile(
         &self,
         circuit_path: &Path,
+        curve: Curve,
         params: CircuitParams,
         architecture: Architecture,
         wandb: WANDB,
@@ -95,7 +126,7 @@ impl JstproveBackend {
 
         api::compile(
             circuit_path_str,
-            self.curve,
+            curve,
             params,
             architecture,
             wandb,
@@ -121,6 +152,7 @@ impl JstproveBackend {
         output_json: &[u8],
     ) -> Result<Vec<u8>> {
         let bundle = self.load_bundle_cached(circuit_path)?;
+        let curve = Self::resolve_curve(&bundle)?;
 
         let req = WitnessRequest {
             circuit: bundle.circuit.clone(),
@@ -130,7 +162,7 @@ impl JstproveBackend {
             metadata: bundle.metadata.clone(),
         };
 
-        let result = api::witness(self.curve, &req, self.compress)
+        let result = api::witness(curve, &req, self.compress)
             .map_err(|e| DsperseError::Backend(format!("witness: {e}")))?;
 
         Ok(result.witness)
@@ -143,6 +175,7 @@ impl JstproveBackend {
         initializers: &[(Vec<f64>, Vec<usize>)],
     ) -> Result<Vec<u8>> {
         let bundle = self.load_bundle_cached(circuit_path)?;
+        let curve = Self::resolve_curve(&bundle)?;
         let params = bundle.metadata.as_ref().ok_or_else(|| {
             DsperseError::Backend(
                 "circuit bundle missing metadata (required for quantization)".into(),
@@ -150,7 +183,7 @@ impl JstproveBackend {
         })?;
 
         let result = api::witness_f64(
-            self.curve,
+            curve,
             &bundle.circuit,
             &bundle.witness_solver,
             params,
@@ -170,8 +203,9 @@ impl JstproveBackend {
 
     pub fn prove(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
         let bundle = self.load_bundle_cached(circuit_path)?;
+        let curve = Self::resolve_curve(&bundle)?;
 
-        api::prove(self.curve, &bundle.circuit, witness_bytes, self.compress)
+        api::prove(curve, &bundle.circuit, witness_bytes, self.compress)
             .map_err(|e| DsperseError::Backend(format!("prove: {e}")))
     }
 
@@ -197,9 +231,32 @@ impl JstproveBackend {
         proof_bytes: &[u8],
     ) -> Result<bool> {
         let bundle = self.load_bundle_cached(circuit_path)?;
+        let curve = Self::resolve_curve(&bundle)?;
 
-        api::verify(self.curve, &bundle.circuit, witness_bytes, proof_bytes)
+        api::verify(curve, &bundle.circuit, witness_bytes, proof_bytes)
             .map_err(|e| DsperseError::Backend(format!("verify: {e}")))
+    }
+
+    pub fn verify_and_extract(
+        &self,
+        circuit_path: &Path,
+        witness_bytes: &[u8],
+        proof_bytes: &[u8],
+        num_inputs: usize,
+        expected_inputs: Option<&[f64]>,
+    ) -> Result<VerifiedOutput> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let curve = Self::resolve_curve(&bundle)?;
+
+        api::verify_and_extract(
+            curve,
+            &bundle.circuit,
+            witness_bytes,
+            proof_bytes,
+            num_inputs,
+            expected_inputs,
+        )
+        .map_err(|e| DsperseError::Backend(format!("verify_and_extract: {e}")))
     }
 }
 
@@ -251,6 +308,7 @@ impl WarmCircuit {
         backend: &JstproveBackend,
     ) -> Result<Self> {
         let bundle = backend.load_bundle_cached(circuit_path)?;
+        let curve = JstproveBackend::resolve_curve(&bundle)?;
         let params = bundle
             .metadata
             .clone()
@@ -260,7 +318,7 @@ impl WarmCircuit {
             params,
             initializers,
             compress: backend.compress(),
-            curve: backend.curve(),
+            curve,
         })
     }
 
@@ -292,15 +350,9 @@ mod tests {
     }
 
     #[test]
-    fn default_curve_is_bn254() {
+    fn backend_constructs_without_curve_state() {
         let backend = JstproveBackend::default();
-        assert_eq!(backend.curve(), Curve::Bn254);
-    }
-
-    #[test]
-    fn with_curve_sets_curve() {
-        let backend = JstproveBackend::new().with_curve(Curve::Goldilocks);
-        assert_eq!(backend.curve(), Curve::Goldilocks);
+        assert!(backend.compress());
     }
 
     #[test]
@@ -318,6 +370,7 @@ mod tests {
             circuit: vec![1, 2, 3],
             witness_solver: vec![],
             metadata: None,
+            curve: None,
             version: None,
         });
         backend

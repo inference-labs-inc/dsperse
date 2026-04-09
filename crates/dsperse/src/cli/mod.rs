@@ -9,11 +9,16 @@ use crate::pipeline::{self, RunConfig};
 
 use jstprove_circuits::api::{CurveParseError, ProofSystemType as ProofSystem};
 
-fn build_backend(curve: &str) -> Result<JstproveBackend> {
-    let c: Curve = curve
+fn parse_curve(curve: &str) -> Result<Curve> {
+    curve
         .parse()
-        .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))?;
-    Ok(JstproveBackend::new().with_curve(c))
+        .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))
+}
+
+fn build_backend(_curve: &str) -> Result<JstproveBackend> {
+    // Curve is resolved per-bundle at load time; the backend no longer
+    // carries a curve. The parameter is retained for CLI validation.
+    Ok(JstproveBackend::new())
 }
 
 pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");
@@ -382,6 +387,7 @@ pub fn cmd_combine(args: CombineArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
+    let curve = parse_curve(&args.curve)?;
     let backend = build_backend(&args.curve)?;
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
@@ -396,6 +402,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
+        curve,
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
@@ -508,6 +515,7 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
+    let curve = parse_curve(&args.curve)?;
     let backend = build_backend(&args.curve)?;
 
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
@@ -541,6 +549,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
+        curve,
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),

@@ -26,9 +26,11 @@ enum CompileOutcome {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_slices(
     slices_dir: &Path,
     backend: &JstproveBackend,
+    curve: jstprove_circuits::api::CurveType,
     parallel: usize,
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
@@ -103,6 +105,7 @@ pub fn compile_slices(
                 slices_dir,
                 slice,
                 backend,
+                curve,
                 weights_as_inputs,
                 jstprove_ops,
                 &exclude_from_wai,
@@ -377,6 +380,7 @@ fn compile_single_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
     backend: &JstproveBackend,
+    curve: jstprove_circuits::api::CurveType,
     weights_as_inputs: bool,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
@@ -400,6 +404,7 @@ fn compile_single_slice(
             slice,
             cs,
             backend,
+            curve,
             jstprove_ops,
             exclude_from_wai,
             skip_compile_over_size,
@@ -417,6 +422,7 @@ fn compile_single_slice(
                 slice,
                 &tmpl_path,
                 backend,
+                curve,
                 jstprove_ops,
                 exclude_from_wai,
                 skip_compile_over_size,
@@ -484,7 +490,7 @@ fn compile_single_slice(
         traced_shapes,
     )?;
 
-    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
+    std::panic::catch_unwind(|| backend.compile(&circuit_path, curve, params, architecture, wandb))
         .map_err(|p| {
             let msg = p
                 .downcast_ref::<&str>()
@@ -562,6 +568,7 @@ fn compile_channel_split_slice(
     slice: &crate::schema::metadata::SliceMetadata,
     cs: &crate::schema::tiling::ChannelSplitInfo,
     backend: &JstproveBackend,
+    curve: jstprove_circuits::api::CurveType,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
@@ -623,7 +630,7 @@ fn compile_channel_split_slice(
         )?;
 
         std::panic::catch_unwind(|| {
-            backend.compile(&shared_circuit_path, params, architecture, wandb)
+            backend.compile(&shared_circuit_path, curve, params, architecture, wandb)
         })
         .map_err(|p| {
             let msg = p
@@ -666,6 +673,7 @@ fn compile_dim_split_template(
     slice: &crate::schema::metadata::SliceMetadata,
     tmpl_path: &Path,
     backend: &JstproveBackend,
+    curve: jstprove_circuits::api::CurveType,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
@@ -752,7 +760,7 @@ fn compile_dim_split_template(
         traced_shapes,
     )?;
 
-    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
+    std::panic::catch_unwind(|| backend.compile(&circuit_path, curve, params, architecture, wandb))
         .map_err(|p| {
             let msg = p
                 .downcast_ref::<&str>()

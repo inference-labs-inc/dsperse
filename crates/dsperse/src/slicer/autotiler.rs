@@ -733,6 +733,12 @@ pub fn detect_dim_split(
 
     for node in nodes {
         if matches!(node.op_type.as_str(), "MatMul" | "Gemm") {
+            // Gemm with a bias (input C) is not yet supported by the dim-split
+            // template builder; skip so the template construction downstream
+            // stays in sync with the detector.
+            if node.op_type == "Gemm" && node.input.get(2).is_some_and(|s: &String| !s.is_empty()) {
+                continue;
+            }
             let Some(weight_name) = node.input.get(1) else {
                 continue;
             };
@@ -770,11 +776,19 @@ pub fn detect_dim_split(
             }
             let row_cost = k_dim.saturating_mul(n_dim).saturating_mul(2);
             let max_per_chunk = MAX_ESTIMATED_CONSTRAINTS as usize;
+            // Even with k_chunks == k_dim (chunk_size == 1), the per-chunk
+            // cost is at minimum n_dim * 2. If that alone exceeds the budget
+            // the split is infeasible; let the caller fall through to other
+            // detection paths.
+            if n_dim.saturating_mul(2) > max_per_chunk {
+                continue;
+            }
             let mut k_chunks = if row_cost > max_per_chunk {
                 row_cost.div_ceil(max_per_chunk).max(1)
             } else {
                 1
             };
+            k_chunks = k_chunks.min(k_dim);
             while k_chunks < k_dim
                 && k_dim
                     .div_ceil(k_chunks)
@@ -1675,28 +1689,34 @@ fn create_matmul_dim_template(
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
 ) -> Result<std::path::PathBuf> {
+    let weight_name = info.weight_name.as_ref().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(format!(
+            "create_matmul_dim_template: slice {} DimSplitInfo missing weight_name",
+            info.slice_idx
+        ))
+    })?;
+
     let matmul_node = graph
         .node
         .iter()
-        .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"))
+        .find(|n| {
+            matches!(n.op_type.as_str(), "MatMul" | "Gemm")
+                && n.input.iter().any(|i| i == weight_name)
+        })
         .ok_or_else(|| {
-            crate::error::DsperseError::Slicer(
-                "create_matmul_dim_template: no MatMul/Gemm node found".into(),
-            )
+            crate::error::DsperseError::Slicer(format!(
+                "create_matmul_dim_template: slice {} no MatMul/Gemm references weight {weight_name:?}",
+                info.slice_idx
+            ))
         })?;
 
-    if matmul_node.op_type == "Gemm" && matmul_node.input.len() > 2 {
+    if matmul_node.op_type == "Gemm" && matmul_node.input.get(2).is_some_and(|s| !s.is_empty()) {
         return Err(crate::error::DsperseError::Slicer(format!(
             "create_matmul_dim_template: slice {} Gemm with bias not supported for dim-split",
             info.slice_idx
         )));
     }
 
-    let weight_name = matmul_node.input.get(1).ok_or_else(|| {
-        crate::error::DsperseError::Slicer(
-            "create_matmul_dim_template: MatMul has no weight input".into(),
-        )
-    })?;
     let weight_tensor = graph
         .initializer
         .iter()
@@ -2270,13 +2290,11 @@ mod tests {
     fn detect_dim_split_gemm_trans_b() {
         use super::onnx_proto::{NodeProto, make_attribute_int};
 
+        // Unbiased Gemm with transB=1. Biased Gemm is rejected upstream by
+        // create_matmul_dim_template, so the detector now skips it as well.
         let node = NodeProto {
             op_type: "Gemm".to_string(),
-            input: vec![
-                "input".to_string(),
-                "weight".to_string(),
-                "bias".to_string(),
-            ],
+            input: vec!["input".to_string(), "weight".to_string()],
             output: vec!["output".to_string()],
             attribute: vec![make_attribute_int("transB", 1)],
             ..Default::default()
@@ -2415,6 +2433,129 @@ mod tests {
         // returns None at the outer gate, which is what we want for a
         // single-row single-chunk MatMul.
         assert!(detect_dim_split(&[node1, node2], &shapes, &init_names).is_none());
+    }
+
+    #[test]
+    fn detect_dim_split_declines_infeasible_n() {
+        // n_dim * 2 > MAX means even k_chunks == k_dim (chunk_size = 1)
+        // cannot fit inside the per-chunk budget, so the MatMul branch must
+        // decline. Use batch=1 so the BatchDim fallback path is not taken.
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        // n_dim = 400_000 -> n*2 = 800_000 > MAX (500_000)
+        shapes.insert("input".to_string(), vec![1, 4]);
+        shapes.insert("weight".to_string(), vec![4, 400_000]);
+        shapes.insert("output".to_string(), vec![1, 400_000]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let got = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(
+            got.as_ref()
+                .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
+            "expected MatMul dim-split to decline, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn detect_dim_split_skips_gemm_with_bias() {
+        use super::onnx_proto::make_attribute_int;
+        let node = NodeProto {
+            op_type: "Gemm".to_string(),
+            input: vec![
+                "input".to_string(),
+                "weight".to_string(),
+                "bias".to_string(),
+            ],
+            output: vec!["output".to_string()],
+            attribute: vec![make_attribute_int("transB", 1)],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        // Use batch=1 so the BatchDim fallback path does not mask the
+        // MatMul-branch decline we want to assert.
+        shapes.insert("input".to_string(), vec![1, 145, 384]);
+        shapes.insert("weight".to_string(), vec![1536, 384]);
+        shapes.insert("bias".to_string(), vec![1536]);
+        shapes.insert("output".to_string(), vec![1, 145, 1536]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+        init_names.insert("bias".to_string());
+
+        // Detector should decline the MatMul branch since the template
+        // builder cannot handle biased Gemm, forcing fall-through.
+        let got = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(
+            got.as_ref()
+                .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
+            "expected Gemm-with-bias MatMul decline, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn create_matmul_dim_template_uses_info_weight_name() {
+        // Graph has two MatMul nodes referencing different weights. The
+        // template builder must pick the node whose input is info.weight_name,
+        // not the first MatMul encountered.
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[4, 64]);
+        let y = onnx_proto::make_tensor_value_info("output", TensorProto::FLOAT, &[4, 2048]);
+
+        let w_small = onnx_proto::make_tensor(
+            "w_small",
+            TensorProto::FLOAT,
+            &[64, 64],
+            vec![0.0f32; 64 * 64],
+        );
+        let w_big = onnx_proto::make_tensor(
+            "w_big",
+            TensorProto::FLOAT,
+            &[64, 2048],
+            vec![0.0f32; 64 * 2048],
+        );
+
+        let n1 = onnx_proto::make_node(
+            "MatMul",
+            vec!["input".into(), "w_small".into()],
+            vec!["mid".into()],
+            vec![],
+        );
+        let n2 = onnx_proto::make_node(
+            "MatMul",
+            vec!["mid".into(), "w_big".into()],
+            vec!["output".into()],
+            vec![],
+        );
+
+        let graph = onnx_proto::make_graph(
+            "two_matmul",
+            vec![n1, n2],
+            vec![x],
+            vec![y],
+            vec![w_small, w_big],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+
+        let info = crate::schema::tiling::DimSplitInfo {
+            slice_idx: 0,
+            weight_name: Some("w_big".to_string()),
+            k_dim: 64,
+            n_dim: 2048,
+            k_chunks: 1,
+            ..Default::default()
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
+        let g = tmpl_model.graph.as_ref().unwrap();
+        let w = g.initializer.iter().find(|i| i.name == "W").unwrap();
+        // Template weight shape must reflect w_big (64, 2048), not w_small.
+        assert_eq!(w.dims, vec![64, 2048]);
     }
 
     fn make_maxpool_node(

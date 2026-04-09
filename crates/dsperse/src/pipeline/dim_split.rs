@@ -56,19 +56,25 @@ pub(crate) fn execute_dim_split(
         .graph
         .as_ref()
         .ok_or_else(|| DsperseError::Pipeline(format!("{slice_id}: slice ONNX has no graph")))?;
-    let matmul_node = orig_graph
-        .node
-        .iter()
-        .find(|n| matches!(n.op_type.as_str(), "MatMul" | "Gemm"));
-    let trans_b = matmul_node.is_some_and(|n| {
-        n.op_type == "Gemm"
-            && crate::slicer::onnx_proto::get_attribute_int(n, "transB").unwrap_or(0) == 1
-    });
     let weight_name = ds.weight_name.as_ref().ok_or_else(|| {
         DsperseError::Pipeline(format!(
             "{slice_id}: dim_split missing weight_name in metadata"
         ))
     })?;
+    let matmul_node = orig_graph
+        .node
+        .iter()
+        .find(|n| {
+            matches!(n.op_type.as_str(), "MatMul" | "Gemm")
+                && n.input.iter().any(|i| i == weight_name)
+        })
+        .ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "{slice_id}: no MatMul/Gemm node references weight {weight_name:?}"
+            ))
+        })?;
+    let trans_b = matmul_node.op_type == "Gemm"
+        && crate::slicer::onnx_proto::get_attribute_int(matmul_node, "transB").unwrap_or(0) == 1;
     let full_weight: Vec<f32> = if let Some(map) = donor_init_map
         && let Some(t) = map.get(weight_name.as_str())
     {

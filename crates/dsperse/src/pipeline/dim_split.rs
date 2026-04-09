@@ -86,6 +86,23 @@ pub(crate) fn execute_dim_split(
 
     let mut tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
 
+    let tmpl_init_names: std::collections::HashSet<String> = tmpl_model
+        .graph
+        .as_ref()
+        .map(|g| g.initializer.iter().map(|i| i.name.clone()).collect())
+        .unwrap_or_default();
+    let tmpl_non_init_inputs: Vec<String> = tmpl_model
+        .graph
+        .as_ref()
+        .map(|g| {
+            g.input
+                .iter()
+                .filter(|vi| !tmpl_init_names.contains(&vi.name))
+                .map(|vi| vi.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::new();
 
     for g in 0..ds.num_groups {
@@ -243,14 +260,9 @@ pub(crate) fn execute_dim_split(
             let tmpl_graph = tmpl_model.graph.as_ref().ok_or_else(|| {
                 DsperseError::Pipeline(format!("{slice_id}: template has no graph"))
             })?;
-            let tmpl_init_names: std::collections::HashSet<&str> = tmpl_graph
-                .initializer
-                .iter()
-                .map(|i| i.name.as_str())
-                .collect();
             let mut group_cache = TensorStore::new();
             for vi in &tmpl_graph.input {
-                if tmpl_init_names.contains(vi.name.as_str()) {
+                if tmpl_init_names.contains(&vi.name) {
                     continue;
                 }
                 if vi.name == "dim_tmpl_in" {
@@ -276,13 +288,8 @@ pub(crate) fn execute_dim_split(
                     }
                 }
             }
-            let input_names: Vec<String> = tmpl_graph
-                .input
-                .iter()
-                .filter(|vi| !tmpl_init_names.contains(vi.name.as_str()))
-                .map(|vi| vi.name.clone())
-                .collect();
-            let named = run_onnx_inference_multi_named(&patched_path, &group_cache, &input_names)?;
+            let named =
+                run_onnx_inference_multi_named(&patched_path, &group_cache, &tmpl_non_init_inputs)?;
             if named.len() != 1 {
                 return Err(DsperseError::Pipeline(format!(
                     "{slice_id}: dim-split group produced {} outputs, expected exactly 1",

@@ -26,9 +26,11 @@ enum CompileOutcome {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn compile_slices(
     slices_dir: &Path,
     backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
     parallel: usize,
     weights_as_inputs: bool,
     layers: Option<&[usize]>,
@@ -103,6 +105,7 @@ pub fn compile_slices(
                 slices_dir,
                 slice,
                 backend,
+                proof_config,
                 weights_as_inputs,
                 jstprove_ops,
                 &exclude_from_wai,
@@ -377,6 +380,7 @@ fn compile_single_slice(
     slices_dir: &Path,
     slice: &crate::schema::metadata::SliceMetadata,
     backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
     weights_as_inputs: bool,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
@@ -400,6 +404,7 @@ fn compile_single_slice(
             slice,
             cs,
             backend,
+            proof_config,
             jstprove_ops,
             exclude_from_wai,
             skip_compile_over_size,
@@ -417,6 +422,7 @@ fn compile_single_slice(
                 slice,
                 &tmpl_path,
                 backend,
+                proof_config,
                 jstprove_ops,
                 exclude_from_wai,
                 skip_compile_over_size,
@@ -484,15 +490,17 @@ fn compile_single_slice(
         traced_shapes,
     )?;
 
-    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
-        .map_err(|p| {
-            let msg = p
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            DsperseError::Backend(format!("jstprove panicked: {msg}"))
-        })??;
+    std::panic::catch_unwind(|| {
+        backend.compile(&circuit_path, proof_config, params, architecture, wandb)
+    })
+    .map_err(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        DsperseError::Backend(format!("jstprove panicked: {msg}"))
+    })??;
 
     Ok(CompileOutcome::Compiled)
 }
@@ -562,6 +570,7 @@ fn compile_channel_split_slice(
     slice: &crate::schema::metadata::SliceMetadata,
     cs: &crate::schema::tiling::ChannelSplitInfo,
     backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
@@ -623,7 +632,13 @@ fn compile_channel_split_slice(
         )?;
 
         std::panic::catch_unwind(|| {
-            backend.compile(&shared_circuit_path, params, architecture, wandb)
+            backend.compile(
+                &shared_circuit_path,
+                proof_config,
+                params,
+                architecture,
+                wandb,
+            )
         })
         .map_err(|p| {
             let msg = p
@@ -666,6 +681,7 @@ fn compile_dim_split_template(
     slice: &crate::schema::metadata::SliceMetadata,
     tmpl_path: &Path,
     backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
@@ -752,18 +768,20 @@ fn compile_dim_split_template(
         traced_shapes,
     )?;
 
-    std::panic::catch_unwind(|| backend.compile(&circuit_path, params, architecture, wandb))
-        .map_err(|p| {
-            let msg = p
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            DsperseError::Backend(format!(
-                "jstprove panicked on slice {} dim-split template: {msg}",
-                slice.index
-            ))
-        })??;
+    std::panic::catch_unwind(|| {
+        backend.compile(&circuit_path, proof_config, params, architecture, wandb)
+    })
+    .map_err(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        DsperseError::Backend(format!(
+            "jstprove panicked on slice {} dim-split template: {msg}",
+            slice.index
+        ))
+    })??;
 
     circuit_cache
         .lock()

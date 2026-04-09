@@ -95,10 +95,11 @@ fn slice_model(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (slices_dir, parallel=1, weights_as_inputs=true, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
+#[pyo3(signature = (slices_dir, proof_config="bn254_raw", parallel=1, weights_as_inputs=true, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
 fn compile_slices(
     py: Python<'_>,
     slices_dir: &str,
+    proof_config: &str,
     parallel: usize,
     weights_as_inputs: bool,
     layers: Option<Vec<usize>>,
@@ -108,6 +109,12 @@ fn compile_slices(
 ) -> PyResult<()> {
     require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
+    let parsed_config: jstprove_circuits::api::ProofConfigType =
+        proof_config
+            .parse()
+            .map_err(|e: jstprove_circuits::api::ProofConfigError| {
+                pyo3::exceptions::PyValueError::new_err(e.to_string())
+            })?;
     let dir = PathBuf::from(slices_dir);
     let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
@@ -115,6 +122,7 @@ fn compile_slices(
         pipeline::compile_slices(
             &dir,
             &backend,
+            parsed_config,
             parallel,
             weights_as_inputs,
             layers.as_deref(),

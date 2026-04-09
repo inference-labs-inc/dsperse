@@ -3,17 +3,16 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::backend::jstprove::{Curve, JstproveBackend};
+use crate::backend::jstprove::{JstproveBackend, ProofConfig};
 use crate::error::{DsperseError, Result};
 use crate::pipeline::{self, RunConfig};
 
-use jstprove_circuits::api::{CurveParseError, ProofSystemType as ProofSystem};
+use jstprove_circuits::api::{ProofConfigError, ProofSystemType as ProofSystem};
 
-fn build_backend(curve: &str) -> Result<JstproveBackend> {
-    let c: Curve = curve
-        .parse()
-        .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))?;
-    Ok(JstproveBackend::new().with_curve(c))
+fn parse_proof_config(value: &str) -> Result<ProofConfig> {
+    value.parse().map_err(|e: ProofConfigError| {
+        DsperseError::Other(format!("invalid --curve '{value}': {e}"))
+    })
 }
 
 pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");
@@ -119,9 +118,10 @@ pub struct CompileArgs {
     )]
     pub circuit_ops: Option<String>,
     #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+        long = "proof-config",
+        visible_alias = "curve",
+        default_value = "bn254_raw",
+        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir. The --curve alias is retained for backward compatibility and will be removed in a future release."
     )]
     pub curve: String,
     #[arg(
@@ -157,12 +157,6 @@ pub struct RunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -175,12 +169,6 @@ pub struct ProveArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -193,12 +181,6 @@ pub struct VerifyArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -293,9 +275,10 @@ pub struct FullRunArgs {
     )]
     pub combined: bool,
     #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
+        long = "proof-config",
+        visible_alias = "curve",
+        default_value = "bn254_raw",
+        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir. The --curve alias is retained for backward compatibility and will be removed in a future release."
     )]
     pub curve: String,
     #[arg(
@@ -382,7 +365,8 @@ pub fn cmd_combine(args: CombineArgs) -> Result<()> {
 }
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let proof_config = parse_proof_config(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
@@ -396,6 +380,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
+        proof_config,
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),
@@ -412,7 +397,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
         )));
     }
 
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let run_dir = args
@@ -431,7 +416,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 }
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -439,7 +424,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 }
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -508,7 +493,8 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
 }
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let proof_config = parse_proof_config(&args.curve)?;
+    let backend = JstproveBackend::new();
 
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
@@ -541,6 +527,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::compile_slices(
         &slices_dir,
         &backend,
+        proof_config,
         args.parallel.get(),
         args.weights_as_inputs,
         layers.as_deref(),

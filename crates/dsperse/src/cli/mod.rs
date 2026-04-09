@@ -15,9 +15,11 @@ fn parse_curve(curve: &str) -> Result<Curve> {
         .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))
 }
 
-fn build_backend(_curve: &str) -> Result<JstproveBackend> {
+fn build_backend(curve: &str) -> Result<JstproveBackend> {
     // Curve is resolved per-bundle at load time; the backend no longer
-    // carries a curve. The parameter is retained for CLI validation.
+    // carries a curve. We still validate the argument here to surface
+    // typos as errors at CLI entry rather than silently accepting them.
+    let _: Curve = parse_curve(curve)?;
     Ok(JstproveBackend::new())
 }
 

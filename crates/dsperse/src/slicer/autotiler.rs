@@ -682,16 +682,9 @@ pub struct DimSplitDetection {
     pub concat_axis: usize,
     pub estimated_constraints: u64,
     pub weight_name: Option<String>,
-}
-
-fn normalize_dim_split_size(raw_epg: usize, dim_size: usize) -> usize {
-    const BUCKETS: &[usize] = &[1, 2, 4, 8, 16, 32, 64, 128, 256];
-    for &b in BUCKETS {
-        if b >= raw_epg {
-            return b.min(dim_size);
-        }
-    }
-    raw_epg.min(dim_size)
+    pub k_dim: usize,
+    pub n_dim: usize,
+    pub k_chunks: usize,
 }
 
 pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
@@ -754,21 +747,33 @@ pub fn detect_dim_split(
             }
             let trans_b = node.op_type == "Gemm"
                 && super::onnx_proto::get_attribute_int(node, "transB").unwrap_or(0) == 1;
-            let (n_dim, split_dim) = if trans_b {
-                (weight_shape[0] as usize, 0)
+            let k_dim = if trans_b {
+                weight_shape[1] as usize
             } else {
-                (weight_shape[1] as usize, 1)
+                weight_shape[0] as usize
             };
-            if n_dim <= 1 {
+            let n_dim = if trans_b {
+                weight_shape[0] as usize
+            } else {
+                weight_shape[1] as usize
+            };
+            let Some(inp_shape) = node.input.first().and_then(|name| shapes.get(name)) else {
+                continue;
+            };
+            let total_rows: usize = inp_shape
+                .iter()
+                .take(inp_shape.len().saturating_sub(1))
+                .map(|&d| d.max(1) as usize)
+                .product();
+            if total_rows <= 1 {
                 continue;
             }
-            let raw_epg = n_dim.div_ceil(target_groups.min(n_dim));
-            let elements_per_group = normalize_dim_split_size(raw_epg, n_dim);
-            let num_groups = n_dim.div_ceil(elements_per_group);
-            let Some(output_shape) = node.output.first().and_then(|name| shapes.get(name)) else {
-                continue;
+            let row_cost = k_dim.saturating_mul(n_dim).saturating_mul(2);
+            let k_chunks = if row_cost > MAX_ESTIMATED_CONSTRAINTS as usize {
+                row_cost.div_ceil(MAX_ESTIMATED_CONSTRAINTS as usize)
+            } else {
+                1
             };
-            let concat_axis = output_shape.len().saturating_sub(1);
             let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
                 continue;
             };
@@ -777,15 +782,18 @@ pub fn detect_dim_split(
             };
             return Some(DimSplitDetection {
                 split_kind: DimSplitKind::MatMulOutputDim,
-                split_dim,
-                dim_size: n_dim,
-                num_groups,
-                elements_per_group,
+                split_dim: 0,
+                dim_size: total_rows,
+                num_groups: total_rows,
+                elements_per_group: 1,
                 input_name,
                 output_name,
-                concat_axis,
+                concat_axis: 0,
                 estimated_constraints: estimated,
                 weight_name: Some(weight_name.clone()),
+                k_dim,
+                n_dim,
+                k_chunks,
             });
         }
     }
@@ -817,6 +825,9 @@ pub fn detect_dim_split(
                     concat_axis: 1,
                     estimated_constraints: estimated,
                     weight_name: None,
+                    k_dim: 0,
+                    n_dim: 0,
+                    k_chunks: 1,
                 });
             }
         }
@@ -849,6 +860,9 @@ pub fn detect_dim_split(
             concat_axis: 0,
             estimated_constraints: estimated,
             weight_name: None,
+            k_dim: 0,
+            n_dim: 0,
+            k_chunks: 1,
         });
     }
 
@@ -1693,42 +1707,30 @@ fn create_matmul_dim_template(
         weight_tensor.dims[0] as usize,
         weight_tensor.dims[1] as usize,
     );
-    let k_dim = if trans_b { cols } else { rows };
-    let epg = info.elements_per_group;
-
-    let tmpl_weight_dims: Vec<i64> = if trans_b {
-        vec![epg as i64, k_dim as i64]
-    } else {
-        vec![k_dim as i64, epg as i64]
-    };
-    let tmpl_weight_data = vec![0.0f32; k_dim * epg];
-
-    let input_name_orig = matmul_node.input.first().cloned().unwrap_or_default();
-    let input_shape: Vec<i64> = graph
-        .input
-        .iter()
-        .chain(graph.value_info.iter())
-        .find(|vi| vi.name == input_name_orig)
-        .and_then(onnx_proto::shape_from_value_info)
-        .unwrap_or_default();
+    let (k_dim, n_dim) = if trans_b { (cols, rows) } else { (rows, cols) };
+    let k_chunk_size = k_dim.div_ceil(info.k_chunks.max(1));
 
     let tmpl_input_name = "dim_tmpl_in".to_string();
     let tmpl_output_name = "dim_tmpl_out".to_string();
     let tmpl_weight_name = "W".to_string();
 
-    let mut output_shape = input_shape.clone();
-    if let Some(last) = output_shape.last_mut() {
-        *last = epg as i64;
-    }
+    let tmpl_input_shape: Vec<i64> = vec![1, 1, k_chunk_size as i64];
+    let output_shape: Vec<i64> = vec![1, 1, n_dim as i64];
 
-    let x = onnx_proto::make_tensor_value_info(&tmpl_input_name, TensorProto::FLOAT, &input_shape);
+    let x =
+        onnx_proto::make_tensor_value_info(&tmpl_input_name, TensorProto::FLOAT, &tmpl_input_shape);
     let y =
         onnx_proto::make_tensor_value_info(&tmpl_output_name, TensorProto::FLOAT, &output_shape);
+    let tmpl_weight_dims: Vec<i64> = if trans_b {
+        vec![n_dim as i64, k_chunk_size as i64]
+    } else {
+        vec![k_chunk_size as i64, n_dim as i64]
+    };
     let w = onnx_proto::make_tensor(
         &tmpl_weight_name,
         TensorProto::FLOAT,
         &tmpl_weight_dims,
-        tmpl_weight_data,
+        vec![0.0f32; k_chunk_size * n_dim],
     );
 
     let mut attrs = Vec::new();
@@ -1751,8 +1753,12 @@ fn create_matmul_dim_template(
         if let Some(bias_name) = matmul_node.input.get(2).filter(|s| !s.is_empty())
             && graph.initializer.iter().any(|i| i.name == *bias_name)
         {
-            let tmpl_bias =
-                onnx_proto::make_tensor("C", TensorProto::FLOAT, &[epg as i64], vec![0.0f32; epg]);
+            let tmpl_bias = onnx_proto::make_tensor(
+                "C",
+                TensorProto::FLOAT,
+                &[n_dim as i64],
+                vec![0.0f32; n_dim],
+            );
             node_inputs.push("C".to_string());
             initializers.push(tmpl_bias);
         }
@@ -2275,7 +2281,11 @@ mod tests {
         assert!(detection.is_some());
         let d = detection.unwrap();
         assert_eq!(d.split_dim, 0);
-        assert_eq!(d.dim_size, 1536);
+        assert_eq!(d.dim_size, 580);
+        assert_eq!(d.num_groups, 580);
+        assert_eq!(d.elements_per_group, 1);
+        assert_eq!(d.k_dim, 384);
+        assert_eq!(d.n_dim, 1536);
         assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
     }
 
@@ -2299,8 +2309,12 @@ mod tests {
         let detection = detect_dim_split(&[node], &shapes, &init_names);
         assert!(detection.is_some());
         let d = detection.unwrap();
-        assert_eq!(d.split_dim, 1);
-        assert_eq!(d.dim_size, 1536);
+        assert_eq!(d.split_dim, 0);
+        assert_eq!(d.dim_size, 580);
+        assert_eq!(d.num_groups, 580);
+        assert_eq!(d.elements_per_group, 1);
+        assert_eq!(d.k_dim, 384);
+        assert_eq!(d.n_dim, 1536);
         assert!(matches!(d.split_kind, DimSplitKind::MatMulOutputDim));
     }
 

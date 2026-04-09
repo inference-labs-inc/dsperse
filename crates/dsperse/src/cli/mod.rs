@@ -118,9 +118,10 @@ pub struct CompileArgs {
     )]
     pub circuit_ops: Option<String>,
     #[arg(
-        long,
+        long = "proof-config",
+        visible_alias = "curve",
         default_value = "bn254_raw",
-        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir"
+        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir. The --curve alias is retained for backward compatibility and will be removed in a future release."
     )]
     pub curve: String,
     #[arg(
@@ -274,9 +275,10 @@ pub struct FullRunArgs {
     )]
     pub combined: bool,
     #[arg(
-        long,
+        long = "proof-config",
+        visible_alias = "curve",
         default_value = "bn254_raw",
-        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir"
+        help = "Proof config: bn254_raw, goldilocks_basefold, goldilocks_ext2_basefold, goldilocks_ext3_whir, goldilocks_ext4_whir. The --curve alias is retained for backward compatibility and will be removed in a future release."
     )]
     pub curve: String,
     #[arg(

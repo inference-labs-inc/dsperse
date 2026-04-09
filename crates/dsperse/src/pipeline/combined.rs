@@ -166,6 +166,10 @@ impl CombinedRun {
         was_pending
     }
 
+    pub fn is_slice_failed(&self, slice_id: &str) -> bool {
+        self.failed_slices.contains(slice_id)
+    }
+
     pub fn failed_count(&self) -> usize {
         self.failed_slices.len()
     }

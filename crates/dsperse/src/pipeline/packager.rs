@@ -102,7 +102,14 @@ struct DagNode {
     output_shape: Vec<Vec<i64>>,
 }
 
-const VALID_CURVES: &[&str] = &["bn254", "goldilocks", "goldilocks_basefold"];
+const VALID_CURVES: &[&str] = &[
+    "bn254",
+    "goldilocks",
+    "goldilocks_basefold",
+    "goldilocks_ext2",
+    "goldilocks_whir",
+    "goldilocks_whir_pq",
+];
 
 fn normalize_curve(curve: Option<&str>) -> Result<Option<String>> {
     let Some(c) = curve else { return Ok(None) };

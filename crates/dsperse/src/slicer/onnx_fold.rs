@@ -56,12 +56,113 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> HashSet<String> {
     }
     folded_names.extend(propagated_names);
 
+    // Graph simplification runs before Conv+BN fusion so that any
+    // Identity chain sitting between a Conv and a BatchNormalization
+    // collapses first, exposing a contiguous Conv -> BN pattern to
+    // the fusion pass.
+    let identity_count = remove_identity_nodes(graph);
+    if identity_count > 0 {
+        tracing::info!(identity_count, "removed Identity nodes");
+    }
+
+    let dead_count = eliminate_dead_nodes(graph);
+    if dead_count > 0 {
+        tracing::info!(dead_count, "eliminated dead nodes");
+    }
+
     let fused = fuse_conv_batchnorm(graph);
     if fused > 0 {
         tracing::info!(fused, "fused Conv+BatchNormalization pairs");
     }
 
     folded_names
+}
+
+pub fn remove_identity_nodes(graph: &mut GraphProto) -> usize {
+    let identity_map: HashMap<String, String> = graph
+        .node
+        .iter()
+        .filter(|n| n.op_type == "Identity" && n.input.len() == 1 && n.output.len() == 1)
+        .filter(|n| !n.input[0].is_empty() && !n.output[0].is_empty())
+        .map(|n| (n.output[0].clone(), n.input[0].clone()))
+        .collect();
+
+    if identity_map.is_empty() {
+        return 0;
+    }
+
+    fn resolve(name: &str, map: &HashMap<String, String>) -> String {
+        let mut current = name;
+        let mut visited = HashSet::new();
+        while let Some(target) = map.get(current) {
+            if !visited.insert(current) {
+                break;
+            }
+            current = target;
+        }
+        current.to_string()
+    }
+
+    let output_names: HashSet<String> = graph.output.iter().map(|o| o.name.clone()).collect();
+
+    for node in &mut graph.node {
+        if node.op_type == "Identity" && identity_map.contains_key(&node.output[0]) {
+            continue;
+        }
+        for inp in &mut node.input {
+            if identity_map.contains_key(inp.as_str()) {
+                *inp = resolve(inp, &identity_map);
+            }
+        }
+    }
+
+    for out in &mut graph.output {
+        if identity_map.contains_key(out.name.as_str()) {
+            out.name = resolve(&out.name, &identity_map);
+        }
+    }
+
+    let count = identity_map.len();
+    graph.node.retain(|n| {
+        !(n.op_type == "Identity"
+            && n.output.len() == 1
+            && identity_map.contains_key(&n.output[0])
+            && !output_names.contains(&n.output[0]))
+    });
+    count
+}
+
+pub fn eliminate_dead_nodes(graph: &mut GraphProto) -> usize {
+    let output_names: HashSet<String> = graph.output.iter().map(|o| o.name.clone()).collect();
+
+    let mut consumed: HashSet<String> = output_names;
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for node in &graph.node {
+            let produces_consumed = node.output.iter().any(|o| consumed.contains(o));
+            if produces_consumed {
+                for inp in &node.input {
+                    if !inp.is_empty() && consumed.insert(inp.clone()) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    let before = graph.node.len();
+    graph
+        .node
+        .retain(|n| n.output.iter().any(|o| consumed.contains(o)));
+    let removed = before - graph.node.len();
+
+    if removed > 0 {
+        graph.initializer.retain(|i| consumed.contains(&i.name));
+        graph.value_info.retain(|vi| consumed.contains(&vi.name));
+    }
+
+    removed
 }
 
 pub fn propagate_constants_with_shapes(

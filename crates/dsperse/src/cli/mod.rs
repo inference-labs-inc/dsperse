@@ -15,14 +15,6 @@ fn parse_curve(curve: &str) -> Result<Curve> {
         .map_err(|e: CurveParseError| DsperseError::Other(e.to_string()))
 }
 
-fn build_backend(curve: &str) -> Result<JstproveBackend> {
-    // Curve is resolved per-bundle at load time; the backend no longer
-    // carries a curve. We still validate the argument here to surface
-    // typos as errors at CLI entry rather than silently accepting them.
-    let _: Curve = parse_curve(curve)?;
-    Ok(JstproveBackend::new())
-}
-
 pub const VERSION: &str = env!("DSPERSE_DISPLAY_VERSION");
 
 #[derive(Parser)]
@@ -164,12 +156,6 @@ pub struct RunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -182,12 +168,6 @@ pub struct ProveArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -200,12 +180,6 @@ pub struct VerifyArgs {
     pub slices_dir: Option<PathBuf>,
     #[arg(long, default_value = "1")]
     pub parallel: NonZeroUsize,
-    #[arg(
-        long,
-        default_value = "bn254",
-        help = "Finite field (bn254, goldilocks, goldilocks_basefold)"
-    )]
-    pub curve: String,
 }
 
 #[derive(Args)]
@@ -390,7 +364,7 @@ pub fn cmd_combine(args: CombineArgs) -> Result<()> {
 
 pub fn cmd_compile(args: CompileArgs) -> Result<()> {
     let curve = parse_curve(&args.curve)?;
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let layers = args
@@ -421,7 +395,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
         )));
     }
 
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     let run_dir = args
@@ -440,7 +414,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
 }
 
 pub fn cmd_prove(args: ProveArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::prove_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -448,7 +422,7 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
 }
 
 pub fn cmd_verify(args: VerifyArgs) -> Result<()> {
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 
     pipeline::verify_run(&args.run_dir, &slices_dir, &backend, args.parallel.get())?;
@@ -518,7 +492,7 @@ pub fn cmd_publish(args: PublishArgs) -> Result<()> {
 
 pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let curve = parse_curve(&args.curve)?;
-    let backend = build_backend(&args.curve)?;
+    let backend = JstproveBackend::new();
 
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
 

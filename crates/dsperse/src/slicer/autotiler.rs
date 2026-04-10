@@ -751,6 +751,14 @@ pub fn detect_dim_split(
             if weight_shape.len() != 2 {
                 continue;
             }
+            // Gemm with transA=1 transposes the activation matrix, which the
+            // single-row sequence tile and the rank-2 template do not model.
+            // Skip so detection stays consistent with the template builder.
+            if node.op_type == "Gemm"
+                && super::onnx_proto::get_attribute_int(node, "transA").unwrap_or(0) == 1
+            {
+                continue;
+            }
             let trans_b = node.op_type == "Gemm"
                 && super::onnx_proto::get_attribute_int(node, "transB").unwrap_or(0) == 1;
             let k_dim = if trans_b {
@@ -1733,6 +1741,15 @@ fn create_matmul_dim_template(
         )));
     }
 
+    if matmul_node.op_type == "Gemm"
+        && onnx_proto::get_attribute_int(matmul_node, "transA").unwrap_or(0) == 1
+    {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_matmul_dim_template: slice {} Gemm with transA=1 is not supported for dim-split",
+            info.slice_idx
+        )));
+    }
+
     let trans_b = matmul_node.op_type == "Gemm"
         && onnx_proto::get_attribute_int(matmul_node, "transB").unwrap_or(0) == 1;
 
@@ -1777,9 +1794,7 @@ fn create_matmul_dim_template(
         if let Some(beta) = onnx_proto::get_attribute_float(matmul_node, "beta") {
             attrs.push(onnx_proto::make_attribute_float("beta", beta));
         }
-        if let Some(trans_a) = onnx_proto::get_attribute_int(matmul_node, "transA") {
-            attrs.push(onnx_proto::make_attribute_int("transA", trans_a));
-        }
+        // transA is rejected above; the template always uses A non-transposed.
         if trans_b {
             attrs.push(onnx_proto::make_attribute_int("transB", 1));
         }
@@ -2459,6 +2474,33 @@ mod tests {
             got.as_ref()
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
             "expected MatMul dim-split to decline, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn detect_dim_split_skips_gemm_trans_a() {
+        use super::onnx_proto::make_attribute_int;
+        let node = NodeProto {
+            op_type: "Gemm".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            attribute: vec![make_attribute_int("transA", 1)],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        // Use batch=1 so the BatchDim fallback path does not mask the
+        // MatMul-branch decline we want to assert.
+        shapes.insert("input".to_string(), vec![1, 384, 145]);
+        shapes.insert("weight".to_string(), vec![384, 1536]);
+        shapes.insert("output".to_string(), vec![1, 145, 1536]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+
+        let got = detect_dim_split(&[node], &shapes, &init_names);
+        assert!(
+            got.as_ref()
+                .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
+            "expected Gemm transA=1 MatMul decline, got {got:?}"
         );
     }
 

@@ -705,7 +705,7 @@ fn compile_dim_split_template(
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
-    traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
+    _traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -780,12 +780,13 @@ fn compile_dim_split_template(
         "compiling dim-split template (weights-as-inputs)"
     );
 
-    let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
-        tmpl_path,
-        true,
-        exclude_from_wai,
-        traced_shapes,
-    )?;
+    // Do NOT pass the original traced_shapes when compiling dim-split
+    // templates. The template has rewritten shapes (dim_size → epg) that
+    // differ from the original model's traced shapes. If traced_shapes
+    // is passed, jstprove uses the original (larger) shapes and the
+    // Transpose/Reshape validation fails on the mismatch.
+    let (params, architecture, wandb) =
+        converter::prepare_jstprove_artifacts_filtered(tmpl_path, true, exclude_from_wai, None)?;
 
     std::panic::catch_unwind(|| {
         backend.compile(&circuit_path, proof_config, params, architecture, wandb)

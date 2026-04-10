@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
@@ -1688,6 +1688,7 @@ pub fn create_dim_split_template(
     model: &ModelProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
+    traced_shapes: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<std::path::PathBuf> {
     let graph = model.graph.as_ref().ok_or_else(|| {
         crate::error::DsperseError::Slicer("create_dim_split_template: model has no graph".into())
@@ -1699,7 +1700,7 @@ pub fn create_dim_split_template(
         }
         crate::schema::tiling::DimSplitKind::HeadDim
         | crate::schema::tiling::DimSplitKind::BatchDim => {
-            create_generic_dim_template(model, graph, info, output_dir)
+            create_generic_dim_template(model, graph, info, output_dir, traced_shapes)
         }
     }
 }
@@ -1907,21 +1908,22 @@ fn create_generic_dim_template(
     graph: &GraphProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
+    traced_shapes: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<std::path::PathBuf> {
-    let split_dim = info.split_dim;
-    let epg = info.elements_per_group;
-    if epg == 0 {
+    if info.elements_per_group == 0 {
         return Err(crate::error::DsperseError::Slicer(format!(
             "create_generic_dim_template: slice {} elements_per_group is 0",
             info.slice_idx
         )));
     }
 
-    check_axis_separable(graph, split_dim, info.slice_idx)?;
+    check_axis_separable(graph, info.split_dim, info.slice_idx)?;
 
-    let init_names: std::collections::HashSet<&str> =
-        graph.initializer.iter().map(|i| i.name.as_str()).collect();
-
+    // The template is the original slice model with no shape rewriting.
+    // The runner pads each group's input to dim_size before inference and
+    // trims the output afterward. Keeping the original shapes means the
+    // compiled circuit signature is identical regardless of group size,
+    // maximizing cross-slice and cross-model circuit catalog reuse.
     let mut tmpl_model = model.clone();
     let tmpl_graph = tmpl_model.graph.as_mut().ok_or_else(|| {
         crate::error::DsperseError::Slicer(
@@ -1929,23 +1931,51 @@ fn create_generic_dim_template(
         )
     })?;
 
-    let rewrite = |vi: &mut ValueInfoProto| {
-        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
-            && split_dim < shape.len()
-            && shape[split_dim] == info.dim_size as i64
-        {
-            shape[split_dim] = epg as i64;
-            onnx_proto::set_vi_shape(vi, &shape);
-        }
-    };
-
-    for vi in tmpl_graph.input.iter_mut() {
-        if !init_names.contains(vi.name.as_str()) {
-            rewrite(vi);
+    // Populate value_info for intermediate node outputs that lack shape
+    // declarations. jstprove needs these to resolve weight shapes during
+    // WAI circuit compilation (e.g. Gemm expected_weight_shape derives N
+    // from the output shape). Without traced_shapes the circuit compiler
+    // cannot infer these and falls back to incorrect dimensions.
+    if let Some(shapes) = traced_shapes {
+        let existing: HashSet<String> = tmpl_graph
+            .input
+            .iter()
+            .chain(tmpl_graph.output.iter())
+            .chain(tmpl_graph.value_info.iter())
+            .map(|vi| vi.name.clone())
+            .collect();
+        let init_names: HashSet<&str> = tmpl_graph
+            .initializer
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        let node_output_types = super::materializer::build_node_output_types(tmpl_graph);
+        for node in &tmpl_graph.node {
+            for out_name in &node.output {
+                if out_name.is_empty()
+                    || existing.contains(out_name)
+                    || init_names.contains(out_name.as_str())
+                {
+                    continue;
+                }
+                if let Some(shape) = shapes.get(out_name) {
+                    let elem_type = node_output_types
+                        .get(out_name)
+                        .copied()
+                        .unwrap_or(TensorProto::FLOAT);
+                    tmpl_graph
+                        .value_info
+                        .push(onnx_proto::make_tensor_value_info(
+                            out_name, elem_type, shape,
+                        ));
+                }
+            }
         }
     }
-    // If output_name is declared in value_info but not graph.output,
-    // promote it so ORT actually produces the tensor at runtime.
+
+    // Promote output_name to graph output if it only exists in value_info.
+    // Runs after the traced_shapes synthesis above so that newly created
+    // value_info entries are eligible for promotion.
     if !tmpl_graph.output.iter().any(|o| o.name == info.output_name)
         && let Some(vi) = tmpl_graph
             .value_info
@@ -1954,70 +1984,6 @@ fn create_generic_dim_template(
             .cloned()
     {
         tmpl_graph.output.push(vi);
-    }
-    for vi in tmpl_graph.output.iter_mut() {
-        rewrite(vi);
-    }
-    for vi in tmpl_graph.value_info.iter_mut() {
-        rewrite(vi);
-    }
-
-    // Rewrite Reshape shape constants at exactly the position corresponding
-    // to split_dim. For each Reshape node whose shape input is an
-    // initializer, find the index in the shape constant where the value
-    // equals dim_size AND whose position corresponds to split_dim in the
-    // Reshape's input tensor. This avoids corrupting other dimensions that
-    // coincidentally equal dim_size.
-    let dim_size_i64 = info.dim_size as i64;
-    let epg_i64 = epg as i64;
-    let reshape_nodes: Vec<(String, usize)> = tmpl_graph
-        .node
-        .iter()
-        .filter(|n| n.op_type == "Reshape")
-        .filter_map(|n| {
-            let shape_name = n.input.get(1)?.clone();
-            // Resolve the input tensor's shape to find where split_dim maps
-            // in the output shape constant. Walk value_info, graph input, and
-            // traced shapes for the Reshape's first input.
-            let inp_name = n.input.first()?;
-            let inp_shape = tmpl_graph
-                .value_info
-                .iter()
-                .chain(tmpl_graph.input.iter())
-                .find(|v| v.name == *inp_name)
-                .and_then(onnx_proto::shape_from_value_info);
-            // If we can resolve the input shape and split_dim is in range,
-            // the position to rewrite is split_dim itself (Reshape preserves
-            // dimension indices when the target shape has the same rank).
-            // For rank-changing Reshapes we still use split_dim as a best
-            // effort — the axis-separability check already rejected
-            // fundamentally non-separable layouts.
-            let pos = if let Some(ref s) = inp_shape {
-                if split_dim < s.len() {
-                    split_dim
-                } else {
-                    return None;
-                }
-            } else {
-                split_dim
-            };
-            Some((shape_name, pos))
-        })
-        .collect();
-    for (shape_name, pos) in &reshape_nodes {
-        if let Some(init) = tmpl_graph
-            .initializer
-            .iter_mut()
-            .find(|i| i.name == *shape_name)
-        {
-            let mut shape_data = onnx_proto::tensor_to_i64(init);
-            if *pos < shape_data.len() && shape_data[*pos] == dim_size_i64 {
-                shape_data[*pos] = epg_i64;
-                init.int64_data = shape_data;
-                init.raw_data.clear();
-                init.data_type = TensorProto::INT64;
-            }
-        }
     }
 
     let tmpl_path = output_dir.join("dim_template.onnx");
@@ -2856,7 +2822,7 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path(), None).unwrap();
         let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
         let g = tmpl_model.graph.as_ref().unwrap();
         let w = g.initializer.iter().find(|i| i.name == "W").unwrap();
@@ -2922,7 +2888,7 @@ mod tests {
         // Builder should succeed by binding the second op (the one whose
         // IO matches info), even though the first op also references the
         // same weight initializer.
-        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path(), None).unwrap();
         let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
         let g = tmpl_model.graph.as_ref().unwrap();
         let w = g.initializer.iter().find(|i| i.name == "W").unwrap();

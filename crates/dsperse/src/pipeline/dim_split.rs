@@ -61,16 +61,22 @@ pub(crate) fn execute_dim_split(
             "{slice_id}: dim_split missing weight_name in metadata"
         ))
     })?;
+    // Tighten the lookup with weight + IO match so that slices reusing the
+    // same initializer (tied weights, etc.) cannot bind a sibling op with
+    // a different transB orientation.
     let matmul_node = orig_graph
         .node
         .iter()
         .find(|n| {
             matches!(n.op_type.as_str(), "MatMul" | "Gemm")
                 && n.input.iter().any(|i| i == weight_name)
+                && n.input.iter().any(|i| i == &ds.input_name)
+                && n.output.iter().any(|o| o == &ds.output_name)
         })
         .ok_or_else(|| {
             DsperseError::Pipeline(format!(
-                "{slice_id}: no MatMul/Gemm node references weight {weight_name:?}"
+                "{slice_id}: no MatMul/Gemm node matches weight={weight_name:?} input={:?} output={:?}",
+                ds.input_name, ds.output_name
             ))
         })?;
     let trans_b = matmul_node.op_type == "Gemm"

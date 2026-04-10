@@ -1704,17 +1704,24 @@ fn create_matmul_dim_template(
         ))
     })?;
 
+    // Match the exact split node by weight, activation input, and output
+    // name. A graph may reuse the same weight initializer in multiple
+    // MatMul/Gemm ops (tied weights, weight sharing across heads); without
+    // checking IO we could bind the wrong op and emit a template that
+    // doesn't match the slice the runner will execute.
     let matmul_node = graph
         .node
         .iter()
         .find(|n| {
             matches!(n.op_type.as_str(), "MatMul" | "Gemm")
                 && n.input.iter().any(|i| i == weight_name)
+                && n.input.iter().any(|i| i == &info.input_name)
+                && n.output.iter().any(|o| o == &info.output_name)
         })
         .ok_or_else(|| {
             crate::error::DsperseError::Slicer(format!(
-                "create_matmul_dim_template: slice {} no MatMul/Gemm references weight {weight_name:?}",
-                info.slice_idx
+                "create_matmul_dim_template: slice {} no MatMul/Gemm matches weight={weight_name:?} input={:?} output={:?}",
+                info.slice_idx, info.input_name, info.output_name
             ))
         })?;
 
@@ -2575,6 +2582,8 @@ mod tests {
         let info = crate::schema::tiling::DimSplitInfo {
             slice_idx: 0,
             weight_name: Some("w_big".to_string()),
+            input_name: "mid".to_string(),
+            output_name: "output".to_string(),
             k_dim: 64,
             n_dim: 2048,
             k_chunks: 1,
@@ -2588,6 +2597,71 @@ mod tests {
         let w = g.initializer.iter().find(|i| i.name == "W").unwrap();
         // Template weight shape must reflect w_big (64, 2048), not w_small.
         assert_eq!(w.dims, vec![64, 2048]);
+    }
+
+    #[test]
+    fn create_matmul_dim_template_disambiguates_shared_weight() {
+        // Two MatMul ops share the same weight initializer (e.g. tied
+        // weights). The template builder must select the op whose
+        // input/output names match info, not the first node that happens
+        // to reference the initializer.
+        let x = onnx_proto::make_tensor_value_info("input", TensorProto::FLOAT, &[4, 64]);
+        let y_a = onnx_proto::make_tensor_value_info("out_a", TensorProto::FLOAT, &[4, 32]);
+        let y_b = onnx_proto::make_tensor_value_info("out_b", TensorProto::FLOAT, &[1, 32]);
+
+        let shared_w = onnx_proto::make_tensor(
+            "tied_w",
+            TensorProto::FLOAT,
+            &[64, 32],
+            vec![0.0f32; 64 * 32],
+        );
+
+        // First op: input -> tied_w -> out_a (shape [4, 32])
+        let n_a = onnx_proto::make_node(
+            "MatMul",
+            vec!["input".into(), "tied_w".into()],
+            vec!["out_a".into()],
+            vec![],
+        );
+        // Second op: alt_in -> tied_w -> out_b (shape [1, 32])
+        let alt_in = onnx_proto::make_tensor_value_info("alt_in", TensorProto::FLOAT, &[1, 64]);
+        let n_b = onnx_proto::make_node(
+            "MatMul",
+            vec!["alt_in".into(), "tied_w".into()],
+            vec!["out_b".into()],
+            vec![],
+        );
+
+        let graph = onnx_proto::make_graph(
+            "shared_weight",
+            vec![n_a, n_b],
+            vec![x, alt_in],
+            vec![y_a, y_b],
+            vec![shared_w],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+
+        // Target the second op explicitly via input_name/output_name.
+        let info = crate::schema::tiling::DimSplitInfo {
+            slice_idx: 0,
+            weight_name: Some("tied_w".to_string()),
+            input_name: "alt_in".to_string(),
+            output_name: "out_b".to_string(),
+            k_dim: 64,
+            n_dim: 32,
+            k_chunks: 1,
+            ..Default::default()
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        // Builder should succeed by binding the second op (the one whose
+        // IO matches info), even though the first op also references the
+        // same weight initializer.
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
+        let g = tmpl_model.graph.as_ref().unwrap();
+        let w = g.initializer.iter().find(|i| i.name == "W").unwrap();
+        assert_eq!(w.dims, vec![64, 32]);
     }
 
     fn make_maxpool_node(

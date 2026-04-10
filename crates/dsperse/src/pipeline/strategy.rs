@@ -27,12 +27,20 @@ impl<'a> ExecutionStrategy<'a> {
             Some(SplitStrategy::ChannelSplit(cs)) => Ok(Self::ChannelSplit(cs)),
             Some(SplitStrategy::DimSplit(ds)) => {
                 if ds.template_path.is_none() {
-                    return Err(DsperseError::Metadata(format!(
-                        "dim_split present but template_path is missing (slice path: {:?})",
-                        meta.path
-                    )));
+                    // Template creation may have been rejected (axis-
+                    // separability, unsupported split kind) or the template
+                    // was not included in the bundle. Fall back to monolithic
+                    // ORT execution so already-published bundles with
+                    // template-less dim_split metadata remain runnable.
+                    tracing::debug!(
+                        path = ?meta.path,
+                        split_kind = ?ds.split_kind,
+                        "dim_split template_path missing, falling back to single execution"
+                    );
+                    Ok(Self::Single { use_circuit })
+                } else {
+                    Ok(Self::DimSplit(ds))
                 }
-                Ok(Self::DimSplit(ds))
             }
             Some(SplitStrategy::Tiled(t)) => Ok(Self::Tiled(t)),
             None => Ok(Self::Single { use_circuit }),

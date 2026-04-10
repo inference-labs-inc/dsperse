@@ -69,6 +69,25 @@ pub fn compile_slices(
             }
         }
     }
+    // Strip dim_split metadata from slices where template creation failed
+    // (axis-separability rejection, unsupported split kind). Leaving stale
+    // dim_split entries in the metadata causes downstream runners and the
+    // packager to emit bundles that fail at the strategy validation stage
+    // ("dim_split present but template_path is missing").
+    for slice in &mut metadata.slices {
+        if slice
+            .dim_split
+            .as_ref()
+            .is_some_and(|ds| ds.template_path.is_none())
+        {
+            tracing::info!(
+                slice = slice.index,
+                "stripping dim_split metadata (no template materialized)"
+            );
+            slice.dim_split = None;
+            metadata_dirty = true;
+        }
+    }
     if metadata_dirty {
         metadata.save(&meta_path)?;
         tracing::info!("persisted materialized split groups to metadata");

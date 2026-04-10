@@ -44,6 +44,17 @@ pub(crate) fn execute_dim_split(
             k_dim, ds.input_name, ds.k_dim
         )));
     }
+    // The equality check above only fires when ds.k_dim is populated.
+    // Legacy metadata with ds.k_dim == 0 paired with a degenerate runtime
+    // tensor (last dim 0) would otherwise produce k_chunk_size = 0 and
+    // silently drive empty inferences. Reject the zero-width activation
+    // explicitly so the failure mode is loud.
+    if k_dim == 0 {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: dim-split input {:?} has zero-width last dim; expected k_dim > 0",
+            ds.input_name
+        )));
+    }
     let k_chunks = ds.k_chunks.max(1);
     let k_chunk_size = k_dim.div_ceil(k_chunks);
 

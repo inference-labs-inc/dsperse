@@ -359,7 +359,7 @@ fn materialize_tiling_artifacts(
         if !tmpl_path.exists() {
             let onnx_path = payload_dir.join(format!("slice_{slice_idx}.onnx"));
             let slice_model = onnx_proto::load_model(&onnx_path)?;
-            match autotiler::create_dim_split_template(&slice_model, ds, &payload_dir) {
+            match autotiler::create_dim_split_template(&slice_model, ds, &payload_dir, None) {
                 Ok(_) => {
                     tracing::info!(slice = slice_idx, "materialized dim-split template");
                 }

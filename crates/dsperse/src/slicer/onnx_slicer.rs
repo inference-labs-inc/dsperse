@@ -128,6 +128,7 @@ pub fn slice_model(
                     &slice_model,
                     &tentative_info,
                     &slice_dir,
+                    Some(&traced_shapes),
                 ) {
                     Ok(tmpl_path) => {
                         let tmpl_rel = tmpl_path
@@ -153,10 +154,16 @@ pub fn slice_model(
                     Err(e) => {
                         tracing::warn!(
                             slice = seg_idx,
+                            estimated = detection.estimated_constraints,
                             error = %e,
                             "dim-split detected but template creation failed; \
-                             slice will compile and run as monolithic circuit"
+                             slice will be skipped during compilation"
                         );
+                        // Record detection with no template path so the
+                        // compiler knows this slice was over-budget and
+                        // should be skipped rather than falling through
+                        // to monolithic compilation.
+                        dim_split_info.insert(seg_idx, (detection, String::new()));
                     }
                 }
             }

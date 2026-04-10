@@ -1688,6 +1688,7 @@ pub fn create_dim_split_template(
     model: &ModelProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
+    traced_shapes: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<std::path::PathBuf> {
     let graph = model.graph.as_ref().ok_or_else(|| {
         crate::error::DsperseError::Slicer("create_dim_split_template: model has no graph".into())
@@ -1699,7 +1700,7 @@ pub fn create_dim_split_template(
         }
         crate::schema::tiling::DimSplitKind::HeadDim
         | crate::schema::tiling::DimSplitKind::BatchDim => {
-            create_generic_dim_template(model, graph, info, output_dir)
+            create_generic_dim_template(model, graph, info, output_dir, traced_shapes)
         }
     }
 }
@@ -1890,14 +1891,6 @@ fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) 
                     )));
                 }
             }
-            "Gemm" => {
-                if node.input.get(2).is_some_and(|s| !s.is_empty()) {
-                    return Err(crate::error::DsperseError::Slicer(format!(
-                        "create_generic_dim_template: slice {slice_idx} Gemm with bias \
-                         is not supported for generic dim-split template compilation"
-                    )));
-                }
-            }
             "BatchNormalization" if split_dim == 0 => {
                 return Err(crate::error::DsperseError::Slicer(format!(
                     "create_generic_dim_template: slice {slice_idx} BatchNormalization requires \
@@ -1915,6 +1908,7 @@ fn create_generic_dim_template(
     graph: &GraphProto,
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
+    traced_shapes: Option<&HashMap<String, Vec<i64>>>,
 ) -> Result<std::path::PathBuf> {
     if info.elements_per_group == 0 {
         return Err(crate::error::DsperseError::Slicer(format!(
@@ -1946,6 +1940,45 @@ fn create_generic_dim_template(
             .cloned()
     {
         tmpl_graph.output.push(vi);
+    }
+
+    // Populate value_info for intermediate node outputs that lack shape
+    // declarations. jstprove needs these to resolve weight shapes during
+    // WAI circuit compilation (e.g. Gemm expected_weight_shape derives N
+    // from the output shape). Without traced_shapes the circuit compiler
+    // cannot infer these and falls back to incorrect dimensions.
+    if let Some(shapes) = traced_shapes {
+        let existing: HashSet<String> = tmpl_graph
+            .input
+            .iter()
+            .chain(tmpl_graph.output.iter())
+            .chain(tmpl_graph.value_info.iter())
+            .map(|vi| vi.name.clone())
+            .collect();
+        let init_names: HashSet<&str> = tmpl_graph
+            .initializer
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        for node in &tmpl_graph.node {
+            for out_name in &node.output {
+                if out_name.is_empty()
+                    || existing.contains(out_name)
+                    || init_names.contains(out_name.as_str())
+                {
+                    continue;
+                }
+                if let Some(shape) = shapes.get(out_name) {
+                    tmpl_graph
+                        .value_info
+                        .push(onnx_proto::make_tensor_value_info(
+                            out_name,
+                            TensorProto::FLOAT,
+                            shape,
+                        ));
+                }
+            }
+        }
     }
 
     let tmpl_path = output_dir.join("dim_template.onnx");
@@ -2784,7 +2817,7 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path(), None).unwrap();
         let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
         let g = tmpl_model.graph.as_ref().unwrap();
         let w = g.initializer.iter().find(|i| i.name == "W").unwrap();
@@ -2850,7 +2883,7 @@ mod tests {
         // Builder should succeed by binding the second op (the one whose
         // IO matches info), even though the first op also references the
         // same weight initializer.
-        let tmpl_path = create_dim_split_template(&model, &info, tmp.path()).unwrap();
+        let tmpl_path = create_dim_split_template(&model, &info, tmp.path(), None).unwrap();
         let tmpl_model = onnx_proto::load_model(&tmpl_path).unwrap();
         let g = tmpl_model.graph.as_ref().unwrap();
         let w = g.initializer.iter().find(|i| i.name == "W").unwrap();

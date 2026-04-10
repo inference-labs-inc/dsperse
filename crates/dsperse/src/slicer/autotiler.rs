@@ -1890,6 +1890,14 @@ fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) 
                     )));
                 }
             }
+            "Gemm" => {
+                if node.input.get(2).is_some_and(|s| !s.is_empty()) {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} Gemm with bias \
+                         is not supported for generic dim-split template compilation"
+                    )));
+                }
+            }
             "BatchNormalization" if split_dim == 0 => {
                 return Err(crate::error::DsperseError::Slicer(format!(
                     "create_generic_dim_template: slice {slice_idx} BatchNormalization requires \

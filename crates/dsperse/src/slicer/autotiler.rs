@@ -1929,7 +1929,9 @@ fn create_generic_dim_template(
         )
     })?;
 
-    let rewrite = |vi: &mut ValueInfoProto| {
+    // Graph inputs: rewrite strictly at split_dim (input hasn't been
+    // permuted yet, so the split dimension is at its declared position).
+    let rewrite_at_split_dim = |vi: &mut ValueInfoProto| {
         if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
             && split_dim < shape.len()
             && shape[split_dim] == info.dim_size as i64
@@ -1939,9 +1941,28 @@ fn create_generic_dim_template(
         }
     };
 
+    // Intermediates and outputs: Transpose/Reshape can move the split
+    // dimension to any position in the tensor. Replace dim_size with epg
+    // wherever it appears in the shape declaration so downstream ops see
+    // consistent shapes throughout the template graph.
+    let dim_size_i64 = info.dim_size as i64;
+    let epg_i64 = epg as i64;
+    let rewrite_any_pos = |vi: &mut ValueInfoProto| {
+        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
+            && shape.contains(&dim_size_i64)
+        {
+            for d in shape.iter_mut() {
+                if *d == dim_size_i64 {
+                    *d = epg_i64;
+                }
+            }
+            onnx_proto::set_vi_shape(vi, &shape);
+        }
+    };
+
     for vi in tmpl_graph.input.iter_mut() {
         if !init_names.contains(vi.name.as_str()) {
-            rewrite(vi);
+            rewrite_at_split_dim(vi);
         }
     }
     // If output_name is declared in value_info but not graph.output,
@@ -1956,67 +1977,35 @@ fn create_generic_dim_template(
         tmpl_graph.output.push(vi);
     }
     for vi in tmpl_graph.output.iter_mut() {
-        rewrite(vi);
+        rewrite_any_pos(vi);
     }
     for vi in tmpl_graph.value_info.iter_mut() {
-        rewrite(vi);
+        rewrite_any_pos(vi);
     }
 
-    // Rewrite Reshape shape constants at exactly the position corresponding
-    // to split_dim. For each Reshape node whose shape input is an
-    // initializer, find the index in the shape constant where the value
-    // equals dim_size AND whose position corresponds to split_dim in the
-    // Reshape's input tensor. This avoids corrupting other dimensions that
-    // coincidentally equal dim_size.
-    let dim_size_i64 = info.dim_size as i64;
-    let epg_i64 = epg as i64;
-    let reshape_nodes: Vec<(String, usize)> = tmpl_graph
+    // Rewrite Reshape shape constants that embed dim_size. Transpose can
+    // move the split dimension to any position, so replace dim_size with
+    // epg at every occurrence in the shape constant (matching the
+    // rewrite_any_pos strategy used for value_info).
+    let reshape_shape_names: Vec<String> = tmpl_graph
         .node
         .iter()
         .filter(|n| n.op_type == "Reshape")
-        .filter_map(|n| {
-            let shape_name = n.input.get(1)?.clone();
-            // Resolve the input tensor's shape to find where split_dim maps
-            // in the output shape constant. Walk value_info, graph input, and
-            // traced shapes for the Reshape's first input.
-            let inp_name = n.input.first()?;
-            let inp_shape = tmpl_graph
-                .value_info
-                .iter()
-                .chain(tmpl_graph.input.iter())
-                .find(|v| v.name == *inp_name)
-                .and_then(onnx_proto::shape_from_value_info);
-            // If we can resolve the input shape and split_dim is in range,
-            // the position to rewrite is split_dim itself (Reshape preserves
-            // dimension indices when the target shape has the same rank).
-            // For rank-changing Reshapes we still use split_dim as a best
-            // effort — the axis-separability check already rejected
-            // fundamentally non-separable layouts.
-            let pos = if let Some(ref s) = inp_shape {
-                if split_dim < s.len() {
-                    split_dim
-                } else {
-                    return None;
-                }
-            } else {
-                split_dim
-            };
-            Some((shape_name, pos))
-        })
+        .filter_map(|n| n.input.get(1).cloned())
         .collect();
-    for (shape_name, pos) in &reshape_nodes {
-        if let Some(init) = tmpl_graph
-            .initializer
-            .iter_mut()
-            .find(|i| i.name == *shape_name)
-        {
-            let mut shape_data = onnx_proto::tensor_to_i64(init);
-            if *pos < shape_data.len() && shape_data[*pos] == dim_size_i64 {
-                shape_data[*pos] = epg_i64;
-                init.int64_data = shape_data;
-                init.raw_data.clear();
-                init.data_type = TensorProto::INT64;
-            }
+    for init in tmpl_graph.initializer.iter_mut() {
+        if !reshape_shape_names.contains(&init.name) {
+            continue;
+        }
+        let shape_data = onnx_proto::tensor_to_i64(init);
+        if shape_data.contains(&dim_size_i64) {
+            let rewritten: Vec<i64> = shape_data
+                .iter()
+                .map(|&d| if d == dim_size_i64 { epg_i64 } else { d })
+                .collect();
+            init.int64_data = rewritten;
+            init.raw_data.clear();
+            init.data_type = TensorProto::INT64;
         }
     }
 

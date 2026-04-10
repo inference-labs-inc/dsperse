@@ -274,7 +274,7 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
     })
 }
 
-fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
+pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -> Result<String> {
     use sha2::{Digest, Sha256};
     let model = onnx_proto::load_model(tmpl_path)?;
     let graph = model
@@ -282,14 +282,25 @@ fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
         .as_ref()
         .ok_or_else(|| DsperseError::Slicer("no graph for signature".into()))?;
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        hasher.update(c.as_bytes());
+    }
     for node in &graph.node {
         hasher.update(node.op_type.as_bytes());
         for attr in &node.attribute {
             hasher.update(attr.name.as_bytes());
+            hasher.update(attr.r#type.to_le_bytes());
             hasher.update(attr.i.to_le_bytes());
             hasher.update(attr.f.to_le_bytes());
+            hasher.update(&attr.s);
             for v in &attr.ints {
                 hasher.update(v.to_le_bytes());
+            }
+            for v in &attr.floats {
+                hasher.update(v.to_le_bytes());
+            }
+            for v in &attr.strings {
+                hasher.update(v);
             }
         }
     }
@@ -319,7 +330,7 @@ fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
         hasher.update(init.data_type.to_le_bytes());
     }
     let hash = hasher.finalize();
-    Ok(format!("{:x}", hash).chars().take(16).collect())
+    Ok(format!("{:x}", hash))
 }
 
 fn estimate_onnx_constraints(onnx_path: &Path) -> Result<u64> {
@@ -634,7 +645,7 @@ fn compile_channel_split_slice(
             }
         }
 
-        let sig = compute_template_signature(&onnx_path)?;
+        let sig = compute_circuit_signature(&onnx_path, None)?;
 
         let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
         if let Some(ref cached_path) = cached
@@ -775,7 +786,7 @@ fn compile_dim_split_template(
         }
     }
 
-    let sig = compute_template_signature(tmpl_path)?;
+    let sig = compute_circuit_signature(tmpl_path, None)?;
 
     let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
     if let Some(ref cached_path) = cached

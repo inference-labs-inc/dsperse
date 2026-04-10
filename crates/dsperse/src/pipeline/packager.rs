@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::error::{DsperseError, Result};
+use crate::pipeline::compiler::compute_circuit_signature;
 use crate::pipeline::runner::load_model_metadata;
 use crate::schema::metadata::SliceMetadata;
 use crate::utils::paths::resolve_relative_path;
@@ -327,6 +328,60 @@ enum ComponentSource {
     OnnxFile(PathBuf),
 }
 
+fn resolve_source_onnx(slices_dir: &Path, slice: &SliceMetadata) -> Result<PathBuf> {
+    if let Some(ref cs) = slice.channel_split
+        && let Some(group) = cs.groups.first()
+    {
+        let p = resolve_relative_path(slices_dir, &group.path)?;
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    if let Some(ref ds) = slice.dim_split
+        && let Some(ref tmpl) = ds.template_path
+    {
+        let p = resolve_relative_path(slices_dir, tmpl)?;
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    if let Some(ref tiling) = slice.tiling
+        && let Some(ref tile) = tiling.tile
+    {
+        let p = resolve_relative_path(slices_dir, &tile.path)?;
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    slice.resolve_onnx(slices_dir)
+}
+
+fn list_bundle_files(dir: &Path) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(dir) {
+        let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
+        reject_symlink(&entry)?;
+        if entry.file_type().is_file() {
+            let relative = entry
+                .path()
+                .strip_prefix(dir)
+                .map_err(|e| DsperseError::Other(e.to_string()))?
+                .components()
+                .map(|c| match c {
+                    std::path::Component::Normal(part) => Ok(part.to_string_lossy().into_owned()),
+                    _ => Err(DsperseError::Other(
+                        "unexpected non-normal path component in bundle".into(),
+                    )),
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join("/");
+            files.push(relative);
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
 fn extract_component(
     slices_dir: &Path,
     slice: &SliceMetadata,
@@ -334,9 +389,11 @@ fn extract_component(
     curve: Option<&str>,
 ) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
     if let Some(dir) = resolve_circuit_dir(slices_dir, slice)? {
-        let (hash, files) = hash_directory(&dir, curve)?;
+        let onnx_path = resolve_source_onnx(slices_dir, slice)?;
+        let sig = compute_circuit_signature(&onnx_path, curve)?;
+        let files = list_bundle_files(&dir)?;
         return Ok((
-            hash,
+            sig,
             files,
             Some("jstprove".to_string()),
             ComponentSource::CircuitBundle(dir),
@@ -466,63 +523,6 @@ fn hash_named_file(path: &Path, filename: &str, curve: Option<&str>) -> Result<S
     Ok(encode_hex(&hasher.finalize()))
 }
 
-fn hash_directory(dir: &Path, curve: Option<&str>) -> Result<(String, Vec<String>)> {
-    let mut entries: Vec<(String, PathBuf)> = Vec::new();
-    for entry in WalkDir::new(dir) {
-        let entry = entry.map_err(|e| DsperseError::Other(e.to_string()))?;
-        reject_symlink(&entry)?;
-        if entry.file_type().is_file() {
-            let relative = entry
-                .path()
-                .strip_prefix(dir)
-                .map_err(|e| DsperseError::Other(e.to_string()))?
-                .components()
-                .map(|c| match c {
-                    std::path::Component::Normal(part) => Ok(part.to_string_lossy().into_owned()),
-                    _ => Err(DsperseError::Other(
-                        "unexpected non-normal path component in bundle".into(),
-                    )),
-                })
-                .collect::<Result<Vec<_>>>()?
-                .join("/");
-            entries.push((relative, entry.path().to_path_buf()));
-        }
-    }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut hasher = Sha256::new();
-    if let Some(c) = curve {
-        let c_bytes = c.as_bytes();
-        hasher.update((c_bytes.len() as u64).to_le_bytes());
-        hasher.update(c_bytes);
-    }
-    let file_names: Vec<String> = entries.iter().map(|(name, _)| name.clone()).collect();
-
-    for (name, path) in &entries {
-        let name_bytes = name.as_bytes();
-        hasher.update((name_bytes.len() as u64).to_le_bytes());
-        hasher.update(name_bytes);
-
-        let mut file = fs::File::open(path).map_err(|e| DsperseError::io(e, path))?;
-        let file_len = file
-            .metadata()
-            .map_err(|e| DsperseError::io(e, path))?
-            .len();
-        hasher.update(file_len.to_le_bytes());
-        let mut buf = [0u8; 8192];
-        loop {
-            let n = file.read(&mut buf).map_err(|e| DsperseError::io(e, path))?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-    }
-
-    let hash = encode_hex(&hasher.finalize());
-    Ok((hash, file_names))
-}
-
 fn sha256_bytes(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -572,6 +572,25 @@ mod tests {
     use crate::schema::metadata::{
         Compilation, Dependencies, ModelMetadata, SliceShapeWrapper, TensorShape,
     };
+    use crate::slicer::onnx_proto;
+
+    fn write_minimal_onnx(path: &Path, input_dim: i64) {
+        let node = onnx_proto::NodeProto {
+            op_type: "Relu".to_string(),
+            input: vec!["x".to_string()],
+            output: vec!["y".to_string()],
+            ..Default::default()
+        };
+        let graph = onnx_proto::make_graph(
+            "g",
+            vec![node],
+            vec![onnx_proto::make_tensor_value_info("x", 1, &[1, input_dim])],
+            vec![onnx_proto::make_tensor_value_info("y", 1, &[1, input_dim])],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+        onnx_proto::save_model(&model, path).unwrap();
+    }
 
     fn create_test_model_metadata(slices_dir: &Path, count: usize) {
         let mut slices = Vec::new();
@@ -579,11 +598,10 @@ mod tests {
             let slice_dir = slices_dir.join(format!("slice_{}", i));
             let payload_dir = slice_dir.join("payload");
             fs::create_dir_all(&payload_dir).unwrap();
-            fs::write(
-                payload_dir.join(format!("slice_{}.onnx", i)),
-                format!("onnx_data_{}", i),
-            )
-            .unwrap();
+            write_minimal_onnx(
+                &payload_dir.join(format!("slice_{}.onnx", i)),
+                (64 + i) as i64,
+            );
 
             let circuit_dir = slice_dir.join("jstprove").join("circuit.bundle");
             fs::create_dir_all(&circuit_dir).unwrap();
@@ -1156,11 +1174,7 @@ mod tests {
             let slice_dir = slices_dir.join(format!("slice_{}", i));
             let payload_dir = slice_dir.join("payload");
             fs::create_dir_all(&payload_dir).unwrap();
-            fs::write(
-                payload_dir.join(format!("slice_{}.onnx", i)),
-                format!("onnx_data_{}", i),
-            )
-            .unwrap();
+            write_minimal_onnx(&payload_dir.join(format!("slice_{}.onnx", i)), 64);
             let circuit_dir = slice_dir.join("jstprove").join("circuit.bundle");
             fs::create_dir_all(&circuit_dir).unwrap();
             fs::write(circuit_dir.join("circuit.bin"), "shared_circuit_data").unwrap();
@@ -1223,7 +1237,7 @@ mod tests {
         let result = package_content_addressed(&slices_dir, &config).unwrap();
 
         assert_eq!(result.component_count, 1);
-        assert_eq!(result.wb_count, 5);
+        assert_eq!(result.wb_count, 3);
 
         let manifest: serde_json::Value =
             rmp_serde::from_slice(&fs::read(output_dir.join("manifest.msgpack")).unwrap()).unwrap();

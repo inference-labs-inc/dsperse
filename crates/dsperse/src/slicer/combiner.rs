@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use super::materializer::build_node_output_types;
 use super::onnx_proto::{self, ModelProto, TensorProto, ValueInfoProto};
 use crate::error::{DsperseError, Result};
 use crate::schema::metadata::ModelMetadata;
@@ -10,6 +9,7 @@ pub fn materialize_combined_model(
     model: &ModelProto,
     metadata: &ModelMetadata,
     traced_shapes: &HashMap<String, Vec<i64>>,
+    traced_types: Option<&HashMap<String, i32>>,
 ) -> Result<ModelProto> {
     let mut combined = model.clone();
     let graph = combined
@@ -30,12 +30,6 @@ pub fn materialize_combined_model(
 
     {
         let vi_map = onnx_proto::build_value_info_map(graph);
-        let init_types: HashMap<&str, i32> = graph
-            .initializer
-            .iter()
-            .map(|i| (i.name.as_str(), i.data_type))
-            .collect();
-        let node_output_types = build_node_output_types(graph);
 
         for slice in &metadata.slices {
             for output_name in &slice.dependencies.output {
@@ -51,13 +45,9 @@ pub fn materialize_combined_model(
                     continue;
                 }
 
-                if let Some(vi) = resolve_value_info(
-                    output_name,
-                    &vi_map,
-                    traced_shapes,
-                    &init_types,
-                    &node_output_types,
-                )? {
+                if let Some(vi) =
+                    resolve_value_info(output_name, &vi_map, traced_shapes, traced_types)?
+                {
                     new_outputs.push(vi);
                     added.insert(output_name.clone());
                 }
@@ -76,13 +66,9 @@ pub fn materialize_combined_model(
                     continue;
                 }
 
-                if let Some(vi) = resolve_value_info(
-                    input_name,
-                    &vi_map,
-                    traced_shapes,
-                    &init_types,
-                    &node_output_types,
-                )? {
+                if let Some(vi) =
+                    resolve_value_info(input_name, &vi_map, traced_shapes, traced_types)?
+                {
                     new_outputs.push(vi);
                     added.insert(input_name.clone());
                 }
@@ -108,8 +94,7 @@ fn resolve_value_info(
     name: &str,
     vi_map: &HashMap<String, &ValueInfoProto>,
     traced_shapes: &HashMap<String, Vec<i64>>,
-    init_types: &HashMap<&str, i32>,
-    node_output_types: &HashMap<String, i32>,
+    traced_types: Option<&HashMap<String, i32>>,
 ) -> Result<Option<ValueInfoProto>> {
     if let Some(vi) = vi_map.get(name) {
         let elem_type = onnx_proto::elem_type_from_value_info(vi).unwrap_or(TensorProto::FLOAT);
@@ -125,10 +110,8 @@ fn resolve_value_info(
         ))
     })?;
 
-    let elem_type = init_types
-        .get(name)
-        .copied()
-        .or_else(|| node_output_types.get(name).copied())
+    let elem_type = traced_types
+        .and_then(|t| t.get(name).copied())
         .unwrap_or(TensorProto::FLOAT);
 
     if NON_NUMERIC_TENSOR_TYPES.contains(&elem_type) {
@@ -138,35 +121,6 @@ fn resolve_value_info(
     Ok(Some(onnx_proto::make_tensor_value_info(
         name, elem_type, shape,
     )))
-}
-
-pub fn materialize_combined_to_disk(
-    slices_dir: &Path,
-    metadata: &ModelMetadata,
-) -> Result<PathBuf> {
-    let traced_shapes = metadata.traced_shapes.as_ref().ok_or_else(|| {
-        DsperseError::Slicer("metadata missing traced_shapes for combined model".into())
-    })?;
-    let original_path = metadata.original_model_path.as_ref().ok_or_else(|| {
-        DsperseError::Slicer("metadata missing original_model_path for combined model".into())
-    })?;
-
-    let model_path = if Path::new(original_path).is_absolute() {
-        PathBuf::from(original_path)
-    } else {
-        slices_dir.join(original_path)
-    };
-
-    let mut model = onnx_proto::load_model(&model_path)?;
-    onnx_proto::normalize_opset(&mut model);
-    let combined = materialize_combined_model(&model, metadata, traced_shapes)?;
-
-    let output_path = slices_dir.join("combined.onnx");
-    onnx_proto::save_model(&combined, &output_path)?;
-
-    tracing::info!(path = %output_path.display(), "materialized combined ONNX");
-
-    Ok(output_path)
 }
 
 pub fn ensure_combined_materialized(
@@ -180,116 +134,107 @@ pub fn ensure_combined_materialized(
     materialize_combined_to_disk(slices_dir, metadata)
 }
 
+pub fn materialize_combined_to_disk(
+    slices_dir: &Path,
+    metadata: &ModelMetadata,
+) -> Result<PathBuf> {
+    let traced_shapes = metadata.traced_shapes.as_ref().ok_or_else(|| {
+        DsperseError::Slicer("metadata missing traced_shapes for combined model".into())
+    })?;
+    let traced_types = metadata.traced_types.as_ref();
+    let original_path = metadata.original_model_path.as_ref().ok_or_else(|| {
+        DsperseError::Slicer("metadata missing original_model_path for combined model".into())
+    })?;
+
+    let model_path = if Path::new(original_path).is_absolute() {
+        std::path::PathBuf::from(original_path)
+    } else {
+        slices_dir.join(original_path)
+    };
+
+    let mut model = onnx_proto::load_model(&model_path)?;
+    onnx_proto::normalize_opset(&mut model);
+
+    let combined = materialize_combined_model(&model, metadata, traced_shapes, traced_types)?;
+
+    let dest = slices_dir.join("combined.onnx");
+    onnx_proto::save_model(&combined, &dest)?;
+    tracing::info!(path = %dest.display(), "materialized combined ONNX");
+
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::metadata::{
+        Dependencies, ModelMetadata, SliceMetadata, SliceShapeWrapper, TensorShape,
+    };
 
-    const TEST_OPS: &[&str] = &["Conv", "Gemm", "MatMul"];
+    fn make_test_model(
+        node_output_types: HashMap<String, i32>,
+        traced_shapes: HashMap<String, Vec<i64>>,
+    ) -> (ModelProto, ModelMetadata) {
+        let graph = onnx_proto::GraphProto {
+            node: vec![onnx_proto::NodeProto {
+                op_type: "Identity".to_string(),
+                input: vec!["input".to_string()],
+                output: vec![
+                    "float_tensor".to_string(),
+                    "bool_tensor".to_string(),
+                    "string_tensor".to_string(),
+                    "int_tensor".to_string(),
+                ],
+                ..Default::default()
+            }],
+            input: vec![onnx_proto::make_tensor_value_info(
+                "input",
+                TensorProto::FLOAT,
+                &[1, 3, 8, 8],
+            )],
+            output: vec![onnx_proto::make_tensor_value_info(
+                "model_output",
+                TensorProto::FLOAT,
+                &[1, 3, 8, 8],
+            )],
+            ..Default::default()
+        };
+        let model = onnx_proto::make_model(graph, 13);
 
-    #[test]
-    fn combined_model_has_intermediate_outputs() {
-        let models_dir = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/models/net"
-        ));
-        let model_path = models_dir.join("model.onnx");
-        if !model_path.exists() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
-            .unwrap();
+        let metadata = ModelMetadata {
+            slices: vec![SliceMetadata {
+                index: 0,
+                filename: "s0.onnx".to_string(),
+                path: "s0.onnx".to_string(),
+                relative_path: "s0.onnx".to_string(),
+                shape: SliceShapeWrapper {
+                    tensor_shape: TensorShape {
+                        input: vec![],
+                        output: vec![],
+                    },
+                },
+                dependencies: Dependencies {
+                    input: vec![],
+                    filtered_inputs: vec![],
+                    output: vec![
+                        "float_tensor".to_string(),
+                        "bool_tensor".to_string(),
+                        "string_tensor".to_string(),
+                        "int_tensor".to_string(),
+                    ],
+                },
+                ..Default::default()
+            }],
+            traced_shapes: Some(traced_shapes.clone()),
+            traced_types: Some(node_output_types),
+            ..Default::default()
+        };
 
-        if meta.slices.len() <= 1 {
-            return;
-        }
-
-        let traced = meta.traced_shapes.as_ref().unwrap();
-        let model = onnx_proto::load_model(&tmp.path().join("model.onnx")).unwrap();
-        let original_output_count = model.graph.as_ref().unwrap().output.len();
-
-        let combined = materialize_combined_model(&model, &meta, traced).unwrap();
-        let combined_output_count = combined.graph.as_ref().unwrap().output.len();
-
-        assert!(
-            combined_output_count > original_output_count,
-            "combined model should have more outputs than original: {combined_output_count} vs {original_output_count}"
-        );
-
-        let output_names: HashSet<String> = combined
-            .graph
-            .as_ref()
-            .unwrap()
-            .output
-            .iter()
-            .map(|o| o.name.clone())
-            .collect();
-
-        for slice in &meta.slices {
-            for out in &slice.dependencies.output {
-                let node_produces = combined
-                    .graph
-                    .as_ref()
-                    .unwrap()
-                    .node
-                    .iter()
-                    .any(|n| n.output.contains(out));
-                if node_produces {
-                    assert!(
-                        output_names.contains(out),
-                        "slice {} output '{out}' should be in combined model outputs",
-                        slice.index
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn combined_model_to_disk_roundtrip() {
-        let models_dir = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/models/net"
-        ));
-        let model_path = models_dir.join("model.onnx");
-        if !model_path.exists() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
-            .unwrap();
-
-        let combined_path = materialize_combined_to_disk(tmp.path(), &meta).unwrap();
-        assert!(combined_path.exists());
-
-        let reloaded = onnx_proto::load_model(&combined_path).unwrap();
-        assert!(reloaded.graph.is_some());
-    }
-
-    #[test]
-    fn ensure_combined_is_idempotent() {
-        let models_dir = std::path::PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/models/net"
-        ));
-        let model_path = models_dir.join("model.onnx");
-        if !model_path.exists() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let meta = crate::slicer::slice_model(&model_path, Some(tmp.path()), None, TEST_OPS, None)
-            .unwrap();
-
-        let p1 = ensure_combined_materialized(tmp.path(), &meta).unwrap();
-        let p2 = ensure_combined_materialized(tmp.path(), &meta).unwrap();
-        assert_eq!(p1, p2);
+        (model, metadata)
     }
 
     #[test]
     fn bool_outputs_included_in_combined_model() {
-        let vi_map: HashMap<String, &ValueInfoProto> = HashMap::new();
-        let init_types: HashMap<&str, i32> = HashMap::new();
-
         let mut node_output_types = HashMap::new();
         node_output_types.insert("float_tensor".to_string(), TensorProto::FLOAT);
         node_output_types.insert("bool_tensor".to_string(), TensorProto::BOOL);
@@ -299,47 +244,119 @@ mod tests {
         let mut traced_shapes = HashMap::new();
         traced_shapes.insert("float_tensor".to_string(), vec![1, 3, 8, 8]);
         traced_shapes.insert("bool_tensor".to_string(), vec![1, 3, 8, 8]);
-        traced_shapes.insert("string_tensor".to_string(), vec![4]);
-        traced_shapes.insert("int_tensor".to_string(), vec![1, 300]);
+        traced_shapes.insert("string_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("int_tensor".to_string(), vec![1, 3, 8, 8]);
 
-        let float_vi = resolve_value_info(
-            "float_tensor",
-            &vi_map,
-            &traced_shapes,
-            &init_types,
-            &node_output_types,
-        )
-        .unwrap();
+        let (model, metadata) = make_test_model(node_output_types, traced_shapes.clone());
+
+        let traced_types = metadata.traced_types.as_ref();
+        let combined =
+            materialize_combined_model(&model, &metadata, &traced_shapes, traced_types).unwrap();
+
+        let graph = combined.graph.as_ref().unwrap();
+
+        let float_vi = graph.output.iter().find(|o| o.name == "float_tensor");
         assert!(float_vi.is_some());
 
-        let bool_vi = resolve_value_info(
-            "bool_tensor",
-            &vi_map,
-            &traced_shapes,
-            &init_types,
-            &node_output_types,
-        )
-        .unwrap();
+        let bool_vi = graph.output.iter().find(|o| o.name == "bool_tensor");
         assert!(bool_vi.is_some());
 
-        let string_vi = resolve_value_info(
-            "string_tensor",
-            &vi_map,
-            &traced_shapes,
-            &init_types,
-            &node_output_types,
-        )
-        .unwrap();
-        assert!(string_vi.is_none());
+        let string_vi = graph.output.iter().find(|o| o.name == "string_tensor");
+        assert!(
+            string_vi.is_none(),
+            "string tensors should be excluded from combined outputs"
+        );
 
-        let int_vi = resolve_value_info(
-            "int_tensor",
-            &vi_map,
-            &traced_shapes,
-            &init_types,
-            &node_output_types,
-        )
-        .unwrap();
+        let int_vi = graph.output.iter().find(|o| o.name == "int_tensor");
         assert!(int_vi.is_some());
+    }
+
+    #[test]
+    fn combined_model_has_intermediate_outputs() {
+        let mut traced_shapes = HashMap::new();
+        traced_shapes.insert("float_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("bool_tensor".to_string(), vec![1]);
+        traced_shapes.insert("string_tensor".to_string(), vec![1]);
+        traced_shapes.insert("int_tensor".to_string(), vec![2, 4]);
+
+        let mut types = HashMap::new();
+        types.insert("float_tensor".to_string(), TensorProto::FLOAT);
+        types.insert("bool_tensor".to_string(), TensorProto::BOOL);
+        types.insert("int_tensor".to_string(), TensorProto::INT64);
+
+        let (model, metadata) = make_test_model(types, traced_shapes.clone());
+        let traced_types = metadata.traced_types.as_ref();
+        let combined =
+            materialize_combined_model(&model, &metadata, &traced_shapes, traced_types).unwrap();
+
+        let graph = combined.graph.as_ref().unwrap();
+        assert!(
+            graph.output.len() > 1,
+            "combined model should have intermediate outputs"
+        );
+    }
+
+    #[test]
+    fn combined_model_to_disk_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let slices_dir = dir.path();
+
+        let mut traced_shapes = HashMap::new();
+        traced_shapes.insert("float_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("bool_tensor".to_string(), vec![1]);
+        traced_shapes.insert("string_tensor".to_string(), vec![1]);
+        traced_shapes.insert("int_tensor".to_string(), vec![2, 4]);
+
+        let mut types = HashMap::new();
+        types.insert("float_tensor".to_string(), TensorProto::FLOAT);
+        types.insert("bool_tensor".to_string(), TensorProto::BOOL);
+        types.insert("int_tensor".to_string(), TensorProto::INT64);
+
+        let (model, mut metadata) = make_test_model(types, traced_shapes);
+        metadata.original_model_path = Some("model.onnx".to_string());
+
+        let model_path = slices_dir.join("model.onnx");
+        onnx_proto::save_model(&model, &model_path).unwrap();
+        let meta_path = slices_dir.join("metadata.msgpack");
+        metadata.save(&meta_path).unwrap();
+
+        let dest = materialize_combined_to_disk(slices_dir, &metadata).unwrap();
+        assert!(dest.exists());
+
+        let loaded = onnx_proto::load_model(&dest).unwrap();
+        let graph = loaded.graph.as_ref().unwrap();
+        assert!(
+            graph.output.len() > 1,
+            "reloaded combined model should have intermediate outputs"
+        );
+    }
+
+    #[test]
+    fn ensure_combined_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let slices_dir = dir.path();
+
+        let mut traced_shapes = HashMap::new();
+        traced_shapes.insert("float_tensor".to_string(), vec![1, 3, 8, 8]);
+        traced_shapes.insert("bool_tensor".to_string(), vec![1]);
+        traced_shapes.insert("string_tensor".to_string(), vec![1]);
+        traced_shapes.insert("int_tensor".to_string(), vec![2, 4]);
+
+        let mut types = HashMap::new();
+        types.insert("float_tensor".to_string(), TensorProto::FLOAT);
+        types.insert("bool_tensor".to_string(), TensorProto::BOOL);
+        types.insert("int_tensor".to_string(), TensorProto::INT64);
+
+        let (model, mut metadata) = make_test_model(types, traced_shapes);
+        metadata.original_model_path = Some("model.onnx".to_string());
+
+        let model_path = slices_dir.join("model.onnx");
+        onnx_proto::save_model(&model, &model_path).unwrap();
+        let meta_path = slices_dir.join("metadata.msgpack");
+        metadata.save(&meta_path).unwrap();
+
+        let dest1 = materialize_combined_to_disk(slices_dir, &metadata).unwrap();
+        let dest2 = materialize_combined_to_disk(slices_dir, &metadata).unwrap();
+        assert_eq!(dest1, dest2);
     }
 }

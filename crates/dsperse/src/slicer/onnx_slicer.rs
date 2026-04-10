@@ -30,7 +30,9 @@ pub fn slice_model(
     onnx_proto::save_model(&model, &tract_path)?;
 
     tracing::info!("folding constants and tracing shapes via tract");
-    let traced_shapes = super::trace::fold_and_trace_via_tract(&tract_path, &model)?;
+    let trace_result = super::trace::fold_and_trace_via_tract(&tract_path, &model)?;
+    let traced_shapes = trace_result.shapes;
+    let traced_types = trace_result.types;
 
     if let Some(graph) = model.graph.as_mut() {
         let folded = super::onnx_fold::propagate_constants_with_shapes(graph, &traced_shapes);
@@ -151,6 +153,7 @@ pub fn slice_model(
         jstprove_version: None,
         jstprove_rev: None,
         traced_shapes: Some(traced_shapes),
+        traced_types: Some(traced_types),
         original_model_path: Some("model.onnx".to_string()),
         folded_constant_names: folded_constants.into_iter().collect(),
     };

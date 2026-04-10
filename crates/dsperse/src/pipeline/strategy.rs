@@ -27,12 +27,14 @@ impl<'a> ExecutionStrategy<'a> {
             Some(SplitStrategy::ChannelSplit(cs)) => Ok(Self::ChannelSplit(cs)),
             Some(SplitStrategy::DimSplit(ds)) => {
                 if ds.template_path.is_none() {
-                    return Err(DsperseError::Metadata(format!(
-                        "dim_split present but template_path is missing (slice path: {:?})",
-                        meta.path
-                    )));
+                    tracing::debug!(
+                        path = ?meta.path,
+                        "dim_split present but template_path missing; falling back to single-slice execution"
+                    );
+                    Ok(Self::Single { use_circuit })
+                } else {
+                    Ok(Self::DimSplit(ds))
                 }
-                Ok(Self::DimSplit(ds))
             }
             Some(SplitStrategy::Tiled(t)) => Ok(Self::Tiled(t)),
             None => Ok(Self::Single { use_circuit }),

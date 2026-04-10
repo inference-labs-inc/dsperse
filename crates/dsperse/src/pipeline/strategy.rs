@@ -29,9 +29,11 @@ impl<'a> ExecutionStrategy<'a> {
                 if ds.template_path.is_none() {
                     // Template creation may have been rejected (axis-
                     // separability, unsupported split kind) or the template
-                    // was not included in the bundle. Fall back to monolithic
-                    // ORT execution so already-published bundles with
-                    // template-less dim_split metadata remain runnable.
+                    // was not included in the bundle. Fall back to the
+                    // non-template Single execution path (which may still
+                    // use circuit-based witness generation if use_circuit is
+                    // set) so already-published bundles with template-less
+                    // dim_split metadata remain runnable.
                     tracing::debug!(
                         path = ?meta.path,
                         split_kind = ?ds.split_kind,

@@ -53,6 +53,7 @@ fn make_model_metadata(num_slices: usize) -> ModelMetadata {
         jstprove_version: Some("0.1.0".into()),
         jstprove_rev: Some("def5678".into()),
         traced_shapes: None,
+        traced_types: None,
         original_model_path: None,
         folded_constant_names: vec![],
     }

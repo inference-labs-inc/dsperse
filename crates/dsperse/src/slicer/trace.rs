@@ -24,7 +24,9 @@ pub(crate) fn fold_and_trace_via_tract(
             .model_for_path(&tract_path)
             .map_err(|e| DsperseError::Slicer(format!("tract load: {e}")))?,
     );
-    let _ = std::fs::remove_file(&tract_path);
+    if let Err(e) = std::fs::remove_file(&tract_path) {
+        tracing::debug!(path = %tract_path.display(), error = %e, "failed to remove tagged model");
+    }
 
     let plan = InferenceSimplePlan::new(tract_model.clone())
         .map_err(|e| DsperseError::Slicer(format!("plan creation: {e}")))?;
@@ -247,7 +249,7 @@ fn tag_all_outputs(onnx_path: &Path, model: &ModelProto) -> Result<std::path::Pa
         }
     }
     let dir = onnx_path.parent().unwrap_or_else(|| Path::new("."));
-    let tagged_path = dir.join("_tract_tagged.onnx");
+    let tagged_path = dir.join(format!("_tract_tagged_{}.onnx", std::process::id()));
     super::onnx_proto::save_model(&tagged, &tagged_path)?;
     Ok(tagged_path)
 }
@@ -539,9 +541,12 @@ fn resolve_body_tensor_shape_inner(
         if input_shapes.len() != producer.input.len() || input_shapes.is_empty() {
             return None;
         }
-        let rank = input_shapes[0].len();
+        let rank = input_shapes[0].len() as i64;
+        if axis < -rank || axis >= rank {
+            return None;
+        }
         let axis_idx = if axis < 0 {
-            (rank as i64 + axis) as usize
+            (rank + axis) as usize
         } else {
             axis as usize
         };

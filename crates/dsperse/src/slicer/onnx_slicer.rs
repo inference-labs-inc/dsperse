@@ -83,7 +83,8 @@ pub fn slice_model(
     let trimmed_points = &slice_points[..slice_points.len().saturating_sub(1)];
 
     let mut tiled_info = HashMap::new();
-    let mut dim_split_info: HashMap<usize, (autotiler::DimSplitDetection, String)> = HashMap::new();
+    let mut dim_split_info: HashMap<usize, (autotiler::DimSplitDetection, Option<String>)> =
+        HashMap::new();
     for (seg_idx, _) in segment_ranges.iter().enumerate() {
         let slice_model =
             materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
@@ -130,6 +131,7 @@ pub fn slice_model(
                     &slice_model,
                     &tentative_info,
                     &slice_dir,
+                    Some(&traced_shapes),
                 ) {
                     Ok(tmpl_path) => {
                         let tmpl_rel = tmpl_path
@@ -150,15 +152,21 @@ pub fn slice_model(
                             split_kind = ?detection.split_kind,
                             "dim-split detected and template created"
                         );
-                        dim_split_info.insert(seg_idx, (detection, tmpl_rel));
+                        dim_split_info.insert(seg_idx, (detection, Some(tmpl_rel)));
                     }
                     Err(e) => {
                         tracing::warn!(
                             slice = seg_idx,
+                            estimated = detection.estimated_constraints,
                             error = %e,
                             "dim-split detected but template creation failed; \
-                             slice will compile and run as monolithic circuit"
+                             slice will be skipped during compilation"
                         );
+                        // Record detection with no template path so the
+                        // compiler knows this slice was over-budget and
+                        // should be skipped rather than falling through
+                        // to monolithic compilation.
+                        dim_split_info.insert(seg_idx, (detection, None));
                     }
                 }
             }
@@ -209,7 +217,7 @@ fn build_slice_metadata(
     segment_ranges: &[(usize, usize)],
     traced_shapes: &HashMap<String, Vec<i64>>,
     tiled_info: &HashMap<usize, autotiler::TilingDetection>,
-    dim_split_info: &HashMap<usize, (autotiler::DimSplitDetection, String)>,
+    dim_split_info: &HashMap<usize, (autotiler::DimSplitDetection, Option<String>)>,
 ) -> Vec<SliceMetadata> {
     let mut slices = Vec::new();
 
@@ -337,7 +345,7 @@ fn build_slice_metadata(
 
         let dim_split = dim_split_info
             .get(&seg_idx)
-            .map(|(d, tmpl_rel)| DimSplitInfo::from_detection(d, seg_idx, Some(tmpl_rel.clone())));
+            .map(|(d, tmpl_rel)| DimSplitInfo::from_detection(d, seg_idx, tmpl_rel.clone()));
 
         slices.push(SliceMetadata {
             index: seg_idx,

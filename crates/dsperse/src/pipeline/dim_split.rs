@@ -175,12 +175,24 @@ pub(crate) fn execute_dim_split(
             };
 
             let mut patched = tmpl_model.clone();
-            if let Some(graph) = patched.graph.as_mut()
-                && let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == "W")
-            {
-                w_init.float_data = weight_chunk;
-                w_init.raw_data.clear();
-            }
+            let graph = patched.graph.as_mut().ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: dim-split template at {} has no graph",
+                    tmpl_path.display()
+                ))
+            })?;
+            let w_init = graph
+                .initializer
+                .iter_mut()
+                .find(|i| i.name == "W")
+                .ok_or_else(|| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: dim-split template at {} missing 'W' initializer",
+                        tmpl_path.display()
+                    ))
+                })?;
+            w_init.float_data = weight_chunk;
+            w_init.raw_data.clear();
 
             let patched_path = tmp_dir.path().join(format!("chunk_{kc}.onnx"));
             crate::slicer::onnx_proto::save_model(&patched, &patched_path)?;

@@ -33,6 +33,17 @@ pub(crate) fn execute_dim_split(
     let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
     let input_shape = input_tensor.shape().to_vec();
     let k_dim = *input_shape.last().unwrap_or(&0);
+    // The runtime activation width must equal the k_dim recorded during
+    // detection. If they diverge (shape inference drift, weight reuse with
+    // different transB orientation, etc.) the chunking math would silently
+    // pad or truncate against a mismatched weight layout and produce wrong
+    // outputs. Refuse to proceed.
+    if ds.k_dim != 0 && k_dim != ds.k_dim {
+        return Err(DsperseError::Pipeline(format!(
+            "{slice_id}: runtime k_dim {} from input {:?} does not match metadata k_dim {}",
+            k_dim, ds.input_name, ds.k_dim
+        )));
+    }
     let k_chunks = ds.k_chunks.max(1);
     let k_chunk_size = k_dim.div_ceil(k_chunks);
 

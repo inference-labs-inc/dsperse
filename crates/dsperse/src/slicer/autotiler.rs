@@ -731,12 +731,28 @@ pub fn detect_dim_split(
 
     let target_groups = estimated.div_ceil(MAX_ESTIMATED_CONSTRAINTS) as usize;
 
-    for node in nodes {
+    for (idx, node) in nodes.iter().enumerate() {
         if matches!(node.op_type.as_str(), "MatMul" | "Gemm") {
             // Gemm with a bias (input C) is not yet supported by the dim-split
             // template builder; skip so the template construction downstream
             // stays in sync with the detector.
             if node.op_type == "Gemm" && node.input.get(2).is_some_and(|s: &String| !s.is_empty()) {
+                continue;
+            }
+            // The dim-split runner replaces the entire slice execution with
+            // the patched MatMul template and only writes ds.output_name to
+            // the tensor cache. If this MatMul/Gemm output is consumed by a
+            // later node in the same slice, those downstream ops would never
+            // execute and the slice would publish the wrong tensor. Decline
+            // and let the search continue or fall through to other paths.
+            let Some(node_out) = node.output.first().filter(|s| !s.is_empty()) else {
+                continue;
+            };
+            let consumed_downstream = nodes
+                .iter()
+                .skip(idx + 1)
+                .any(|later| later.input.iter().any(|i| i == node_out));
+            if consumed_downstream {
                 continue;
             }
             let Some(weight_name) = node.input.get(1) else {
@@ -2472,6 +2488,76 @@ mod tests {
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
             "expected MatMul dim-split to decline, got {got:?}"
         );
+    }
+
+    #[test]
+    fn detect_dim_split_skips_non_terminal_matmul() {
+        // MatMul output is consumed by a later Add inside the same slice.
+        // The dim-split runner only writes MatMul output to the cache, so
+        // the Add would never run; detection must decline this MatMul and
+        // either pick a later terminal MatMul or fall through.
+        let matmul = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["mid".to_string()],
+            ..Default::default()
+        };
+        let add = NodeProto {
+            op_type: "Add".to_string(),
+            input: vec!["mid".to_string(), "bias".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![1, 145, 384]);
+        shapes.insert("weight".to_string(), vec![384, 1536]);
+        shapes.insert("bias".to_string(), vec![1536]);
+        shapes.insert("mid".to_string(), vec![1, 145, 1536]);
+        shapes.insert("output".to_string(), vec![1, 145, 1536]);
+        let mut init_names = HashSet::new();
+        init_names.insert("weight".to_string());
+        init_names.insert("bias".to_string());
+
+        let got = detect_dim_split(&[matmul, add], &shapes, &init_names);
+        assert!(
+            got.as_ref()
+                .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
+            "expected non-terminal MatMul to be declined, got {got:?}"
+        );
+    }
+
+    #[test]
+    fn detect_dim_split_picks_terminal_matmul_after_consumed_one() {
+        // First MatMul feeds a second MatMul; only the second is terminal,
+        // so detection must skip the first and select the second when both
+        // are otherwise eligible.
+        let m1 = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "w1".to_string()],
+            output: vec!["mid".to_string()],
+            ..Default::default()
+        };
+        let m2 = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["mid".to_string(), "w2".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+        let mut shapes = HashMap::new();
+        shapes.insert("input".to_string(), vec![4, 145, 384]);
+        shapes.insert("w1".to_string(), vec![384, 1536]);
+        shapes.insert("mid".to_string(), vec![4, 145, 1536]);
+        shapes.insert("w2".to_string(), vec![1536, 384]);
+        shapes.insert("output".to_string(), vec![4, 145, 384]);
+        let mut init_names = HashSet::new();
+        init_names.insert("w1".to_string());
+        init_names.insert("w2".to_string());
+
+        let d = detect_dim_split(&[m1, m2], &shapes, &init_names).unwrap();
+        assert_eq!(d.weight_name.as_deref(), Some("w2"));
+        assert_eq!(d.output_name, "output");
+        assert_eq!(d.k_dim, 1536);
+        assert_eq!(d.n_dim, 384);
     }
 
     #[test]

@@ -785,12 +785,8 @@ fn compile_dim_split_template(
     // differ from the original model's traced shapes. If traced_shapes
     // is passed, jstprove uses the original (larger) shapes and the
     // Transpose/Reshape validation fails on the mismatch.
-    let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
-        tmpl_path,
-        true,
-        exclude_from_wai,
-        None,
-    )?;
+    let (params, architecture, wandb) =
+        converter::prepare_jstprove_artifacts_filtered(tmpl_path, true, exclude_from_wai, None)?;
 
     std::panic::catch_unwind(|| {
         backend.compile(&circuit_path, proof_config, params, architecture, wandb)

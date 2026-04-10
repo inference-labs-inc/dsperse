@@ -336,6 +336,9 @@ fn execute_generic_dim_split(
         let dim_end = ((g + 1) * epg).min(ds.dim_size);
         let actual_size = dim_end - dim_start;
 
+        // Pad every group's input to dim_size so the template runs with
+        // the original model's shapes unchanged. This keeps the compiled
+        // circuit signature identical for every group and across slices.
         let mut group_cache = TensorStore::new();
         for vi_name in &input_names {
             let arr = tensor_cache.try_get(vi_name).ok_or_else(|| {
@@ -348,20 +351,16 @@ fn execute_generic_dim_split(
                 let sliced = arr
                     .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
                     .to_owned();
-                if actual_size < epg {
-                    let mut padded_shape = sliced.shape().to_vec();
-                    padded_shape[split_dim] = epg;
-                    let mut padded = ndarray::ArrayD::zeros(padded_shape);
-                    for (mut dst, src) in padded
-                        .axis_iter_mut(Axis(split_dim))
-                        .zip(sliced.axis_iter(Axis(split_dim)))
-                    {
-                        dst.assign(&src);
-                    }
-                    group_cache.put(vi_name.clone(), padded);
-                } else {
-                    group_cache.put(vi_name.clone(), sliced);
+                let mut padded_shape = sliced.shape().to_vec();
+                padded_shape[split_dim] = ds.dim_size;
+                let mut padded = ndarray::ArrayD::zeros(padded_shape);
+                for (mut dst, src) in padded
+                    .axis_iter_mut(Axis(split_dim))
+                    .zip(sliced.axis_iter(Axis(split_dim)))
+                {
+                    dst.assign(&src);
                 }
+                group_cache.put(vi_name.clone(), padded);
             } else {
                 group_cache.put(vi_name.clone(), arr.clone());
             }
@@ -378,7 +377,8 @@ fn execute_generic_dim_split(
         let group_output = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data)
             .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: group {g} reshape: {e}")))?;
 
-        let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
+        // Trim the padded region from the output along concat_axis.
+        let trimmed = if actual_size < ds.dim_size && concat_axis < group_output.ndim() {
             group_output
                 .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
                 .to_owned()

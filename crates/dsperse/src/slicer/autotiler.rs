@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
@@ -1908,20 +1908,20 @@ fn create_generic_dim_template(
     info: &crate::schema::tiling::DimSplitInfo,
     output_dir: &Path,
 ) -> Result<std::path::PathBuf> {
-    let split_dim = info.split_dim;
-    let epg = info.elements_per_group;
-    if epg == 0 {
+    if info.elements_per_group == 0 {
         return Err(crate::error::DsperseError::Slicer(format!(
             "create_generic_dim_template: slice {} elements_per_group is 0",
             info.slice_idx
         )));
     }
 
-    check_axis_separable(graph, split_dim, info.slice_idx)?;
+    check_axis_separable(graph, info.split_dim, info.slice_idx)?;
 
-    let init_names: std::collections::HashSet<&str> =
-        graph.initializer.iter().map(|i| i.name.as_str()).collect();
-
+    // The template is the original slice model with no shape rewriting.
+    // The runner pads each group's input to dim_size before inference and
+    // trims the output afterward. Keeping the original shapes means the
+    // compiled circuit signature is identical regardless of group size,
+    // maximizing cross-slice and cross-model circuit catalog reuse.
     let mut tmpl_model = model.clone();
     let tmpl_graph = tmpl_model.graph.as_mut().ok_or_else(|| {
         crate::error::DsperseError::Slicer(
@@ -1929,44 +1929,7 @@ fn create_generic_dim_template(
         )
     })?;
 
-    // Graph inputs: rewrite strictly at split_dim (input hasn't been
-    // permuted yet, so the split dimension is at its declared position).
-    let rewrite_at_split_dim = |vi: &mut ValueInfoProto| {
-        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
-            && split_dim < shape.len()
-            && shape[split_dim] == info.dim_size as i64
-        {
-            shape[split_dim] = epg as i64;
-            onnx_proto::set_vi_shape(vi, &shape);
-        }
-    };
-
-    // Intermediates and outputs: Transpose/Reshape can move the split
-    // dimension to any position in the tensor. Replace dim_size with epg
-    // wherever it appears in the shape declaration so downstream ops see
-    // consistent shapes throughout the template graph.
-    let dim_size_i64 = info.dim_size as i64;
-    let epg_i64 = epg as i64;
-    let rewrite_any_pos = |vi: &mut ValueInfoProto| {
-        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
-            && shape.contains(&dim_size_i64)
-        {
-            for d in shape.iter_mut() {
-                if *d == dim_size_i64 {
-                    *d = epg_i64;
-                }
-            }
-            onnx_proto::set_vi_shape(vi, &shape);
-        }
-    };
-
-    for vi in tmpl_graph.input.iter_mut() {
-        if !init_names.contains(vi.name.as_str()) {
-            rewrite_at_split_dim(vi);
-        }
-    }
-    // If output_name is declared in value_info but not graph.output,
-    // promote it so ORT actually produces the tensor at runtime.
+    // Promote output_name to graph output if it only exists in value_info.
     if !tmpl_graph.output.iter().any(|o| o.name == info.output_name)
         && let Some(vi) = tmpl_graph
             .value_info
@@ -1975,38 +1938,6 @@ fn create_generic_dim_template(
             .cloned()
     {
         tmpl_graph.output.push(vi);
-    }
-    for vi in tmpl_graph.output.iter_mut() {
-        rewrite_any_pos(vi);
-    }
-    for vi in tmpl_graph.value_info.iter_mut() {
-        rewrite_any_pos(vi);
-    }
-
-    // Rewrite Reshape shape constants that embed dim_size. Transpose can
-    // move the split dimension to any position, so replace dim_size with
-    // epg at every occurrence in the shape constant (matching the
-    // rewrite_any_pos strategy used for value_info).
-    let reshape_shape_names: Vec<String> = tmpl_graph
-        .node
-        .iter()
-        .filter(|n| n.op_type == "Reshape")
-        .filter_map(|n| n.input.get(1).cloned())
-        .collect();
-    for init in tmpl_graph.initializer.iter_mut() {
-        if !reshape_shape_names.contains(&init.name) {
-            continue;
-        }
-        let shape_data = onnx_proto::tensor_to_i64(init);
-        if shape_data.contains(&dim_size_i64) {
-            let rewritten: Vec<i64> = shape_data
-                .iter()
-                .map(|&d| if d == dim_size_i64 { epg_i64 } else { d })
-                .collect();
-            init.int64_data = rewritten;
-            init.raw_data.clear();
-            init.data_type = TensorProto::INT64;
-        }
     }
 
     let tmpl_path = output_dir.join("dim_template.onnx");

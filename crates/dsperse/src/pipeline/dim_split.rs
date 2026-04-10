@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::runner::run_onnx_inference;
+use super::runner::{run_onnx_inference, run_onnx_inference_multi_named};
 use super::tensor_store::TensorStore;
 use crate::backend::jstprove::JstproveBackend;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::ExecutionInfo;
+use crate::schema::tiling::DimSplitKind;
 use crate::slicer::onnx_proto::TensorProto;
 
 #[allow(clippy::too_many_arguments)]
@@ -30,25 +31,53 @@ pub(crate) fn execute_dim_split(
         )));
     }
 
+    let use_matmul_split = matches!(ds.split_kind, DimSplitKind::MatMulOutputDim);
+
+    let final_result = if use_matmul_split {
+        execute_matmul_dim_split(
+            slices_dir,
+            slice_id,
+            ds,
+            target_shape,
+            tensor_cache,
+            &tmpl_path,
+            donor_init_map,
+        )?
+    } else {
+        execute_generic_dim_split(slice_id, ds, target_shape, tensor_cache, &tmpl_path)?
+    };
+
+    Ok(crate::schema::execution::StrategyOutput {
+        info: ExecutionInfo {
+            method: crate::schema::execution::ExecutionMethod::DimSplit,
+            success: true,
+            error: None,
+            witness_file: None,
+            tile_exec_infos: Vec::new(),
+        },
+        outputs: vec![(ds.output_name.clone(), final_result)],
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_matmul_dim_split(
+    slices_dir: &Path,
+    slice_id: &str,
+    ds: &crate::schema::tiling::DimSplitInfo,
+    target_shape: Option<&[i64]>,
+    tensor_cache: &TensorStore,
+    tmpl_path: &Path,
+    donor_init_map: Option<&HashMap<String, &TensorProto>>,
+) -> Result<ndarray::ArrayD<f64>> {
     let input_tensor = tensor_cache.get(&ds.input_name)?.clone();
     let input_shape = input_tensor.shape().to_vec();
     let k_dim = *input_shape.last().unwrap_or(&0);
-    // The runtime activation width must equal the k_dim recorded during
-    // detection. If they diverge (shape inference drift, weight reuse with
-    // different transB orientation, etc.) the chunking math would silently
-    // pad or truncate against a mismatched weight layout and produce wrong
-    // outputs. Refuse to proceed.
     if ds.k_dim != 0 && k_dim != ds.k_dim {
         return Err(DsperseError::Pipeline(format!(
             "{slice_id}: runtime k_dim {} from input {:?} does not match metadata k_dim {}",
             k_dim, ds.input_name, ds.k_dim
         )));
     }
-    // The equality check above only fires when ds.k_dim is populated.
-    // Legacy metadata with ds.k_dim == 0 paired with a degenerate runtime
-    // tensor (last dim 0) would otherwise produce k_chunk_size = 0 and
-    // silently drive empty inferences. Reject the zero-width activation
-    // explicitly so the failure mode is loud.
     if k_dim == 0 {
         return Err(DsperseError::Pipeline(format!(
             "{slice_id}: dim-split input {:?} has zero-width last dim; expected k_dim > 0",
@@ -83,9 +112,6 @@ pub(crate) fn execute_dim_split(
             "{slice_id}: dim_split missing weight_name in metadata"
         ))
     })?;
-    // Tighten the lookup with weight + IO match so that slices reusing the
-    // same initializer (tied weights, etc.) cannot bind a sibling op with
-    // a different transB orientation.
     let matmul_node = orig_graph
         .node
         .iter()
@@ -131,15 +157,11 @@ pub(crate) fn execute_dim_split(
     }
 
     let n_dim = ds.n_dim;
-    let tmpl_model = crate::slicer::onnx_proto::load_model(&tmpl_path)?;
+    let tmpl_model = crate::slicer::onnx_proto::load_model(tmpl_path)?;
 
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
 
-    // Precompute one patched ONNX per K-chunk. The weight slice and the
-    // patched model both depend only on kc (and the immutable template),
-    // so hoisting them out of the row loop turns O(rows * k_chunks)
-    // weight builds + clones + save_model writes into O(k_chunks) work.
     let mut patched_paths: Vec<std::path::PathBuf> = Vec::with_capacity(k_chunks);
     for kc in 0..k_chunks {
         let k_start = kc * k_chunk_size;
@@ -241,11 +263,6 @@ pub(crate) fn execute_dim_split(
         row_outputs.push(row_arr);
     }
 
-    // ndarray::concatenate panics / errors on an empty slice list, so a
-    // zero-row activation (empty batch, dynamic-dim collapse) would surface
-    // as an opaque ShapeError. Short-circuit to an empty [0, n_dim] tensor
-    // and let the downstream reshape produce the correctly shaped empty
-    // output.
     let stacked: ndarray::ArrayD<f64> = if row_outputs.is_empty() {
         ndarray::ArrayD::zeros(ndarray::IxDyn(&[0, n_dim]))
     } else {
@@ -256,24 +273,7 @@ pub(crate) fn execute_dim_split(
         .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row concat: {e}")))?
     };
 
-    let output_shape_vec: Vec<usize> = if let Some(target) = target_shape {
-        target
-            .iter()
-            .map(|&d| {
-                usize::try_from(d).map_err(|_| {
-                    DsperseError::Pipeline(format!(
-                        "{slice_id}: invalid target dimension {d} in dim-split reshape"
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        let mut s = input_shape.clone();
-        if let Some(last) = s.last_mut() {
-            *last = n_dim;
-        }
-        s
-    };
+    let output_shape_vec = resolve_output_shape(slice_id, &input_shape, n_dim, target_shape)?;
 
     let final_result = stacked
         .as_standard_layout()
@@ -288,14 +288,166 @@ pub(crate) fn execute_dim_split(
         "executed dim-split (sequence + K tiled)"
     );
 
-    Ok(crate::schema::execution::StrategyOutput {
-        info: ExecutionInfo {
-            method: crate::schema::execution::ExecutionMethod::DimSplit,
-            success: true,
-            error: None,
-            witness_file: None,
-            tile_exec_infos: Vec::new(),
-        },
-        outputs: vec![(ds.output_name.clone(), final_result)],
-    })
+    Ok(final_result)
+}
+
+fn execute_generic_dim_split(
+    slice_id: &str,
+    ds: &crate::schema::tiling::DimSplitInfo,
+    target_shape: Option<&[i64]>,
+    tensor_cache: &TensorStore,
+    tmpl_path: &Path,
+) -> Result<ndarray::ArrayD<f64>> {
+    use ndarray::Axis;
+
+    let concat_axis = ds.concat_axis;
+    let split_dim = ds.split_dim;
+    let epg = ds.elements_per_group;
+
+    let tmpl_model = crate::slicer::onnx_proto::load_model(tmpl_path)?;
+    let tmpl_graph = tmpl_model
+        .graph
+        .as_ref()
+        .ok_or_else(|| DsperseError::Pipeline(format!("{slice_id}: template has no graph")))?;
+    let tmpl_init_names: std::collections::HashSet<&str> = tmpl_graph
+        .initializer
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect();
+    let input_names: Vec<String> = tmpl_graph
+        .input
+        .iter()
+        .filter(|vi| !tmpl_init_names.contains(vi.name.as_str()))
+        .map(|vi| vi.name.clone())
+        .collect();
+
+    let tmp_dir = tempfile::tempdir()
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
+    let tmpl_on_disk = tmp_dir.path().join("dim_tmpl.onnx");
+    crate::slicer::onnx_proto::save_model(&tmpl_model, &tmpl_on_disk)?;
+
+    let mut group_outputs: Vec<ndarray::ArrayD<f64>> = Vec::new();
+
+    for g in 0..ds.num_groups {
+        let dim_start = g * epg;
+        if dim_start >= ds.dim_size {
+            break;
+        }
+        let dim_end = ((g + 1) * epg).min(ds.dim_size);
+        let actual_size = dim_end - dim_start;
+
+        let mut group_cache = TensorStore::new();
+        for vi_name in &input_names {
+            let arr = tensor_cache.try_get(vi_name).ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: template input {vi_name:?} not found in tensor cache"
+                ))
+            })?;
+            let shape = arr.shape();
+            if split_dim < shape.len() && shape[split_dim] == ds.dim_size {
+                let sliced = arr
+                    .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
+                    .to_owned();
+                if actual_size < epg {
+                    let mut padded_shape = sliced.shape().to_vec();
+                    padded_shape[split_dim] = epg;
+                    let mut padded = ndarray::ArrayD::zeros(padded_shape);
+                    for (mut dst, src) in padded
+                        .axis_iter_mut(Axis(split_dim))
+                        .zip(sliced.axis_iter(Axis(split_dim)))
+                    {
+                        dst.assign(&src);
+                    }
+                    group_cache.put(vi_name.clone(), padded);
+                } else {
+                    group_cache.put(vi_name.clone(), sliced);
+                }
+            } else {
+                group_cache.put(vi_name.clone(), arr.clone());
+            }
+        }
+
+        let mut named = run_onnx_inference_multi_named(&tmpl_on_disk, &group_cache, &input_names)?;
+        let (data, shape) = named.remove(&ds.output_name).ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "{slice_id}: dim-split group {g} missing output {:?} (available: {:?})",
+                ds.output_name,
+                named.keys().collect::<Vec<_>>()
+            ))
+        })?;
+        let group_output = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data)
+            .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: group {g} reshape: {e}")))?;
+
+        let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
+            group_output
+                .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
+                .to_owned()
+        } else {
+            group_output
+        };
+
+        group_outputs.push(trimmed);
+    }
+
+    let result = ndarray::concatenate(
+        Axis(concat_axis),
+        &group_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
+    )
+    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: dim-split concat: {e}")))?;
+
+    let output_shape_vec = if let Some(target) = target_shape {
+        target
+            .iter()
+            .map(|&d| {
+                usize::try_from(d).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: invalid target dim {d} in dim-split reshape"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        result.shape().to_vec()
+    };
+
+    let final_result = result
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order(ndarray::IxDyn(&output_shape_vec))
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: dim-split reshape: {e}")))?;
+
+    tracing::info!(
+        slice = %slice_id,
+        groups = ds.num_groups,
+        split_kind = ?ds.split_kind,
+        "executed dim-split (generic)"
+    );
+
+    Ok(final_result)
+}
+
+fn resolve_output_shape(
+    slice_id: &str,
+    input_shape: &[usize],
+    n_dim: usize,
+    target_shape: Option<&[i64]>,
+) -> Result<Vec<usize>> {
+    if let Some(target) = target_shape {
+        target
+            .iter()
+            .map(|&d| {
+                usize::try_from(d).map_err(|_| {
+                    DsperseError::Pipeline(format!(
+                        "{slice_id}: invalid target dimension {d} in dim-split reshape"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    } else {
+        let mut s = input_shape.to_vec();
+        if let Some(last) = s.last_mut() {
+            *last = n_dim;
+        }
+        Ok(s)
+    }
 }

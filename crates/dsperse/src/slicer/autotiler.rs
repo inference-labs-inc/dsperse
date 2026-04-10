@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
@@ -1699,10 +1699,7 @@ pub fn create_dim_split_template(
         }
         crate::schema::tiling::DimSplitKind::HeadDim
         | crate::schema::tiling::DimSplitKind::BatchDim => {
-            Err(crate::error::DsperseError::Slicer(format!(
-                "create_dim_split_template: {:?} split requires shape rewriting not yet supported for slice {}",
-                info.split_kind, info.slice_idx
-            )))
+            create_generic_dim_template(model, graph, info, output_dir)
         }
     }
 }
@@ -1840,6 +1837,188 @@ fn create_matmul_dim_template(
         initializers,
     );
     let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
+
+    let tmpl_path = output_dir.join("dim_template.onnx");
+    onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+    Ok(tmpl_path)
+}
+
+fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) -> Result<()> {
+    let resolve_axis = |axis: i64| -> usize {
+        let ndim = graph
+            .input
+            .first()
+            .and_then(onnx_proto::shape_from_value_info)
+            .map(|s| s.len() as i64)
+            .unwrap_or(4);
+        if axis < 0 {
+            (ndim + axis) as usize
+        } else {
+            axis as usize
+        }
+    };
+
+    for node in &graph.node {
+        match node.op_type.as_str() {
+            "Flatten" => {
+                let axis = resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(1));
+                if split_dim < axis {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} Flatten axis \
+                         {axis} > split_dim {split_dim}; split dimension falls in the merged leading group"
+                    )));
+                }
+            }
+            "Softmax" | "LogSoftmax" => {
+                let resolved =
+                    resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1));
+                if resolved == split_dim {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} {} axis {resolved} \
+                         equals split_dim {split_dim}; normalization spans the split dimension",
+                        node.op_type
+                    )));
+                }
+            }
+            "LayerNormalization" => {
+                let resolved =
+                    resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1));
+                if resolved <= split_dim {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} LayerNormalization axis \
+                         {resolved} <= split_dim {split_dim}; normalization spans the split dimension",
+                    )));
+                }
+            }
+            "BatchNormalization" if split_dim == 0 => {
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "create_generic_dim_template: slice {slice_idx} BatchNormalization requires \
+                     full batch statistics; cannot split at dim 0"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn create_generic_dim_template(
+    model: &ModelProto,
+    graph: &GraphProto,
+    info: &crate::schema::tiling::DimSplitInfo,
+    output_dir: &Path,
+) -> Result<std::path::PathBuf> {
+    let split_dim = info.split_dim;
+    let epg = info.elements_per_group;
+    if epg == 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_generic_dim_template: slice {} elements_per_group is 0",
+            info.slice_idx
+        )));
+    }
+
+    check_axis_separable(graph, split_dim, info.slice_idx)?;
+
+    let init_names: std::collections::HashSet<&str> =
+        graph.initializer.iter().map(|i| i.name.as_str()).collect();
+
+    let mut tmpl_model = model.clone();
+    let tmpl_graph = tmpl_model.graph.as_mut().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_generic_dim_template: cloned model has no graph".into(),
+        )
+    })?;
+
+    let rewrite = |vi: &mut ValueInfoProto| {
+        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
+            && split_dim < shape.len()
+            && shape[split_dim] == info.dim_size as i64
+        {
+            shape[split_dim] = epg as i64;
+            onnx_proto::set_vi_shape(vi, &shape);
+        }
+    };
+
+    for vi in tmpl_graph.input.iter_mut() {
+        if !init_names.contains(vi.name.as_str()) {
+            rewrite(vi);
+        }
+    }
+    // If output_name is declared in value_info but not graph.output,
+    // promote it so ORT actually produces the tensor at runtime.
+    if !tmpl_graph.output.iter().any(|o| o.name == info.output_name)
+        && let Some(vi) = tmpl_graph
+            .value_info
+            .iter()
+            .find(|v| v.name == info.output_name)
+            .cloned()
+    {
+        tmpl_graph.output.push(vi);
+    }
+    for vi in tmpl_graph.output.iter_mut() {
+        rewrite(vi);
+    }
+    for vi in tmpl_graph.value_info.iter_mut() {
+        rewrite(vi);
+    }
+
+    // Rewrite Reshape shape constants at exactly the position corresponding
+    // to split_dim. For each Reshape node whose shape input is an
+    // initializer, find the index in the shape constant where the value
+    // equals dim_size AND whose position corresponds to split_dim in the
+    // Reshape's input tensor. This avoids corrupting other dimensions that
+    // coincidentally equal dim_size.
+    let dim_size_i64 = info.dim_size as i64;
+    let epg_i64 = epg as i64;
+    let reshape_nodes: Vec<(String, usize)> = tmpl_graph
+        .node
+        .iter()
+        .filter(|n| n.op_type == "Reshape")
+        .filter_map(|n| {
+            let shape_name = n.input.get(1)?.clone();
+            // Resolve the input tensor's shape to find where split_dim maps
+            // in the output shape constant. Walk value_info, graph input, and
+            // traced shapes for the Reshape's first input.
+            let inp_name = n.input.first()?;
+            let inp_shape = tmpl_graph
+                .value_info
+                .iter()
+                .chain(tmpl_graph.input.iter())
+                .find(|v| v.name == *inp_name)
+                .and_then(onnx_proto::shape_from_value_info);
+            // If we can resolve the input shape and split_dim is in range,
+            // the position to rewrite is split_dim itself (Reshape preserves
+            // dimension indices when the target shape has the same rank).
+            // For rank-changing Reshapes we still use split_dim as a best
+            // effort — the axis-separability check already rejected
+            // fundamentally non-separable layouts.
+            let pos = if let Some(ref s) = inp_shape {
+                if split_dim < s.len() {
+                    split_dim
+                } else {
+                    return None;
+                }
+            } else {
+                split_dim
+            };
+            Some((shape_name, pos))
+        })
+        .collect();
+    for (shape_name, pos) in &reshape_nodes {
+        if let Some(init) = tmpl_graph
+            .initializer
+            .iter_mut()
+            .find(|i| i.name == *shape_name)
+        {
+            let mut shape_data = onnx_proto::tensor_to_i64(init);
+            if *pos < shape_data.len() && shape_data[*pos] == dim_size_i64 {
+                shape_data[*pos] = epg_i64;
+                init.int64_data = shape_data;
+                init.raw_data.clear();
+                init.data_type = TensorProto::INT64;
+            }
+        }
+    }
 
     let tmpl_path = output_dir.join("dim_template.onnx");
     onnx_proto::save_model(&tmpl_model, &tmpl_path)?;

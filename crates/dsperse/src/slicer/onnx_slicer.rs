@@ -81,7 +81,7 @@ pub fn slice_model(
     let trimmed_points = &slice_points[..slice_points.len().saturating_sub(1)];
 
     let mut tiled_info = HashMap::new();
-    let mut dim_split_info: HashMap<usize, autotiler::DimSplitDetection> = HashMap::new();
+    let mut dim_split_info: HashMap<usize, (autotiler::DimSplitDetection, String)> = HashMap::new();
     for (seg_idx, _) in segment_ranges.iter().enumerate() {
         let slice_model =
             materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
@@ -117,14 +117,48 @@ pub fn slice_model(
             if let Some(detection) =
                 autotiler::detect_dim_split(&graph.node, &slice_shapes, &init_names)
             {
-                tracing::info!(
-                    slice = seg_idx,
-                    estimated = detection.estimated_constraints,
-                    num_groups = detection.num_groups,
-                    split_kind = ?detection.split_kind,
-                    "dim-split detected"
-                );
-                dim_split_info.insert(seg_idx, detection);
+                // Build a tentative DimSplitInfo to attempt template creation.
+                // Only record the detection if the template materializes
+                // successfully, so the metadata never carries dim_split
+                // entries that can't be fulfilled at runtime.
+                let tentative_info = DimSplitInfo::from_detection(&detection, seg_idx, None);
+                let slice_dir = output_dir.join(format!("slice_{seg_idx}")).join("payload");
+                std::fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
+                match autotiler::create_dim_split_template(
+                    &slice_model,
+                    &tentative_info,
+                    &slice_dir,
+                ) {
+                    Ok(tmpl_path) => {
+                        let tmpl_rel = tmpl_path
+                            .strip_prefix(&output_dir)
+                            .map_err(|_| {
+                                DsperseError::Slicer(format!(
+                                    "dim-split template path {} is not under output dir {}",
+                                    tmpl_path.display(),
+                                    output_dir.display()
+                                ))
+                            })?
+                            .to_string_lossy()
+                            .into_owned();
+                        tracing::info!(
+                            slice = seg_idx,
+                            estimated = detection.estimated_constraints,
+                            num_groups = detection.num_groups,
+                            split_kind = ?detection.split_kind,
+                            "dim-split detected and template created"
+                        );
+                        dim_split_info.insert(seg_idx, (detection, tmpl_rel));
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            slice = seg_idx,
+                            error = %e,
+                            "dim-split detected but template creation failed; \
+                             slice will compile and run as monolithic circuit"
+                        );
+                    }
+                }
             }
         }
     }
@@ -172,7 +206,7 @@ fn build_slice_metadata(
     segment_ranges: &[(usize, usize)],
     traced_shapes: &HashMap<String, Vec<i64>>,
     tiled_info: &HashMap<usize, autotiler::TilingDetection>,
-    dim_split_info: &HashMap<usize, autotiler::DimSplitDetection>,
+    dim_split_info: &HashMap<usize, (autotiler::DimSplitDetection, String)>,
 ) -> Vec<SliceMetadata> {
     let mut slices = Vec::new();
 
@@ -298,30 +332,9 @@ fn build_slice_metadata(
             }
         }
 
-        let dim_split = dim_split_info.get(&seg_idx).map(|d| DimSplitInfo {
-            slice_idx: seg_idx,
-            split_kind: d.split_kind.clone(),
-            split_dim: d.split_dim,
-            dim_size: d.dim_size,
-            num_groups: d.num_groups,
-            elements_per_group: d.elements_per_group,
-            input_name: d.input_name.clone(),
-            output_name: d.output_name.clone(),
-            concat_axis: d.concat_axis,
-            estimated_group_constraints: if d.k_chunks > 1 {
-                (d.k_dim.div_ceil(d.k_chunks) * d.n_dim * 2) as u64
-            } else if d.num_groups > 0 {
-                d.estimated_constraints / d.num_groups as u64
-            } else {
-                d.estimated_constraints
-            },
-            weight_name: d.weight_name.clone(),
-            k_dim: d.k_dim,
-            n_dim: d.n_dim,
-            k_chunks: d.k_chunks,
-            template_path: None,
-            jstprove_circuit_path: None,
-        });
+        let dim_split = dim_split_info
+            .get(&seg_idx)
+            .map(|(d, tmpl_rel)| DimSplitInfo::from_detection(d, seg_idx, Some(tmpl_rel.clone())));
 
         slices.push(SliceMetadata {
             index: seg_idx,

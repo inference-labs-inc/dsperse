@@ -199,6 +199,40 @@ pub struct DimSplitInfo {
     pub jstprove_circuit_path: Option<String>,
 }
 
+impl DimSplitInfo {
+    pub fn from_detection(
+        d: &crate::slicer::autotiler::DimSplitDetection,
+        slice_idx: usize,
+        template_path: Option<String>,
+    ) -> Self {
+        let estimated_group_constraints = if d.k_chunks > 1 {
+            (d.k_dim.div_ceil(d.k_chunks) * d.n_dim * 2) as u64
+        } else if d.num_groups > 0 {
+            d.estimated_constraints / d.num_groups as u64
+        } else {
+            d.estimated_constraints
+        };
+        Self {
+            slice_idx,
+            split_kind: d.split_kind.clone(),
+            split_dim: d.split_dim,
+            dim_size: d.dim_size,
+            num_groups: d.num_groups,
+            elements_per_group: d.elements_per_group,
+            input_name: d.input_name.clone(),
+            output_name: d.output_name.clone(),
+            concat_axis: d.concat_axis,
+            estimated_group_constraints,
+            weight_name: d.weight_name.clone(),
+            k_dim: d.k_dim,
+            n_dim: d.n_dim,
+            k_chunks: d.k_chunks,
+            template_path,
+            jstprove_circuit_path: None,
+        }
+    }
+}
+
 fn default_input_name() -> String {
     "input".to_string()
 }

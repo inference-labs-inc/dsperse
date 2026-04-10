@@ -186,20 +186,41 @@ pub fn get_segment_dependencies(
         .collect();
     sorted_nodes.sort_by_key(|n| n.index);
 
+    let mut consumed_in_segment: HashSet<String> = HashSet::new();
     for node in &sorted_nodes {
         for out in &node.dependencies.output {
             output_map.insert(out.clone(), true);
         }
         for inp in &node.dependencies.input {
+            if output_map.contains_key(inp) {
+                consumed_in_segment.insert(inp.clone());
+            }
             if !output_map.contains_key(inp) && !inputs.contains(inp) {
                 inputs.push(inp.clone());
             }
         }
     }
 
+    let model_output_set: HashSet<&str> =
+        analysis.output_names.iter().map(|s| s.as_str()).collect();
+
     let mut outputs: Vec<String> = output_map
         .keys()
-        .filter(|output| !inputs.contains(output))
+        .filter(|output| {
+            if inputs.contains(output) {
+                return false;
+            }
+            // Exclude tensors consumed by a later node in the same segment
+            // unless they are also model-level final outputs. The materializer
+            // only promotes internally-consumed tensors to graph outputs when
+            // a downstream segment needs them; the metadata list must match.
+            if consumed_in_segment.contains(output.as_str())
+                && !model_output_set.contains(output.as_str())
+            {
+                return false;
+            }
+            true
+        })
         .cloned()
         .collect();
     outputs.sort();

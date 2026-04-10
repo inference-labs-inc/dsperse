@@ -367,16 +367,12 @@ fn execute_generic_dim_split(
             }
         }
 
-        let named = run_onnx_inference_multi_named(&tmpl_on_disk, &group_cache, &input_names)?;
-        if named.len() != 1 {
-            return Err(DsperseError::Pipeline(format!(
-                "{slice_id}: dim-split group {g} produced {} outputs, expected 1",
-                named.len()
-            )));
-        }
-        let (data, shape) = named.into_values().next().ok_or_else(|| {
+        let mut named = run_onnx_inference_multi_named(&tmpl_on_disk, &group_cache, &input_names)?;
+        let (data, shape) = named.remove(&ds.output_name).ok_or_else(|| {
             DsperseError::Pipeline(format!(
-                "{slice_id}: dim-split group {g} produced no output"
+                "{slice_id}: dim-split group {g} missing output {:?} (available: {:?})",
+                ds.output_name,
+                named.keys().collect::<Vec<_>>()
             ))
         })?;
         let group_output = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data)

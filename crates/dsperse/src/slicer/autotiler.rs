@@ -1843,6 +1843,69 @@ fn create_matmul_dim_template(
     Ok(tmpl_path)
 }
 
+fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) -> Result<()> {
+    for node in &graph.node {
+        match node.op_type.as_str() {
+            "Reshape" | "Flatten" => {
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "create_generic_dim_template: slice {slice_idx} contains {} which embeds \
+                     tensor layout and is not axis-separable at dim {split_dim}",
+                    node.op_type
+                )));
+            }
+            "Softmax" | "LogSoftmax" => {
+                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+                let ndim = graph
+                    .input
+                    .first()
+                    .and_then(onnx_proto::shape_from_value_info)
+                    .map(|s| s.len() as i64)
+                    .unwrap_or(4);
+                let resolved = if axis < 0 {
+                    (ndim + axis) as usize
+                } else {
+                    axis as usize
+                };
+                if resolved == split_dim {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} {} axis {resolved} \
+                         equals split_dim {split_dim}; normalization spans the split dimension",
+                        node.op_type
+                    )));
+                }
+            }
+            "LayerNormalization" => {
+                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+                let ndim = graph
+                    .input
+                    .first()
+                    .and_then(onnx_proto::shape_from_value_info)
+                    .map(|s| s.len() as i64)
+                    .unwrap_or(4);
+                let resolved = if axis < 0 {
+                    (ndim + axis) as usize
+                } else {
+                    axis as usize
+                };
+                if resolved <= split_dim {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} LayerNormalization axis \
+                         {resolved} <= split_dim {split_dim}; normalization spans the split dimension",
+                    )));
+                }
+            }
+            "BatchNormalization" if split_dim == 0 => {
+                return Err(crate::error::DsperseError::Slicer(format!(
+                    "create_generic_dim_template: slice {slice_idx} BatchNormalization requires \
+                     full batch statistics; cannot split at dim 0"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn create_generic_dim_template(
     model: &ModelProto,
     graph: &GraphProto,
@@ -1857,6 +1920,8 @@ fn create_generic_dim_template(
             info.slice_idx
         )));
     }
+
+    check_axis_separable(graph, split_dim, info.slice_idx)?;
 
     let init_names: std::collections::HashSet<&str> =
         graph.initializer.iter().map(|i| i.name.as_str()).collect();

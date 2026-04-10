@@ -121,24 +121,7 @@ pub fn slice_model(
                 // Only record the detection if the template materializes
                 // successfully, so the metadata never carries dim_split
                 // entries that can't be fulfilled at runtime.
-                let tentative_info = crate::schema::tiling::DimSplitInfo {
-                    slice_idx: seg_idx,
-                    split_kind: detection.split_kind.clone(),
-                    split_dim: detection.split_dim,
-                    dim_size: detection.dim_size,
-                    num_groups: detection.num_groups,
-                    elements_per_group: detection.elements_per_group,
-                    input_name: detection.input_name.clone(),
-                    output_name: detection.output_name.clone(),
-                    concat_axis: detection.concat_axis,
-                    estimated_group_constraints: 0,
-                    weight_name: detection.weight_name.clone(),
-                    k_dim: detection.k_dim,
-                    n_dim: detection.n_dim,
-                    k_chunks: detection.k_chunks,
-                    template_path: None,
-                    jstprove_circuit_path: None,
-                };
+                let tentative_info = DimSplitInfo::from_detection(&detection, seg_idx, None);
                 let slice_dir = output_dir.join(format!("slice_{seg_idx}")).join("payload");
                 std::fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
                 match autotiler::create_dim_split_template(
@@ -350,30 +333,7 @@ fn build_slice_metadata(
 
         let dim_split = dim_split_info
             .get(&seg_idx)
-            .map(|(d, tmpl_rel)| DimSplitInfo {
-                slice_idx: seg_idx,
-                split_kind: d.split_kind.clone(),
-                split_dim: d.split_dim,
-                dim_size: d.dim_size,
-                num_groups: d.num_groups,
-                elements_per_group: d.elements_per_group,
-                input_name: d.input_name.clone(),
-                output_name: d.output_name.clone(),
-                concat_axis: d.concat_axis,
-                estimated_group_constraints: if d.k_chunks > 1 {
-                    (d.k_dim.div_ceil(d.k_chunks) * d.n_dim * 2) as u64
-                } else if d.num_groups > 0 {
-                    d.estimated_constraints / d.num_groups as u64
-                } else {
-                    d.estimated_constraints
-                },
-                weight_name: d.weight_name.clone(),
-                k_dim: d.k_dim,
-                n_dim: d.n_dim,
-                k_chunks: d.k_chunks,
-                template_path: Some(tmpl_rel.clone()),
-                jstprove_circuit_path: None,
-            });
+            .map(|(d, tmpl_rel)| DimSplitInfo::from_detection(d, seg_idx, Some(tmpl_rel.clone())));
 
         slices.push(SliceMetadata {
             index: seg_idx,

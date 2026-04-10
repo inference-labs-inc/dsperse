@@ -1862,10 +1862,10 @@ fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) 
         match node.op_type.as_str() {
             "Flatten" => {
                 let axis = resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(1));
-                if axis <= split_dim {
+                if split_dim < axis {
                     return Err(crate::error::DsperseError::Slicer(format!(
                         "create_generic_dim_template: slice {slice_idx} Flatten axis \
-                         {axis} <= split_dim {split_dim}; flattening merges the split dimension"
+                         {axis} > split_dim {split_dim}; split dimension falls in the merged leading group"
                     )));
                 }
             }
@@ -1944,6 +1944,17 @@ fn create_generic_dim_template(
             rewrite(vi);
         }
     }
+    // If output_name is declared in value_info but not graph.output,
+    // promote it so ORT actually produces the tensor at runtime.
+    if !tmpl_graph.output.iter().any(|o| o.name == info.output_name)
+        && let Some(vi) = tmpl_graph
+            .value_info
+            .iter()
+            .find(|v| v.name == info.output_name)
+            .cloned()
+    {
+        tmpl_graph.output.push(vi);
+    }
     for vi in tmpl_graph.output.iter_mut() {
         rewrite(vi);
     }
@@ -1951,31 +1962,61 @@ fn create_generic_dim_template(
         rewrite(vi);
     }
 
-    // Rewrite Reshape shape constants that embed dim_size. The second input
-    // to Reshape is the target shape tensor — when it's an initializer we
-    // can replace dim_size with epg so the Reshape stays consistent with
-    // the rewritten I/O shapes.
+    // Rewrite Reshape shape constants at exactly the position corresponding
+    // to split_dim. For each Reshape node whose shape input is an
+    // initializer, find the index in the shape constant where the value
+    // equals dim_size AND whose position corresponds to split_dim in the
+    // Reshape's input tensor. This avoids corrupting other dimensions that
+    // coincidentally equal dim_size.
     let dim_size_i64 = info.dim_size as i64;
     let epg_i64 = epg as i64;
-    let reshape_shape_names: Vec<String> = tmpl_graph
+    let reshape_nodes: Vec<(String, usize)> = tmpl_graph
         .node
         .iter()
         .filter(|n| n.op_type == "Reshape")
-        .filter_map(|n| n.input.get(1).cloned())
-        .collect();
-    for init in tmpl_graph.initializer.iter_mut() {
-        if !reshape_shape_names.contains(&init.name) {
-            continue;
-        }
-        let shape_data = onnx_proto::tensor_to_i64(init);
-        if shape_data.contains(&dim_size_i64) {
-            let rewritten: Vec<i64> = shape_data
+        .filter_map(|n| {
+            let shape_name = n.input.get(1)?.clone();
+            // Resolve the input tensor's shape to find where split_dim maps
+            // in the output shape constant. Walk value_info, graph input, and
+            // traced shapes for the Reshape's first input.
+            let inp_name = n.input.first()?;
+            let inp_shape = tmpl_graph
+                .value_info
                 .iter()
-                .map(|&d| if d == dim_size_i64 { epg_i64 } else { d })
-                .collect();
-            init.int64_data = rewritten;
-            init.raw_data.clear();
-            init.data_type = TensorProto::INT64;
+                .chain(tmpl_graph.input.iter())
+                .find(|v| v.name == *inp_name)
+                .and_then(onnx_proto::shape_from_value_info);
+            // If we can resolve the input shape and split_dim is in range,
+            // the position to rewrite is split_dim itself (Reshape preserves
+            // dimension indices when the target shape has the same rank).
+            // For rank-changing Reshapes we still use split_dim as a best
+            // effort — the axis-separability check already rejected
+            // fundamentally non-separable layouts.
+            let pos = if let Some(ref s) = inp_shape {
+                if split_dim < s.len() {
+                    split_dim
+                } else {
+                    return None;
+                }
+            } else {
+                split_dim
+            };
+            Some((shape_name, pos))
+        })
+        .collect();
+    for (shape_name, pos) in &reshape_nodes {
+        if let Some(init) = tmpl_graph
+            .initializer
+            .iter_mut()
+            .find(|i| i.name == *shape_name)
+        {
+            let mut shape_data = onnx_proto::tensor_to_i64(init);
+            if *pos < shape_data.len() && shape_data[*pos] == dim_size_i64 {
+                shape_data[*pos] = epg_i64;
+                init.int64_data = shape_data;
+                init.raw_data.clear();
+                init.data_type = TensorProto::INT64;
+            }
         }
     }
 

@@ -149,7 +149,13 @@ pub fn slice_model(
                     Ok(tmpl_path) => {
                         let tmpl_rel = tmpl_path
                             .strip_prefix(&output_dir)
-                            .unwrap_or(&tmpl_path)
+                            .map_err(|_| {
+                                DsperseError::Slicer(format!(
+                                    "dim-split template path {} is not under output dir {}",
+                                    tmpl_path.display(),
+                                    output_dir.display()
+                                ))
+                            })?
                             .to_string_lossy()
                             .into_owned();
                         tracing::info!(

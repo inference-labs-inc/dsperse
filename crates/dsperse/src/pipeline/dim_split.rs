@@ -230,11 +230,20 @@ pub(crate) fn execute_dim_split(
         row_outputs.push(row_arr);
     }
 
-    let stacked = ndarray::concatenate(
-        ndarray::Axis(0),
-        &row_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
-    )
-    .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row concat: {e}")))?;
+    // ndarray::concatenate panics / errors on an empty slice list, so a
+    // zero-row activation (empty batch, dynamic-dim collapse) would surface
+    // as an opaque ShapeError. Short-circuit to an empty [0, n_dim] tensor
+    // and let the downstream reshape produce the correctly shaped empty
+    // output.
+    let stacked: ndarray::ArrayD<f64> = if row_outputs.is_empty() {
+        ndarray::ArrayD::zeros(ndarray::IxDyn(&[0, n_dim]))
+    } else {
+        ndarray::concatenate(
+            ndarray::Axis(0),
+            &row_outputs.iter().map(|a| a.view()).collect::<Vec<_>>(),
+        )
+        .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: row concat: {e}")))?
+    };
 
     let output_shape_vec: Vec<usize> = if let Some(target) = target_shape {
         target

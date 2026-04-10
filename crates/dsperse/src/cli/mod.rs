@@ -201,7 +201,7 @@ pub struct PackageArgs {
     pub timeout: Option<u64>,
     #[arg(
         long,
-        help = "Finite field curve used as domain separator in content hashes (bn254, goldilocks, goldilocks_basefold)"
+        help = "Finite field curve used as domain separator in content hashes (bn254, goldilocks, goldilocks_basefold, goldilocks_ext2, goldilocks_whir, goldilocks_whir_pq)"
     )]
     pub curve: Option<String>,
 }

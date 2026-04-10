@@ -79,7 +79,7 @@ pub struct SliceShapeWrapper {
     pub tensor_shape: TensorShape,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SliceMetadata {
     #[serde(default)]
     pub index: usize,
@@ -202,6 +202,8 @@ pub struct ModelMetadata {
     pub jstprove_rev: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traced_shapes: Option<HashMap<String, Vec<i64>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traced_types: Option<HashMap<String, i32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_model_path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

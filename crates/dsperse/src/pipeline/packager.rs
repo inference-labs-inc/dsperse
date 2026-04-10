@@ -639,6 +639,7 @@ mod tests {
             jstprove_version: Some("0.1.0-test".to_string()),
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1000,6 +1001,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1201,6 +1203,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1278,6 +1281,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1355,6 +1359,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1425,6 +1430,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1521,6 +1527,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };
@@ -1608,6 +1615,7 @@ mod tests {
             jstprove_version: None,
             jstprove_rev: None,
             traced_shapes: None,
+            traced_types: None,
             original_model_path: None,
             folded_constant_names: vec![],
         };

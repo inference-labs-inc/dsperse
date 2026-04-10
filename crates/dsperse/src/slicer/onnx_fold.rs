@@ -170,13 +170,19 @@ pub(crate) fn propagate_constants(graph: &mut GraphProto) -> HashSet<String> {
         }
     }
 
-    let consumed_by_remaining: HashSet<String> = graph
+    let mut consumed_by_remaining: HashSet<String> = graph
         .node
         .iter()
         .enumerate()
         .filter(|(i, _)| !folded_node_indices.contains(i))
         .flat_map(|(_, n)| n.input.iter().cloned())
         .collect();
+    for node in &graph.node {
+        if super::is_control_flow(&node.op_type) {
+            let outer_refs = super::collect_subgraph_outer_refs(node, graph);
+            consumed_by_remaining.extend(outer_refs);
+        }
+    }
     let output_names: HashSet<String> = graph.output.iter().map(|o| o.name.clone()).collect();
 
     for name in &new_init_names {

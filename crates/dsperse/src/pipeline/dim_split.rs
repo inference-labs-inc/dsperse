@@ -125,6 +125,69 @@ pub(crate) fn execute_dim_split(
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: tmpdir: {e}")))?;
 
+    // Precompute one patched ONNX per K-chunk. The weight slice and the
+    // patched model both depend only on kc (and the immutable template),
+    // so hoisting them out of the row loop turns O(rows * k_chunks)
+    // weight builds + clones + save_model writes into O(k_chunks) work.
+    let mut patched_paths: Vec<std::path::PathBuf> = Vec::with_capacity(k_chunks);
+    for kc in 0..k_chunks {
+        let k_start = kc * k_chunk_size;
+        let k_end = (k_start + k_chunk_size).min(k_dim);
+        let actual_k = k_end.saturating_sub(k_start);
+
+        let weight_chunk: Vec<f32> = if trans_b {
+            let mut w = Vec::with_capacity(n_dim * k_chunk_size);
+            for row_idx in 0..n_dim {
+                let row_start = row_idx * k_dim + k_start;
+                let avail = actual_k.min(full_weight.len().saturating_sub(row_start));
+                w.extend_from_slice(&full_weight[row_start..row_start + avail]);
+                if avail < k_chunk_size {
+                    w.resize(w.len() + k_chunk_size - avail, 0.0);
+                }
+            }
+            w
+        } else {
+            let mut w = Vec::with_capacity(k_chunk_size * n_dim);
+            for ki in k_start..k_start + actual_k {
+                let start = ki * n_dim;
+                let end = start + n_dim;
+                if end <= full_weight.len() {
+                    w.extend_from_slice(&full_weight[start..end]);
+                } else {
+                    w.resize(w.len() + n_dim, 0.0);
+                }
+            }
+            if actual_k < k_chunk_size {
+                w.resize(k_chunk_size * n_dim, 0.0);
+            }
+            w
+        };
+
+        let mut patched = tmpl_model.clone();
+        let graph = patched.graph.as_mut().ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "{slice_id}: dim-split template at {} has no graph",
+                tmpl_path.display()
+            ))
+        })?;
+        let w_init = graph
+            .initializer
+            .iter_mut()
+            .find(|i| i.name == "W")
+            .ok_or_else(|| {
+                DsperseError::Pipeline(format!(
+                    "{slice_id}: dim-split template at {} missing 'W' initializer",
+                    tmpl_path.display()
+                ))
+            })?;
+        w_init.float_data = weight_chunk;
+        w_init.raw_data.clear();
+
+        let patched_path = tmp_dir.path().join(format!("chunk_{kc}.onnx"));
+        crate::slicer::onnx_proto::save_model(&patched, &patched_path)?;
+        patched_paths.push(patched_path);
+    }
+
     let mut row_outputs: Vec<ndarray::ArrayD<f64>> = Vec::with_capacity(total_rows);
 
     for r in 0..total_rows {
@@ -136,7 +199,7 @@ pub(crate) fn execute_dim_split(
 
         let mut row_accum = vec![0.0f64; n_dim];
 
-        for kc in 0..k_chunks {
+        for (kc, patched_path) in patched_paths.iter().enumerate() {
             let k_start = kc * k_chunk_size;
             let k_end = (k_start + k_chunk_size).min(k_dim);
             let actual_k = k_end.saturating_sub(k_start);
@@ -146,62 +209,11 @@ pub(crate) fn execute_dim_split(
                 input_chunk[..actual_k].copy_from_slice(&full_row[k_start..k_end]);
             }
 
-            let weight_chunk: Vec<f32> = if trans_b {
-                let mut w = Vec::with_capacity(n_dim * k_chunk_size);
-                for row_idx in 0..n_dim {
-                    let row_start = row_idx * k_dim + k_start;
-                    let avail = actual_k.min(full_weight.len().saturating_sub(row_start));
-                    w.extend_from_slice(&full_weight[row_start..row_start + avail]);
-                    if avail < k_chunk_size {
-                        w.resize(w.len() + k_chunk_size - avail, 0.0);
-                    }
-                }
-                w
-            } else {
-                let mut w = Vec::with_capacity(k_chunk_size * n_dim);
-                for ki in k_start..k_start + actual_k {
-                    let start = ki * n_dim;
-                    let end = start + n_dim;
-                    if end <= full_weight.len() {
-                        w.extend_from_slice(&full_weight[start..end]);
-                    } else {
-                        w.resize(w.len() + n_dim, 0.0);
-                    }
-                }
-                if actual_k < k_chunk_size {
-                    w.resize(k_chunk_size * n_dim, 0.0);
-                }
-                w
-            };
-
-            let mut patched = tmpl_model.clone();
-            let graph = patched.graph.as_mut().ok_or_else(|| {
-                DsperseError::Pipeline(format!(
-                    "{slice_id}: dim-split template at {} has no graph",
-                    tmpl_path.display()
-                ))
-            })?;
-            let w_init = graph
-                .initializer
-                .iter_mut()
-                .find(|i| i.name == "W")
-                .ok_or_else(|| {
-                    DsperseError::Pipeline(format!(
-                        "{slice_id}: dim-split template at {} missing 'W' initializer",
-                        tmpl_path.display()
-                    ))
-                })?;
-            w_init.float_data = weight_chunk;
-            w_init.raw_data.clear();
-
-            let patched_path = tmp_dir.path().join(format!("chunk_{kc}.onnx"));
-            crate::slicer::onnx_proto::save_model(&patched, &patched_path)?;
-
             let input_arr =
                 ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, k_chunk_size]), input_chunk)
                     .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: input chunk: {e}")))?;
 
-            let out = run_onnx_inference(&patched_path, &input_arr)?;
+            let out = run_onnx_inference(patched_path, &input_arr)?;
             if out.len() != n_dim {
                 return Err(DsperseError::Pipeline(format!(
                     "{slice_id}: dim-split k-chunk {kc} produced {} outputs, expected n_dim={n_dim}",

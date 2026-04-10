@@ -1784,8 +1784,8 @@ fn create_matmul_dim_template(
     );
 
     let mut attrs = Vec::new();
-    let mut node_inputs = vec![tmpl_input_name, tmpl_weight_name];
-    let mut initializers = vec![w];
+    let node_inputs = vec![tmpl_input_name, tmpl_weight_name];
+    let initializers = vec![w];
 
     if matmul_node.op_type == "Gemm" {
         if let Some(alpha) = onnx_proto::get_attribute_float(matmul_node, "alpha") {
@@ -1798,18 +1798,8 @@ fn create_matmul_dim_template(
         if trans_b {
             attrs.push(onnx_proto::make_attribute_int("transB", 1));
         }
-        if let Some(bias_name) = matmul_node.input.get(2).filter(|s| !s.is_empty())
-            && graph.initializer.iter().any(|i| i.name == *bias_name)
-        {
-            let tmpl_bias = onnx_proto::make_tensor(
-                "C",
-                TensorProto::FLOAT,
-                &[n_dim as i64],
-                vec![0.0f32; n_dim],
-            );
-            node_inputs.push("C".to_string());
-            initializers.push(tmpl_bias);
-        }
+        // Biased Gemm is rejected above, so no C initializer is ever folded
+        // into the template.
     }
 
     let node = onnx_proto::make_node(

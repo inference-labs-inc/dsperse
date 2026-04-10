@@ -117,14 +117,53 @@ pub fn slice_model(
             if let Some(detection) =
                 autotiler::detect_dim_split(&graph.node, &slice_shapes, &init_names)
             {
-                tracing::info!(
-                    slice = seg_idx,
-                    estimated = detection.estimated_constraints,
-                    num_groups = detection.num_groups,
-                    split_kind = ?detection.split_kind,
-                    "dim-split detected"
-                );
-                dim_split_info.insert(seg_idx, detection);
+                // Build a tentative DimSplitInfo to attempt template creation.
+                // Only record the detection if the template materializes
+                // successfully, so the metadata never carries dim_split
+                // entries that can't be fulfilled at runtime.
+                let tentative_info = crate::schema::tiling::DimSplitInfo {
+                    slice_idx: seg_idx,
+                    split_kind: detection.split_kind.clone(),
+                    split_dim: detection.split_dim,
+                    dim_size: detection.dim_size,
+                    num_groups: detection.num_groups,
+                    elements_per_group: detection.elements_per_group,
+                    input_name: detection.input_name.clone(),
+                    output_name: detection.output_name.clone(),
+                    concat_axis: detection.concat_axis,
+                    estimated_group_constraints: 0,
+                    weight_name: detection.weight_name.clone(),
+                    k_dim: detection.k_dim,
+                    n_dim: detection.n_dim,
+                    k_chunks: detection.k_chunks,
+                    template_path: None,
+                    jstprove_circuit_path: None,
+                };
+                let slice_dir = output_dir.join(format!("slice_{seg_idx}")).join("payload");
+                std::fs::create_dir_all(&slice_dir).map_err(|e| DsperseError::io(e, &slice_dir))?;
+                match autotiler::create_dim_split_template(
+                    &slice_model,
+                    &tentative_info,
+                    &slice_dir,
+                ) {
+                    Ok(_) => {
+                        tracing::info!(
+                            slice = seg_idx,
+                            estimated = detection.estimated_constraints,
+                            num_groups = detection.num_groups,
+                            split_kind = ?detection.split_kind,
+                            "dim-split detected and template created"
+                        );
+                        dim_split_info.insert(seg_idx, detection);
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            slice = seg_idx,
+                            error = %e,
+                            "dim-split detected but template creation failed, skipping"
+                        );
+                    }
+                }
             }
         }
     }
@@ -319,7 +358,7 @@ fn build_slice_metadata(
             k_dim: d.k_dim,
             n_dim: d.n_dim,
             k_chunks: d.k_chunks,
-            template_path: None,
+            template_path: Some(format!("slice_{seg_idx}/payload/dim_template.onnx")),
             jstprove_circuit_path: None,
         });
 

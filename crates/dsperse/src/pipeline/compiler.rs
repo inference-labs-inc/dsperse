@@ -116,7 +116,7 @@ pub fn compile_slices(
     let compiled_count = std::sync::atomic::AtomicUsize::new(0);
     let meta_mutex = std::sync::Mutex::new((&mut metadata, false));
     let errors: std::sync::Mutex<Vec<(usize, DsperseError)>> = std::sync::Mutex::new(Vec::new());
-    let dim_split_cache: CircuitCache = std::sync::Mutex::new(HashMap::new());
+    let circuit_cache: CircuitCache = std::sync::Mutex::new(HashMap::new());
 
     pool.install(|| {
         slices.par_iter().for_each(|slice| {
@@ -129,7 +129,7 @@ pub fn compile_slices(
                 jstprove_ops,
                 &exclude_from_wai,
                 skip_compile_over_size,
-                &dim_split_cache,
+                &circuit_cache,
                 traced_ref,
             );
             match r {
@@ -427,6 +427,7 @@ fn compile_single_slice(
             jstprove_ops,
             exclude_from_wai,
             skip_compile_over_size,
+            circuit_cache,
             traced_shapes,
         );
     }
@@ -593,6 +594,7 @@ fn compile_channel_split_slice(
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
     skip_compile_over_size: Option<u64>,
+    circuit_cache: &CircuitCache,
     traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
@@ -632,46 +634,69 @@ fn compile_channel_split_slice(
             }
         }
 
-        let shared_dir = shared_circuit_path
-            .parent()
-            .ok_or_else(|| DsperseError::Pipeline("shared circuit path has no parent".into()))?;
-        std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
+        let sig = compute_template_signature(&onnx_path)?;
 
-        tracing::info!(
-            slice = slice.index,
-            groups = cs.groups.len(),
-            "compiling shared channel group circuit (weights-as-inputs)"
-        );
+        let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
+        if let Some(ref cached_path) = cached
+            && cached_path.is_dir()
+        {
+            let shared_dir = shared_circuit_path.parent().ok_or_else(|| {
+                DsperseError::Pipeline("shared circuit path has no parent".into())
+            })?;
+            std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
+            copy_dir_recursive(cached_path, &shared_circuit_path)?;
+            tracing::info!(
+                slice = slice.index,
+                sig = %sig,
+                "reused cached channel-split circuit from prior slice"
+            );
+        } else {
+            let shared_dir = shared_circuit_path.parent().ok_or_else(|| {
+                DsperseError::Pipeline("shared circuit path has no parent".into())
+            })?;
+            std::fs::create_dir_all(shared_dir).map_err(|e| DsperseError::io(e, shared_dir))?;
 
-        let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
-            &onnx_path,
-            true,
-            exclude_from_wai,
-            traced_shapes,
-        )?;
+            tracing::info!(
+                slice = slice.index,
+                groups = cs.groups.len(),
+                sig = %sig,
+                "compiling shared channel group circuit (weights-as-inputs)"
+            );
 
-        std::panic::catch_unwind(|| {
-            backend.compile(
-                &shared_circuit_path,
-                proof_config,
-                params,
-                architecture,
-                wandb,
-            )
-        })
-        .map_err(|p| {
-            let msg = p
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| p.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            DsperseError::Backend(format!(
-                "jstprove panicked on slice {} shared circuit: {msg}",
-                slice.index
-            ))
-        })??;
+            let (params, architecture, wandb) = converter::prepare_jstprove_artifacts_filtered(
+                &onnx_path,
+                true,
+                exclude_from_wai,
+                traced_shapes,
+            )?;
 
-        tracing::info!(slice = slice.index, "shared circuit compiled");
+            std::panic::catch_unwind(|| {
+                backend.compile(
+                    &shared_circuit_path,
+                    proof_config,
+                    params,
+                    architecture,
+                    wandb,
+                )
+            })
+            .map_err(|p| {
+                let msg = p
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("unknown panic");
+                DsperseError::Backend(format!(
+                    "jstprove panicked on slice {} shared circuit: {msg}",
+                    slice.index
+                ))
+            })??;
+
+            circuit_cache
+                .lock()
+                .unwrap()
+                .insert(sig.clone(), shared_circuit_path.clone());
+            tracing::info!(slice = slice.index, sig = %sig, "shared circuit compiled");
+        }
     } else {
         backend.load_params(&shared_circuit_path).map_err(|e| {
             DsperseError::Pipeline(format!(

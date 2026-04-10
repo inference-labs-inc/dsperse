@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto};
+use super::onnx_proto::{self, GraphProto, ModelProto, NodeProto, TensorProto, ValueInfoProto};
 use crate::error::Result;
 use crate::schema::tiling::{ChannelGroupInfo, ChannelSplitInfo, DimSplitKind};
 
@@ -1699,10 +1699,7 @@ pub fn create_dim_split_template(
         }
         crate::schema::tiling::DimSplitKind::HeadDim
         | crate::schema::tiling::DimSplitKind::BatchDim => {
-            Err(crate::error::DsperseError::Slicer(format!(
-                "create_dim_split_template: {:?} split requires shape rewriting not yet supported for slice {}",
-                info.split_kind, info.slice_idx
-            )))
+            create_generic_dim_template(model, graph, info, output_dir)
         }
     }
 }
@@ -1840,6 +1837,58 @@ fn create_matmul_dim_template(
         initializers,
     );
     let tmpl_model = onnx_proto::make_model(graph_proto, model_opset(model));
+
+    let tmpl_path = output_dir.join("dim_template.onnx");
+    onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+    Ok(tmpl_path)
+}
+
+fn create_generic_dim_template(
+    model: &ModelProto,
+    graph: &GraphProto,
+    info: &crate::schema::tiling::DimSplitInfo,
+    output_dir: &Path,
+) -> Result<std::path::PathBuf> {
+    let split_dim = info.split_dim;
+    let epg = info.elements_per_group;
+    if epg == 0 {
+        return Err(crate::error::DsperseError::Slicer(format!(
+            "create_generic_dim_template: slice {} elements_per_group is 0",
+            info.slice_idx
+        )));
+    }
+
+    let init_names: std::collections::HashSet<&str> =
+        graph.initializer.iter().map(|i| i.name.as_str()).collect();
+
+    let mut tmpl_model = model.clone();
+    let tmpl_graph = tmpl_model.graph.as_mut().ok_or_else(|| {
+        crate::error::DsperseError::Slicer(
+            "create_generic_dim_template: cloned model has no graph".into(),
+        )
+    })?;
+
+    let rewrite = |vi: &mut ValueInfoProto| {
+        if let Some(mut shape) = onnx_proto::shape_from_value_info(vi)
+            && split_dim < shape.len()
+            && shape[split_dim] == info.dim_size as i64
+        {
+            shape[split_dim] = epg as i64;
+            onnx_proto::set_vi_shape(vi, &shape);
+        }
+    };
+
+    for vi in tmpl_graph.input.iter_mut() {
+        if !init_names.contains(vi.name.as_str()) {
+            rewrite(vi);
+        }
+    }
+    for vi in tmpl_graph.output.iter_mut() {
+        rewrite(vi);
+    }
+    for vi in tmpl_graph.value_info.iter_mut() {
+        rewrite(vi);
+    }
 
     let tmpl_path = output_dir.join("dim_template.onnx");
     onnx_proto::save_model(&tmpl_model, &tmpl_path)?;

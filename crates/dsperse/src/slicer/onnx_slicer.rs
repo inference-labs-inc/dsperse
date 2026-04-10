@@ -151,10 +151,11 @@ pub fn slice_model(
                         dim_split_info.insert(seg_idx, (detection, tmpl_rel));
                     }
                     Err(e) => {
-                        tracing::info!(
+                        tracing::warn!(
                             slice = seg_idx,
                             error = %e,
-                            "dim-split detected but template creation failed, skipping"
+                            "dim-split detected but template creation failed; \
+                             slice will compile and run as monolithic circuit"
                         );
                     }
                 }

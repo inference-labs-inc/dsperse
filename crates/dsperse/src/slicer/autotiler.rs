@@ -1844,28 +1844,34 @@ fn create_matmul_dim_template(
 }
 
 fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) -> Result<()> {
+    let resolve_axis = |axis: i64| -> usize {
+        let ndim = graph
+            .input
+            .first()
+            .and_then(onnx_proto::shape_from_value_info)
+            .map(|s| s.len() as i64)
+            .unwrap_or(4);
+        if axis < 0 {
+            (ndim + axis) as usize
+        } else {
+            axis as usize
+        }
+    };
+
     for node in &graph.node {
         match node.op_type.as_str() {
-            "Reshape" | "Flatten" => {
-                return Err(crate::error::DsperseError::Slicer(format!(
-                    "create_generic_dim_template: slice {slice_idx} contains {} which embeds \
-                     tensor layout and is not axis-separable at dim {split_dim}",
-                    node.op_type
-                )));
+            "Flatten" => {
+                let axis = resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(1));
+                if axis <= split_dim {
+                    return Err(crate::error::DsperseError::Slicer(format!(
+                        "create_generic_dim_template: slice {slice_idx} Flatten axis \
+                         {axis} <= split_dim {split_dim}; flattening merges the split dimension"
+                    )));
+                }
             }
             "Softmax" | "LogSoftmax" => {
-                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
-                let ndim = graph
-                    .input
-                    .first()
-                    .and_then(onnx_proto::shape_from_value_info)
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(4);
-                let resolved = if axis < 0 {
-                    (ndim + axis) as usize
-                } else {
-                    axis as usize
-                };
+                let resolved =
+                    resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1));
                 if resolved == split_dim {
                     return Err(crate::error::DsperseError::Slicer(format!(
                         "create_generic_dim_template: slice {slice_idx} {} axis {resolved} \
@@ -1875,18 +1881,8 @@ fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) 
                 }
             }
             "LayerNormalization" => {
-                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
-                let ndim = graph
-                    .input
-                    .first()
-                    .and_then(onnx_proto::shape_from_value_info)
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(4);
-                let resolved = if axis < 0 {
-                    (ndim + axis) as usize
-                } else {
-                    axis as usize
-                };
+                let resolved =
+                    resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1));
                 if resolved <= split_dim {
                     return Err(crate::error::DsperseError::Slicer(format!(
                         "create_generic_dim_template: slice {slice_idx} LayerNormalization axis \
@@ -1953,6 +1949,34 @@ fn create_generic_dim_template(
     }
     for vi in tmpl_graph.value_info.iter_mut() {
         rewrite(vi);
+    }
+
+    // Rewrite Reshape shape constants that embed dim_size. The second input
+    // to Reshape is the target shape tensor — when it's an initializer we
+    // can replace dim_size with epg so the Reshape stays consistent with
+    // the rewritten I/O shapes.
+    let dim_size_i64 = info.dim_size as i64;
+    let epg_i64 = epg as i64;
+    let reshape_shape_names: Vec<String> = tmpl_graph
+        .node
+        .iter()
+        .filter(|n| n.op_type == "Reshape")
+        .filter_map(|n| n.input.get(1).cloned())
+        .collect();
+    for init in tmpl_graph.initializer.iter_mut() {
+        if !reshape_shape_names.contains(&init.name) {
+            continue;
+        }
+        let shape_data = onnx_proto::tensor_to_i64(init);
+        if shape_data.contains(&dim_size_i64) {
+            let rewritten: Vec<i64> = shape_data
+                .iter()
+                .map(|&d| if d == dim_size_i64 { epg_i64 } else { d })
+                .collect();
+            init.int64_data = rewritten;
+            init.raw_data.clear();
+            init.data_type = TensorProto::INT64;
+        }
     }
 
     let tmpl_path = output_dir.join("dim_template.onnx");

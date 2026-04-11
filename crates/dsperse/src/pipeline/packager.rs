@@ -341,25 +341,43 @@ fn resolve_source_onnx(slices_dir: &Path, slice: &SliceMetadata) -> Result<PathB
         && let Some(group) = cs.groups.first()
     {
         let p = resolve_relative_path(slices_dir, &group.path)?;
-        if p.is_file() {
-            return Ok(p);
+        reject_symlink_path(&p)?;
+        if !p.is_file() {
+            return Err(DsperseError::Other(format!(
+                "slice {} channel group ONNX configured but missing: {}",
+                slice.index,
+                p.display()
+            )));
         }
+        return Ok(p);
     }
     if let Some(ref ds) = slice.dim_split
         && let Some(ref tmpl) = ds.template_path
     {
         let p = resolve_relative_path(slices_dir, tmpl)?;
-        if p.is_file() {
-            return Ok(p);
+        reject_symlink_path(&p)?;
+        if !p.is_file() {
+            return Err(DsperseError::Other(format!(
+                "slice {} dim-split template configured but missing: {}",
+                slice.index,
+                p.display()
+            )));
         }
+        return Ok(p);
     }
     if let Some(ref tiling) = slice.tiling
         && let Some(ref tile) = tiling.tile
     {
         let p = resolve_relative_path(slices_dir, &tile.path)?;
-        if p.is_file() {
-            return Ok(p);
+        reject_symlink_path(&p)?;
+        if !p.is_file() {
+            return Err(DsperseError::Other(format!(
+                "slice {} tile ONNX configured but missing: {}",
+                slice.index,
+                p.display()
+            )));
         }
+        return Ok(p);
     }
     slice.resolve_onnx(slices_dir)
 }

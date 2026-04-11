@@ -335,6 +335,9 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
                 hasher.update(d.to_le_bytes());
             }
         }
+        if let Some(dt) = onnx_proto::elem_type_from_value_info(vi) {
+            hasher.update(dt.to_le_bytes());
+        }
     }
     for vi in &graph.output {
         if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
@@ -342,6 +345,9 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
             for d in &shape {
                 hasher.update(d.to_le_bytes());
             }
+        }
+        if let Some(dt) = onnx_proto::elem_type_from_value_info(vi) {
+            hasher.update(dt.to_le_bytes());
         }
     }
     hasher.update((graph.initializer.len() as u64).to_le_bytes());

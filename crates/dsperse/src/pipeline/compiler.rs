@@ -703,7 +703,7 @@ fn compile_dim_split_template(
     proof_config: jstprove_circuits::api::ProofConfigType,
     jstprove_ops: &[&str],
     exclude_from_wai: &std::collections::HashSet<String>,
-    skip_compile_over_size: Option<u64>,
+    _skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
     _traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
 ) -> Result<CompileOutcome> {
@@ -735,15 +735,11 @@ fn compile_dim_split_template(
         return Ok(CompileOutcome::Skipped);
     }
 
-    if let Some(threshold) = skip_compile_over_size {
-        let estimated = estimate_onnx_constraints(tmpl_path).unwrap_or(0);
-        if estimated > threshold {
-            return Ok(CompileOutcome::SkippedOverSize {
-                estimated,
-                threshold,
-            });
-        }
-    }
+    // No skip-compile-over-size check for dim-split templates. The
+    // detection already gated on MAX_ESTIMATED_CONSTRAINTS and the
+    // template was successfully created. For pad-to-dim_size templates
+    // the ONNX is the original full-sized model — estimating from it
+    // would reject circuits that are necessary for the split to work.
 
     let sig = compute_template_signature(tmpl_path)?;
 

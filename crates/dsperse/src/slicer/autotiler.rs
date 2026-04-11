@@ -711,6 +711,7 @@ pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, 
                     .saturating_mul(2)
             }
             "Softmax" => output_elements.saturating_mul(4),
+            "LayerNormalization" => output_elements.saturating_mul(20),
             "Conv" => output_elements.saturating_mul(3),
             _ => output_elements.saturating_mul(2),
         };

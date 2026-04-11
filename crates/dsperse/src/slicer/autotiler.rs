@@ -688,32 +688,26 @@ pub struct DimSplitDetection {
 }
 
 pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
+    let config = jstprove_circuits::api::EstimationConfig::bn254_defaults();
     let mut total: u64 = 0;
-    for node in nodes {
-        let output_elements: u64 = node
-            .output
-            .first()
-            .and_then(|name| shapes.get(name))
-            .map(|s| s.iter().filter(|&&d| d > 0).map(|&d| d as u64).product())
-            .unwrap_or(0);
 
-        let cost = match node.op_type.as_str() {
-            "MatMul" | "Gemm" => {
-                let input_last_dim: u64 = node
-                    .input
-                    .first()
-                    .and_then(|name| shapes.get(name))
-                    .and_then(|s| s.last())
-                    .map(|&d| d.max(0) as u64)
-                    .unwrap_or(1);
-                output_elements
-                    .saturating_mul(input_last_dim)
-                    .saturating_mul(2)
-            }
-            "Softmax" => output_elements.saturating_mul(4),
-            "Conv" => output_elements.saturating_mul(3),
-            _ => output_elements.saturating_mul(2),
+    for node in nodes {
+        let to_usize_shape = |name: &String| -> Vec<usize> {
+            shapes
+                .get(name)
+                .map(|s| s.iter().map(|&d| d.max(0) as usize).collect())
+                .unwrap_or_default()
         };
+
+        let input_shapes: Vec<Vec<usize>> = node.input.iter().map(&to_usize_shape).collect();
+        let output_shapes: Vec<Vec<usize>> = node.output.iter().map(&to_usize_shape).collect();
+
+        let cost = jstprove_circuits::api::estimate_op_constraints(
+            &node.op_type,
+            &input_shapes,
+            &output_shapes,
+            &config,
+        );
         total = total.saturating_add(cost);
     }
     total

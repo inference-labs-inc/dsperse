@@ -668,7 +668,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     })
 }
 
-pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 500_000;
+pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 2_000_000;
 
 #[derive(Debug, Clone)]
 pub struct DimSplitDetection {

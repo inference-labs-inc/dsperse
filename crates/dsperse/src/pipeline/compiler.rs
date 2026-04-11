@@ -276,6 +276,12 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
 
 pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -> Result<String> {
     use sha2::{Digest, Sha256};
+
+    fn hash_bytes(hasher: &mut Sha256, b: &[u8]) {
+        hasher.update((b.len() as u64).to_le_bytes());
+        hasher.update(b);
+    }
+
     let model = onnx_proto::load_model(tmpl_path)?;
     let graph = model
         .graph
@@ -283,24 +289,37 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
         .ok_or_else(|| DsperseError::Slicer("no graph for signature".into()))?;
     let mut hasher = Sha256::new();
     if let Some(c) = curve {
-        hasher.update(c.as_bytes());
+        hash_bytes(&mut hasher, c.as_bytes());
     }
+    hasher.update((graph.node.len() as u64).to_le_bytes());
     for node in &graph.node {
-        hasher.update(node.op_type.as_bytes());
+        hash_bytes(&mut hasher, node.op_type.as_bytes());
+        hasher.update((node.input.len() as u64).to_le_bytes());
+        for inp in &node.input {
+            hash_bytes(&mut hasher, inp.as_bytes());
+        }
+        hasher.update((node.output.len() as u64).to_le_bytes());
+        for out in &node.output {
+            hash_bytes(&mut hasher, out.as_bytes());
+        }
+        hasher.update((node.attribute.len() as u64).to_le_bytes());
         for attr in &node.attribute {
-            hasher.update(attr.name.as_bytes());
+            hash_bytes(&mut hasher, attr.name.as_bytes());
             hasher.update(attr.r#type.to_le_bytes());
             hasher.update(attr.i.to_le_bytes());
             hasher.update(attr.f.to_le_bytes());
-            hasher.update(&attr.s);
+            hash_bytes(&mut hasher, &attr.s);
+            hasher.update((attr.ints.len() as u64).to_le_bytes());
             for v in &attr.ints {
                 hasher.update(v.to_le_bytes());
             }
+            hasher.update((attr.floats.len() as u64).to_le_bytes());
             for v in &attr.floats {
                 hasher.update(v.to_le_bytes());
             }
+            hasher.update((attr.strings.len() as u64).to_le_bytes());
             for v in &attr.strings {
-                hasher.update(v);
+                hash_bytes(&mut hasher, v);
             }
         }
     }
@@ -311,6 +330,7 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
             continue;
         }
         if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            hasher.update((shape.len() as u64).to_le_bytes());
             for d in &shape {
                 hasher.update(d.to_le_bytes());
             }
@@ -318,12 +338,15 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
     }
     for vi in &graph.output {
         if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            hasher.update((shape.len() as u64).to_le_bytes());
             for d in &shape {
                 hasher.update(d.to_le_bytes());
             }
         }
     }
+    hasher.update((graph.initializer.len() as u64).to_le_bytes());
     for init in &graph.initializer {
+        hasher.update((init.dims.len() as u64).to_le_bytes());
         for d in &init.dims {
             hasher.update(d.to_le_bytes());
         }

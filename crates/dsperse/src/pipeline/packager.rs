@@ -320,6 +320,14 @@ fn resolve_circuit_dir(slices_dir: &Path, slice: &SliceMetadata) -> Result<Optio
             return Ok(Some(abs));
         }
     }
+    if let Some(ref ds) = slice.dim_split
+        && let Some(ref circuit_path) = ds.jstprove_circuit_path
+    {
+        let abs = resolve_relative_path(slices_dir, circuit_path)?;
+        if abs.is_dir() {
+            return Ok(Some(abs));
+        }
+    }
     Ok(None)
 }
 

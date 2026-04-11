@@ -129,6 +129,7 @@ fn compile_slices(
             &ops_refs,
             skip_compile_over_size,
         )
+        .map(|_| ())
     })
     .map_err(to_py_err)
 }

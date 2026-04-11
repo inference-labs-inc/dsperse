@@ -38,6 +38,7 @@ pub enum Commands {
     Publish(PublishArgs),
     #[command(name = "full-run")]
     FullRun(FullRunArgs),
+    Analyze(AnalyzeArgs),
 }
 
 pub fn dispatch(command: Commands) -> Result<()> {
@@ -51,6 +52,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Package(args) => cmd_package(args),
         Commands::Publish(args) => cmd_publish(args),
         Commands::FullRun(args) => cmd_full_run(args),
+        Commands::Analyze(args) => cmd_analyze(args),
     }
 }
 
@@ -129,6 +131,13 @@ pub struct CompileArgs {
         help = "Skip compilation of slices whose estimated constraint count exceeds this threshold"
     )]
     pub skip_compile_over_size: Option<u64>,
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        help = "Allow the command to exit 0 when individual slices fail to compile.  Failed slices fall back to ONNX execution at run / prove time, producing a partial-coverage proof.  Off by default so CI surfaces real compile regressions."
+    )]
+    pub allow_onnx_fallback: bool,
 }
 
 #[derive(Args)]
@@ -286,6 +295,13 @@ pub struct FullRunArgs {
         help = "Skip compilation of slices whose estimated constraint count exceeds this threshold"
     )]
     pub skip_compile_over_size: Option<u64>,
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        help = "Allow full-run to proceed when individual slices fail to compile.  Failed slices fall back to ONNX execution, producing a partial-coverage proof.  Off by default so CI surfaces real compile regressions."
+    )]
+    pub allow_onnx_fallback: bool,
 }
 
 struct CircuitOps(Vec<String>);
@@ -377,7 +393,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
 
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
 
-    pipeline::compile_slices(
+    let report = pipeline::compile_slices(
         &slices_dir,
         &backend,
         proof_config,
@@ -386,7 +402,12 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         layers.as_deref(),
         &ops.as_refs(),
         args.skip_compile_over_size,
-    )
+    )?;
+    if args.allow_onnx_fallback {
+        Ok(())
+    } else {
+        report.ok_if_no_failures().map(|_| ())
+    }
 }
 
 pub fn cmd_run(args: RunArgs) -> Result<()> {
@@ -524,7 +545,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
 
     tracing::info!("compiling slices");
-    pipeline::compile_slices(
+    let report = pipeline::compile_slices(
         &slices_dir,
         &backend,
         proof_config,
@@ -534,6 +555,9 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         &ops.as_refs(),
         args.skip_compile_over_size,
     )?;
+    if !args.allow_onnx_fallback {
+        report.ok_if_no_failures()?;
+    }
 
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));
 
@@ -554,6 +578,127 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     pipeline::verify_run(&run_dir, &slices_dir, &backend, args.parallel.get())?;
 
     tracing::info!(run_dir = %run_dir.display(), "full run complete");
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct AnalyzeArgs {
+    #[arg(long)]
+    pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        default_value = "expander",
+        help = "Proof system backend (expander or remainder)"
+    )]
+    pub proof_system: String,
+    #[arg(
+        long,
+        help = "Comma-separated ONNX op names to compile via the proof backend"
+    )]
+    pub circuit_ops: Option<String>,
+    #[arg(
+        long,
+        help = "Skip slices whose estimated constraint count exceeds this"
+    )]
+    pub skip_compile_over_size: Option<u64>,
+    #[arg(
+        long,
+        default_value = "bn254_raw",
+        help = "Proof config for circuit signature computation",
+        aliases = ["--curve"]
+    )]
+    pub proof_config: String,
+    #[arg(long, default_value = "table", help = "Output format: table or json")]
+    pub format: String,
+}
+
+fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
+    let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
+
+    let reports = pipeline::analyze_slices(
+        &slices_dir,
+        &ops.as_refs(),
+        args.skip_compile_over_size,
+        Some(args.proof_config.as_str()),
+    )?;
+
+    if args.format == "json" {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&reports)
+                .map_err(|e| DsperseError::Other(e.to_string()))?
+        );
+    } else {
+        let hdr_ops = "OPS";
+        println!(
+            "{:<8} {:<10} {:<28} {:<14} {:<6} {:<6} {:<6} {:<12} {hdr_ops}",
+            "SLICE", "BACKEND", "REASON", "EST.CONSTR", "TILED", "CHSPL", "DMSPL", "SIGNATURE"
+        );
+        println!("{}", "-".repeat(120));
+
+        let mut jstprove_count = 0usize;
+        let mut onnx_count = 0usize;
+        let mut missing_count = 0usize;
+        let mut total_constraints: u64 = 0;
+        let mut unique_sigs: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for r in &reports {
+            let est = r
+                .estimated_constraints
+                .map(|c| format!("{c}"))
+                .unwrap_or_default();
+            let sig = r
+                .circuit_signature
+                .as_deref()
+                .map(|s| &s[..12.min(s.len())])
+                .unwrap_or("");
+            println!(
+                "{:<8} {:<10} {:<28} {:<14} {:<6} {:<6} {:<6} {:<12} {}",
+                r.index,
+                r.backend,
+                r.reason,
+                est,
+                r.tiled,
+                r.channel_split,
+                r.dim_split,
+                sig,
+                r.ops,
+            );
+            match r.backend.as_str() {
+                "jstprove" => jstprove_count += 1,
+                "onnx" => onnx_count += 1,
+                "missing" => missing_count += 1,
+                other => {
+                    tracing::warn!(
+                        slice = r.index,
+                        backend = other,
+                        "analyze: unknown backend classification; not counted"
+                    );
+                }
+            }
+            if let Some(c) = r.estimated_constraints {
+                total_constraints += c;
+            }
+            if let Some(ref s) = r.circuit_signature {
+                unique_sigs.insert(s.clone());
+            }
+        }
+
+        println!("{}", "-".repeat(120));
+        println!(
+            "total: {} slices | jstprove: {} | onnx: {} | missing: {} | unique circuits: {} | total constraints: {}",
+            reports.len(),
+            jstprove_count,
+            onnx_count,
+            missing_count,
+            unique_sigs.len(),
+            total_constraints,
+        );
+    }
+
     Ok(())
 }
 

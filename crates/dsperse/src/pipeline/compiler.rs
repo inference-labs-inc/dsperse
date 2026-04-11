@@ -274,22 +274,52 @@ fn analyze_slice_onnx(onnx_path: &Path, jstprove_ops: &[&str]) -> Result<SliceAn
     })
 }
 
-fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
+pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -> Result<String> {
     use sha2::{Digest, Sha256};
+
+    fn hash_bytes(hasher: &mut Sha256, b: &[u8]) {
+        hasher.update((b.len() as u64).to_le_bytes());
+        hasher.update(b);
+    }
+
     let model = onnx_proto::load_model(tmpl_path)?;
     let graph = model
         .graph
         .as_ref()
         .ok_or_else(|| DsperseError::Slicer("no graph for signature".into()))?;
     let mut hasher = Sha256::new();
+    if let Some(c) = curve {
+        hash_bytes(&mut hasher, c.as_bytes());
+    }
+    hasher.update((graph.node.len() as u64).to_le_bytes());
     for node in &graph.node {
-        hasher.update(node.op_type.as_bytes());
+        hash_bytes(&mut hasher, node.op_type.as_bytes());
+        hasher.update((node.input.len() as u64).to_le_bytes());
+        for inp in &node.input {
+            hash_bytes(&mut hasher, inp.as_bytes());
+        }
+        hasher.update((node.output.len() as u64).to_le_bytes());
+        for out in &node.output {
+            hash_bytes(&mut hasher, out.as_bytes());
+        }
+        hasher.update((node.attribute.len() as u64).to_le_bytes());
         for attr in &node.attribute {
-            hasher.update(attr.name.as_bytes());
+            hash_bytes(&mut hasher, attr.name.as_bytes());
+            hasher.update(attr.r#type.to_le_bytes());
             hasher.update(attr.i.to_le_bytes());
             hasher.update(attr.f.to_le_bytes());
+            hash_bytes(&mut hasher, &attr.s);
+            hasher.update((attr.ints.len() as u64).to_le_bytes());
             for v in &attr.ints {
                 hasher.update(v.to_le_bytes());
+            }
+            hasher.update((attr.floats.len() as u64).to_le_bytes());
+            for v in &attr.floats {
+                hasher.update(v.to_le_bytes());
+            }
+            hasher.update((attr.strings.len() as u64).to_le_bytes());
+            for v in &attr.strings {
+                hash_bytes(&mut hasher, v);
             }
         }
     }
@@ -300,26 +330,36 @@ fn compute_template_signature(tmpl_path: &Path) -> Result<String> {
             continue;
         }
         if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            hasher.update((shape.len() as u64).to_le_bytes());
             for d in &shape {
                 hasher.update(d.to_le_bytes());
             }
+        }
+        if let Some(dt) = onnx_proto::elem_type_from_value_info(vi) {
+            hasher.update(dt.to_le_bytes());
         }
     }
     for vi in &graph.output {
         if let Some(shape) = onnx_proto::shape_from_value_info(vi) {
+            hasher.update((shape.len() as u64).to_le_bytes());
             for d in &shape {
                 hasher.update(d.to_le_bytes());
             }
         }
+        if let Some(dt) = onnx_proto::elem_type_from_value_info(vi) {
+            hasher.update(dt.to_le_bytes());
+        }
     }
+    hasher.update((graph.initializer.len() as u64).to_le_bytes());
     for init in &graph.initializer {
+        hasher.update((init.dims.len() as u64).to_le_bytes());
         for d in &init.dims {
             hasher.update(d.to_le_bytes());
         }
         hasher.update(init.data_type.to_le_bytes());
     }
     let hash = hasher.finalize();
-    Ok(format!("{:x}", hash).chars().take(16).collect())
+    Ok(format!("{:x}", hash))
 }
 
 fn estimate_onnx_constraints(onnx_path: &Path) -> Result<u64> {
@@ -634,7 +674,7 @@ fn compile_channel_split_slice(
             }
         }
 
-        let sig = compute_template_signature(&onnx_path)?;
+        let sig = compute_circuit_signature(&onnx_path, None)?;
 
         let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
         if let Some(ref cached_path) = cached
@@ -775,7 +815,7 @@ fn compile_dim_split_template(
         }
     }
 
-    let sig = compute_template_signature(tmpl_path)?;
+    let sig = compute_circuit_signature(tmpl_path, None)?;
 
     let cached = circuit_cache.lock().unwrap().get(&sig).cloned();
     if let Some(ref cached_path) = cached

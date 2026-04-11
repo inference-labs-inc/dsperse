@@ -379,7 +379,9 @@ fn resolve_source_onnx(slices_dir: &Path, slice: &SliceMetadata) -> Result<PathB
         }
         return Ok(p);
     }
-    slice.resolve_onnx(slices_dir)
+    let p = slice.resolve_onnx(slices_dir)?;
+    reject_symlink_path(&p)?;
+    Ok(p)
 }
 
 fn list_bundle_files(dir: &Path) -> Result<Vec<String>> {

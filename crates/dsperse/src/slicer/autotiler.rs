@@ -668,7 +668,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     })
 }
 
-pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 500_000;
+pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 2_000_000;
 
 #[derive(Debug, Clone)]
 pub struct DimSplitDetection {
@@ -688,32 +688,26 @@ pub struct DimSplitDetection {
 }
 
 pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, Vec<i64>>) -> u64 {
+    let config = jstprove_circuits::api::EstimationConfig::bn254_defaults();
     let mut total: u64 = 0;
-    for node in nodes {
-        let output_elements: u64 = node
-            .output
-            .first()
-            .and_then(|name| shapes.get(name))
-            .map(|s| s.iter().filter(|&&d| d > 0).map(|&d| d as u64).product())
-            .unwrap_or(0);
 
-        let cost = match node.op_type.as_str() {
-            "MatMul" | "Gemm" => {
-                let input_last_dim: u64 = node
-                    .input
-                    .first()
-                    .and_then(|name| shapes.get(name))
-                    .and_then(|s| s.last())
-                    .map(|&d| d.max(0) as u64)
-                    .unwrap_or(1);
-                output_elements
-                    .saturating_mul(input_last_dim)
-                    .saturating_mul(2)
-            }
-            "Softmax" => output_elements.saturating_mul(4),
-            "Conv" => output_elements.saturating_mul(3),
-            _ => output_elements.saturating_mul(2),
-        };
+    let to_usize_shape = |name: &String| -> Vec<usize> {
+        shapes
+            .get(name)
+            .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
+            .unwrap_or_default()
+    };
+
+    for node in nodes {
+        let input_shapes: Vec<Vec<usize>> = node.input.iter().map(&to_usize_shape).collect();
+        let output_shapes: Vec<Vec<usize>> = node.output.iter().map(&to_usize_shape).collect();
+
+        let cost = jstprove_circuits::api::estimate_op_constraints(
+            &node.op_type,
+            &input_shapes,
+            &output_shapes,
+            &config,
+        );
         total = total.saturating_add(cost);
     }
     total
@@ -2524,9 +2518,10 @@ mod tests {
 
     #[test]
     fn detect_dim_split_k_chunks_saturate_budget() {
-        // k_dim=10, n_dim=100_000: row_cost=2M, naive k_chunks=4 yields
-        // chunk_size=3 -> per-chunk=600K > 500K. Loop should bump k_chunks
-        // until per-chunk <= MAX_ESTIMATED_CONSTRAINTS.
+        // k_dim=10, n_dim=300_000: row_cost=6M. Naive k_chunks=ceil(6M/2M)=3
+        // yields chunk_size=ceil(10/3)=4 -> per-chunk=4*300_000*2=2.4M > 2M
+        // (MAX_ESTIMATED_CONSTRAINTS). Loop bumps k_chunks to 4 giving
+        // chunk_size=3 -> per-chunk=1.8M which fits.
         let node = NodeProto {
             op_type: "MatMul".to_string(),
             input: vec!["input".to_string(), "weight".to_string()],
@@ -2535,14 +2530,14 @@ mod tests {
         };
         let mut shapes = HashMap::new();
         shapes.insert("input".to_string(), vec![4, 10]);
-        shapes.insert("weight".to_string(), vec![10, 100_000]);
-        shapes.insert("output".to_string(), vec![4, 100_000]);
+        shapes.insert("weight".to_string(), vec![10, 300_000]);
+        shapes.insert("output".to_string(), vec![4, 300_000]);
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
         let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
         assert_eq!(d.k_dim, 10);
-        assert_eq!(d.n_dim, 100_000);
+        assert_eq!(d.n_dim, 300_000);
         let chunk_size = d.k_dim.div_ceil(d.k_chunks);
         assert!(
             chunk_size * d.n_dim * 2 <= MAX_ESTIMATED_CONSTRAINTS as usize,
@@ -2620,10 +2615,10 @@ mod tests {
             ..Default::default()
         };
         let mut shapes = HashMap::new();
-        // n_dim = 400_000 -> n*2 = 800_000 > MAX (500_000)
+        // n_dim = 1_500_000 -> n*2 = 3_000_000 > MAX (2_000_000)
         shapes.insert("input".to_string(), vec![1, 4]);
-        shapes.insert("weight".to_string(), vec![4, 400_000]);
-        shapes.insert("output".to_string(), vec![1, 400_000]);
+        shapes.insert("weight".to_string(), vec![4, 1_500_000]);
+        shapes.insert("output".to_string(), vec![1, 1_500_000]);
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
@@ -3064,5 +3059,42 @@ mod tests {
         let model = onnx_proto::make_model(graph, 13);
         let tmp = tempfile::tempdir().unwrap();
         assert!(create_pool_tile_slice(&model, 16, 0, tmp.path()).is_err());
+    }
+
+    #[test]
+    fn estimate_slice_constraints_clamps_symbolic_dimensions() {
+        // ONNX serializes dynamic axes as -1 and placeholder axes as 0.
+        // Both must be clamped to 1 before forwarding to the jstprove
+        // estimator, otherwise product(shape) multiplies by zero and
+        // collapses the op's cost contribution to 0.
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+
+        let mut symbolic_shapes = HashMap::new();
+        symbolic_shapes.insert("input".to_string(), vec![-1, 64]);
+        symbolic_shapes.insert("weight".to_string(), vec![64, 128]);
+        symbolic_shapes.insert("output".to_string(), vec![0, 128]);
+
+        let mut concrete_shapes = HashMap::new();
+        concrete_shapes.insert("input".to_string(), vec![1, 64]);
+        concrete_shapes.insert("weight".to_string(), vec![64, 128]);
+        concrete_shapes.insert("output".to_string(), vec![1, 128]);
+
+        let nodes = [node];
+        let symbolic_cost = estimate_slice_constraints(&nodes, &symbolic_shapes);
+        let concrete_cost = estimate_slice_constraints(&nodes, &concrete_shapes);
+
+        assert!(
+            symbolic_cost > 0,
+            "symbolic dims must not collapse cost to zero"
+        );
+        assert_eq!(
+            symbolic_cost, concrete_cost,
+            "batch -1 and batch 0 must clamp to 1 and match concrete batch 1"
+        );
     }
 }

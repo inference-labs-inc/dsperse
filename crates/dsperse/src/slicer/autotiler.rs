@@ -3084,8 +3084,9 @@ mod tests {
         concrete_shapes.insert("weight".to_string(), vec![64, 128]);
         concrete_shapes.insert("output".to_string(), vec![1, 128]);
 
-        let symbolic_cost = estimate_slice_constraints(&[node.clone()], &symbolic_shapes);
-        let concrete_cost = estimate_slice_constraints(&[node], &concrete_shapes);
+        let nodes = [node];
+        let symbolic_cost = estimate_slice_constraints(&nodes, &symbolic_shapes);
+        let concrete_cost = estimate_slice_constraints(&nodes, &concrete_shapes);
 
         assert!(
             symbolic_cost > 0,

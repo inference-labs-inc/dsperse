@@ -2518,9 +2518,10 @@ mod tests {
 
     #[test]
     fn detect_dim_split_k_chunks_saturate_budget() {
-        // k_dim=10, n_dim=100_000: row_cost=2M, naive k_chunks=4 yields
-        // chunk_size=3 -> per-chunk=600K > 500K. Loop should bump k_chunks
-        // until per-chunk <= MAX_ESTIMATED_CONSTRAINTS.
+        // k_dim=10, n_dim=300_000: row_cost=6M. Naive k_chunks=ceil(6M/2M)=3
+        // yields chunk_size=ceil(10/3)=4 -> per-chunk=4*300_000*2=2.4M > 2M
+        // (MAX_ESTIMATED_CONSTRAINTS). Loop bumps k_chunks to 4 giving
+        // chunk_size=3 -> per-chunk=1.8M which fits.
         let node = NodeProto {
             op_type: "MatMul".to_string(),
             input: vec!["input".to_string(), "weight".to_string()],
@@ -2529,14 +2530,14 @@ mod tests {
         };
         let mut shapes = HashMap::new();
         shapes.insert("input".to_string(), vec![4, 10]);
-        shapes.insert("weight".to_string(), vec![10, 100_000]);
-        shapes.insert("output".to_string(), vec![4, 100_000]);
+        shapes.insert("weight".to_string(), vec![10, 300_000]);
+        shapes.insert("output".to_string(), vec![4, 300_000]);
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
         let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
         assert_eq!(d.k_dim, 10);
-        assert_eq!(d.n_dim, 100_000);
+        assert_eq!(d.n_dim, 300_000);
         let chunk_size = d.k_dim.div_ceil(d.k_chunks);
         assert!(
             chunk_size * d.n_dim * 2 <= MAX_ESTIMATED_CONSTRAINTS as usize,
@@ -2614,10 +2615,10 @@ mod tests {
             ..Default::default()
         };
         let mut shapes = HashMap::new();
-        // n_dim = 400_000 -> n*2 = 800_000 > MAX (500_000)
+        // n_dim = 1_500_000 -> n*2 = 3_000_000 > MAX (2_000_000)
         shapes.insert("input".to_string(), vec![1, 4]);
-        shapes.insert("weight".to_string(), vec![4, 400_000]);
-        shapes.insert("output".to_string(), vec![1, 400_000]);
+        shapes.insert("weight".to_string(), vec![4, 1_500_000]);
+        shapes.insert("output".to_string(), vec![1, 1_500_000]);
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 

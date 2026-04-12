@@ -3060,4 +3060,40 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(create_pool_tile_slice(&model, 16, 0, tmp.path()).is_err());
     }
+
+    #[test]
+    fn estimate_slice_constraints_clamps_symbolic_dimensions() {
+        // ONNX serializes dynamic axes as -1 and placeholder axes as 0.
+        // Both must be clamped to 1 before forwarding to the jstprove
+        // estimator, otherwise product(shape) multiplies by zero and
+        // collapses the op's cost contribution to 0.
+        let node = NodeProto {
+            op_type: "MatMul".to_string(),
+            input: vec!["input".to_string(), "weight".to_string()],
+            output: vec!["output".to_string()],
+            ..Default::default()
+        };
+
+        let mut symbolic_shapes = HashMap::new();
+        symbolic_shapes.insert("input".to_string(), vec![-1, 64]);
+        symbolic_shapes.insert("weight".to_string(), vec![64, 128]);
+        symbolic_shapes.insert("output".to_string(), vec![0, 128]);
+
+        let mut concrete_shapes = HashMap::new();
+        concrete_shapes.insert("input".to_string(), vec![1, 64]);
+        concrete_shapes.insert("weight".to_string(), vec![64, 128]);
+        concrete_shapes.insert("output".to_string(), vec![1, 128]);
+
+        let symbolic_cost = estimate_slice_constraints(&[node.clone()], &symbolic_shapes);
+        let concrete_cost = estimate_slice_constraints(&[node], &concrete_shapes);
+
+        assert!(
+            symbolic_cost > 0,
+            "symbolic dims must not collapse cost to zero"
+        );
+        assert_eq!(
+            symbolic_cost, concrete_cost,
+            "batch -1 and batch 0 must clamp to 1 and match concrete batch 1"
+        );
+    }
 }

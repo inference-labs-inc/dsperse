@@ -695,7 +695,7 @@ pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, 
         let to_usize_shape = |name: &String| -> Vec<usize> {
             shapes
                 .get(name)
-                .map(|s| s.iter().map(|&d| d.max(0) as usize).collect())
+                .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
                 .unwrap_or_default()
         };
 

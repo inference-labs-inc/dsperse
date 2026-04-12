@@ -691,14 +691,14 @@ pub fn estimate_slice_constraints(nodes: &[NodeProto], shapes: &HashMap<String, 
     let config = jstprove_circuits::api::EstimationConfig::bn254_defaults();
     let mut total: u64 = 0;
 
-    for node in nodes {
-        let to_usize_shape = |name: &String| -> Vec<usize> {
-            shapes
-                .get(name)
-                .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
-                .unwrap_or_default()
-        };
+    let to_usize_shape = |name: &String| -> Vec<usize> {
+        shapes
+            .get(name)
+            .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
+            .unwrap_or_default()
+    };
 
+    for node in nodes {
         let input_shapes: Vec<Vec<usize>> = node.input.iter().map(&to_usize_shape).collect();
         let output_shapes: Vec<Vec<usize>> = node.output.iter().map(&to_usize_shape).collect();
 

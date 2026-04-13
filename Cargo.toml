@@ -21,6 +21,6 @@ sha2 = "0.10"
 tempfile = "3"
 prost = "0.13"
 pyo3 = { version = "0.24" }
-jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "ac0441e9" }
+jstprove_circuits = { git = "https://github.com/inference-labs-inc/JSTprove.git", rev = "fc3eae08" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt", "macros"] }

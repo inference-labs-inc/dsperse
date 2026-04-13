@@ -31,7 +31,7 @@ pub fn slice_model(
 
     tracing::info!("folding constants and tracing shapes via tract");
     let trace_result = super::trace::fold_and_trace_via_tract(&tract_path, &model)?;
-    let traced_shapes = trace_result.shapes;
+    let mut traced_shapes = trace_result.shapes;
     let traced_types = trace_result.types;
 
     if let Some(graph) = model.graph.as_mut() {
@@ -39,6 +39,17 @@ pub fn slice_model(
         if folded > 0 {
             tracing::info!(folded, "propagated shape-derived constants in parent graph");
         }
+    }
+
+    let fused_ln = super::layernorm_fuse::fuse_inline_layernorms(&mut model, &mut traced_shapes);
+    if fused_ln > 0 {
+        tracing::info!(fused_ln, "fused inline LayerNorm patterns");
+    }
+
+    let self_div_rewrites =
+        super::self_div_rewrite::rewrite_self_div_to_one(&mut model, &mut traced_shapes);
+    if self_div_rewrites > 0 {
+        tracing::info!(self_div_rewrites, "rewrote degenerate Div(X, X) nodes");
     }
 
     let missing: Vec<String> = if let Some(graph) = &model.graph {
@@ -68,7 +79,8 @@ pub fn slice_model(
     });
     std::fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
-    let slice_points = determine_slice_points(&analysis, tile_size, jstprove_ops);
+    let slice_points =
+        determine_slice_points(&analysis, tile_size, jstprove_ops, &model, &traced_shapes);
     tracing::info!(points = ?slice_points, "determined slice points");
     debug_assert!(
         !slice_points.is_empty(),
@@ -86,8 +98,13 @@ pub fn slice_model(
     let mut dim_split_info: HashMap<usize, (autotiler::DimSplitDetection, Option<String>)> =
         HashMap::new();
     for (seg_idx, _) in segment_ranges.iter().enumerate() {
-        let slice_model =
-            materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
+        let slice_model = materializer::materialize_slice_model(
+            &model,
+            trimmed_points,
+            &traced_shapes,
+            &traced_types,
+            seg_idx,
+        )?;
         if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
             tiled_info.insert(seg_idx, detection);
             continue;
@@ -117,9 +134,12 @@ pub fn slice_model(
                     .entry(name.clone())
                     .or_insert_with(|| shape.clone());
             }
-            if let Some(detection) =
-                autotiler::detect_dim_split(&graph.node, &slice_shapes, &init_names)
-            {
+            if let Some(detection) = autotiler::detect_dim_split(
+                &graph.node,
+                &slice_shapes,
+                &init_names,
+                autotiler::model_opset(&model),
+            ) {
                 // Build a tentative DimSplitInfo to attempt template creation.
                 // Only record the detection if the template materializes
                 // successfully, so the metadata never carries dim_split
@@ -397,6 +417,8 @@ fn determine_slice_points(
     analysis: &AnalysisResult,
     tile_size: Option<usize>,
     jstprove_ops: &[&str],
+    model: &onnx_proto::ModelProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
 ) -> Vec<usize> {
     let mut points: HashSet<usize> = HashSet::new();
 
@@ -410,6 +432,7 @@ fn determine_slice_points(
     sorted_points.sort();
 
     sorted_points = isolate_conv(&sorted_points, analysis);
+    sorted_points = isolate_expensive_ops(&sorted_points, analysis, model, traced_shapes);
     sorted_points = optimize_jstprove_slices(&sorted_points, analysis, jstprove_ops);
 
     if tile_size.is_some() {
@@ -442,6 +465,116 @@ fn optimize_points(
 
 fn is_spatial_primary(op: &str) -> bool {
     op == "Conv" || op == "MaxPool"
+}
+
+/// Insert slice points before AND after every ONNX node whose
+/// estimated constraint count exceeds
+/// [`autotiler::MAX_ESTIMATED_CONSTRAINTS`].  Each "expensive" op
+/// (large MatMul, LayerNormalization, Softmax, etc.) becomes a
+/// single-node slice so the dim-split detector sees an unambiguous
+/// shape and the runner doesn't need to trace which axis lives where
+/// through Transpose / Reshape neighbours.  Small ops keep their
+/// existing grouping for circuit catalog reuse.
+fn isolate_expensive_ops(
+    points: &[usize],
+    analysis: &AnalysisResult,
+    model: &onnx_proto::ModelProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+) -> Vec<usize> {
+    use jstprove_circuits::api::{EstimationConfig, estimate_op_constraints};
+    let cfg = EstimationConfig::bn254_defaults();
+    let threshold = autotiler::MAX_ESTIMATED_CONSTRAINTS;
+
+    // Build a parallel index: ONNX-node-index -> &NodeProto so we can
+    // resolve input/output tensor names per slicer-node.
+    let onnx_nodes: Vec<&onnx_proto::NodeProto> = model
+        .graph
+        .as_ref()
+        .map(|g| g.node.iter().collect())
+        .unwrap_or_default();
+    // Resolve a tensor's traced shape strictly: every dim must be a
+    // concrete positive value.  Coercing dynamic / -1 / 0 dims to 1
+    // would silently drive the cost estimate to ~zero and let the
+    // very nodes this pass exists to isolate sneak through.  Returning
+    // `None` for an unresolved tensor is the signal to pessimistically
+    // isolate the node anyway.
+    let to_usize_shape = |name: &String| -> Option<Vec<usize>> {
+        let shape = traced_shapes.get(name)?;
+        let mut out = Vec::with_capacity(shape.len());
+        for &d in shape {
+            if d <= 0 {
+                return None;
+            }
+            out.push(d as usize);
+        }
+        Some(out)
+    };
+
+    // Pure elementwise binary ops (Add / Sub / Mul / Div / Pow) are
+    // never isolated.  This is a coupling to jstprove_circuits's
+    // single-op-slice invariants: when an isolated slice contains
+    // exactly one Div with a runtime divisor, one Mul / Sub between
+    // operands of broadcast-incompatible shapes, or one Pow whose
+    // exponent is a non-constant tensor, the per-op layer builder
+    // rejects the slice with a strict-mode error.  When the same
+    // pattern appears inside a larger multi-op slice the
+    // dim-split / LayerNorm fusion machinery rewrites the
+    // surrounding subgraph and the strict check passes.  These ops
+    // are also cheap to compile in absolute terms, so isolating them
+    // buys little proving wall-clock and surfaces the strict-mode
+    // failure more often.
+    //
+    // TODO: revisit when jstprove_circuits relaxes the single-op
+    // invariants (or exposes a "permissive" mode) so we can drop
+    // this exemption and let the autotiler decide based on cost.
+    let elementwise_skip: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow"].into_iter().collect();
+    optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
+        for node in sorted_nodes {
+            if elementwise_skip.contains(node.node_type.as_str()) {
+                continue;
+            }
+            let Some(onnx_node) = onnx_nodes.get(node.index) else {
+                continue;
+            };
+            // ONNX node inputs / outputs use "" to denote an
+            // unbound optional slot (e.g. Conv with no bias, GRU
+            // with no initial_h).  Treating those as unresolved
+            // boundary tensors makes every node carrying an empty
+            // slot pessimistically isolate, even when the real
+            // boundary tensors are fully shape-resolved.  Skip the
+            // empty entries so estimate_op_constraints sees only
+            // the real boundary tensors.
+            let in_shapes: Option<Vec<Vec<usize>>> = onnx_node
+                .input
+                .iter()
+                .filter(|name| !name.is_empty())
+                .map(&to_usize_shape)
+                .collect();
+            let out_shapes: Option<Vec<Vec<usize>>> = onnx_node
+                .output
+                .iter()
+                .filter(|name| !name.is_empty())
+                .map(&to_usize_shape)
+                .collect();
+            // If any boundary tensor is unresolved we cannot give an
+            // honest cost estimate; isolate pessimistically so the
+            // downstream compile path sees a single-op slice and can
+            // either compile it successfully or skip it cleanly,
+            // rather than silently grouping an unbounded op.
+            let isolate = match (in_shapes, out_shapes) {
+                (Some(ins), Some(outs)) => {
+                    estimate_op_constraints(&node.node_type, &ins, &outs, &cfg) > threshold
+                }
+                _ => true,
+            };
+            if isolate {
+                updated.insert(node.index);
+                if node.index < max_idx {
+                    updated.insert(node.index + 1);
+                }
+            }
+        }
+    })
 }
 
 fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
@@ -833,7 +966,9 @@ mod tests {
             ("conv1", 2, "Conv", true),
             ("relu1", 3, "Relu", false),
         ]);
-        let points = determine_slice_points(&analysis, None, TEST_OPS);
+        let model = onnx_proto::ModelProto::default();
+        let traced = HashMap::new();
+        let points = determine_slice_points(&analysis, None, TEST_OPS, &model, &traced);
         assert!(points.contains(&0));
         assert!(points.contains(&2));
         let max = *points.last().unwrap();
@@ -848,7 +983,9 @@ mod tests {
             ("pool", 2, "MaxPool", false),
             ("conv1", 3, "Conv", true),
         ]);
-        let points = determine_slice_points(&analysis, Some(1024), TEST_OPS);
+        let model = onnx_proto::ModelProto::default();
+        let traced = HashMap::new();
+        let points = determine_slice_points(&analysis, Some(1024), TEST_OPS, &model, &traced);
         assert!(points.contains(&0));
         assert!(points.len() >= 3);
     }

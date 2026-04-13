@@ -2,6 +2,7 @@ pub mod analyzer;
 pub mod autotiler;
 pub mod combiner;
 pub mod materializer;
+pub(crate) mod layernorm_fuse;
 pub(crate) mod onnx_fold;
 pub mod onnx_proto;
 pub(crate) mod onnx_shapes;

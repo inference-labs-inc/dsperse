@@ -31,7 +31,7 @@ pub fn slice_model(
 
     tracing::info!("folding constants and tracing shapes via tract");
     let trace_result = super::trace::fold_and_trace_via_tract(&tract_path, &model)?;
-    let traced_shapes = trace_result.shapes;
+    let mut traced_shapes = trace_result.shapes;
     let traced_types = trace_result.types;
 
     if let Some(graph) = model.graph.as_mut() {
@@ -39,6 +39,11 @@ pub fn slice_model(
         if folded > 0 {
             tracing::info!(folded, "propagated shape-derived constants in parent graph");
         }
+    }
+
+    let fused_ln = super::layernorm_fuse::fuse_inline_layernorms(&mut model, &mut traced_shapes);
+    if fused_ln > 0 {
+        tracing::info!(fused_ln, "fused inline LayerNorm patterns");
     }
 
     let missing: Vec<String> = if let Some(graph) = &model.graph {

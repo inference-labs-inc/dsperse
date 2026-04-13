@@ -97,8 +97,6 @@ pub fn fuse_inline_layernorms(
         new_nodes.push(n);
     }
     graph.node = new_nodes;
-
-    tracing::info!(fused, "fused inline LayerNorm patterns into LayerNormalization");
     fused
 }
 
@@ -132,7 +130,7 @@ fn try_match_layernorm(
     let x_name = mean_node.input.first()?.clone();
     let mean_out = mean_node.output.first()?.clone();
 
-    let sub_idx = find_unique_consumer(consumers, &mean_out, "Sub", drop)?;
+    let sub_idx = find_unique_consumer(consumers, &mean_out, "Sub", nodes, drop)?;
     let sub_node = &nodes[sub_idx];
     if sub_node.input.len() < 2
         || sub_node.input.first()? != &x_name
@@ -142,11 +140,11 @@ fn try_match_layernorm(
     }
     let centered = sub_node.output.first()?.clone();
 
-    let sq_idx = find_square_consumer(consumers, &centered, nodes, drop)?;
+    let sq_idx = find_square_consumer(consumers, &centered, nodes, initializers, drop)?;
     let sq_node = &nodes[sq_idx];
     let sq_out = sq_node.output.first()?.clone();
 
-    let mean2_idx = find_unique_consumer(consumers, &sq_out, "ReduceMean", drop)?;
+    let mean2_idx = find_unique_consumer(consumers, &sq_out, "ReduceMean", nodes, drop)?;
     let mean2_node = &nodes[mean2_idx];
     let raw_axes2 = reduce_axes(mean2_node, initializers)?;
     if raw_axes2 != raw_axes {
@@ -157,16 +155,16 @@ fn try_match_layernorm(
     }
     let var_out = mean2_node.output.first()?.clone();
 
-    let add_idx = find_unique_consumer(consumers, &var_out, "Add", drop)?;
+    let add_idx = find_unique_consumer(consumers, &var_out, "Add", nodes, drop)?;
     let add_node = &nodes[add_idx];
     let eps = extract_binary_const_scalar(add_node, &var_out, initializers)?;
     let var_eps = add_node.output.first()?.clone();
 
-    let sqrt_idx = find_unique_consumer(consumers, &var_eps, "Sqrt", drop)?;
+    let sqrt_idx = find_unique_consumer(consumers, &var_eps, "Sqrt", nodes, drop)?;
     let sqrt_node = &nodes[sqrt_idx];
     let std_out = sqrt_node.output.first()?.clone();
 
-    let div_idx = find_unique_consumer(consumers, &std_out, "Div", drop)?;
+    let div_idx = find_unique_consumer(consumers, &std_out, "Div", nodes, drop)?;
     let div_node = &nodes[div_idx];
     if div_node.input.len() < 2
         || div_node.input.first()? != &centered
@@ -181,14 +179,14 @@ fn try_match_layernorm(
     let mut scale_init: Option<String> = None;
     let mut bias_init: Option<String> = None;
 
-    if let Some(mul_idx) = find_unique_consumer(consumers, &norm_out, "Mul", drop) {
+    if let Some(mul_idx) = find_unique_consumer(consumers, &norm_out, "Mul", nodes, drop) {
         let mul_node = &nodes[mul_idx];
         if let Some(scale) = other_input_if_init(mul_node, &norm_out, initializers) {
             scale_init = Some(scale);
             output_name = mul_node.output.first()?.clone();
             nodes_to_drop.push(mul_idx);
 
-            if let Some(add2_idx) = find_unique_consumer(consumers, &output_name, "Add", drop) {
+            if let Some(add2_idx) = find_unique_consumer(consumers, &output_name, "Add", nodes, drop) {
                 let add2_node = &nodes[add2_idx];
                 if let Some(bias) = other_input_if_init(add2_node, &output_name, initializers) {
                     bias_init = Some(bias);
@@ -276,25 +274,26 @@ fn find_unique_consumer(
     consumers: &HashMap<String, Vec<usize>>,
     tensor: &str,
     op_type: &str,
+    nodes: &[NodeProto],
     drop: &HashSet<usize>,
 ) -> Option<usize> {
     let list = consumers.get(tensor)?;
-    let live: Vec<usize> = list.iter().copied().filter(|i| !drop.contains(i)).collect();
-    if live.len() != 1 {
+    let mut matching: Vec<usize> = list
+        .iter()
+        .copied()
+        .filter(|i| !drop.contains(i) && nodes[*i].op_type == op_type)
+        .collect();
+    if matching.len() != 1 {
         return None;
     }
-    let idx = live[0];
-    // Op type check deferred to caller by pattern; verify here.
-    Some(idx).filter(|_| {
-        let _ = op_type;
-        true
-    })
+    matching.pop()
 }
 
 fn find_square_consumer(
     consumers: &HashMap<String, Vec<usize>>,
     tensor: &str,
     nodes: &[NodeProto],
+    initializers: &HashMap<String, TensorProto>,
     drop: &HashSet<usize>,
 ) -> Option<usize> {
     let list = consumers.get(tensor)?;
@@ -302,7 +301,10 @@ fn find_square_consumer(
         let n = &nodes[idx];
         match n.op_type.as_str() {
             "Pow" => {
-                if n.input.len() >= 2 && n.input.first().map(String::as_str) == Some(tensor) {
+                if n.input.len() >= 2
+                    && n.input.first().map(String::as_str) == Some(tensor)
+                    && pow_exponent_is_two(n.input.get(1)?, initializers)
+                {
                     return Some(idx);
                 }
             }
@@ -315,6 +317,20 @@ fn find_square_consumer(
         }
     }
     None
+}
+
+fn pow_exponent_is_two(name: &str, initializers: &HashMap<String, TensorProto>) -> bool {
+    let Some(t) = initializers.get(name) else {
+        return false;
+    };
+    let f = tensor_to_f32(t);
+    if let Some(&v) = f.first() {
+        if (v - 2.0).abs() < f32::EPSILON {
+            return true;
+        }
+    }
+    let i = tensor_to_i64(t);
+    matches!(i.first(), Some(&2))
 }
 
 fn extract_binary_const_scalar(

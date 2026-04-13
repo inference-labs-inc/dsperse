@@ -937,20 +937,22 @@ pub fn detect_dim_split(
         return None;
     }
 
-    // Conv / ConvTranspose / Pooling / MatMul / Gemm are not separable
-    // along arbitrary input axes: splitting the input channel or the
-    // spatial dimensions of the input tensor produces semantically
-    // incorrect per-group outputs. The dedicated detection paths
-    // (conv spatial tiling, channel splitting, dim-split-k) handle
+    // Conv / ConvTranspose / Pooling are not separable along arbitrary
+    // input axes: splitting the input channel or the spatial dimensions
+    // produces semantically incorrect per-group outputs. The dedicated
+    // detection paths (conv spatial tiling, channel splitting) handle
     // these ops correctly; this generic fallback refuses to emit a
-    // split for them.
+    // split for them.  MatMul / Gemm are *not* listed here: their
+    // dedicated dim-split-k path handles the K-axis split when the
+    // weight is an initializer, but non-terminal MatMul/Gemm slices or
+    // slices whose weight is a runtime tensor still benefit from the
+    // generic axis-0 (batch) fallback, which is always semantically
+    // sound because the batch dimension is independent across rows.
     for node in nodes {
         if matches!(
             node.op_type.as_str(),
             "Conv"
                 | "ConvTranspose"
-                | "MatMul"
-                | "Gemm"
                 | "AveragePool"
                 | "MaxPool"
                 | "GlobalAveragePool"

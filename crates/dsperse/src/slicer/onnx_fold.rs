@@ -256,9 +256,9 @@ fn eval_const_node(
         "ConstantOfShape" => eval_constant_of_shape(node, inputs[0], &out_name),
         "Where" if inputs.len() == 3 => eval_where(inputs, &out_name),
         "Range" if inputs.len() == 3 => eval_range(inputs, &out_name),
-        "Equal" => eval_cmp(inputs, &out_name, |a, b| a == b),
-        "Less" => eval_cmp(inputs, &out_name, |a, b| a < b),
-        "Greater" => eval_cmp(inputs, &out_name, |a, b| a > b),
+        "Equal" => eval_cmp(inputs, &out_name, |a, b| a == b, |a, b| a == b),
+        "Less" => eval_cmp(inputs, &out_name, |a, b| a < b, |a, b| a < b),
+        "Greater" => eval_cmp(inputs, &out_name, |a, b| a > b, |a, b| a > b),
         "Not" => eval_not(inputs[0], &out_name),
         "And" => eval_logical(inputs, &out_name, |a, b| a & b),
         "Or" => eval_logical(inputs, &out_name, |a, b| a | b),
@@ -574,23 +574,40 @@ fn eval_range(
 fn eval_cmp(
     inputs: &[&TensorProto],
     out_name: &str,
-    f: fn(f32, f32) -> bool,
+    f_f32: fn(f32, f32) -> bool,
+    f_i64: fn(i64, i64) -> bool,
 ) -> Option<Vec<(String, TensorProto)>> {
     if inputs.len() < 2 {
         return None;
     }
-    let a = tensor_to_f32(inputs[0]);
-    let b = tensor_to_f32(inputs[1]);
-    if a.is_empty() || b.is_empty() {
-        return None;
-    }
     let out_dims = broadcast_shape(&inputs[0].dims, &inputs[1].dims)?;
     let total = broadcast_total(&out_dims)?;
+
+    let both_int = inputs[0].data_type == TensorProto::INT64
+        && inputs[1].data_type == TensorProto::INT64;
     let mut result = Vec::with_capacity(total);
-    for i in 0..total {
-        let ai = broadcast_index(i, &out_dims, &inputs[0].dims);
-        let bi = broadcast_index(i, &out_dims, &inputs[1].dims);
-        result.push(f(a[ai], b[bi]) as i32);
+    if both_int {
+        let a = tensor_to_i64(inputs[0]);
+        let b = tensor_to_i64(inputs[1]);
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        for i in 0..total {
+            let ai = broadcast_index(i, &out_dims, &inputs[0].dims);
+            let bi = broadcast_index(i, &out_dims, &inputs[1].dims);
+            result.push(f_i64(a[ai], b[bi]) as i32);
+        }
+    } else {
+        let a = tensor_to_f32(inputs[0]);
+        let b = tensor_to_f32(inputs[1]);
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        for i in 0..total {
+            let ai = broadcast_index(i, &out_dims, &inputs[0].dims);
+            let bi = broadcast_index(i, &out_dims, &inputs[1].dims);
+            result.push(f_f32(a[ai], b[bi]) as i32);
+        }
     }
     let t = TensorProto {
         name: out_name.to_string(),
@@ -660,15 +677,28 @@ fn eval_transpose(
     if rank == 0 {
         return None;
     }
-    let perm: Vec<usize> = node
-        .attribute
-        .iter()
-        .find(|a| a.name == "perm")
-        .map(|a| a.ints.iter().map(|&p| p as usize).collect())
-        .unwrap_or_else(|| (0..rank).rev().collect());
-    if perm.len() != rank {
-        return None;
-    }
+    let perm: Vec<usize> = match node.attribute.iter().find(|a| a.name == "perm") {
+        Some(attr) => {
+            if attr.ints.len() != rank {
+                return None;
+            }
+            let mut out = Vec::with_capacity(rank);
+            let mut seen = vec![false; rank];
+            for &raw in &attr.ints {
+                if raw < 0 || (raw as usize) >= rank {
+                    return None;
+                }
+                let p = raw as usize;
+                if seen[p] {
+                    return None;
+                }
+                seen[p] = true;
+                out.push(p);
+            }
+            out
+        }
+        None => (0..rank).rev().collect(),
+    };
     let out_dims: Vec<i64> = perm.iter().map(|&p| input.dims[p]).collect();
     let total = broadcast_total(&out_dims)?;
 
@@ -1719,17 +1749,26 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
         }
         let raw_start = starts[i];
         let raw_end = ends[i];
-        let clamp_pos = |v: i64, max_inclusive: i64| -> i64 { v.clamp(0, max_inclusive) };
+        let clamp = |v: i64, lo: i64, hi: i64| -> i64 { v.clamp(lo, hi) };
         let (s, e) = if step > 0 {
-            let s = clamp_pos(if raw_start < 0 { dim + raw_start } else { raw_start }, dim);
-            let e = clamp_pos(if raw_end < 0 { dim + raw_end } else { raw_end }, dim);
+            // ONNX forward slice: start in [0, dim], end in [0, dim],
+            // both treated as exclusive upper bound.
+            let s = clamp(if raw_start < 0 { dim + raw_start } else { raw_start }, 0, dim);
+            let e = clamp(if raw_end < 0 { dim + raw_end } else { raw_end }, 0, dim);
             (s, e)
         } else {
-            let s = clamp_pos(
-                if raw_start < 0 { dim + raw_start } else { raw_start },
-                dim - 1,
-            );
-            let e = clamp_pos(if raw_end < 0 { dim + raw_end } else { raw_end }, dim - 1);
+            // ONNX reverse slice: start in [0, dim-1] (inclusive first
+            // read), end in [-1, dim-1] (exclusive lower bound; -1
+            // means "walk past index 0", i.e. include element 0).
+            let s = clamp(if raw_start < 0 { dim + raw_start } else { raw_start }, 0, dim - 1);
+            let resolved_end = if raw_end == i64::MIN {
+                -1
+            } else if raw_end < 0 {
+                dim + raw_end
+            } else {
+                raw_end
+            };
+            let e = clamp(resolved_end, -1, dim - 1);
             (s, e)
         };
         per_axis_range[a as usize] = (s, e, step);
@@ -1964,7 +2003,10 @@ fn eval_split(
     let is_int64 = data.data_type == TensorProto::INT64;
     let mut offset = 0usize;
     for (i, &sz) in split_sizes.iter().enumerate() {
-        let sz_us = sz as usize;
+        let sz_us = usize::try_from(sz).ok()?;
+        if sz_us == 0 {
+            return None;
+        }
         let mut out_dims = data.dims.clone();
         out_dims[axis] = sz;
         let total = prefix * sz_us * suffix;

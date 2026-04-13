@@ -210,6 +210,13 @@ fn try_match_layernorm(
         if a >= rank {
             return None;
         }
+        // Reject dynamic / unresolved dims along the reduction axes: the
+        // fused LayerNormalization circuit needs a concrete lane_size
+        // and consumers of m.x_shape[a] later cast the dim to usize,
+        // which silently wraps negative sentinels into huge values.
+        if x_shape[a] <= 0 {
+            return None;
+        }
     }
 
     Some(MatchedPattern {
@@ -278,15 +285,12 @@ fn find_unique_consumer(
     drop: &HashSet<usize>,
 ) -> Option<usize> {
     let list = consumers.get(tensor)?;
-    let mut matching: Vec<usize> = list
-        .iter()
-        .copied()
-        .filter(|i| !drop.contains(i) && nodes[*i].op_type == op_type)
-        .collect();
-    if matching.len() != 1 {
+    let live: Vec<usize> = list.iter().copied().filter(|i| !drop.contains(i)).collect();
+    if live.len() != 1 {
         return None;
     }
-    matching.pop()
+    let idx = live[0];
+    (nodes[idx].op_type == op_type).then_some(idx)
 }
 
 fn find_square_consumer(
@@ -297,26 +301,32 @@ fn find_square_consumer(
     drop: &HashSet<usize>,
 ) -> Option<usize> {
     let list = consumers.get(tensor)?;
-    for &idx in list.iter().filter(|i| !drop.contains(i)) {
-        let n = &nodes[idx];
-        match n.op_type.as_str() {
-            "Pow" => {
-                if n.input.len() >= 2
-                    && n.input.first().map(String::as_str) == Some(tensor)
-                    && pow_exponent_is_two(n.input.get(1)?, initializers)
-                {
-                    return Some(idx);
-                }
-            }
-            "Mul" => {
-                if n.input.len() == 2 && n.input.iter().all(|i| i == tensor) {
-                    return Some(idx);
-                }
-            }
-            _ => {}
-        }
+    let live: Vec<usize> = list.iter().copied().filter(|i| !drop.contains(i)).collect();
+    if live.len() != 1 {
+        return None;
     }
-    None
+    let idx = live[0];
+    let n = &nodes[idx];
+    match n.op_type.as_str() {
+        "Pow" => {
+            if n.input.len() >= 2
+                && n.input.first().map(String::as_str) == Some(tensor)
+                && pow_exponent_is_two(n.input.get(1)?, initializers)
+            {
+                Some(idx)
+            } else {
+                None
+            }
+        }
+        "Mul" => {
+            if n.input.len() == 2 && n.input.iter().all(|i| i == tensor) {
+                Some(idx)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn pow_exponent_is_two(name: &str, initializers: &HashMap<String, TensorProto>) -> bool {

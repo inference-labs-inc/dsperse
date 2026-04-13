@@ -693,8 +693,22 @@ pub fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
         "Resize",
         "Upsample",
         "Crop",
+        // Unique preserves input dtype on its first output (output[0]
+        // values; output[1..3] indices/inverse/counts default to
+        // INT64 but are not standard pass-through targets and the
+        // slicer rarely sees them as graph-internal value_info
+        // entries -- defer per-output handling until we encounter a
+        // real model that needs it).
+        "Unique",
     ];
-    let always_int64: &[&str] = &["Shape", "NonZero", "ArgMax", "ArgMin"];
+    let always_int64: &[&str] = &[
+        "Shape",
+        "NonZero",
+        "ArgMax",
+        "ArgMin",
+        // NonMaxSuppression's selected_indices output is INT64.
+        "NonMaxSuppression",
+    ];
     let always_bool: &[&str] = &[
         "Equal",
         "Less",

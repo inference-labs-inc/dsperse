@@ -508,14 +508,22 @@ fn isolate_expensive_ops(
     };
 
     // Pure elementwise binary ops (Add / Sub / Mul / Div / Pow) are
-    // never isolated: when they appear as a single-op slice, jstprove
-    // applies its op-level invariants strictly (Div with a dynamic
-    // divisor, Mul/Sub between operands with broadcast-incompatible
-    // initializers, etc.) where the multi-op-slice path would have
-    // hidden the same pattern inside a larger graph that the
-    // dim-split / fusion machinery understands.  These ops are also
-    // cheap to compile in absolute terms, so isolating them buys
-    // little and breaks more.
+    // never isolated.  This is a coupling to jstprove_circuits's
+    // single-op-slice invariants: when an isolated slice contains
+    // exactly one Div with a runtime divisor, one Mul / Sub between
+    // operands of broadcast-incompatible shapes, or one Pow whose
+    // exponent is a non-constant tensor, the per-op layer builder
+    // rejects the slice with a strict-mode error.  When the same
+    // pattern appears inside a larger multi-op slice the
+    // dim-split / LayerNorm fusion machinery rewrites the
+    // surrounding subgraph and the strict check passes.  These ops
+    // are also cheap to compile in absolute terms, so isolating them
+    // buys little proving wall-clock and surfaces the strict-mode
+    // failure more often.
+    //
+    // TODO: revisit when jstprove_circuits relaxes the single-op
+    // invariants (or exposes a "permissive" mode) so we can drop
+    // this exemption and let the autotiler decide based on cost.
     let elementwise_skip: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow"].into_iter().collect();
     optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
         for node in sorted_nodes {

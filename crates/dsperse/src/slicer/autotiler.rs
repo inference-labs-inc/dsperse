@@ -1034,9 +1034,12 @@ pub fn detect_dim_split(
                 }
             }
             "BatchNormalization" => {
-                if max_allowed > 0 {
-                    max_allowed = 0;
-                }
+                // BatchNorm couples every spatial element to the
+                // running mean / variance per channel; splitting any
+                // axis would change those statistics.  Force-reject
+                // the dim-split unconditionally so the early return at
+                // line 1044 fires regardless of prior state.
+                max_allowed = 0;
             }
             _ => {}
         }

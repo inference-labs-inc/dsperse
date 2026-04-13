@@ -174,7 +174,9 @@ fn try_match_layernorm(
     }
     let norm_out = div_node.output.first()?.clone();
 
-    let mut nodes_to_drop = vec![mean_idx, sub_idx, sq_idx, mean2_idx, add_idx, sqrt_idx, div_idx];
+    let mut nodes_to_drop = vec![
+        mean_idx, sub_idx, sq_idx, mean2_idx, add_idx, sqrt_idx, div_idx,
+    ];
     let mut output_name = norm_out.clone();
     let mut scale_init: Option<String> = None;
     let mut bias_init: Option<String> = None;
@@ -186,7 +188,9 @@ fn try_match_layernorm(
             output_name = mul_node.output.first()?.clone();
             nodes_to_drop.push(mul_idx);
 
-            if let Some(add2_idx) = find_unique_consumer(consumers, &output_name, "Add", nodes, drop) {
+            if let Some(add2_idx) =
+                find_unique_consumer(consumers, &output_name, "Add", nodes, drop)
+            {
                 let add2_node = &nodes[add2_idx];
                 if let Some(bias) = other_input_if_init(add2_node, &output_name, initializers) {
                     bias_init = Some(bias);
@@ -202,10 +206,7 @@ fn try_match_layernorm(
     if rank == 0 {
         return None;
     }
-    let axes: Vec<usize> = raw_axes
-        .iter()
-        .map(|&a| normalize_axis(a, rank))
-        .collect();
+    let axes: Vec<usize> = raw_axes.iter().map(|&a| normalize_axis(a, rank)).collect();
     for &a in &axes {
         if a >= rank {
             return None;
@@ -239,10 +240,10 @@ fn resolve_shape(
     _nodes: &[NodeProto],
     _producers: &HashMap<String, usize>,
 ) -> Option<Vec<i64>> {
-    if let Some(s) = traced_shapes.get(name) {
-        if !s.is_empty() {
-            return Some(s.clone());
-        }
+    if let Some(s) = traced_shapes.get(name)
+        && !s.is_empty()
+    {
+        return Some(s.clone());
     }
     if let Some(t) = initializers.get(name) {
         return Some(t.dims.clone());
@@ -250,10 +251,7 @@ fn resolve_shape(
     None
 }
 
-fn reduce_axes(
-    node: &NodeProto,
-    initializers: &HashMap<String, TensorProto>,
-) -> Option<Vec<i64>> {
+fn reduce_axes(node: &NodeProto, initializers: &HashMap<String, TensorProto>) -> Option<Vec<i64>> {
     if let Some(attr) = node.attribute.iter().find(|a| a.name == "axes")
         && !attr.ints.is_empty()
     {
@@ -334,10 +332,10 @@ fn pow_exponent_is_two(name: &str, initializers: &HashMap<String, TensorProto>) 
         return false;
     };
     let f = tensor_to_f32(t);
-    if let Some(&v) = f.first() {
-        if (v - 2.0).abs() < f32::EPSILON {
-            return true;
-        }
+    if let Some(&v) = f.first()
+        && (v - 2.0).abs() < f32::EPSILON
+    {
+        return true;
     }
     let i = tensor_to_i64(t);
     matches!(i.first(), Some(&2))
@@ -383,11 +381,14 @@ fn other_input_if_init(
     initializers.get(&other).map(|_| other)
 }
 
+type ReplacementShapes = Vec<(String, Vec<i64>)>;
+type Replacement = (Vec<NodeProto>, Vec<TensorProto>, ReplacementShapes);
+
 fn emit_replacement(
     m: &MatchedPattern,
     fused_id: usize,
     initializers: &HashMap<String, TensorProto>,
-) -> (Vec<NodeProto>, Vec<TensorProto>, Vec<(String, Vec<i64>)>) {
+) -> Replacement {
     let rank = m.rank;
     let axes_set: HashSet<usize> = m.axes.iter().copied().collect();
     let mut forward_perm: Vec<i64> = (0..rank)
@@ -402,11 +403,7 @@ fn emit_replacement(
         inverse_perm[old_pos as usize] = new_pos as i64;
     }
 
-    let lane_size: usize = m
-        .axes
-        .iter()
-        .map(|&a| m.x_shape[a] as usize)
-        .product();
+    let lane_size: usize = m.axes.iter().map(|&a| m.x_shape[a] as usize).product();
 
     let prefix = format!("/__dsperse/fused_ln_{fused_id}");
     let xt_name = format!("{prefix}/xt");
@@ -461,7 +458,10 @@ fn emit_replacement(
     inits.extend(scale_init_opt);
     inits.extend(bias_init_opt);
 
-    let xt_shape: Vec<i64> = forward_perm.iter().map(|&p| m.x_shape[p as usize]).collect();
+    let xt_shape: Vec<i64> = forward_perm
+        .iter()
+        .map(|&p| m.x_shape[p as usize])
+        .collect();
     let yt_shape = xt_shape.clone();
     let shapes = vec![
         (format!("{prefix}/xt"), xt_shape),
@@ -479,10 +479,16 @@ fn materialize_1d_initializer(
     default_fill: f32,
 ) -> (String, Option<TensorProto>) {
     let Some(src) = source else {
-        return (new_name.to_string(), Some(const_vector(new_name, lane_size, default_fill)));
+        return (
+            new_name.to_string(),
+            Some(const_vector(new_name, lane_size, default_fill)),
+        );
     };
     let Some(t) = initializers.get(src) else {
-        return (new_name.to_string(), Some(const_vector(new_name, lane_size, default_fill)));
+        return (
+            new_name.to_string(),
+            Some(const_vector(new_name, lane_size, default_fill)),
+        );
     };
     let elems = tensor_to_f32(t);
     if elems.len() == lane_size && t.dims.len() == 1 {
@@ -493,7 +499,10 @@ fn materialize_1d_initializer(
     } else if elems.len() == 1 {
         vec![elems[0]; lane_size]
     } else {
-        return (new_name.to_string(), Some(const_vector(new_name, lane_size, default_fill)));
+        return (
+            new_name.to_string(),
+            Some(const_vector(new_name, lane_size, default_fill)),
+        );
     };
     (new_name.to_string(), Some(make_f32_vector(new_name, &vals)))
 }

@@ -863,9 +863,7 @@ pub fn detect_dim_split(
             let attn_input = nodes.iter().flat_map(|n| n.input.iter()).find(|name| {
                 !name.is_empty()
                     && !initializer_names.contains(name.as_str())
-                    && shapes
-                        .get(*name)
-                        .is_some_and(|s| s.len() == 4 && s[0] > 0)
+                    && shapes.get(*name).is_some_and(|s| s.len() == 4 && s[0] > 0)
             });
             let Some(attn_input_name) = attn_input.cloned() else {
                 continue;
@@ -877,11 +875,11 @@ pub fn detect_dim_split(
             // axis and yields the highest axis size; that axis gives the
             // most groups and the lowest per-group cost.
             let mut best: Option<(usize, usize, DimSplitKind)> = None;
-            for d in 0..attn_shape.len() {
+            for (d, &axis_len) in attn_shape.iter().enumerate() {
                 if d == softmax_axis_abs {
                     continue;
                 }
-                let dim_size = attn_shape[d].max(1) as usize;
+                let dim_size = axis_len.max(1) as usize;
                 if dim_size < 2 {
                     continue;
                 }
@@ -918,8 +916,7 @@ pub fn detect_dim_split(
             let Some(out_shape) = shapes.get(&output_name) else {
                 continue;
             };
-            if out_shape.len() != attn_shape.len()
-                || out_shape[split_dim] != attn_shape[split_dim]
+            if out_shape.len() != attn_shape.len() || out_shape[split_dim] != attn_shape[split_dim]
             {
                 continue;
             }
@@ -1019,8 +1016,8 @@ pub fn detect_dim_split(
     }
 
     let mut best: Option<(usize, usize)> = None;
-    for d in 0..max_allowed {
-        let dim = first_input_shape[d].max(1) as usize;
+    for (d, &axis_len) in first_input_shape.iter().enumerate().take(max_allowed) {
+        let dim = axis_len.max(1) as usize;
         if dim <= 1 {
             continue;
         }
@@ -1044,9 +1041,7 @@ pub fn detect_dim_split(
     // concat_axis=split_dim would splice the groups into the wrong
     // output dimension.  Tracing the axis through an arbitrary chain
     // of shape ops is out of scope here, so we conservatively reject.
-    let Some(out_shape) = shapes.get(&output_name) else {
-        return None;
-    };
+    let out_shape = shapes.get(&output_name)?;
     if out_shape.len() != first_input_shape.len()
         || out_shape[split_dim] != first_input_shape[split_dim]
     {

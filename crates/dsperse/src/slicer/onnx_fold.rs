@@ -276,10 +276,7 @@ fn eval_const_node(
     }
 }
 
-fn eval_expand(
-    inputs: &[&TensorProto],
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_expand(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let data = inputs[0];
     let shape = tensor_to_i64(inputs[1]);
     if shape.is_empty() {
@@ -319,10 +316,7 @@ fn eval_expand(
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_tile(
-    inputs: &[&TensorProto],
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_tile(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let data = inputs[0];
     let repeats = tensor_to_i64(inputs[1]);
     if repeats.is_empty() || repeats.len() != data.dims.len() {
@@ -358,7 +352,7 @@ fn eval_tile(
             return None;
         }
         let mut result = vec![0i64; total];
-        for o in 0..total {
+        for (o, out_slot) in result.iter_mut().enumerate().take(total) {
             let mut src = 0usize;
             let mut rem = o;
             for i in 0..rank {
@@ -366,7 +360,7 @@ fn eval_tile(
                 rem %= out_strides[i];
                 src += (coord % data.dims[i] as usize) * in_strides[i];
             }
-            result[o] = v[src];
+            *out_slot = v[src];
         }
         let t = TensorProto {
             name: out_name.to_string(),
@@ -382,7 +376,7 @@ fn eval_tile(
         return None;
     }
     let mut result = vec![0f32; total];
-    for o in 0..total {
+    for (o, out_slot) in result.iter_mut().enumerate().take(total) {
         let mut src = 0usize;
         let mut rem = o;
         for i in 0..rank {
@@ -390,7 +384,7 @@ fn eval_tile(
             rem %= out_strides[i];
             src += (coord % data.dims[i] as usize) * in_strides[i];
         }
-        result[o] = v[src];
+        *out_slot = v[src];
     }
     let t = make_f32_tensor(out_name, &out_dims, &result, data.data_type);
     Some(vec![(out_name.to_string(), t)])
@@ -444,18 +438,14 @@ fn eval_constant_of_shape(
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_where(
-    inputs: &[&TensorProto],
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_where(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let cond = tensor_to_i64(inputs[0]);
-    let data_type = if inputs[1].data_type == TensorProto::INT64
-        && inputs[2].data_type == TensorProto::INT64
-    {
-        TensorProto::INT64
-    } else {
-        TensorProto::FLOAT
-    };
+    let data_type =
+        if inputs[1].data_type == TensorProto::INT64 && inputs[2].data_type == TensorProto::INT64 {
+            TensorProto::INT64
+        } else {
+            TensorProto::FLOAT
+        };
     if data_type == TensorProto::INT64 {
         let x = tensor_to_i64(inputs[1]);
         let y = tensor_to_i64(inputs[2]);
@@ -500,10 +490,7 @@ fn eval_where(
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_range(
-    inputs: &[&TensorProto],
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_range(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let is_int = inputs[0].data_type == TensorProto::INT64
         && inputs[1].data_type == TensorProto::INT64
         && inputs[2].data_type == TensorProto::INT64;
@@ -583,8 +570,8 @@ fn eval_cmp(
     let out_dims = broadcast_shape(&inputs[0].dims, &inputs[1].dims)?;
     let total = broadcast_total(&out_dims)?;
 
-    let both_int = inputs[0].data_type == TensorProto::INT64
-        && inputs[1].data_type == TensorProto::INT64;
+    let both_int =
+        inputs[0].data_type == TensorProto::INT64 && inputs[1].data_type == TensorProto::INT64;
     let mut result = Vec::with_capacity(total);
     if both_int {
         let a = tensor_to_i64(inputs[0]);
@@ -619,10 +606,7 @@ fn eval_cmp(
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_not(
-    input: &TensorProto,
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_not(input: &TensorProto, out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let vals = tensor_to_i64(input);
     if vals.is_empty() {
         return None;
@@ -902,9 +886,7 @@ fn eval_resize(
         s
     };
 
-    let resize_axes: Vec<usize> = (0..rank)
-        .filter(|&d| x.dims[d] != out_dims[d])
-        .collect();
+    let resize_axes: Vec<usize> = (0..rank).filter(|&d| x.dims[d] != out_dims[d]).collect();
     if resize_axes.is_empty() {
         let t = make_f32_tensor(out_name, &out_dims, &vals, x.data_type);
         return Some(vec![(out_name.to_string(), t)]);
@@ -1155,7 +1137,13 @@ fn eval_reduce(
     };
     let norm_axes: Vec<usize> = axes
         .iter()
-        .map(|&a| if a < 0 { (rank as i64 + a) as usize } else { a as usize })
+        .map(|&a| {
+            if a < 0 {
+                (rank as i64 + a) as usize
+            } else {
+                a as usize
+            }
+        })
         .collect();
     for &ax in &norm_axes {
         if ax >= rank {
@@ -1183,22 +1171,18 @@ fn eval_reduce(
         return None;
     }
 
-    let src_strides = {
-        let mut s = vec![1i64; rank];
-        for i in (0..rank.saturating_sub(1)).rev() {
-            s[i] = s[i + 1] * input.dims[i + 1];
-        }
-        s
-    };
     let reduced_count: i64 = norm_axes.iter().map(|&a| input.dims[a]).product();
 
-    let mut accum = vec![match op {
-        ReduceOp::Sum | ReduceOp::Mean => 0.0f32,
-        ReduceOp::Max => f32::NEG_INFINITY,
-        ReduceOp::Min => f32::INFINITY,
-    }; total_out];
+    let mut accum = vec![
+        match op {
+            ReduceOp::Sum | ReduceOp::Mean => 0.0f32,
+            ReduceOp::Max => f32::NEG_INFINITY,
+            ReduceOp::Min => f32::INFINITY,
+        };
+        total_out
+    ];
 
-    for in_idx in 0..total_in {
+    for (in_idx, &v) in vals.iter().enumerate().take(total_in) {
         let mut rem = in_idx as i64;
         let mut out_idx = 0i64;
         let mut out_stride = 1i64;
@@ -1211,7 +1195,6 @@ fn eval_reduce(
             out_stride *= out_dims_full[i];
         }
         let o = out_idx as usize;
-        let v = vals[in_idx];
         accum[o] = match op {
             ReduceOp::Sum | ReduceOp::Mean => accum[o] + v,
             ReduceOp::Max => accum[o].max(v),
@@ -1745,9 +1728,15 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
         return None;
     }
 
-    let mut per_axis_range: Vec<(i64, i64, i64)> = (0..rank as i64).map(|d| (0, data.dims[d as usize], 1)).collect();
+    let mut per_axis_range: Vec<(i64, i64, i64)> = (0..rank as i64)
+        .map(|d| (0, data.dims[d as usize], 1))
+        .collect();
     for (i, &raw_axis) in axes.iter().enumerate() {
-        let a = if raw_axis < 0 { rank as i64 + raw_axis } else { raw_axis };
+        let a = if raw_axis < 0 {
+            rank as i64 + raw_axis
+        } else {
+            raw_axis
+        };
         if a < 0 || a >= rank as i64 {
             return None;
         }
@@ -1769,14 +1758,30 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
         let (s, e) = if step > 0 {
             // ONNX forward slice: start in [0, dim], end in [0, dim],
             // both treated as exclusive upper bound.
-            let s = clamp(if raw_start < 0 { dim + raw_start } else { raw_start }, 0, dim);
+            let s = clamp(
+                if raw_start < 0 {
+                    dim + raw_start
+                } else {
+                    raw_start
+                },
+                0,
+                dim,
+            );
             let e = clamp(if raw_end < 0 { dim + raw_end } else { raw_end }, 0, dim);
             (s, e)
         } else {
             // ONNX reverse slice: start in [0, dim-1] (inclusive first
             // read), end in [-1, dim-1] (exclusive lower bound; -1
             // means "walk past index 0", i.e. include element 0).
-            let s = clamp(if raw_start < 0 { dim + raw_start } else { raw_start }, 0, dim - 1);
+            let s = clamp(
+                if raw_start < 0 {
+                    dim + raw_start
+                } else {
+                    raw_start
+                },
+                0,
+                dim - 1,
+            );
             let resolved_end = if raw_end == i64::MIN {
                 -1
             } else if raw_end < 0 {
@@ -1868,10 +1873,7 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
     Some(vec![(out_name.to_string(), t)])
 }
 
-fn eval_scatter_nd(
-    inputs: &[&TensorProto],
-    out_name: &str,
-) -> Option<Vec<(String, TensorProto)>> {
+fn eval_scatter_nd(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, TensorProto)>> {
     let data = inputs[0];
     let indices = inputs[1];
     let updates = inputs[2];
@@ -1980,7 +1982,11 @@ fn eval_split(
         .find(|a| a.name == "axis")
         .map(|a| a.i)
         .unwrap_or(0);
-    let axis = if raw_axis < 0 { rank as i64 + raw_axis } else { raw_axis } as usize;
+    let axis = if raw_axis < 0 {
+        rank as i64 + raw_axis
+    } else {
+        raw_axis
+    } as usize;
     if axis >= rank {
         return None;
     }
@@ -2112,7 +2118,9 @@ fn eval_concat(
     let prefix_size: usize = out_dims[..axis].iter().map(|&d| d as usize).product();
     let out_axis: usize = out_dims[axis] as usize;
     let suffix_size: usize = out_dims[axis + 1..].iter().map(|&d| d as usize).product();
-    let out_total = prefix_size.checked_mul(out_axis)?.checked_mul(suffix_size)?;
+    let out_total = prefix_size
+        .checked_mul(out_axis)?
+        .checked_mul(suffix_size)?;
     if out_total > MAX_BROADCAST_ELEMENTS {
         return None;
     }

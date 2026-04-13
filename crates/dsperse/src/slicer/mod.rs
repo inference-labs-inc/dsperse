@@ -3,6 +3,7 @@ pub mod autotiler;
 pub mod combiner;
 pub mod materializer;
 pub(crate) mod layernorm_fuse;
+pub(crate) mod self_div_rewrite;
 pub(crate) mod onnx_fold;
 pub mod onnx_proto;
 pub(crate) mod onnx_shapes;

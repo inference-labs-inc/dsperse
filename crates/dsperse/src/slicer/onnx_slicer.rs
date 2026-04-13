@@ -46,6 +46,12 @@ pub fn slice_model(
         tracing::info!(fused_ln, "fused inline LayerNorm patterns");
     }
 
+    let self_div_rewrites =
+        super::self_div_rewrite::rewrite_self_div_to_one(&mut model, &mut traced_shapes);
+    if self_div_rewrites > 0 {
+        tracing::info!(self_div_rewrites, "rewrote degenerate Div(X, X) nodes");
+    }
+
     let missing: Vec<String> = if let Some(graph) = &model.graph {
         let mut missing = Vec::new();
         for n in &graph.node {

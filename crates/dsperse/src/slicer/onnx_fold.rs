@@ -1129,6 +1129,15 @@ fn eval_reduce(
     if rank == 0 {
         return None;
     }
+    // Reduce* for non-floating-point tensors would lose precision
+    // through the tensor_to_f32 path below; refuse to fold them so
+    // the compiler can emit a proper integer reduction.
+    if !matches!(
+        input.data_type,
+        TensorProto::FLOAT | TensorProto::DOUBLE | TensorProto::FLOAT16
+    ) {
+        return None;
+    }
     let keepdims = node
         .attribute
         .iter()
@@ -1747,6 +1756,13 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
         if step == 0 {
             return None;
         }
+        if dim == 0 {
+            // Zero-length axis: any slice yields an empty output on that
+            // axis.  Record (0, 0, step) and skip clamping to avoid the
+            // clamp(..., 0, dim - 1) == clamp(..., 0, -1) inverted range.
+            per_axis_range[a as usize] = (0, 0, step);
+            continue;
+        }
         let raw_start = starts[i];
         let raw_end = ends[i];
         let clamp = |v: i64, lo: i64, hi: i64| -> i64 { v.clamp(lo, hi) };
@@ -2179,6 +2195,13 @@ fn make_f32_tensor(name: &str, dims: &[i64], vals: &[f32], target_type: i32) -> 
             data_type: TensorProto::DOUBLE,
             dims: dims.to_vec(),
             double_data: vals.iter().map(|&v| v as f64).collect(),
+            ..Default::default()
+        },
+        TensorProto::BOOL => TensorProto {
+            name: name.to_string(),
+            data_type: TensorProto::BOOL,
+            dims: dims.to_vec(),
+            int32_data: vals.iter().map(|&v| (v != 0.0) as i32).collect(),
             ..Default::default()
         },
         _ => TensorProto {

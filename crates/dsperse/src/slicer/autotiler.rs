@@ -909,6 +909,20 @@ pub fn detect_dim_split(
             if output_name.is_empty() {
                 continue;
             }
+            // Reject the split when axis tracing through the slice cannot
+            // prove the split axis lands at the same position (and size)
+            // in the final output.  Shape-reordering ops (Reshape,
+            // Transpose, Flatten, Squeeze, Unsqueeze, Concat on the
+            // split axis) are non-trivial to follow here, so we require
+            // the output shape to match the attention input at split_dim.
+            let Some(out_shape) = shapes.get(&output_name) else {
+                continue;
+            };
+            if out_shape.len() != attn_shape.len()
+                || out_shape[split_dim] != attn_shape[split_dim]
+            {
+                continue;
+            }
             return Some(DimSplitDetection {
                 split_kind,
                 split_dim,
@@ -1024,6 +1038,20 @@ pub fn detect_dim_split(
         .and_then(|n| n.output.first())
         .filter(|s| !s.is_empty())
         .cloned()?;
+    // Require the final output shape to preserve rank and the split
+    // axis size; otherwise an intermediate op (Reshape, Transpose,
+    // Flatten, Squeeze, Unsqueeze) has reordered the axes and
+    // concat_axis=split_dim would splice the groups into the wrong
+    // output dimension.  Tracing the axis through an arbitrary chain
+    // of shape ops is out of scope here, so we conservatively reject.
+    let Some(out_shape) = shapes.get(&output_name) else {
+        return None;
+    };
+    if out_shape.len() != first_input_shape.len()
+        || out_shape[split_dim] != first_input_shape[split_dim]
+    {
+        return None;
+    }
     Some(DimSplitDetection {
         split_kind: DimSplitKind::BatchDim,
         split_dim,

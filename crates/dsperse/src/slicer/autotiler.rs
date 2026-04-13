@@ -2206,9 +2206,7 @@ fn create_generic_dim_template(
         .filter(|name| !name.is_empty())
         .collect();
     for init in &mut tmpl_graph.initializer {
-        if init.data_type == TensorProto::INT64
-            && shape_input_initializers.contains(&init.name)
-        {
+        if init.data_type == TensorProto::INT64 && shape_input_initializers.contains(&init.name) {
             for v in &mut init.int64_data {
                 if *v == dim_size {
                     *v = epg;
@@ -2279,7 +2277,10 @@ fn create_generic_dim_template(
             }
             // Promote output_name to graph output if it now exists in
             // value_info but not in graph.output.
-            if !graph_after.output.iter().any(|o| o.name == info.output_name)
+            if !graph_after
+                .output
+                .iter()
+                .any(|o| o.name == info.output_name)
                 && let Some(vi) = graph_after
                     .value_info
                     .iter()

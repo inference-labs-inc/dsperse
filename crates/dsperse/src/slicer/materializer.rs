@@ -79,6 +79,7 @@ pub fn materialize_slice_model(
     model: &ModelProto,
     slice_points: &[usize],
     traced_shapes: &HashMap<String, Vec<i64>>,
+    traced_types: &HashMap<String, i32>,
     slice_idx: usize,
 ) -> Result<ModelProto> {
     let graph = model
@@ -160,6 +161,7 @@ pub fn materialize_slice_model(
         init_map: &init_map,
         vi_map: &vi_map,
         traced_shapes,
+        traced_types,
         init_types: &init_types,
         node_output_types: &node_output_types,
         constant_producers: &constant_producers,
@@ -187,10 +189,12 @@ pub fn materialize_slice_to_disk(
     model: &ModelProto,
     slice_points: &[usize],
     traced_shapes: &HashMap<String, Vec<i64>>,
+    traced_types: &HashMap<String, i32>,
     slice_idx: usize,
     output_path: &Path,
 ) -> Result<PathBuf> {
-    let slice_model = materialize_slice_model(model, slice_points, traced_shapes, slice_idx)?;
+    let slice_model =
+        materialize_slice_model(model, slice_points, traced_shapes, traced_types, slice_idx)?;
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| DsperseError::io(e, parent))?;
     }
@@ -232,6 +236,8 @@ pub fn ensure_slice_materialized(
     let traced_shapes = metadata.traced_shapes.as_ref().ok_or_else(|| {
         DsperseError::Slicer("metadata missing traced_shapes for materialization".into())
     })?;
+    let empty_types: HashMap<String, i32> = HashMap::new();
+    let traced_types = metadata.traced_types.as_ref().unwrap_or(&empty_types);
     let original_path = metadata.original_model_path.as_ref().ok_or_else(|| {
         DsperseError::Slicer("metadata missing original_model_path for materialization".into())
     })?;
@@ -251,6 +257,7 @@ pub fn ensure_slice_materialized(
         &model_with_shapes,
         &metadata.slice_points,
         traced_shapes,
+        traced_types,
         slice_idx,
         &onnx_path,
     )?;
@@ -519,6 +526,7 @@ struct ShapeContext<'a> {
     init_map: &'a HashMap<&'a str, &'a TensorProto>,
     vi_map: &'a HashMap<String, &'a ValueInfoProto>,
     traced_shapes: &'a HashMap<String, Vec<i64>>,
+    traced_types: &'a HashMap<String, i32>,
     init_types: &'a HashMap<&'a str, i32>,
     node_output_types: &'a HashMap<String, i32>,
     constant_producers: &'a HashMap<String, &'a TensorProto>,
@@ -526,9 +534,18 @@ struct ShapeContext<'a> {
 
 impl ShapeContext<'_> {
     fn resolve_elem_type(&self, name: &str) -> i32 {
+        // Resolution order: parent value_info dtype is implicitly used
+        // upstream via vi_map; fall back to initializer dtype, then to
+        // dtype-aware tract trace, then to the small set of ops whose
+        // output dtype is fixed by the spec, and finally to FLOAT.
+        // Skipping the traced_types lookup is the bug that turned
+        // INT64 indices (TopK, Tile-of-int, Slice-of-int) into FLOAT
+        // value_info entries; the witness path then quantised them by
+        // alpha and produced indices like 138_149_888 = 1054 * 2^17.
         self.init_types
             .get(name)
             .copied()
+            .or_else(|| self.traced_types.get(name).copied())
             .or_else(|| self.node_output_types.get(name).copied())
             .unwrap_or(TensorProto::FLOAT)
     }
@@ -619,7 +636,79 @@ fn get_segment_details(
 }
 
 pub fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
+    // Propagate ONNX output dtypes in topological order so that
+    // every node's output dtype is derivable from already-resolved
+    // input dtypes.  This is the source of truth for the slicer
+    // when tract's runtime trace falls back to f32 because it can't
+    // statically evaluate a node (e.g. TopK with a runtime K, or
+    // any node downstream of one that taints during tract's
+    // best-effort eval).  Without this, INT64 indices flowing
+    // through Tile / Slice / Reshape / GatherElements get tagged
+    // as FLOAT in slice value_info and the witness path quantises
+    // them by alpha, producing nonsense indices like
+    // 1054 * 2^17 = 138_149_888.
     let mut types: HashMap<String, i32> = HashMap::new();
+    for init in &graph.initializer {
+        if init.data_type != 0 {
+            types.insert(init.name.clone(), init.data_type);
+        }
+    }
+    for vi in graph
+        .input
+        .iter()
+        .chain(graph.value_info.iter())
+        .chain(graph.output.iter())
+    {
+        if let Some(dt) = onnx_proto::elem_type_from_value_info(vi)
+            && dt != 0
+            && !types.contains_key(&vi.name)
+        {
+            types.insert(vi.name.clone(), dt);
+        }
+    }
+    let pass_through_first_input: &[&str] = &[
+        "Tile",
+        "Slice",
+        "Reshape",
+        "Transpose",
+        "Squeeze",
+        "Unsqueeze",
+        "Identity",
+        "Flatten",
+        "Expand",
+        "Concat",
+        "Gather",
+        "GatherElements",
+        "GatherND",
+        "Pad",
+        "Compress",
+        "ScatterND",
+        "ScatterElements",
+        "Scatter",
+        "Split",
+        "DepthToSpace",
+        "SpaceToDepth",
+        "ReverseSequence",
+        "OneHot",
+        "Resize",
+        "Upsample",
+        "Crop",
+    ];
+    let always_int64: &[&str] = &["Shape", "NonZero", "ArgMax", "ArgMin"];
+    let always_bool: &[&str] = &[
+        "Equal",
+        "Less",
+        "LessOrEqual",
+        "Greater",
+        "GreaterOrEqual",
+        "And",
+        "Or",
+        "Not",
+        "Xor",
+        "IsNaN",
+        "IsInf",
+    ];
+
     for node in &graph.node {
         match node.op_type.as_str() {
             "Cast" => {
@@ -631,17 +720,94 @@ pub fn build_node_output_types(graph: &GraphProto) -> HashMap<String, i32> {
                     }
                 }
             }
+            "Constant" => {
+                if let Some(t) = node
+                    .attribute
+                    .iter()
+                    .find(|a| a.name == "value")
+                    .and_then(|a| a.t.as_ref())
+                    && let Some(out) = node.output.first()
+                    && !out.is_empty()
+                {
+                    types.insert(out.clone(), t.data_type);
+                }
+            }
+            "ConstantOfShape" => {
+                let dt = node
+                    .attribute
+                    .iter()
+                    .find(|a| a.name == "value")
+                    .and_then(|a| a.t.as_ref())
+                    .map(|t| t.data_type)
+                    .unwrap_or(TensorProto::FLOAT);
+                for out in &node.output {
+                    if !out.is_empty() {
+                        types.insert(out.clone(), dt);
+                    }
+                }
+            }
             "MaxPool" => {
                 if let Some(idx_out) = node.output.get(1)
                     && !idx_out.is_empty()
                 {
                     types.insert(idx_out.clone(), TensorProto::INT64);
                 }
+                if let Some(val_out) = node.output.first()
+                    && !val_out.is_empty()
+                    && let Some(in_name) = node.input.first()
+                    && let Some(&dt) = types.get(in_name.as_str())
+                {
+                    types.insert(val_out.clone(), dt);
+                }
             }
-            "Shape" | "NonZero" | "ArgMax" | "ArgMin" => {
+            "TopK" => {
+                if let Some(val_out) = node.output.first()
+                    && !val_out.is_empty()
+                    && let Some(in_name) = node.input.first()
+                    && let Some(&dt) = types.get(in_name.as_str())
+                {
+                    types.insert(val_out.clone(), dt);
+                }
+                if let Some(idx_out) = node.output.get(1)
+                    && !idx_out.is_empty()
+                {
+                    types.insert(idx_out.clone(), TensorProto::INT64);
+                }
+            }
+            "Where" => {
+                if let Some(out) = node.output.first()
+                    && !out.is_empty()
+                {
+                    if let Some(&dt) = node.input.get(1).and_then(|n| types.get(n.as_str())) {
+                        types.insert(out.clone(), dt);
+                    } else if let Some(&dt) = node.input.get(2).and_then(|n| types.get(n.as_str()))
+                    {
+                        types.insert(out.clone(), dt);
+                    }
+                }
+            }
+            op if always_int64.contains(&op) => {
                 for out in &node.output {
                     if !out.is_empty() {
                         types.insert(out.clone(), TensorProto::INT64);
+                    }
+                }
+            }
+            op if always_bool.contains(&op) => {
+                for out in &node.output {
+                    if !out.is_empty() {
+                        types.insert(out.clone(), TensorProto::BOOL);
+                    }
+                }
+            }
+            op if pass_through_first_input.contains(&op) => {
+                if let Some(in_name) = node.input.first().filter(|s| !s.is_empty())
+                    && let Some(&dt) = types.get(in_name.as_str())
+                {
+                    for out in &node.output {
+                        if !out.is_empty() {
+                            types.insert(out.clone(), dt);
+                        }
                     }
                 }
             }

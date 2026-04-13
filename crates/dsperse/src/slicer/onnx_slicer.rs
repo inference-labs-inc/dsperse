@@ -79,7 +79,8 @@ pub fn slice_model(
     });
     std::fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
-    let slice_points = determine_slice_points(&analysis, tile_size, jstprove_ops, &model, &traced_shapes);
+    let slice_points =
+        determine_slice_points(&analysis, tile_size, jstprove_ops, &model, &traced_shapes);
     tracing::info!(points = ?slice_points, "determined slice points");
     debug_assert!(
         !slice_points.is_empty(),
@@ -97,8 +98,13 @@ pub fn slice_model(
     let mut dim_split_info: HashMap<usize, (autotiler::DimSplitDetection, Option<String>)> =
         HashMap::new();
     for (seg_idx, _) in segment_ranges.iter().enumerate() {
-        let slice_model =
-            materializer::materialize_slice_model(&model, trimmed_points, &traced_shapes, seg_idx)?;
+        let slice_model = materializer::materialize_slice_model(
+            &model,
+            trimmed_points,
+            &traced_shapes,
+            &traced_types,
+            seg_idx,
+        )?;
         if let Some(detection) = autotiler::detect_tiling_needs(&slice_model, tile_size) {
             tiled_info.insert(seg_idx, detection);
             continue;
@@ -510,9 +516,7 @@ fn isolate_expensive_ops(
     // dim-split / fusion machinery understands.  These ops are also
     // cheap to compile in absolute terms, so isolating them buys
     // little and breaks more.
-    let elementwise_skip: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow"]
-        .into_iter()
-        .collect();
+    let elementwise_skip: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow"].into_iter().collect();
     optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
         for node in sorted_nodes {
             if elementwise_skip.contains(node.node_type.as_str()) {

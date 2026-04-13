@@ -341,7 +341,10 @@ fn execute_generic_dim_split(
         // exactly `epg` wide and we can feed the sliced view straight
         // in -- no zero-padding, no output trimming, no risk of
         // contaminating reductions on non-split axes.
-        debug_assert_eq!(actual_size, epg, "dim-split detector must enforce dim_size % epg == 0");
+        debug_assert_eq!(
+            actual_size, epg,
+            "dim-split detector must enforce dim_size % epg == 0"
+        );
         let mut group_cache = TensorStore::new();
         for vi_name in &input_names {
             let arr = tensor_cache.try_get(vi_name).ok_or_else(|| {

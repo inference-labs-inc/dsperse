@@ -263,7 +263,6 @@ fn eval_const_node(
         "And" => eval_logical(inputs, &out_name, |a, b| a & b),
         "Or" => eval_logical(inputs, &out_name, |a, b| a | b),
         "Transpose" => eval_transpose(node, inputs[0], &out_name),
-        "Pow" => eval_binary_f32(inputs, &out_name, f32::powf),
         "ReduceMean" => eval_reduce(node, inputs, &out_name, ReduceOp::Mean),
         "ReduceSum" => eval_reduce(node, inputs, &out_name, ReduceOp::Sum),
         "ReduceMax" => eval_reduce(node, inputs, &out_name, ReduceOp::Max),
@@ -271,6 +270,8 @@ fn eval_const_node(
         "Resize" => eval_resize(node, inputs, &out_name),
         "Expand" if inputs.len() == 2 => eval_expand(inputs, &out_name),
         "Tile" if inputs.len() == 2 => eval_tile(inputs, &out_name),
+        "ScatterND" if inputs.len() == 3 => eval_scatter_nd(inputs, &out_name),
+        "Split" => eval_split(node, inputs, &node.output),
         _ => None,
     }
 }
@@ -461,14 +462,10 @@ fn eval_where(
         if x.is_empty() || y.is_empty() || cond.is_empty() {
             return None;
         }
-        let (xy_vals, xy_dims) =
-            broadcast_binary_i64(&x, &inputs[1].dims, &y, &inputs[2].dims, |a, b| {
-                a * 0 + b * 0
-            })?;
+        let xy_dims = broadcast_shape(&inputs[1].dims, &inputs[2].dims)?;
         let out_dims = broadcast_shape(&xy_dims, &inputs[0].dims)?;
         let total = broadcast_total(&out_dims)?;
         let mut result = Vec::with_capacity(total);
-        let _ = xy_vals;
         for i in 0..total {
             let ci = broadcast_index(i, &out_dims, &inputs[0].dims);
             let xi = broadcast_index(i, &out_dims, &inputs[1].dims);
@@ -517,11 +514,23 @@ fn eval_range(
         if delta == 0 {
             return None;
         }
-        let mut out = Vec::new();
+        let producing = (delta > 0 && start < limit) || (delta < 0 && start > limit);
+        let count = if producing {
+            let span = (limit - start) as i128;
+            let d = delta as i128;
+            let c = (span + d - d.signum()) / d;
+            usize::try_from(c).ok()?
+        } else {
+            0
+        };
+        if count > MAX_BROADCAST_ELEMENTS {
+            return None;
+        }
+        let mut out = Vec::with_capacity(count);
         let mut v = start;
-        while (delta > 0 && v < limit) || (delta < 0 && v > limit) {
+        for _ in 0..count {
             out.push(v);
-            v += delta;
+            v = v.checked_add(delta)?;
         }
         let t = TensorProto {
             name: out_name.to_string(),
@@ -535,12 +544,25 @@ fn eval_range(
     let start = tensor_to_f32(inputs[0]).first().copied()?;
     let limit = tensor_to_f32(inputs[1]).first().copied()?;
     let delta = tensor_to_f32(inputs[2]).first().copied()?;
-    if delta == 0.0 {
+    if delta == 0.0 || !delta.is_finite() || !start.is_finite() || !limit.is_finite() {
         return None;
     }
-    let mut out = Vec::new();
+    let count = ((limit - start) / delta).ceil();
+    if count <= 0.0 {
+        let dims = vec![0i64];
+        let t = make_f32_tensor(out_name, &dims, &[], inputs[0].data_type);
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+    if count as usize > MAX_BROADCAST_ELEMENTS {
+        return None;
+    }
+    let count = count as usize;
+    let mut out = Vec::with_capacity(count);
     let mut v = start;
-    while (delta > 0.0 && v < limit) || (delta < 0.0 && v > limit) {
+    for _ in 0..count {
+        if (delta > 0.0 && v >= limit) || (delta < 0.0 && v <= limit) {
+            break;
+        }
         out.push(v);
         v += delta;
     }
@@ -1676,48 +1698,316 @@ fn eval_slice(inputs: &[&TensorProto], out_name: &str) -> Option<Vec<(String, Te
     } else {
         vec![1; starts.len()]
     };
-    if data.dims.len() == 1 && axes == [0] && steps.iter().all(|&s| s == 1) {
-        let dim = data.dims[0];
-        let start = if starts[0] < 0 {
-            (dim + starts[0]).max(0) as usize
-        } else {
-            (starts[0] as usize).min(dim as usize)
-        };
-        let end = if ends[0] < 0 {
-            (dim + ends[0]).max(0) as usize
-        } else {
-            (ends[0] as usize).min(dim as usize)
-        };
-        if start > end {
+    if starts.len() != ends.len() || axes.len() != starts.len() || steps.len() != starts.len() {
+        return None;
+    }
+    let rank = data.dims.len();
+    if rank == 0 {
+        return None;
+    }
+
+    let mut per_axis_range: Vec<(i64, i64, i64)> = (0..rank as i64).map(|d| (0, data.dims[d as usize], 1)).collect();
+    for (i, &raw_axis) in axes.iter().enumerate() {
+        let a = if raw_axis < 0 { rank as i64 + raw_axis } else { raw_axis };
+        if a < 0 || a >= rank as i64 {
             return None;
         }
-        if start == end {
-            let t = TensorProto {
-                name: out_name.to_string(),
-                data_type: data.data_type,
-                dims: vec![0],
-                ..Default::default()
-            };
-            return Some(vec![(out_name.to_string(), t)]);
+        let dim = data.dims[a as usize];
+        let step = steps[i];
+        if step == 0 {
+            return None;
         }
-        if data.data_type == TensorProto::INT64 {
-            let vals = tensor_to_i64(data);
-            let sliced: Vec<i64> = vals.get(start..end)?.to_vec();
-            let t = TensorProto {
-                name: out_name.to_string(),
-                data_type: TensorProto::INT64,
-                dims: vec![(end - start) as i64],
-                int64_data: sliced,
-                ..Default::default()
-            };
-            return Some(vec![(out_name.to_string(), t)]);
-        }
-        let vals = tensor_to_f32(data);
-        let sliced: Vec<f32> = vals.get(start..end)?.to_vec();
-        let t = make_f32_tensor(out_name, &[(end - start) as i64], &sliced, data.data_type);
+        let raw_start = starts[i];
+        let raw_end = ends[i];
+        let clamp_pos = |v: i64, max_inclusive: i64| -> i64 { v.clamp(0, max_inclusive) };
+        let (s, e) = if step > 0 {
+            let s = clamp_pos(if raw_start < 0 { dim + raw_start } else { raw_start }, dim);
+            let e = clamp_pos(if raw_end < 0 { dim + raw_end } else { raw_end }, dim);
+            (s, e)
+        } else {
+            let s = clamp_pos(
+                if raw_start < 0 { dim + raw_start } else { raw_start },
+                dim - 1,
+            );
+            let e = clamp_pos(if raw_end < 0 { dim + raw_end } else { raw_end }, dim - 1);
+            (s, e)
+        };
+        per_axis_range[a as usize] = (s, e, step);
+    }
+
+    let out_dims: Vec<i64> = per_axis_range
+        .iter()
+        .map(|(s, e, st)| {
+            if *st > 0 {
+                ((e - s + st - 1) / st).max(0)
+            } else {
+                ((s - e + (-st) - 1) / (-st)).max(0)
+            }
+        })
+        .collect();
+    let total = broadcast_total(&out_dims)?;
+    if total == 0 {
+        let t = TensorProto {
+            name: out_name.to_string(),
+            data_type: data.data_type,
+            dims: out_dims,
+            ..Default::default()
+        };
         return Some(vec![(out_name.to_string(), t)]);
     }
-    None
+
+    let in_strides: Vec<i64> = {
+        let mut s = vec![1i64; rank];
+        for i in (0..rank.saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * data.dims[i + 1];
+        }
+        s
+    };
+    let out_strides: Vec<i64> = {
+        let mut s = vec![1i64; rank];
+        for i in (0..rank.saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * out_dims[i + 1];
+        }
+        s
+    };
+
+    let src_index = |o: i64| -> i64 {
+        let mut rem = o;
+        let mut src = 0i64;
+        for d in 0..rank {
+            let coord = rem / out_strides[d];
+            rem %= out_strides[d];
+            let (s_axis, _, st) = per_axis_range[d];
+            src += (s_axis + coord * st) * in_strides[d];
+        }
+        src
+    };
+
+    if data.data_type == TensorProto::INT64 {
+        let vals = tensor_to_i64(data);
+        if vals.is_empty() {
+            return None;
+        }
+        let mut result = Vec::with_capacity(total);
+        for o in 0..total {
+            result.push(*vals.get(src_index(o as i64) as usize)?);
+        }
+        let t = TensorProto {
+            name: out_name.to_string(),
+            data_type: TensorProto::INT64,
+            dims: out_dims,
+            int64_data: result,
+            ..Default::default()
+        };
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+    let vals = tensor_to_f32(data);
+    if vals.is_empty() {
+        return None;
+    }
+    let mut result = Vec::with_capacity(total);
+    for o in 0..total {
+        result.push(*vals.get(src_index(o as i64) as usize)?);
+    }
+    let t = make_f32_tensor(out_name, &out_dims, &result, data.data_type);
+    Some(vec![(out_name.to_string(), t)])
+}
+
+fn eval_scatter_nd(
+    inputs: &[&TensorProto],
+    out_name: &str,
+) -> Option<Vec<(String, TensorProto)>> {
+    let data = inputs[0];
+    let indices = inputs[1];
+    let updates = inputs[2];
+    let rank = data.dims.len();
+    if rank == 0 || indices.dims.is_empty() {
+        return None;
+    }
+    let q = *indices.dims.last()? as usize;
+    if q == 0 || q > rank {
+        return None;
+    }
+    let total = broadcast_total(&data.dims)?;
+    let in_strides: Vec<i64> = {
+        let mut s = vec![1i64; rank];
+        for i in (0..rank.saturating_sub(1)).rev() {
+            s[i] = s[i + 1] * data.dims[i + 1];
+        }
+        s
+    };
+    let trail_size: usize = data.dims[q..].iter().map(|&d| d as usize).product();
+    let scatter_count: usize = indices.dims[..indices.dims.len() - 1]
+        .iter()
+        .map(|&d| d as usize)
+        .product();
+    let idx_vals = tensor_to_i64(indices);
+    if idx_vals.len() != scatter_count * q {
+        return None;
+    }
+
+    if data.data_type == TensorProto::INT64 {
+        let mut buf = tensor_to_i64(data);
+        if buf.len() != total {
+            return None;
+        }
+        let upd_vals = tensor_to_i64(updates);
+        if upd_vals.len() != scatter_count * trail_size {
+            return None;
+        }
+        for s in 0..scatter_count {
+            let mut base = 0i64;
+            for d in 0..q {
+                let mut idx = idx_vals[s * q + d];
+                if idx < 0 {
+                    idx += data.dims[d];
+                }
+                if idx < 0 || idx >= data.dims[d] {
+                    return None;
+                }
+                base += idx * in_strides[d];
+            }
+            for k in 0..trail_size {
+                buf[base as usize + k] = upd_vals[s * trail_size + k];
+            }
+        }
+        let t = TensorProto {
+            name: out_name.to_string(),
+            data_type: TensorProto::INT64,
+            dims: data.dims.clone(),
+            int64_data: buf,
+            ..Default::default()
+        };
+        return Some(vec![(out_name.to_string(), t)]);
+    }
+
+    let mut buf = tensor_to_f32(data);
+    if buf.len() != total {
+        return None;
+    }
+    let upd_vals = tensor_to_f32(updates);
+    if upd_vals.len() != scatter_count * trail_size {
+        return None;
+    }
+    for s in 0..scatter_count {
+        let mut base = 0i64;
+        for d in 0..q {
+            let mut idx = idx_vals[s * q + d];
+            if idx < 0 {
+                idx += data.dims[d];
+            }
+            if idx < 0 || idx >= data.dims[d] {
+                return None;
+            }
+            base += idx * in_strides[d];
+        }
+        for k in 0..trail_size {
+            buf[base as usize + k] = upd_vals[s * trail_size + k];
+        }
+    }
+    let t = make_f32_tensor(out_name, &data.dims, &buf, data.data_type);
+    Some(vec![(out_name.to_string(), t)])
+}
+
+fn eval_split(
+    node: &NodeProto,
+    inputs: &[&TensorProto],
+    output_names: &[String],
+) -> Option<Vec<(String, TensorProto)>> {
+    let data = inputs.first()?;
+    let rank = data.dims.len();
+    if rank == 0 {
+        return None;
+    }
+    let raw_axis = node
+        .attribute
+        .iter()
+        .find(|a| a.name == "axis")
+        .map(|a| a.i)
+        .unwrap_or(0);
+    let axis = if raw_axis < 0 { rank as i64 + raw_axis } else { raw_axis } as usize;
+    if axis >= rank {
+        return None;
+    }
+    let split_sizes: Vec<i64> = if inputs.len() >= 2 {
+        tensor_to_i64(inputs[1])
+    } else if let Some(attr) = node.attribute.iter().find(|a| a.name == "split") {
+        attr.ints.clone()
+    } else {
+        let n = output_names.iter().filter(|s| !s.is_empty()).count() as i64;
+        if n == 0 {
+            return None;
+        }
+        let dim = data.dims[axis];
+        if dim % n != 0 {
+            return None;
+        }
+        vec![dim / n; n as usize]
+    };
+    if split_sizes.iter().sum::<i64>() != data.dims[axis] {
+        return None;
+    }
+    let outputs: Vec<&str> = output_names
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(String::as_str)
+        .collect();
+    if outputs.len() != split_sizes.len() {
+        return None;
+    }
+
+    let prefix: usize = data.dims[..axis].iter().map(|&d| d as usize).product();
+    let suffix: usize = data.dims[axis + 1..].iter().map(|&d| d as usize).product();
+    let axis_in: usize = data.dims[axis] as usize;
+
+    let mut result = Vec::with_capacity(outputs.len());
+    let is_int64 = data.data_type == TensorProto::INT64;
+    let mut offset = 0usize;
+    for (i, &sz) in split_sizes.iter().enumerate() {
+        let sz_us = sz as usize;
+        let mut out_dims = data.dims.clone();
+        out_dims[axis] = sz;
+        let total = prefix * sz_us * suffix;
+        if is_int64 {
+            let vals = tensor_to_i64(data);
+            if vals.is_empty() {
+                return None;
+            }
+            let mut chunk = Vec::with_capacity(total);
+            for p in 0..prefix {
+                for ai in 0..sz_us {
+                    let src_axis = offset + ai;
+                    let src_base = (p * axis_in + src_axis) * suffix;
+                    chunk.extend_from_slice(&vals[src_base..src_base + suffix]);
+                }
+            }
+            let t = TensorProto {
+                name: outputs[i].to_string(),
+                data_type: TensorProto::INT64,
+                dims: out_dims,
+                int64_data: chunk,
+                ..Default::default()
+            };
+            result.push((outputs[i].to_string(), t));
+        } else {
+            let vals = tensor_to_f32(data);
+            if vals.is_empty() {
+                return None;
+            }
+            let mut chunk = Vec::with_capacity(total);
+            for p in 0..prefix {
+                for ai in 0..sz_us {
+                    let src_axis = offset + ai;
+                    let src_base = (p * axis_in + src_axis) * suffix;
+                    chunk.extend_from_slice(&vals[src_base..src_base + suffix]);
+                }
+            }
+            let t = make_f32_tensor(outputs[i], &out_dims, &chunk, data.data_type);
+            result.push((outputs[i].to_string(), t));
+        }
+        offset += sz_us;
+    }
+    Some(result)
 }
 
 fn eval_concat(
@@ -1769,8 +2059,9 @@ fn eval_concat(
         return None;
     }
 
-    let is_int64 = inputs[0].data_type == TensorProto::INT64
-        || inputs.iter().all(|t| !tensor_to_i64(t).is_empty() && tensor_to_f32(t).is_empty());
+    // ONNX Concat requires homogeneous input element types, so the first
+    // input's declared type is authoritative.
+    let is_int64 = inputs[0].data_type == TensorProto::INT64;
 
     if is_int64 {
         let mut result: Vec<i64> = vec![0; out_total];

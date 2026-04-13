@@ -134,9 +134,12 @@ pub fn slice_model(
                     .entry(name.clone())
                     .or_insert_with(|| shape.clone());
             }
-            if let Some(detection) =
-                autotiler::detect_dim_split(&graph.node, &slice_shapes, &init_names)
-            {
+            if let Some(detection) = autotiler::detect_dim_split(
+                &graph.node,
+                &slice_shapes,
+                &init_names,
+                autotiler::model_opset(&model),
+            ) {
                 // Build a tentative DimSplitInfo to attempt template creation.
                 // Only record the detection if the template materializes
                 // successfully, so the metadata never carries dim_split
@@ -533,10 +536,26 @@ fn isolate_expensive_ops(
             let Some(onnx_node) = onnx_nodes.get(node.index) else {
                 continue;
             };
-            let in_shapes: Option<Vec<Vec<usize>>> =
-                onnx_node.input.iter().map(&to_usize_shape).collect();
-            let out_shapes: Option<Vec<Vec<usize>>> =
-                onnx_node.output.iter().map(&to_usize_shape).collect();
+            // ONNX node inputs / outputs use "" to denote an
+            // unbound optional slot (e.g. Conv with no bias, GRU
+            // with no initial_h).  Treating those as unresolved
+            // boundary tensors makes every node carrying an empty
+            // slot pessimistically isolate, even when the real
+            // boundary tensors are fully shape-resolved.  Skip the
+            // empty entries so estimate_op_constraints sees only
+            // the real boundary tensors.
+            let in_shapes: Option<Vec<Vec<usize>>> = onnx_node
+                .input
+                .iter()
+                .filter(|name| !name.is_empty())
+                .map(&to_usize_shape)
+                .collect();
+            let out_shapes: Option<Vec<Vec<usize>>> = onnx_node
+                .output
+                .iter()
+                .filter(|name| !name.is_empty())
+                .map(&to_usize_shape)
+                .collect();
             // If any boundary tensor is unresolved we cannot give an
             // honest cost estimate; isolate pessimistically so the
             // downstream compile path sees a single-op slice and can

@@ -21,7 +21,7 @@ fn try_quad(v: &[i64]) -> Option<[i64; 4]> {
     }
 }
 
-fn model_opset(model: &ModelProto) -> i64 {
+pub(crate) fn model_opset(model: &ModelProto) -> i64 {
     model
         .opset_import
         .iter()
@@ -731,6 +731,7 @@ pub fn detect_dim_split(
     nodes: &[NodeProto],
     shapes: &HashMap<String, Vec<i64>>,
     initializer_names: &HashSet<String>,
+    model_opset: i64,
 ) -> Option<DimSplitDetection> {
     let estimated = estimate_slice_constraints(nodes, shapes);
     if estimated <= MAX_ESTIMATED_CONSTRAINTS {
@@ -857,6 +858,16 @@ pub fn detect_dim_split(
         }
     }
 
+    // Slice-boundary inputs are ones not produced by any node inside
+    // this slice; everything else is internal data flow that the
+    // dim-split rewrite cannot honour as a true split axis.
+    let slice_internal_outputs: HashSet<&str> = nodes
+        .iter()
+        .flat_map(|n| n.output.iter())
+        .filter(|s| !s.is_empty())
+        .map(String::as_str)
+        .collect();
+
     for node in nodes {
         if node.op_type == "Softmax" {
             let Some(softmax_in) = node.input.first().and_then(|name| shapes.get(name)) else {
@@ -865,18 +876,26 @@ pub fn detect_dim_split(
             if softmax_in.len() != 4 {
                 continue;
             }
-            let softmax_axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+            // ONNX Softmax default axis: opset >= 13 -> -1
+            // (last axis), opset < 13 -> 1 (channel axis).
+            // unwrap_or(-1) silently mismatches runtime semantics on
+            // opset <13 models that omit the attribute.
+            let default_axis: i64 = if model_opset >= 13 { -1 } else { 1 };
+            let softmax_axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(default_axis);
             let softmax_axis_abs = if softmax_axis < 0 {
                 (softmax_in.len() as i64 + softmax_axis).max(0) as usize
             } else {
                 softmax_axis as usize
             };
-            // Find the attention-block input among the slice inputs: the
-            // first non-init tensor whose rank matches the softmax input
-            // rank (Q/V-like activation).
+            // Find the attention-block input among the slice inputs:
+            // the first slice-boundary tensor (external -- not the
+            // output of any other node in this slice, and not an
+            // initializer) whose rank matches the softmax input rank
+            // (Q/V-like activation).
             let attn_input = nodes.iter().flat_map(|n| n.input.iter()).find(|name| {
                 !name.is_empty()
                     && !initializer_names.contains(name.as_str())
+                    && !slice_internal_outputs.contains(name.as_str())
                     && shapes.get(*name).is_some_and(|s| s.len() == 4 && s[0] > 0)
             });
             let Some(attn_input_name) = attn_input.cloned() else {
@@ -1023,7 +1042,13 @@ pub fn detect_dim_split(
                 }
             }
             "Softmax" | "LogSoftmax" => {
-                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+                // ONNX Softmax / LogSoftmax default axis: opset >=
+                // 13 -> -1 (last axis), opset < 13 -> 1 (channel
+                // axis).  unwrap_or(-1) silently mismatches runtime
+                // semantics on opset < 13 models that omit the
+                // attribute.
+                let default_axis: i64 = if model_opset >= 13 { -1 } else { 1 };
+                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(default_axis);
                 let resolved = if axis < 0 {
                     (rank as i64 + axis).max(0) as usize
                 } else {
@@ -2021,7 +2046,12 @@ fn create_matmul_dim_template(
     Ok(tmpl_path)
 }
 
-fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) -> Result<()> {
+fn check_axis_separable(
+    graph: &GraphProto,
+    split_dim: usize,
+    slice_idx: usize,
+    model_opset: i64,
+) -> Result<()> {
     let resolve_axis = |axis: i64| -> usize {
         let ndim = graph
             .input
@@ -2048,8 +2078,13 @@ fn check_axis_separable(graph: &GraphProto, split_dim: usize, slice_idx: usize) 
                 }
             }
             "Softmax" | "LogSoftmax" => {
-                let resolved =
-                    resolve_axis(onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1));
+                // ONNX Softmax / LogSoftmax default axis: opset >=
+                // 13 -> -1 (last axis), opset < 13 -> 1 (channel
+                // axis).
+                let default_axis: i64 = if model_opset >= 13 { -1 } else { 1 };
+                let resolved = resolve_axis(
+                    onnx_proto::get_attribute_int(node, "axis").unwrap_or(default_axis),
+                );
                 if resolved == split_dim {
                     return Err(crate::error::DsperseError::Slicer(format!(
                         "create_generic_dim_template: slice {slice_idx} {} axis {resolved} \
@@ -2094,7 +2129,7 @@ fn create_generic_dim_template(
         )));
     }
 
-    check_axis_separable(graph, info.split_dim, info.slice_idx)?;
+    check_axis_separable(graph, info.split_dim, info.slice_idx, model_opset(model))?;
 
     // Rewrite the template so the split axis carries elements_per_group
     // instead of the full dim_size.  The runner only ever feeds a single
@@ -2210,9 +2245,34 @@ fn create_generic_dim_template(
         .collect();
     for init in &mut tmpl_graph.initializer {
         if init.data_type == TensorProto::INT64 && shape_input_initializers.contains(&init.name) {
+            // ONNX TensorProto INT64 payloads can live in either
+            // int64_data (typed field) or raw_data (little-endian
+            // i64 byte stream); larger constants tend to use
+            // raw_data.  Patch both representations.
             for v in &mut init.int64_data {
                 if *v == dim_size {
                     *v = epg;
+                }
+            }
+            if !init.raw_data.is_empty() && init.raw_data.len() % 8 == 0 {
+                let mut buf: Vec<i64> = init
+                    .raw_data
+                    .chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect();
+                let mut changed = false;
+                for v in &mut buf {
+                    if *v == dim_size {
+                        *v = epg;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let mut new_raw = Vec::with_capacity(buf.len() * 8);
+                    for v in &buf {
+                        new_raw.extend_from_slice(&v.to_le_bytes());
+                    }
+                    init.raw_data = new_raw;
                 }
             }
         }
@@ -2789,7 +2849,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        let detection = detect_dim_split(&[node], &shapes, &init_names, 17);
         assert!(detection.is_some());
         let d = detection.unwrap();
         assert_eq!(d.split_dim, 0);
@@ -2818,7 +2878,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let detection = detect_dim_split(&[node], &shapes, &init_names);
+        let detection = detect_dim_split(&[node], &shapes, &init_names, 17);
         assert!(detection.is_some());
         let d = detection.unwrap();
         assert_eq!(d.split_dim, 0);
@@ -2849,7 +2909,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
+        let d = detect_dim_split(&[node], &shapes, &init_names, 17).unwrap();
         assert_eq!(d.k_dim, 10);
         assert_eq!(d.n_dim, 300_000);
         let chunk_size = d.k_dim.div_ceil(d.k_chunks);
@@ -2877,7 +2937,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let d = detect_dim_split(&[node], &shapes, &init_names).unwrap();
+        let d = detect_dim_split(&[node], &shapes, &init_names, 17).unwrap();
         assert_eq!(d.dim_size, 1);
         assert_eq!(d.num_groups, 1);
         assert!(d.k_chunks > 1, "expected K-chunking for single row");
@@ -2914,7 +2974,7 @@ mod tests {
         // Tiny per-op cost; slice estimate stays under MAX so detect_dim_split
         // returns None at the outer gate, which is what we want for a
         // single-row single-chunk MatMul.
-        assert!(detect_dim_split(&[node1, node2], &shapes, &init_names).is_none());
+        assert!(detect_dim_split(&[node1, node2], &shapes, &init_names, 17).is_none());
     }
 
     #[test]
@@ -2936,7 +2996,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let got = detect_dim_split(&[node], &shapes, &init_names);
+        let got = detect_dim_split(&[node], &shapes, &init_names, 17);
         assert!(
             got.as_ref()
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
@@ -2972,7 +3032,7 @@ mod tests {
         init_names.insert("weight".to_string());
         init_names.insert("bias".to_string());
 
-        let got = detect_dim_split(&[matmul, add], &shapes, &init_names);
+        let got = detect_dim_split(&[matmul, add], &shapes, &init_names, 17);
         assert!(
             got.as_ref()
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
@@ -3007,7 +3067,7 @@ mod tests {
         init_names.insert("w1".to_string());
         init_names.insert("w2".to_string());
 
-        let d = detect_dim_split(&[m1, m2], &shapes, &init_names).unwrap();
+        let d = detect_dim_split(&[m1, m2], &shapes, &init_names, 17).unwrap();
         assert_eq!(d.weight_name.as_deref(), Some("w2"));
         assert_eq!(d.output_name, "output");
         assert_eq!(d.k_dim, 1536);
@@ -3033,7 +3093,7 @@ mod tests {
         let mut init_names = HashSet::new();
         init_names.insert("weight".to_string());
 
-        let got = detect_dim_split(&[node], &shapes, &init_names);
+        let got = detect_dim_split(&[node], &shapes, &init_names, 17);
         assert!(
             got.as_ref()
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),
@@ -3068,7 +3128,7 @@ mod tests {
 
         // Detector should decline the MatMul branch since the template
         // builder cannot handle biased Gemm, forcing fall-through.
-        let got = detect_dim_split(&[node], &shapes, &init_names);
+        let got = detect_dim_split(&[node], &shapes, &init_names, 17);
         assert!(
             got.as_ref()
                 .is_none_or(|d| !matches!(d.split_kind, DimSplitKind::MatMulOutputDim)),

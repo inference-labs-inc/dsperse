@@ -483,29 +483,60 @@ fn isolate_expensive_ops(
         .as_ref()
         .map(|g| g.node.iter().collect())
         .unwrap_or_default();
-    let to_usize_shape = |name: &String| -> Vec<usize> {
-        traced_shapes
-            .get(name)
-            .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
-            .unwrap_or_default()
+    // Resolve a tensor's traced shape strictly: every dim must be a
+    // concrete positive value.  Coercing dynamic / -1 / 0 dims to 1
+    // would silently drive the cost estimate to ~zero and let the
+    // very nodes this pass exists to isolate sneak through.  Returning
+    // `None` for an unresolved tensor is the signal to pessimistically
+    // isolate the node anyway.
+    let to_usize_shape = |name: &String| -> Option<Vec<usize>> {
+        let shape = traced_shapes.get(name)?;
+        let mut out = Vec::with_capacity(shape.len());
+        for &d in shape {
+            if d <= 0 {
+                return None;
+            }
+            out.push(d as usize);
+        }
+        Some(out)
     };
 
+    // Pure elementwise binary ops (Add / Sub / Mul / Div / Pow) are
+    // never isolated: when they appear as a single-op slice, jstprove
+    // applies its op-level invariants strictly (Div with a dynamic
+    // divisor, Mul/Sub between operands with broadcast-incompatible
+    // initializers, etc.) where the multi-op-slice path would have
+    // hidden the same pattern inside a larger graph that the
+    // dim-split / fusion machinery understands.  These ops are also
+    // cheap to compile in absolute terms, so isolating them buys
+    // little and breaks more.
+    let elementwise_skip: HashSet<&str> = ["Add", "Sub", "Mul", "Div", "Pow"]
+        .into_iter()
+        .collect();
     optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
         for node in sorted_nodes {
+            if elementwise_skip.contains(node.node_type.as_str()) {
+                continue;
+            }
             let Some(onnx_node) = onnx_nodes.get(node.index) else {
                 continue;
             };
-            let in_shapes: Vec<Vec<usize>> =
+            let in_shapes: Option<Vec<Vec<usize>>> =
                 onnx_node.input.iter().map(&to_usize_shape).collect();
-            let out_shapes: Vec<Vec<usize>> =
+            let out_shapes: Option<Vec<Vec<usize>>> =
                 onnx_node.output.iter().map(&to_usize_shape).collect();
-            let cost = estimate_op_constraints(
-                &node.node_type,
-                &in_shapes,
-                &out_shapes,
-                &cfg,
-            );
-            if cost > threshold {
+            // If any boundary tensor is unresolved we cannot give an
+            // honest cost estimate; isolate pessimistically so the
+            // downstream compile path sees a single-op slice and can
+            // either compile it successfully or skip it cleanly,
+            // rather than silently grouping an unbounded op.
+            let isolate = match (in_shapes, out_shapes) {
+                (Some(ins), Some(outs)) => {
+                    estimate_op_constraints(&node.node_type, &ins, &outs, &cfg) > threshold
+                }
+                _ => true,
+            };
+            if isolate {
                 updated.insert(node.index);
                 if node.index < max_idx {
                     updated.insert(node.index + 1);

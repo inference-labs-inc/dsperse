@@ -201,6 +201,35 @@ fn try_match_layernorm(
         }
     }
 
+    // Soundness check: every intermediate tensor we are about to drop
+    // (mean_out, centered, sq_out, var_out, var_eps, std_out, plus the
+    // pre-affine norm_out when scale/bias are present) must have all
+    // its live consumers inside nodes_to_drop.  Otherwise some
+    // downstream node still reads the intermediate and fusing would
+    // disconnect it.
+    let drop_set: HashSet<usize> = nodes_to_drop.iter().copied().collect();
+    let mut intermediates: Vec<&str> = vec![
+        mean_out.as_str(),
+        centered.as_str(),
+        sq_out.as_str(),
+        var_out.as_str(),
+        var_eps.as_str(),
+        std_out.as_str(),
+    ];
+    if scale_init.is_some() {
+        intermediates.push(norm_out.as_str());
+    }
+    for tname in intermediates {
+        if let Some(list) = consumers.get(tname) {
+            for &idx in list {
+                if drop.contains(&idx) || drop_set.contains(&idx) {
+                    continue;
+                }
+                return None;
+            }
+        }
+    }
+
     let x_shape = resolve_shape(&x_name, traced_shapes, initializers, nodes, producers)?;
     let rank = x_shape.len();
     if rank == 0 {
@@ -298,33 +327,32 @@ fn find_square_consumer(
     initializers: &HashMap<String, TensorProto>,
     drop: &HashSet<usize>,
 ) -> Option<usize> {
+    // The centered tensor in the inline-LN pattern has TWO legitimate
+    // consumers: Pow / Mul (for the variance branch) AND Div (for the
+    // normalization branch).  Both belong to the fusion -- don't reject
+    // them as orphan consumers.  Final orphan-leak check happens after
+    // the whole pattern matches in try_match_layernorm.
     let list = consumers.get(tensor)?;
-    let live: Vec<usize> = list.iter().copied().filter(|i| !drop.contains(i)).collect();
-    if live.len() != 1 {
-        return None;
-    }
-    let idx = live[0];
-    let n = &nodes[idx];
-    match n.op_type.as_str() {
-        "Pow" => {
-            if n.input.len() >= 2
-                && n.input.first().map(String::as_str) == Some(tensor)
-                && pow_exponent_is_two(n.input.get(1)?, initializers)
-            {
-                Some(idx)
-            } else {
-                None
+    for &idx in list.iter().filter(|i| !drop.contains(i)) {
+        let n = &nodes[idx];
+        match n.op_type.as_str() {
+            "Pow" => {
+                if n.input.len() >= 2
+                    && n.input.first().map(String::as_str) == Some(tensor)
+                    && pow_exponent_is_two(n.input.get(1)?, initializers)
+                {
+                    return Some(idx);
+                }
             }
-        }
-        "Mul" => {
-            if n.input.len() == 2 && n.input.iter().all(|i| i == tensor) {
-                Some(idx)
-            } else {
-                None
+            "Mul" => {
+                if n.input.len() == 2 && n.input.iter().all(|i| i == tensor) {
+                    return Some(idx);
+                }
             }
+            _ => {}
         }
-        _ => None,
     }
+    None
 }
 
 fn pow_exponent_is_two(name: &str, initializers: &HashMap<String, TensorProto>) -> bool {

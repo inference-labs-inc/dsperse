@@ -670,6 +670,20 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
 
 pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 750_000;
 
+/// Return the smallest divisor of `dim` that is >= `target`.  Returns
+/// `None` if no such divisor exists in `(0, dim]`, which is the
+/// signal to refuse the dim-split: pad-then-trim on the last group
+/// would inject zeros into reductions on non-split axes (Softmax,
+/// LayerNorm, ReduceMean, etc.) and contaminate the unpadded
+/// region's outputs.
+fn smallest_divisor_at_least(dim: usize, target: usize) -> Option<usize> {
+    if dim == 0 || target == 0 {
+        return None;
+    }
+    let target = target.min(dim);
+    (target..=dim).find(|&g| dim.is_multiple_of(g))
+}
+
 #[derive(Debug, Clone)]
 pub struct DimSplitDetection {
     pub split_kind: DimSplitKind,
@@ -896,8 +910,11 @@ pub fn detect_dim_split(
             let Some((split_dim, dim_size, split_kind)) = best else {
                 continue;
             };
-            let num_groups = target_groups.min(dim_size);
-            let elements_per_group = dim_size.div_ceil(num_groups);
+            let num_groups = match smallest_divisor_at_least(dim_size, target_groups) {
+                Some(g) => g,
+                None => continue,
+            };
+            let elements_per_group = dim_size / num_groups;
             let output_name = nodes
                 .last()
                 .and_then(|n| n.output.first())
@@ -1040,8 +1057,8 @@ pub fn detect_dim_split(
     }
     let (split_dim, dim_size) = best?;
 
-    let num_groups = target_groups.min(dim_size);
-    let elements_per_group = dim_size.div_ceil(num_groups);
+    let num_groups = smallest_divisor_at_least(dim_size, target_groups)?;
+    let elements_per_group = dim_size / num_groups;
     let input_name = first_non_init_input.cloned()?;
     let output_name = nodes
         .last()
@@ -2211,19 +2228,19 @@ fn create_generic_dim_template(
     // 4. Re-run shape inference on the rewritten template and inject
     //    the derived shapes back as value_info.  This replaces the old
     //    ad-hoc per-op rewrites (which had to special-case every shape
-    //    op).
-    let trace_result = match super::trace::fold_and_trace_via_tract(&tmpl_path, &tmpl_model) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            tracing::warn!(
-                slice = info.slice_idx,
-                error = %e,
-                "dim-split template re-trace failed; downstream compile may report shape errors"
-            );
-            None
-        }
-    };
-    if let Some(trace) = trace_result {
+    //    op).  If re-trace fails the template is uncompilable -- the
+    //    circuit compiler downstream will see no value_info for the
+    //    intermediate tensors and produce hard-to-diagnose shape
+    //    errors at compile time.  Refuse to emit the template instead.
+    let trace = super::trace::fold_and_trace_via_tract(&tmpl_path, &tmpl_model).map_err(
+        |e| {
+            crate::error::DsperseError::Slicer(format!(
+                "create_generic_dim_template: slice {} re-trace failed (template input shape {:?}, split_dim {}): {e}",
+                info.slice_idx, info.input_name, split_dim
+            ))
+        },
+    )?;
+    {
         let mut model_after = onnx_proto::load_model(&tmpl_path)?;
         if let Some(graph_after) = model_after.graph.as_mut() {
             let existing: HashSet<String> = graph_after

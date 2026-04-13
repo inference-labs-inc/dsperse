@@ -336,11 +336,12 @@ fn execute_generic_dim_split(
         let dim_end = ((g + 1) * epg).min(ds.dim_size);
         let actual_size = dim_end - dim_start;
 
-        // The dim-split template now has split_dim sized to epg, not
-        // dim_size, so feed each group's slice straight in.  When the
-        // last group is smaller than epg, pad with zeros to keep the
-        // shape stable, then trim the corresponding region off the
-        // output below.
+        // dim_size is required to be an exact multiple of epg by the
+        // detector (`smallest_divisor_at_least`), so every group is
+        // exactly `epg` wide and we can feed the sliced view straight
+        // in -- no zero-padding, no output trimming, no risk of
+        // contaminating reductions on non-split axes.
+        debug_assert_eq!(actual_size, epg, "dim-split detector must enforce dim_size % epg == 0");
         let mut group_cache = TensorStore::new();
         for vi_name in &input_names {
             let arr = tensor_cache.try_get(vi_name).ok_or_else(|| {
@@ -353,20 +354,7 @@ fn execute_generic_dim_split(
                 let sliced = arr
                     .slice_axis(Axis(split_dim), ndarray::Slice::from(dim_start..dim_end))
                     .to_owned();
-                if actual_size == epg {
-                    group_cache.put(vi_name.clone(), sliced);
-                } else {
-                    let mut padded_shape = sliced.shape().to_vec();
-                    padded_shape[split_dim] = epg;
-                    let mut padded = ndarray::ArrayD::zeros(padded_shape);
-                    for (mut dst, src) in padded
-                        .axis_iter_mut(Axis(split_dim))
-                        .zip(sliced.axis_iter(Axis(split_dim)))
-                    {
-                        dst.assign(&src);
-                    }
-                    group_cache.put(vi_name.clone(), padded);
-                }
+                group_cache.put(vi_name.clone(), sliced);
             } else {
                 group_cache.put(vi_name.clone(), arr.clone());
             }
@@ -383,15 +371,8 @@ fn execute_generic_dim_split(
         let group_output = ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&shape), data)
             .map_err(|e| DsperseError::Pipeline(format!("{slice_id}: group {g} reshape: {e}")))?;
 
-        // Trim the padded region from the output along concat_axis when
-        // the last group is shorter than epg.
-        let trimmed = if actual_size < epg && concat_axis < group_output.ndim() {
-            group_output
-                .slice_axis(Axis(concat_axis), ndarray::Slice::from(0..actual_size))
-                .to_owned()
-        } else {
-            group_output
-        };
+        // Output is naturally `epg` wide along concat_axis.
+        let trimmed = group_output;
 
         group_outputs.push(trimmed);
     }

@@ -79,7 +79,7 @@ pub fn slice_model(
     });
     std::fs::create_dir_all(&output_dir).map_err(|e| DsperseError::io(e, &output_dir))?;
 
-    let slice_points = determine_slice_points(&analysis, tile_size, jstprove_ops);
+    let slice_points = determine_slice_points(&analysis, tile_size, jstprove_ops, &model, &traced_shapes);
     tracing::info!(points = ?slice_points, "determined slice points");
     debug_assert!(
         !slice_points.is_empty(),
@@ -408,6 +408,8 @@ fn determine_slice_points(
     analysis: &AnalysisResult,
     tile_size: Option<usize>,
     jstprove_ops: &[&str],
+    model: &onnx_proto::ModelProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
 ) -> Vec<usize> {
     let mut points: HashSet<usize> = HashSet::new();
 
@@ -421,6 +423,7 @@ fn determine_slice_points(
     sorted_points.sort();
 
     sorted_points = isolate_conv(&sorted_points, analysis);
+    sorted_points = isolate_expensive_ops(&sorted_points, analysis, model, traced_shapes);
     sorted_points = optimize_jstprove_slices(&sorted_points, analysis, jstprove_ops);
 
     if tile_size.is_some() {
@@ -453,6 +456,63 @@ fn optimize_points(
 
 fn is_spatial_primary(op: &str) -> bool {
     op == "Conv" || op == "MaxPool"
+}
+
+/// Insert slice points before AND after every ONNX node whose
+/// estimated constraint count exceeds
+/// [`autotiler::MAX_ESTIMATED_CONSTRAINTS`].  Each "expensive" op
+/// (large MatMul, LayerNormalization, Softmax, etc.) becomes a
+/// single-node slice so the dim-split detector sees an unambiguous
+/// shape and the runner doesn't need to trace which axis lives where
+/// through Transpose / Reshape neighbours.  Small ops keep their
+/// existing grouping for circuit catalog reuse.
+fn isolate_expensive_ops(
+    points: &[usize],
+    analysis: &AnalysisResult,
+    model: &onnx_proto::ModelProto,
+    traced_shapes: &HashMap<String, Vec<i64>>,
+) -> Vec<usize> {
+    use jstprove_circuits::api::{EstimationConfig, estimate_op_constraints};
+    let cfg = EstimationConfig::bn254_defaults();
+    let threshold = autotiler::MAX_ESTIMATED_CONSTRAINTS;
+
+    // Build a parallel index: ONNX-node-index -> &NodeProto so we can
+    // resolve input/output tensor names per slicer-node.
+    let onnx_nodes: Vec<&onnx_proto::NodeProto> = model
+        .graph
+        .as_ref()
+        .map(|g| g.node.iter().collect())
+        .unwrap_or_default();
+    let to_usize_shape = |name: &String| -> Vec<usize> {
+        traced_shapes
+            .get(name)
+            .map(|s| s.iter().map(|&d| d.max(1) as usize).collect())
+            .unwrap_or_default()
+    };
+
+    optimize_points(points, analysis, |updated, sorted_nodes, max_idx| {
+        for node in sorted_nodes {
+            let Some(onnx_node) = onnx_nodes.get(node.index) else {
+                continue;
+            };
+            let in_shapes: Vec<Vec<usize>> =
+                onnx_node.input.iter().map(&to_usize_shape).collect();
+            let out_shapes: Vec<Vec<usize>> =
+                onnx_node.output.iter().map(&to_usize_shape).collect();
+            let cost = estimate_op_constraints(
+                &node.node_type,
+                &in_shapes,
+                &out_shapes,
+                &cfg,
+            );
+            if cost > threshold {
+                updated.insert(node.index);
+                if node.index < max_idx {
+                    updated.insert(node.index + 1);
+                }
+            }
+        }
+    })
 }
 
 fn isolate_conv(points: &[usize], analysis: &AnalysisResult) -> Vec<usize> {
@@ -844,7 +904,9 @@ mod tests {
             ("conv1", 2, "Conv", true),
             ("relu1", 3, "Relu", false),
         ]);
-        let points = determine_slice_points(&analysis, None, TEST_OPS);
+        let model = onnx_proto::ModelProto::default();
+        let traced = HashMap::new();
+        let points = determine_slice_points(&analysis, None, TEST_OPS, &model, &traced);
         assert!(points.contains(&0));
         assert!(points.contains(&2));
         let max = *points.last().unwrap();
@@ -859,7 +921,9 @@ mod tests {
             ("pool", 2, "MaxPool", false),
             ("conv1", 3, "Conv", true),
         ]);
-        let points = determine_slice_points(&analysis, Some(1024), TEST_OPS);
+        let model = onnx_proto::ModelProto::default();
+        let traced = HashMap::new();
+        let points = determine_slice_points(&analysis, Some(1024), TEST_OPS, &model, &traced);
         assert!(points.contains(&0));
         assert!(points.len() >= 3);
     }

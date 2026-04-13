@@ -978,7 +978,20 @@ pub fn detect_dim_split(
     // normalization-style op in the slice.  Splitting a later axis produces
     // more groups and a smaller per-group cost without violating op semantics.
     let rank = first_input_shape.len();
-    let mut max_allowed = rank;
+    // If the slice contains any axis-reordering op (Transpose) AND any
+    // axis-sensitive normalization op (LayerNormalization / Softmax),
+    // we can no longer cheaply trace which axis the normalization
+    // really runs on after the reorder.  Restrict the split to axis 0
+    // (always the batch dim, always semantically sound) so we never
+    // emit a split that lands on the post-Transpose normalization axis.
+    let has_transpose = nodes.iter().any(|n| n.op_type == "Transpose");
+    let has_norm = nodes.iter().any(|n| {
+        matches!(
+            n.op_type.as_str(),
+            "LayerNormalization" | "Softmax" | "LogSoftmax"
+        )
+    });
+    let mut max_allowed = if has_transpose && has_norm { 1 } else { rank };
     for node in nodes {
         match node.op_type.as_str() {
             "LayerNormalization" => {
@@ -2063,75 +2076,205 @@ fn create_generic_dim_template(
 
     check_axis_separable(graph, info.split_dim, info.slice_idx)?;
 
-    // The template is the original slice model with no shape rewriting.
-    // The runner pads each group's input to dim_size before inference and
-    // trims the output afterward. Keeping the original shapes means the
-    // compiled circuit signature is identical regardless of group size,
-    // maximizing cross-slice and cross-model circuit catalog reuse.
+    // Rewrite the template so the split axis carries elements_per_group
+    // instead of the full dim_size.  The runner only ever feeds a single
+    // group's worth of activations to the compiled circuit, so the
+    // *compile* cost should match the per-group cost rather than the
+    // whole-slice cost.  Catalog reuse is preserved at per-group
+    // granularity: any two slices that share (split_dim, epg, surrounding
+    // op shapes) hash identically.
+    //
+    // The strategy is: rewrite only the boundary shapes (graph inputs +
+    // shape-input initializers consumed by Reshape / Expand / Tile /
+    // ConstantOfShape) and a fresh shape inference pass derives every
+    // intermediate value_info from those.  Per-feature initializers
+    // (gamma, beta, weights) are never touched, and there are no ad-hoc
+    // cases for individual op patterns -- the rule is "rewrite the
+    // boundary, let inference do the rest".
     let mut tmpl_model = model.clone();
     let tmpl_graph = tmpl_model.graph.as_mut().ok_or_else(|| {
         crate::error::DsperseError::Slicer(
             "create_generic_dim_template: cloned model has no graph".into(),
         )
     })?;
+    let dim_size = info.dim_size as i64;
+    let epg = info.elements_per_group as i64;
+    let split_dim = info.split_dim;
 
-    // Populate value_info for intermediate node outputs that lack shape
-    // declarations. jstprove needs these to resolve weight shapes during
-    // WAI circuit compilation (e.g. Gemm expected_weight_shape derives N
-    // from the output shape). Without traced_shapes the circuit compiler
-    // cannot infer these and falls back to incorrect dimensions.
-    if let Some(shapes) = traced_shapes {
-        let existing: HashSet<String> = tmpl_graph
+    // 1. Decide which graph inputs must be rewritten at split_dim.
+    //
+    //    The runner always slices every cached tensor whose shape has
+    //    dim_size at split_dim, so the *compile-time* template needs
+    //    every such input declared with epg, otherwise jstprove's
+    //    type checker rejects the op (e.g. Mul broadcast 150 vs 300,
+    //    or MatMul A.K vs B.K mismatch).  But for ops where two
+    //    inputs reference dim_size at the *same* split_dim with
+    //    different semantic meanings (the canonical case is the
+    //    second attention MatMul: attn[B,H,M,N] @ V[B,H,N,D] with
+    //    M == N at split_dim=2) blanket rewriting both inputs
+    //    produces a real mismatch.
+    //
+    //    Heuristic:
+    //      * Elementwise / broadcast ops (Add, Sub, Mul, Div, Pow, Min,
+    //        Max, Where, Equal, Greater, Less): rewrite every input
+    //        whose shape has dim_size at split_dim.  All inputs share
+    //        a logical broadcast axis, so all must shrink together.
+    //      * MatMul / Gemm: rewrite only `info.input_name`.  The other
+    //        operand's split_dim is a contraction axis; touching it
+    //        produces an inner-dim mismatch.
+    //      * Everything else (the single-op slices we get after
+    //        isolate_expensive_ops): rewrite only `info.input_name`,
+    //        which is the safe default for ops with one primary
+    //        activation and a handful of scalar / per-feature
+    //        initializer inputs.
+    let elementwise_ops: HashSet<&str> = [
+        "Add", "Sub", "Mul", "Div", "Pow", "Min", "Max", "Where", "Equal", "Greater", "Less",
+    ]
+    .into_iter()
+    .collect();
+    let rewrite_all_matching = tmpl_graph
+        .node
+        .iter()
+        .all(|n| elementwise_ops.contains(n.op_type.as_str()));
+
+    let rewrite_input_at_split_dim = |vi: &mut super::onnx_proto::ValueInfoProto| {
+        if let Some(t) = vi.r#type.as_mut()
+            && let Some(super::onnx_proto::onnx::type_proto::Value::TensorType(tt)) =
+                t.value.as_mut()
+            && let Some(shape) = tt.shape.as_mut()
+            && let Some(d) = shape.dim.get_mut(split_dim)
+            && let Some(super::onnx_proto::onnx::tensor_shape_proto::dimension::Value::DimValue(v)) =
+                d.value.as_mut()
+            && *v == dim_size
+        {
+            *v = epg;
+        }
+    };
+
+    if rewrite_all_matching {
+        for vi in tmpl_graph
             .input
-            .iter()
-            .chain(tmpl_graph.output.iter())
-            .chain(tmpl_graph.value_info.iter())
-            .map(|vi| vi.name.clone())
-            .collect();
-        let init_names: HashSet<&str> = tmpl_graph
-            .initializer
-            .iter()
-            .map(|i| i.name.as_str())
-            .collect();
-        let node_output_types = super::materializer::build_node_output_types(tmpl_graph);
-        for node in &tmpl_graph.node {
-            for out_name in &node.output {
-                if out_name.is_empty()
-                    || existing.contains(out_name)
-                    || init_names.contains(out_name.as_str())
-                {
-                    continue;
-                }
-                if let Some(shape) = shapes.get(out_name) {
-                    let elem_type = node_output_types
-                        .get(out_name)
-                        .copied()
-                        .unwrap_or(TensorProto::FLOAT);
-                    tmpl_graph
-                        .value_info
-                        .push(onnx_proto::make_tensor_value_info(
-                            out_name, elem_type, shape,
-                        ));
+            .iter_mut()
+            .chain(tmpl_graph.output.iter_mut())
+        {
+            rewrite_input_at_split_dim(vi);
+        }
+    } else {
+        for vi in tmpl_graph
+            .input
+            .iter_mut()
+            .filter(|vi| vi.name == info.input_name)
+            .chain(
+                tmpl_graph
+                    .output
+                    .iter_mut()
+                    .filter(|vi| vi.name == info.output_name),
+            )
+        {
+            rewrite_input_at_split_dim(vi);
+        }
+    }
+
+    // 2. Rewrite shape-input initializers (Reshape / Expand / Tile /
+    //    ConstantOfShape).  These are explicit shape descriptors; if
+    //    the input shape changes their dim_size entry must change too.
+    let shape_input_initializers: HashSet<String> = tmpl_graph
+        .node
+        .iter()
+        .filter_map(|n| match n.op_type.as_str() {
+            "Reshape" | "Expand" | "Tile" => n.input.get(1).cloned(),
+            "ConstantOfShape" => n.input.first().cloned(),
+            _ => None,
+        })
+        .filter(|name| !name.is_empty())
+        .collect();
+    for init in &mut tmpl_graph.initializer {
+        if init.data_type == TensorProto::INT64
+            && shape_input_initializers.contains(&init.name)
+        {
+            for v in &mut init.int64_data {
+                if *v == dim_size {
+                    *v = epg;
                 }
             }
         }
     }
 
-    // Promote output_name to graph output if it only exists in value_info.
-    // Runs after the traced_shapes synthesis above so that newly created
-    // value_info entries are eligible for promotion.
-    if !tmpl_graph.output.iter().any(|o| o.name == info.output_name)
-        && let Some(vi) = tmpl_graph
-            .value_info
-            .iter()
-            .find(|v| v.name == info.output_name)
-            .cloned()
-    {
-        tmpl_graph.output.push(vi);
-    }
+    // 3. Drop every intermediate value_info; it will be re-derived.
+    tmpl_graph.value_info.clear();
+
+    let _ = traced_shapes; // intentionally unused: we re-trace after rewriting.
 
     let tmpl_path = output_dir.join("dim_template.onnx");
     onnx_proto::save_model(&tmpl_model, &tmpl_path)?;
+
+    // 4. Re-run shape inference on the rewritten template and inject
+    //    the derived shapes back as value_info.  This replaces the old
+    //    ad-hoc per-op rewrites (which had to special-case every shape
+    //    op).
+    let trace_result = match super::trace::fold_and_trace_via_tract(&tmpl_path, &tmpl_model) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            tracing::warn!(
+                slice = info.slice_idx,
+                error = %e,
+                "dim-split template re-trace failed; downstream compile may report shape errors"
+            );
+            None
+        }
+    };
+    if let Some(trace) = trace_result {
+        let mut model_after = onnx_proto::load_model(&tmpl_path)?;
+        if let Some(graph_after) = model_after.graph.as_mut() {
+            let existing: HashSet<String> = graph_after
+                .input
+                .iter()
+                .chain(graph_after.output.iter())
+                .chain(graph_after.value_info.iter())
+                .map(|vi| vi.name.clone())
+                .collect();
+            let init_names: HashSet<&str> = graph_after
+                .initializer
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect();
+            for node in &graph_after.node {
+                for out_name in &node.output {
+                    if out_name.is_empty()
+                        || existing.contains(out_name)
+                        || init_names.contains(out_name.as_str())
+                    {
+                        continue;
+                    }
+                    if let Some(shape) = trace.shapes.get(out_name) {
+                        let elem_type = trace
+                            .types
+                            .get(out_name)
+                            .copied()
+                            .unwrap_or(TensorProto::FLOAT);
+                        graph_after
+                            .value_info
+                            .push(onnx_proto::make_tensor_value_info(
+                                out_name, elem_type, shape,
+                            ));
+                    }
+                }
+            }
+            // Promote output_name to graph output if it now exists in
+            // value_info but not in graph.output.
+            if !graph_after.output.iter().any(|o| o.name == info.output_name)
+                && let Some(vi) = graph_after
+                    .value_info
+                    .iter()
+                    .find(|v| v.name == info.output_name)
+                    .cloned()
+            {
+                graph_after.output.push(vi);
+            }
+        }
+        onnx_proto::save_model(&model_after, &tmpl_path)?;
+    }
+
     Ok(tmpl_path)
 }
 

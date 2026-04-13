@@ -668,7 +668,7 @@ fn detect_elementwise_fixed_segments(graph: &GraphProto) -> Option<TilingDetecti
     })
 }
 
-pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 2_000_000;
+pub const MAX_ESTIMATED_CONSTRAINTS: u64 = 750_000;
 
 #[derive(Debug, Clone)]
 pub struct DimSplitDetection {
@@ -845,36 +845,85 @@ pub fn detect_dim_split(
 
     for node in nodes {
         if node.op_type == "Softmax" {
-            let Some(input_shape) = node.input.first().and_then(|name| shapes.get(name)) else {
+            let Some(softmax_in) = node.input.first().and_then(|name| shapes.get(name)) else {
                 continue;
             };
-            if input_shape.len() == 4 && input_shape[1] > 1 {
-                let head_dim = input_shape[1] as usize;
-                let num_groups = target_groups.min(head_dim);
-                let elements_per_group = head_dim.div_ceil(num_groups);
-                let Some(input_name) = node.input.first().filter(|s| !s.is_empty()).cloned() else {
-                    continue;
-                };
-                let Some(output_name) = node.output.first().filter(|s| !s.is_empty()).cloned()
-                else {
-                    continue;
-                };
-                return Some(DimSplitDetection {
-                    split_kind: DimSplitKind::HeadDim,
-                    split_dim: 1,
-                    dim_size: head_dim,
-                    num_groups,
-                    elements_per_group,
-                    input_name,
-                    output_name,
-                    concat_axis: 1,
-                    estimated_constraints: estimated,
-                    weight_name: None,
-                    k_dim: 0,
-                    n_dim: 0,
-                    k_chunks: 1,
-                });
+            if softmax_in.len() != 4 {
+                continue;
             }
+            let softmax_axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+            let softmax_axis_abs = if softmax_axis < 0 {
+                (softmax_in.len() as i64 + softmax_axis).max(0) as usize
+            } else {
+                softmax_axis as usize
+            };
+            // Find the attention-block input among the slice inputs: the
+            // first non-init tensor whose rank matches the softmax input
+            // rank (Q/V-like activation).
+            let attn_input = nodes.iter().flat_map(|n| n.input.iter()).find(|name| {
+                !name.is_empty()
+                    && !initializer_names.contains(name.as_str())
+                    && shapes
+                        .get(*name)
+                        .is_some_and(|s| s.len() == 4 && s[0] > 0)
+            });
+            let Some(attn_input_name) = attn_input.cloned() else {
+                continue;
+            };
+            let Some(attn_shape) = shapes.get(&attn_input_name) else {
+                continue;
+            };
+            // Choose the dim (among 0..rank) that is not the softmax-reduction
+            // axis and yields the highest axis size; that axis gives the
+            // most groups and the lowest per-group cost.
+            let mut best: Option<(usize, usize, DimSplitKind)> = None;
+            for d in 0..attn_shape.len() {
+                if d == softmax_axis_abs {
+                    continue;
+                }
+                let dim_size = attn_shape[d].max(1) as usize;
+                if dim_size < 2 {
+                    continue;
+                }
+                let kind = if d == 1 {
+                    DimSplitKind::HeadDim
+                } else {
+                    DimSplitKind::BatchDim
+                };
+                let better = best.as_ref().is_none_or(|(_, sz, _)| dim_size > *sz);
+                if better {
+                    best = Some((d, dim_size, kind));
+                }
+            }
+            let Some((split_dim, dim_size, split_kind)) = best else {
+                continue;
+            };
+            let num_groups = target_groups.min(dim_size);
+            let elements_per_group = dim_size.div_ceil(num_groups);
+            let output_name = nodes
+                .last()
+                .and_then(|n| n.output.first())
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .unwrap_or_else(|| node.output.first().cloned().unwrap_or_default());
+            if output_name.is_empty() {
+                continue;
+            }
+            return Some(DimSplitDetection {
+                split_kind,
+                split_dim,
+                dim_size,
+                num_groups,
+                elements_per_group,
+                input_name: attn_input_name,
+                output_name,
+                concat_axis: split_dim,
+                estimated_constraints: estimated,
+                weight_name: None,
+                k_dim: 0,
+                n_dim: 0,
+                k_chunks: 1,
+            });
         }
     }
 
@@ -884,34 +933,110 @@ pub fn detect_dim_split(
             .find(|name| !name.is_empty() && !initializer_names.contains(name.as_str()))
     });
     let first_input_shape = first_non_init_input.and_then(|name| shapes.get(name))?;
-    if !first_input_shape.is_empty() && first_input_shape[0] > 1 {
-        let batch_dim = first_input_shape[0] as usize;
-        let num_groups = target_groups.min(batch_dim);
-        let elements_per_group = batch_dim.div_ceil(num_groups);
-        let input_name = first_non_init_input.cloned()?;
-        let output_name = nodes
-            .last()
-            .and_then(|n| n.output.first())
-            .filter(|s| !s.is_empty())
-            .cloned()?;
-        return Some(DimSplitDetection {
-            split_kind: DimSplitKind::BatchDim,
-            split_dim: 0,
-            dim_size: batch_dim,
-            num_groups,
-            elements_per_group,
-            input_name,
-            output_name,
-            concat_axis: 0,
-            estimated_constraints: estimated,
-            weight_name: None,
-            k_dim: 0,
-            n_dim: 0,
-            k_chunks: 1,
-        });
+    if first_input_shape.is_empty() {
+        return None;
     }
 
-    None
+    // Conv / ConvTranspose / Pooling / MatMul / Gemm are not separable
+    // along arbitrary input axes: splitting the input channel or the
+    // spatial dimensions of the input tensor produces semantically
+    // incorrect per-group outputs. The dedicated detection paths
+    // (conv spatial tiling, channel splitting, dim-split-k) handle
+    // these ops correctly; this generic fallback refuses to emit a
+    // split for them.
+    for node in nodes {
+        if matches!(
+            node.op_type.as_str(),
+            "Conv"
+                | "ConvTranspose"
+                | "MatMul"
+                | "Gemm"
+                | "AveragePool"
+                | "MaxPool"
+                | "GlobalAveragePool"
+                | "GlobalMaxPool"
+                | "LRN"
+        ) {
+            return None;
+        }
+    }
+
+    // Find the deepest split_dim that is still compatible with every
+    // normalization-style op in the slice.  Splitting a later axis produces
+    // more groups and a smaller per-group cost without violating op semantics.
+    let rank = first_input_shape.len();
+    let mut max_allowed = rank;
+    for node in nodes {
+        match node.op_type.as_str() {
+            "LayerNormalization" => {
+                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+                let resolved = if axis < 0 {
+                    (rank as i64 + axis).max(0) as usize
+                } else {
+                    (axis as usize).min(rank)
+                };
+                if resolved < max_allowed {
+                    max_allowed = resolved;
+                }
+            }
+            "Softmax" | "LogSoftmax" => {
+                let axis = onnx_proto::get_attribute_int(node, "axis").unwrap_or(-1);
+                let resolved = if axis < 0 {
+                    (rank as i64 + axis).max(0) as usize
+                } else {
+                    (axis as usize).min(rank.saturating_sub(1))
+                };
+                if resolved < max_allowed {
+                    max_allowed = resolved;
+                }
+            }
+            "BatchNormalization" => {
+                if max_allowed > 0 {
+                    max_allowed = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+    if max_allowed == 0 {
+        return None;
+    }
+
+    let mut best: Option<(usize, usize)> = None;
+    for d in 0..max_allowed {
+        let dim = first_input_shape[d].max(1) as usize;
+        if dim <= 1 {
+            continue;
+        }
+        if best.map(|(_, size)| dim > size).unwrap_or(true) {
+            best = Some((d, dim));
+        }
+    }
+    let (split_dim, dim_size) = best?;
+
+    let num_groups = target_groups.min(dim_size);
+    let elements_per_group = dim_size.div_ceil(num_groups);
+    let input_name = first_non_init_input.cloned()?;
+    let output_name = nodes
+        .last()
+        .and_then(|n| n.output.first())
+        .filter(|s| !s.is_empty())
+        .cloned()?;
+    Some(DimSplitDetection {
+        split_kind: DimSplitKind::BatchDim,
+        split_dim,
+        dim_size,
+        num_groups,
+        elements_per_group,
+        input_name,
+        output_name,
+        concat_axis: split_dim,
+        estimated_constraints: estimated,
+        weight_name: None,
+        k_dim: 0,
+        n_dim: 0,
+        k_chunks: 1,
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -637,12 +637,18 @@ impl std::fmt::Display for AnalyzeFormat {
 fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
     let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
     let ops = resolve_circuit_ops(&args.proof_system, args.circuit_ops.as_deref())?;
+    // Validate proof_config through the same parser cmd_compile and
+    // cmd_full_run use so a typo in --proof-config fails fast with a
+    // "unknown proof config 'foo'" message rather than silently
+    // producing signatures under an unintended curve.
+    let proof_config = parse_proof_config(&args.proof_config)?;
+    let proof_config_name = proof_config.to_string();
 
     let reports = pipeline::analyze_slices(
         &slices_dir,
         &ops.as_refs(),
         args.skip_compile_over_size,
-        Some(args.proof_config.as_str()),
+        Some(proof_config_name.as_str()),
     )?;
 
     if matches!(args.format, AnalyzeFormat::Json) {

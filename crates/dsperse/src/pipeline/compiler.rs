@@ -40,12 +40,19 @@ pub struct CompileReport {
 }
 
 impl CompileReport {
+    /// Return Ok(self) when every slice compiled cleanly.  Otherwise
+    /// return a generic Pipeline error; callers layer their own
+    /// actionable guidance on top (the CLI mentions its
+    /// --allow-onnx-fallback flag, the Python binding mentions the
+    /// `allow_onnx_fallback` keyword).  Keeping the library message
+    /// surface-agnostic avoids leaking CLI conventions into the
+    /// Python / Rust API error stream.
     pub fn ok_if_no_failures(self) -> Result<Self> {
         if self.failed.is_empty() {
             Ok(self)
         } else {
             Err(DsperseError::Pipeline(format!(
-                "compile_slices: {} slice(s) failed to compile; set --allow-onnx-fallback to proceed with partial coverage",
+                "compile_slices: {} slice(s) failed to compile; the caller must opt in to partial coverage before proceeding",
                 self.failed.len()
             )))
         }
@@ -236,7 +243,14 @@ pub fn compile_slices(
                     )
                 }
                 Err(e) => {
-                    tracing::error!(slice = slice.index, error = %e, "compilation failed");
+                    // Per-slice compile failure is recoverable: the
+                    // summary log at the end of compile_slices
+                    // already surfaces the aggregate via warn!, and
+                    // the caller decides whether to continue with
+                    // partial coverage.  Emitting error! here would
+                    // spam CI for an outcome that ok_if_no_failures
+                    // handles structurally.
+                    tracing::warn!(slice = slice.index, error = %e, "compilation failed");
                     errors.lock().unwrap().push((slice.index, e));
                 }
             }
@@ -441,6 +455,29 @@ pub struct SliceAnalysisReport {
     pub circuit_signature: Option<String>,
 }
 
+/// Derive the three metrics SliceAnalysisReport carries from an
+/// ONNX file: op-summary string, constraint estimate, and curve-
+/// stamped circuit signature.  Used from every analyze_slices
+/// branch that can point at a concrete representative ONNX (the
+/// slice's own .onnx for standard slices, the first channel
+/// group's .onnx for channel-split, the dim-split template
+/// ONNX for dim-split).  Failure on any single metric is
+/// non-fatal: we emit empty / None for the affected field and
+/// continue so analyze never aborts on a partially-materialised
+/// slice.
+fn derive_slice_report_metrics(
+    onnx_path: &Path,
+    proof_config: Option<&str>,
+) -> (String, Option<u64>, Option<String>) {
+    if !onnx_path.exists() {
+        return (String::new(), None, None);
+    }
+    let ops = summarize_onnx_ops(onnx_path);
+    let estimated = estimate_onnx_constraints(onnx_path).ok();
+    let signature = compute_circuit_signature(onnx_path, proof_config).ok();
+    (ops, estimated, signature)
+}
+
 pub fn analyze_slices(
     slices_dir: &Path,
     jstprove_ops: &[&str],
@@ -480,38 +517,53 @@ pub fn analyze_slices(
             continue;
         }
 
-        if slice
-            .channel_split
-            .as_ref()
-            .is_some_and(|cs| !cs.groups.is_empty())
+        if let Some(ref cs) = slice.channel_split
+            && !cs.groups.is_empty()
         {
+            // Use the first channel-group ONNX as representative
+            // for the reported metrics: every group in the split
+            // shares the same per-chunk topology, so op summary,
+            // constraint estimate, and circuit signature are
+            // group-invariant and the first group is authoritative
+            // for the backend's view of compilation cost.
+            let group_path = slices_dir.join(&cs.groups[0].path);
+            let (ops, estimated, circuit_signature) =
+                derive_slice_report_metrics(&group_path, proof_config);
             reports.push(SliceAnalysisReport {
                 index: slice.index,
                 backend: "jstprove".into(),
                 reason: "channel-split".into(),
-                estimated_constraints: None,
-                ops: String::new(),
+                estimated_constraints: estimated,
+                ops,
                 tiled: slice.tiling.is_some(),
                 channel_split: true,
                 dim_split: false,
-                circuit_signature: None,
+                circuit_signature,
             });
             continue;
         }
 
         if let Some(ref ds) = slice.dim_split
-            && ds.template_path.is_some()
+            && let Some(ref tmpl_rel) = ds.template_path
         {
+            // The dim-split template is the ONNX the backend
+            // actually compiles (one circuit shared across every
+            // group), so it is the correct source for the
+            // reported ops / constraint estimate / circuit
+            // signature.
+            let tmpl_path = slices_dir.join(tmpl_rel);
+            let (ops, estimated, circuit_signature) =
+                derive_slice_report_metrics(&tmpl_path, proof_config);
             reports.push(SliceAnalysisReport {
                 index: slice.index,
                 backend: "jstprove".into(),
                 reason: "dim-split".into(),
-                estimated_constraints: None,
-                ops: String::new(),
+                estimated_constraints: estimated,
+                ops,
                 tiled: slice.tiling.is_some(),
                 channel_split: false,
                 dim_split: true,
-                circuit_signature: None,
+                circuit_signature,
             });
             continue;
         }

@@ -157,14 +157,23 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             components_skipped += 1;
             continue;
         }
+
+        // Ambiguity guard: a partial upload (some files present,
+        // some missing) is unrecoverable without more surgery than
+        // we can do from here -- we can't ask the registry to
+        // re-issue pre-signed URLs for the specific missing files
+        // without dropping and re-registering the whole component,
+        // and that would also orphan any valid uploads still in
+        // place.  Surface it as an explicit error so the operator
+        // can decide.
         if present > 0 {
             return Err(DsperseError::Other(format!(
                 "component {sha} is partially uploaded: {present}/{} files present, \
-                 missing: {:?}.  A previous publish registered the component row but \
-                 some PUTs did not complete.  Run \
+                 missing: {:?}.  A previous publish registered the component row \
+                 and successfully PUT some files but not others.  Manual recovery: \
                  `curl -X DELETE -H 'Authorization: Bearer $REGISTRY_AUTH_TOKEN' \
                  {api}/admin/components/{sha}` to drop the stale row, then re-run \
-                 publish so the full register + upload flow can replay for this sha.",
+                 publish.",
                 files.len(),
                 missing
             )));
@@ -175,34 +184,72 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             .unwrap_or(&config.proof_system)
             .to_uppercase();
         let comp_name = comp["name"].as_str().unwrap_or(sha);
+        let register_body = serde_json::json!({
+            "sha256": sha,
+            "name": comp_name,
+            "description": "",
+            "proof_system": proof_system,
+            "files": files,
+        });
 
         tracing::info!(sha = %sha, files = files.len(), "registering component");
-        let register_resp = client
+        let mut register_resp = client
             .post(format!("{api}/admin/components"))
             .header("Authorization", &auth)
-            .json(&serde_json::json!({
-                "sha256": sha,
-                "name": comp_name,
-                "description": "",
-                "proof_system": proof_system,
-                "files": files,
-            }))
+            .json(&register_body)
             .send()
             .await
             .map_err(|e| DsperseError::Other(format!("register component {sha}: {e}")))?;
+        let mut reg_status = register_resp.status();
 
-        let reg_status = register_resp.status();
+        // Self-heal the "metadata row exists, every file is 404"
+        // state the presence check above just proved we are in:
+        // the row was created by a prior publish whose per-file
+        // PUTs never completed, and the server now 409s any fresh
+        // register attempt for this sha.  The only way to request
+        // fresh pre-signed upload URLs is to drop the stale row
+        // and POST again.  Safe because the presence check already
+        // confirmed zero files are live on the blob store, so
+        // nothing is orphaned by the DELETE.
         if reg_status.as_u16() == 409 {
-            tracing::info!(sha = %sha, "component already registered (conflict)");
-            components_skipped += 1;
-            continue;
+            tracing::warn!(
+                sha = %sha,
+                "component row exists but zero files are live; dropping stale row and \
+                 re-registering so fresh upload URLs can issue"
+            );
+            let delete_resp = client
+                .delete(format!("{api}/admin/components/{sha}"))
+                .header("Authorization", &auth)
+                .send()
+                .await
+                .map_err(|e| DsperseError::Other(format!("delete stale component {sha}: {e}")))?;
+            let del_status = delete_resp.status();
+            if !del_status.is_success() && del_status.as_u16() != 404 {
+                let text = delete_resp.text().await.unwrap_or_default();
+                return Err(DsperseError::Other(format!(
+                    "delete stale component {sha} failed ({del_status}): {text}"
+                )));
+            }
+            register_resp = client
+                .post(format!("{api}/admin/components"))
+                .header("Authorization", &auth)
+                .json(&register_body)
+                .send()
+                .await
+                .map_err(|e| DsperseError::Other(format!("re-register component {sha}: {e}")))?;
+            reg_status = register_resp.status();
         }
+
         if !reg_status.is_success() {
             let text = register_resp.text().await.unwrap_or_default();
-            if text.contains("already exists") {
-                tracing::info!(sha = %sha, "component already registered");
-                components_skipped += 1;
-                continue;
+            if text.contains("already exists") || reg_status.as_u16() == 409 {
+                // Persistent conflict after auto-recovery: surface
+                // details so the operator can investigate rather
+                // than silently skipping.
+                return Err(DsperseError::Other(format!(
+                    "component {sha} registration persistently conflicts after auto-DELETE \
+                     retry ({reg_status}): {text}"
+                )));
             }
             return Err(DsperseError::Other(format!(
                 "register component {sha} failed ({reg_status}): {text}"

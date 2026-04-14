@@ -2240,6 +2240,13 @@ struct ConvBnFusion {
     mean: Vec<f32>,
     var: Vec<f32>,
     eps: f32,
+    // Initialiser names that become dead after the fusion: the BN's
+    // four parameter inputs (gamma / beta / running mean / running
+    // variance) and, if the Conv had no bias before fusion, the
+    // auto-named "<w>_fused_bias" we create.  Collected here so the
+    // caller can purge them in a single post-pass sweep without
+    // re-walking every BN node.
+    stale_bn_param_names: Vec<String>,
 }
 
 pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
@@ -2334,6 +2341,13 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
                 vec![]
             };
 
+            let stale_bn_param_names = vec![
+                bn_node.input[1].clone(),
+                bn_node.input[2].clone(),
+                bn_node.input[3].clone(),
+                bn_node.input[4].clone(),
+            ];
+
             fusions.push(ConvBnFusion {
                 conv_idx,
                 bn_idx,
@@ -2347,6 +2361,7 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
                 mean,
                 var,
                 eps,
+                stale_bn_param_names,
             });
         }
 
@@ -2358,6 +2373,7 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
     }
 
     let mut removed_bn: HashSet<usize> = HashSet::new();
+    let mut stale_init_names: HashSet<String> = HashSet::new();
 
     for f in &fusions {
         let channels = f.gamma.len();
@@ -2367,7 +2383,14 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
 
         let w_ok = if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == f.w_name) {
             let mut w_data = tensor_to_f32(w_init);
-            if !w_init.dims.is_empty() && w_init.dims[0] as usize == channels {
+            // tensor_to_f32 returns empty for unsupported dtypes
+            // (e.g. f16 / bf16 weights we don't yet convert); skip
+            // the fusion for this Conv rather than silently clearing
+            // the initializer into a zero-length FLOAT tensor that
+            // would fail every downstream shape check.
+            if w_data.is_empty() {
+                false
+            } else if !w_init.dims.is_empty() && w_init.dims[0] as usize == channels {
                 let per_filter = w_data.len() / channels;
                 for c in 0..channels {
                     for j in 0..per_filter {
@@ -2376,6 +2399,11 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
                 }
                 w_init.float_data = w_data;
                 w_init.raw_data.clear();
+                // The initialiser may have arrived as half / bfloat
+                // encoded in raw_data; float_data is FLOAT by
+                // definition, so stamp the tensor metadata to match
+                // the new representation.
+                w_init.data_type = TensorProto::FLOAT;
                 true
             } else {
                 false
@@ -2398,6 +2426,7 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
             b_init.float_data = fused_bias;
             b_init.raw_data.clear();
             b_init.dims = vec![channels as i64];
+            b_init.data_type = TensorProto::FLOAT;
         } else {
             graph.initializer.push(TensorProto {
                 name: f.bias_name.clone(),
@@ -2415,6 +2444,7 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
         conv_node.output[0] = f.bn_output.clone();
 
         removed_bn.insert(f.bn_idx);
+        stale_init_names.extend(f.stale_bn_param_names.iter().cloned());
     }
 
     if !removed_bn.is_empty() {
@@ -2423,6 +2453,21 @@ pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
             let keep = !removed_bn.contains(&idx);
             idx += 1;
             keep
+        });
+    }
+
+    if !stale_init_names.is_empty() {
+        // Only drop BN parameter initialisers that no surviving node
+        // still references.  Rare in practice but cheap to verify
+        // and prevents accidentally deleting an initialiser shared
+        // between a fused Conv+BN and an unrelated node elsewhere.
+        let still_used: HashSet<&str> = graph
+            .node
+            .iter()
+            .flat_map(|n| n.input.iter().map(String::as_str))
+            .collect();
+        graph.initializer.retain(|init| {
+            !stale_init_names.contains(&init.name) || still_used.contains(init.name.as_str())
         });
     }
 

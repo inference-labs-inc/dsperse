@@ -118,19 +118,32 @@ fn compile_slices(
     let dir = PathBuf::from(slices_dir);
     let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
-    py.allow_threads(|| {
-        pipeline::compile_slices(
-            &dir,
-            &backend,
-            parsed_config,
-            parallel,
-            weights_as_inputs,
-            layers.as_deref(),
-            &ops_refs,
-            skip_compile_over_size,
-        )
-    })
-    .map_err(to_py_err)
+    let report = py
+        .allow_threads(|| {
+            pipeline::compile_slices(
+                &dir,
+                &backend,
+                parsed_config,
+                parallel,
+                weights_as_inputs,
+                layers.as_deref(),
+                &ops_refs,
+                skip_compile_over_size,
+            )
+        })
+        .map_err(to_py_err)?;
+    // Propagate partial-compile failures to the Python caller so
+    // silent non-zero masks become impossible, but phrase the
+    // message in Python-binding terms rather than reusing the
+    // CLI's --allow-onnx-fallback hint (the Python API has its
+    // own opt-in path).
+    if !report.failed.is_empty() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "partial compile failures: {} slice(s) failed to compile; catch this exception and continue to accept ONNX fallback for the failed slices, or inspect the Rust-side logs for the per-slice error payload",
+            report.failed.len()
+        )));
+    }
+    Ok(())
 }
 
 #[pyfunction]

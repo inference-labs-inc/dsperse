@@ -26,27 +26,54 @@ enum CompileOutcome {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn compile_slices(
-    slices_dir: &Path,
-    backend: &JstproveBackend,
-    proof_config: jstprove_circuits::api::ProofConfigType,
-    parallel: usize,
-    weights_as_inputs: bool,
-    layers: Option<&[usize]>,
-    jstprove_ops: &[&str],
-    skip_compile_over_size: Option<u64>,
-) -> Result<()> {
-    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
-        DsperseError::Metadata(format!(
-            "no {} found in slices directory",
-            crate::utils::paths::METADATA_FILE
-        ))
-    })?;
-    let mut metadata = ModelMetadata::load(&meta_path)?;
+/// Summary of a compile_slices invocation.  The pass returns Ok
+/// even when individual slice compilations fail, so callers must
+/// inspect `failed` to decide whether to proceed (e.g. allow
+/// partial-coverage ONNX fallback) or abort.  Keeping the
+/// compiled count explicit lets the CLI / analyze command
+/// report a structured summary instead of inferring success from
+/// log lines.
+#[derive(Debug, Default)]
+pub struct CompileReport {
+    pub compiled: usize,
+    pub failed: Vec<(usize, DsperseError)>,
+}
 
+impl CompileReport {
+    /// Return Ok(self) when every slice compiled cleanly.  Otherwise
+    /// return a generic Pipeline error; callers layer their own
+    /// actionable guidance on top (the CLI mentions its
+    /// --allow-onnx-fallback flag, the Python binding mentions the
+    /// `allow_onnx_fallback` keyword).  Keeping the library message
+    /// surface-agnostic avoids leaking CLI conventions into the
+    /// Python / Rust API error stream.
+    pub fn ok_if_no_failures(self) -> Result<Self> {
+        if self.failed.is_empty() {
+            Ok(self)
+        } else {
+            Err(DsperseError::Pipeline(format!(
+                "compile_slices: {} slice(s) failed to compile; the caller must opt in to partial coverage before proceeding",
+                self.failed.len()
+            )))
+        }
+    }
+}
+
+/// Backfill split metadata fields that only become resolvable after
+/// slicing (channel_split.groups populated from disk,
+/// dim_split.template_path inferred from the materialized template
+/// ONNX), and strip dim_split entries whose template could not be
+/// materialized.  Called from both compile_slices and analyze_slices
+/// so the two classifications agree on what actually counts as a
+/// channel- or dim-split slice.  Persists the normalised metadata
+/// back to disk when any field changes.
+fn normalize_split_metadata(
+    slices_dir: &Path,
+    meta_path: &Path,
+    metadata: &mut ModelMetadata,
+) -> Result<()> {
     if metadata.original_model_path.is_some() {
-        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &metadata)?;
+        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, metadata)?;
     }
 
     let mut metadata_dirty = false;
@@ -69,11 +96,12 @@ pub fn compile_slices(
             }
         }
     }
-    // Strip dim_split metadata from slices where template creation failed
-    // (axis-separability rejection, unsupported split kind). Leaving stale
-    // dim_split entries in the metadata causes downstream runners and the
-    // packager to emit bundles that fail at the strategy validation stage
-    // ("dim_split present but template_path is missing").
+    // Strip dim_split metadata from slices where template creation
+    // failed (axis-separability rejection, unsupported split kind).
+    // Leaving stale dim_split entries in the metadata causes
+    // downstream runners and the packager to emit bundles that fail
+    // at the strategy validation stage ("dim_split present but
+    // template_path is missing").
     for slice in &mut metadata.slices {
         if slice
             .dim_split
@@ -89,9 +117,31 @@ pub fn compile_slices(
         }
     }
     if metadata_dirty {
-        metadata.save(&meta_path)?;
+        metadata.save(meta_path)?;
         tracing::info!("persisted materialized split groups to metadata");
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compile_slices(
+    slices_dir: &Path,
+    backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
+    parallel: usize,
+    weights_as_inputs: bool,
+    layers: Option<&[usize]>,
+    jstprove_ops: &[&str],
+    skip_compile_over_size: Option<u64>,
+) -> Result<CompileReport> {
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata(format!(
+            "no {} found in slices directory",
+            crate::utils::paths::METADATA_FILE
+        ))
+    })?;
+    let mut metadata = ModelMetadata::load(&meta_path)?;
+    normalize_split_metadata(slices_dir, &meta_path, &mut metadata)?;
 
     let slices: Vec<_> = metadata
         .slices
@@ -193,7 +243,14 @@ pub fn compile_slices(
                     )
                 }
                 Err(e) => {
-                    tracing::error!(slice = slice.index, error = %e, "compilation failed");
+                    // Per-slice compile failure is recoverable: the
+                    // summary log at the end of compile_slices
+                    // already surfaces the aggregate via warn!, and
+                    // the caller decides whether to continue with
+                    // partial coverage.  Emitting error! here would
+                    // spam CI for an outcome that ok_if_no_failures
+                    // handles structurally.
+                    tracing::warn!(slice = slice.index, error = %e, "compilation failed");
                     errors.lock().unwrap().push((slice.index, e));
                 }
             }
@@ -203,33 +260,32 @@ pub fn compile_slices(
     let errors = errors.into_inner().unwrap();
     let (metadata, cs_dirty) = meta_mutex.into_inner().unwrap();
     if cs_dirty {
-        if let Err(e) = metadata.save(&meta_path) {
-            tracing::error!(error = %e, "failed to persist split circuit paths");
-        } else {
-            tracing::info!("persisted split circuit paths to metadata");
-        }
+        // Swallowing the save failure would let downstream
+        // analyze / run / package observe an in-memory set of
+        // materialised channel / dim-split circuit paths that the
+        // on-disk metadata doesn't know about -- the very problem
+        // normalize_split_metadata exists to prevent.  Propagate.
+        metadata.save(&meta_path)?;
+        tracing::info!("persisted split circuit paths to metadata");
     }
     let compiled_count = compiled_count.load(std::sync::atomic::Ordering::Relaxed);
 
     if errors.is_empty() {
         tracing::info!(count = compiled_count, "all slices compiled");
-        Ok(())
     } else {
         tracing::warn!(
             compiled = compiled_count,
             failed = errors.len(),
-            "compilation completed with errors"
+            "compilation completed with errors; failed slices fall back to ONNX execution if the caller allows partial coverage"
         );
-        let msg = errors
-            .iter()
-            .map(|(idx, e)| format!("slice {idx}: {e}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        Err(DsperseError::Pipeline(format!(
-            "{} slices failed: {msg}",
-            errors.len()
-        )))
+        for (idx, e) in &errors {
+            tracing::warn!(slice = idx, error = %e, "slice compilation failed");
+        }
     }
+    Ok(CompileReport {
+        compiled: compiled_count,
+        failed: errors,
+    })
 }
 
 struct SliceAnalysis {
@@ -360,6 +416,238 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
     }
     let hash = hasher.finalize();
     Ok(format!("{:x}", hash))
+}
+
+fn summarize_onnx_ops(onnx_path: &Path) -> String {
+    let model = match onnx_proto::load_model(onnx_path) {
+        Ok(m) => m,
+        Err(_) => return String::from("?"),
+    };
+    let graph = match model.graph.as_ref() {
+        Some(g) => g,
+        None => return String::from("?"),
+    };
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for node in &graph.node {
+        *counts.entry(node.op_type.as_str()).or_default() += 1;
+    }
+    counts
+        .iter()
+        .map(|(op, n)| {
+            if *n > 1 {
+                format!("{op}x{n}")
+            } else {
+                op.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SliceAnalysisReport {
+    pub index: usize,
+    pub backend: String,
+    pub reason: String,
+    pub estimated_constraints: Option<u64>,
+    pub ops: String,
+    pub tiled: bool,
+    pub channel_split: bool,
+    pub dim_split: bool,
+    pub circuit_signature: Option<String>,
+}
+
+/// Derive the three metrics SliceAnalysisReport carries from an
+/// ONNX file: op-summary string, constraint estimate, and curve-
+/// stamped circuit signature.  Used from every analyze_slices
+/// branch that can point at a concrete representative ONNX (the
+/// slice's own .onnx for standard slices, the first channel
+/// group's .onnx for channel-split, the dim-split template
+/// ONNX for dim-split).  Failure on any single metric is
+/// non-fatal: we emit empty / None for the affected field and
+/// continue so analyze never aborts on a partially-materialised
+/// slice.
+fn derive_slice_report_metrics(
+    onnx_path: &Path,
+    proof_config: Option<&str>,
+) -> (String, Option<u64>, Option<String>) {
+    if !onnx_path.exists() {
+        return (String::new(), None, None);
+    }
+    let ops = summarize_onnx_ops(onnx_path);
+    let estimated = estimate_onnx_constraints(onnx_path).ok();
+    let signature = compute_circuit_signature(onnx_path, proof_config).ok();
+    (ops, estimated, signature)
+}
+
+pub fn analyze_slices(
+    slices_dir: &Path,
+    jstprove_ops: &[&str],
+    skip_compile_over_size: Option<u64>,
+    proof_config: Option<&str>,
+) -> Result<Vec<SliceAnalysisReport>> {
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata(format!(
+            "no {} found in slices directory",
+            crate::utils::paths::METADATA_FILE
+        ))
+    })?;
+    let mut metadata = ModelMetadata::load(&meta_path)?;
+    // Apply the same split-metadata normalisation compile_slices
+    // performs so the backend / reason classifications below see
+    // populated channel_split.groups, inferred dim_split template
+    // paths, and stripped dim_split entries whose template never
+    // materialised.  Without this step analyze_slices misreports
+    // slices whose split state is implicit in on-disk artefacts.
+    normalize_split_metadata(slices_dir, &meta_path, &mut metadata)?;
+    let mut reports = Vec::with_capacity(metadata.slices.len());
+
+    for slice in &metadata.slices {
+        let slice_dir = slice_dir_path(slices_dir, slice.index);
+        if !slice_dir.exists() {
+            reports.push(SliceAnalysisReport {
+                index: slice.index,
+                backend: "missing".into(),
+                reason: "slice directory not found".into(),
+                estimated_constraints: None,
+                ops: String::new(),
+                tiled: slice.tiling.is_some(),
+                channel_split: slice.channel_split.is_some(),
+                dim_split: slice.dim_split.is_some(),
+                circuit_signature: None,
+            });
+            continue;
+        }
+
+        if let Some(ref cs) = slice.channel_split
+            && !cs.groups.is_empty()
+        {
+            // Use the first channel-group ONNX as representative
+            // for the reported metrics: every group in the split
+            // shares the same per-chunk topology, so op summary,
+            // constraint estimate, and circuit signature are
+            // group-invariant and the first group is authoritative
+            // for the backend's view of compilation cost.
+            let group_path = slices_dir.join(&cs.groups[0].path);
+            let (ops, estimated, circuit_signature) =
+                derive_slice_report_metrics(&group_path, proof_config);
+            reports.push(SliceAnalysisReport {
+                index: slice.index,
+                backend: "jstprove".into(),
+                reason: "channel-split".into(),
+                estimated_constraints: estimated,
+                ops,
+                tiled: slice.tiling.is_some(),
+                channel_split: true,
+                dim_split: false,
+                circuit_signature,
+            });
+            continue;
+        }
+
+        if let Some(ref ds) = slice.dim_split
+            && let Some(ref tmpl_rel) = ds.template_path
+        {
+            // The dim-split template is the ONNX the backend
+            // actually compiles (one circuit shared across every
+            // group), so it is the correct source for the
+            // reported ops / constraint estimate / circuit
+            // signature.
+            let tmpl_path = slices_dir.join(tmpl_rel);
+            let (ops, estimated, circuit_signature) =
+                derive_slice_report_metrics(&tmpl_path, proof_config);
+            reports.push(SliceAnalysisReport {
+                index: slice.index,
+                backend: "jstprove".into(),
+                reason: "dim-split".into(),
+                estimated_constraints: estimated,
+                ops,
+                tiled: slice.tiling.is_some(),
+                channel_split: false,
+                dim_split: true,
+                circuit_signature,
+            });
+            continue;
+        }
+
+        let onnx_path = match resolve_compile_onnx(slices_dir, slice) {
+            Ok(p) => p,
+            Err(_) => {
+                // resolve_compile_onnx failing means the slice has
+                // no ONNX artefact on disk at all.  That is a
+                // genuine "missing" state (the analyse footer
+                // already has a dedicated missing count), not an
+                // "onnx-backend-compatible" slice.
+                reports.push(SliceAnalysisReport {
+                    index: slice.index,
+                    backend: "missing".into(),
+                    reason: "onnx not found".into(),
+                    estimated_constraints: None,
+                    ops: String::new(),
+                    tiled: slice.tiling.is_some(),
+                    channel_split: false,
+                    dim_split: false,
+                    circuit_signature: None,
+                });
+                continue;
+            }
+        };
+
+        if !onnx_path.exists() {
+            // Same reasoning as the resolve_compile_onnx Err branch
+            // above: path was resolvable by metadata but the file
+            // is absent, so the slice is missing rather than ONNX-
+            // compatible.
+            reports.push(SliceAnalysisReport {
+                index: slice.index,
+                backend: "missing".into(),
+                reason: "onnx not found".into(),
+                estimated_constraints: None,
+                ops: String::new(),
+                tiled: slice.tiling.is_some(),
+                channel_split: false,
+                dim_split: false,
+                circuit_signature: None,
+            });
+            continue;
+        }
+
+        let ops = summarize_onnx_ops(&onnx_path);
+        let analysis = analyze_slice_onnx(&onnx_path, jstprove_ops);
+        let estimated = estimate_onnx_constraints(&onnx_path).ok();
+        let sig = compute_circuit_signature(&onnx_path, proof_config).ok();
+
+        let (backend, reason) = match analysis {
+            Ok(a) if !a.compatible => ("onnx", "unsupported ops"),
+            Ok(a) if a.data_movement_only => ("onnx", "data movement only"),
+            Ok(_) => {
+                if let (Some(est), Some(thresh)) = (estimated, skip_compile_over_size) {
+                    if est > thresh {
+                        ("onnx", "exceeds size threshold")
+                    } else {
+                        ("jstprove", "compilable")
+                    }
+                } else {
+                    ("jstprove", "compilable")
+                }
+            }
+            Err(_) => ("onnx", "analysis failed"),
+        };
+
+        reports.push(SliceAnalysisReport {
+            index: slice.index,
+            backend: backend.into(),
+            reason: reason.into(),
+            estimated_constraints: estimated,
+            ops,
+            tiled: slice.tiling.is_some(),
+            channel_split: false,
+            dim_split: slice.dim_split.is_some(),
+            circuit_signature: sig,
+        });
+    }
+
+    Ok(reports)
 }
 
 fn estimate_onnx_constraints(onnx_path: &Path) -> Result<u64> {
@@ -510,11 +798,16 @@ fn compile_single_slice(
         return Ok(CompileOutcome::Skipped);
     }
 
+    // The threshold gate needs a concrete estimate; the debug
+    // block below can reuse it so we only re-parse the slice ONNX
+    // for constraint counting once per slice.
+    let mut estimated: Option<u64> = None;
     if let Some(threshold) = skip_compile_over_size {
-        let estimated = estimate_onnx_constraints(&onnx_path)?;
-        if estimated > threshold {
+        let est = estimate_onnx_constraints(&onnx_path)?;
+        estimated = Some(est);
+        if est > threshold {
             return Ok(CompileOutcome::SkippedOverSize {
-                estimated,
+                estimated: est,
                 threshold,
             });
         }
@@ -540,6 +833,30 @@ fn compile_single_slice(
     }
 
     let effective_wai = weights_as_inputs;
+
+    // The diagnostic bundle re-parses the slice ONNX (once for the
+    // op summary, once for the constraint estimate if we didn't
+    // already gate through it above).  Skip that work when debug
+    // tracing is disabled -- in a release build across hundreds of
+    // slices it adds up.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        if estimated.is_none() {
+            estimated = estimate_onnx_constraints(&onnx_path).ok();
+        }
+        let op_summary = summarize_onnx_ops(&onnx_path);
+
+        tracing::debug!(
+            slice = slice.index,
+            onnx = %onnx_path.display(),
+            estimated_constraints = ?estimated,
+            weights_as_inputs = effective_wai,
+            ops = %op_summary,
+            tiled = slice.tiling.is_some(),
+            channel_split = slice.channel_split.is_some(),
+            dim_split = slice.dim_split.is_some(),
+            "compiling slice"
+        );
+    }
 
     let compile_onnx = normalize_slice_for_backend(&onnx_path)?;
 
@@ -644,7 +961,37 @@ fn compile_channel_split_slice(
     let shared_circuit_rel = format!("slice_{}/jstprove/shared/circuit.bundle", slice.index);
     let shared_circuit_path = jst_dir.join("shared").join("circuit.bundle");
 
-    if !shared_circuit_path.is_dir() {
+    // Treat an existing shared bundle the same way the standard-
+    // slice path does: try to load it; if load_params rejects it
+    // (version drift, partial write, corruption), drop the stale
+    // directory and fall through to the compile-fresh branch so a
+    // single bad bundle doesn't permanently wedge every slice in
+    // the channel-split group.  The fresh-build code below is
+    // unchanged and will re-populate from the circuit cache or
+    // via backend.compile as appropriate.
+    let mut needs_build = !shared_circuit_path.is_dir();
+    if !needs_build {
+        match backend.load_params(&shared_circuit_path) {
+            Ok(_) => {
+                tracing::info!(
+                    slice = slice.index,
+                    "shared circuit already compiled, reusing"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    slice = slice.index,
+                    error = %e,
+                    "cached shared circuit invalid, recompiling"
+                );
+                std::fs::remove_dir_all(&shared_circuit_path)
+                    .map_err(|e| DsperseError::io(e, &shared_circuit_path))?;
+                needs_build = true;
+            }
+        }
+    }
+
+    if needs_build {
         let first_group = cs.groups.first().ok_or_else(|| {
             DsperseError::Pipeline(format!("slice {} channel_split has no groups", slice.index))
         })?;
@@ -737,17 +1084,18 @@ fn compile_channel_split_slice(
                 .insert(sig.clone(), shared_circuit_path.clone());
             tracing::info!(slice = slice.index, sig = %sig, "shared circuit compiled");
         }
-    } else {
+
+        // One final load to match the cached-bundle branch's
+        // invariant: the function returns only after we have seen
+        // a viable shared circuit at shared_circuit_path.  If the
+        // freshly-built bundle still fails to load, a retry would
+        // recurse indefinitely, so surface the error.
         backend.load_params(&shared_circuit_path).map_err(|e| {
             DsperseError::Pipeline(format!(
-                "slice {} cached shared circuit invalid: {e}",
+                "slice {} freshly-built shared circuit failed to load: {e}",
                 slice.index
             ))
         })?;
-        tracing::info!(
-            slice = slice.index,
-            "shared circuit already compiled, reusing"
-        );
     }
 
     let group_circuits: Vec<(usize, String)> = cs
@@ -806,8 +1154,25 @@ fn compile_dim_split_template(
             .as_ref()
             .map(|ds| ds.estimated_group_constraints)
             .filter(|&e| e > 0)
-            .unwrap_or_else(|| estimate_onnx_constraints(tmpl_path).unwrap_or(0));
-        if estimated > threshold {
+            .or_else(|| match estimate_onnx_constraints(tmpl_path) {
+                Ok(e) => Some(e),
+                Err(err) => {
+                    // We can't turn an unknown cost into a safe
+                    // gating decision, so fall through and let the
+                    // compile attempt surface the real error rather
+                    // than silently treating the slice as tiny.
+                    tracing::warn!(
+                        slice = slice.index,
+                        onnx = %tmpl_path.display(),
+                        error = %err,
+                        "skip_compile_over_size: constraint estimate failed; proceeding to compile"
+                    );
+                    None
+                }
+            });
+        if let Some(estimated) = estimated
+            && estimated > threshold
+        {
             return Ok(CompileOutcome::SkippedOverSize {
                 estimated,
                 threshold,

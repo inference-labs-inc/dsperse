@@ -604,14 +604,34 @@ pub struct AnalyzeArgs {
     )]
     pub skip_compile_over_size: Option<u64>,
     #[arg(
-        long,
+        long = "proof-config",
+        visible_alias = "curve",
         default_value = "bn254_raw",
-        help = "Proof config for circuit signature computation",
-        aliases = ["--curve"]
+        help = "Proof config for circuit signature computation"
     )]
     pub proof_config: String,
-    #[arg(long, default_value = "table", help = "Output format: table or json")]
-    pub format: String,
+    #[arg(
+        long,
+        default_value_t = AnalyzeFormat::Table,
+        value_enum,
+        help = "Output format"
+    )]
+    pub format: AnalyzeFormat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum AnalyzeFormat {
+    Table,
+    Json,
+}
+
+impl std::fmt::Display for AnalyzeFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Table => f.write_str("table"),
+            Self::Json => f.write_str("json"),
+        }
+    }
 }
 
 fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
@@ -625,7 +645,7 @@ fn cmd_analyze(args: AnalyzeArgs) -> Result<()> {
         Some(args.proof_config.as_str()),
     )?;
 
-    if args.format == "json" {
+    if matches!(args.format, AnalyzeFormat::Json) {
         println!(
             "{}",
             serde_json::to_string_pretty(&reports)

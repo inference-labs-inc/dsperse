@@ -119,6 +119,11 @@ fn compile_slices(
     let ops = resolve_ops(proof_system, circuit_ops.as_deref())?;
     let ops_refs: Vec<&str> = ops.iter().map(String::as_str).collect();
     py.allow_threads(|| {
+        // Propagate partial-compile failures to the Python caller
+        // so silent non-zero exit masks become impossible; callers
+        // that want permissive behaviour can catch the exception
+        // and continue with ONNX fallback explicitly, rather than
+        // the Rust wrapper deciding the policy on their behalf.
         pipeline::compile_slices(
             &dir,
             &backend,
@@ -129,7 +134,7 @@ fn compile_slices(
             &ops_refs,
             skip_compile_over_size,
         )
-        .map(|_| ())
+        .and_then(|report| report.ok_if_no_failures().map(|_| ()))
     })
     .map_err(to_py_err)
 }

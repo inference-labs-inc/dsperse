@@ -52,27 +52,21 @@ impl CompileReport {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn compile_slices(
+/// Backfill split metadata fields that only become resolvable after
+/// slicing (channel_split.groups populated from disk,
+/// dim_split.template_path inferred from the materialized template
+/// ONNX), and strip dim_split entries whose template could not be
+/// materialized.  Called from both compile_slices and analyze_slices
+/// so the two classifications agree on what actually counts as a
+/// channel- or dim-split slice.  Persists the normalised metadata
+/// back to disk when any field changes.
+fn normalize_split_metadata(
     slices_dir: &Path,
-    backend: &JstproveBackend,
-    proof_config: jstprove_circuits::api::ProofConfigType,
-    parallel: usize,
-    weights_as_inputs: bool,
-    layers: Option<&[usize]>,
-    jstprove_ops: &[&str],
-    skip_compile_over_size: Option<u64>,
-) -> Result<CompileReport> {
-    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
-        DsperseError::Metadata(format!(
-            "no {} found in slices directory",
-            crate::utils::paths::METADATA_FILE
-        ))
-    })?;
-    let mut metadata = ModelMetadata::load(&meta_path)?;
-
+    meta_path: &Path,
+    metadata: &mut ModelMetadata,
+) -> Result<()> {
     if metadata.original_model_path.is_some() {
-        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, &metadata)?;
+        crate::slicer::materializer::ensure_all_slices_materialized(slices_dir, metadata)?;
     }
 
     let mut metadata_dirty = false;
@@ -95,11 +89,12 @@ pub fn compile_slices(
             }
         }
     }
-    // Strip dim_split metadata from slices where template creation failed
-    // (axis-separability rejection, unsupported split kind). Leaving stale
-    // dim_split entries in the metadata causes downstream runners and the
-    // packager to emit bundles that fail at the strategy validation stage
-    // ("dim_split present but template_path is missing").
+    // Strip dim_split metadata from slices where template creation
+    // failed (axis-separability rejection, unsupported split kind).
+    // Leaving stale dim_split entries in the metadata causes
+    // downstream runners and the packager to emit bundles that fail
+    // at the strategy validation stage ("dim_split present but
+    // template_path is missing").
     for slice in &mut metadata.slices {
         if slice
             .dim_split
@@ -115,9 +110,31 @@ pub fn compile_slices(
         }
     }
     if metadata_dirty {
-        metadata.save(&meta_path)?;
+        metadata.save(meta_path)?;
         tracing::info!("persisted materialized split groups to metadata");
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn compile_slices(
+    slices_dir: &Path,
+    backend: &JstproveBackend,
+    proof_config: jstprove_circuits::api::ProofConfigType,
+    parallel: usize,
+    weights_as_inputs: bool,
+    layers: Option<&[usize]>,
+    jstprove_ops: &[&str],
+    skip_compile_over_size: Option<u64>,
+) -> Result<CompileReport> {
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata(format!(
+            "no {} found in slices directory",
+            crate::utils::paths::METADATA_FILE
+        ))
+    })?;
+    let mut metadata = ModelMetadata::load(&meta_path)?;
+    normalize_split_metadata(slices_dir, &meta_path, &mut metadata)?;
 
     let slices: Vec<_> = metadata
         .slices
@@ -436,7 +453,14 @@ pub fn analyze_slices(
             crate::utils::paths::METADATA_FILE
         ))
     })?;
-    let metadata = ModelMetadata::load(&meta_path)?;
+    let mut metadata = ModelMetadata::load(&meta_path)?;
+    // Apply the same split-metadata normalisation compile_slices
+    // performs so the backend / reason classifications below see
+    // populated channel_split.groups, inferred dim_split template
+    // paths, and stripped dim_split entries whose template never
+    // materialised.  Without this step analyze_slices misreports
+    // slices whose split state is implicit in on-disk artefacts.
+    normalize_split_metadata(slices_dir, &meta_path, &mut metadata)?;
     let mut reports = Vec::with_capacity(metadata.slices.len());
 
     for slice in &metadata.slices {
@@ -711,11 +735,16 @@ fn compile_single_slice(
         return Ok(CompileOutcome::Skipped);
     }
 
+    // The threshold gate needs a concrete estimate; the debug
+    // block below can reuse it so we only re-parse the slice ONNX
+    // for constraint counting once per slice.
+    let mut estimated: Option<u64> = None;
     if let Some(threshold) = skip_compile_over_size {
-        let estimated = estimate_onnx_constraints(&onnx_path)?;
-        if estimated > threshold {
+        let est = estimate_onnx_constraints(&onnx_path)?;
+        estimated = Some(est);
+        if est > threshold {
             return Ok(CompileOutcome::SkippedOverSize {
-                estimated,
+                estimated: est,
                 threshold,
             });
         }
@@ -742,20 +771,29 @@ fn compile_single_slice(
 
     let effective_wai = weights_as_inputs;
 
-    let estimated = estimate_onnx_constraints(&onnx_path).ok();
-    let op_summary = summarize_onnx_ops(&onnx_path);
+    // The diagnostic bundle re-parses the slice ONNX (once for the
+    // op summary, once for the constraint estimate if we didn't
+    // already gate through it above).  Skip that work when debug
+    // tracing is disabled -- in a release build across hundreds of
+    // slices it adds up.
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        if estimated.is_none() {
+            estimated = estimate_onnx_constraints(&onnx_path).ok();
+        }
+        let op_summary = summarize_onnx_ops(&onnx_path);
 
-    tracing::debug!(
-        slice = slice.index,
-        onnx = %onnx_path.display(),
-        estimated_constraints = ?estimated,
-        weights_as_inputs = effective_wai,
-        ops = %op_summary,
-        tiled = slice.tiling.is_some(),
-        channel_split = slice.channel_split.is_some(),
-        dim_split = slice.dim_split.is_some(),
-        "compiling slice"
-    );
+        tracing::debug!(
+            slice = slice.index,
+            onnx = %onnx_path.display(),
+            estimated_constraints = ?estimated,
+            weights_as_inputs = effective_wai,
+            ops = %op_summary,
+            tiled = slice.tiling.is_some(),
+            channel_split = slice.channel_split.is_some(),
+            dim_split = slice.dim_split.is_some(),
+            "compiling slice"
+        );
+    }
 
     let compile_onnx = normalize_slice_for_backend(&onnx_path)?;
 

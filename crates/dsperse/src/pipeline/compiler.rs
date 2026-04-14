@@ -260,11 +260,13 @@ pub fn compile_slices(
     let errors = errors.into_inner().unwrap();
     let (metadata, cs_dirty) = meta_mutex.into_inner().unwrap();
     if cs_dirty {
-        if let Err(e) = metadata.save(&meta_path) {
-            tracing::error!(error = %e, "failed to persist split circuit paths");
-        } else {
-            tracing::info!("persisted split circuit paths to metadata");
-        }
+        // Swallowing the save failure would let downstream
+        // analyze / run / package observe an in-memory set of
+        // materialised channel / dim-split circuit paths that the
+        // on-disk metadata doesn't know about -- the very problem
+        // normalize_split_metadata exists to prevent.  Propagate.
+        metadata.save(&meta_path)?;
+        tracing::info!("persisted split circuit paths to metadata");
     }
     let compiled_count = compiled_count.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -571,9 +573,14 @@ pub fn analyze_slices(
         let onnx_path = match resolve_compile_onnx(slices_dir, slice) {
             Ok(p) => p,
             Err(_) => {
+                // resolve_compile_onnx failing means the slice has
+                // no ONNX artefact on disk at all.  That is a
+                // genuine "missing" state (the analyse footer
+                // already has a dedicated missing count), not an
+                // "onnx-backend-compatible" slice.
                 reports.push(SliceAnalysisReport {
                     index: slice.index,
-                    backend: "onnx".into(),
+                    backend: "missing".into(),
                     reason: "onnx not found".into(),
                     estimated_constraints: None,
                     ops: String::new(),
@@ -587,9 +594,13 @@ pub fn analyze_slices(
         };
 
         if !onnx_path.exists() {
+            // Same reasoning as the resolve_compile_onnx Err branch
+            // above: path was resolvable by metadata but the file
+            // is absent, so the slice is missing rather than ONNX-
+            // compatible.
             reports.push(SliceAnalysisReport {
                 index: slice.index,
-                backend: "onnx".into(),
+                backend: "missing".into(),
                 reason: "onnx not found".into(),
                 estimated_constraints: None,
                 ops: String::new(),
@@ -950,7 +961,37 @@ fn compile_channel_split_slice(
     let shared_circuit_rel = format!("slice_{}/jstprove/shared/circuit.bundle", slice.index);
     let shared_circuit_path = jst_dir.join("shared").join("circuit.bundle");
 
-    if !shared_circuit_path.is_dir() {
+    // Treat an existing shared bundle the same way the standard-
+    // slice path does: try to load it; if load_params rejects it
+    // (version drift, partial write, corruption), drop the stale
+    // directory and fall through to the compile-fresh branch so a
+    // single bad bundle doesn't permanently wedge every slice in
+    // the channel-split group.  The fresh-build code below is
+    // unchanged and will re-populate from the circuit cache or
+    // via backend.compile as appropriate.
+    let mut needs_build = !shared_circuit_path.is_dir();
+    if !needs_build {
+        match backend.load_params(&shared_circuit_path) {
+            Ok(_) => {
+                tracing::info!(
+                    slice = slice.index,
+                    "shared circuit already compiled, reusing"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    slice = slice.index,
+                    error = %e,
+                    "cached shared circuit invalid, recompiling"
+                );
+                std::fs::remove_dir_all(&shared_circuit_path)
+                    .map_err(|e| DsperseError::io(e, &shared_circuit_path))?;
+                needs_build = true;
+            }
+        }
+    }
+
+    if needs_build {
         let first_group = cs.groups.first().ok_or_else(|| {
             DsperseError::Pipeline(format!("slice {} channel_split has no groups", slice.index))
         })?;
@@ -1043,17 +1084,18 @@ fn compile_channel_split_slice(
                 .insert(sig.clone(), shared_circuit_path.clone());
             tracing::info!(slice = slice.index, sig = %sig, "shared circuit compiled");
         }
-    } else {
+
+        // One final load to match the cached-bundle branch's
+        // invariant: the function returns only after we have seen
+        // a viable shared circuit at shared_circuit_path.  If the
+        // freshly-built bundle still fails to load, a retry would
+        // recurse indefinitely, so surface the error.
         backend.load_params(&shared_circuit_path).map_err(|e| {
             DsperseError::Pipeline(format!(
-                "slice {} cached shared circuit invalid: {e}",
+                "slice {} freshly-built shared circuit failed to load: {e}",
                 slice.index
             ))
         })?;
-        tracing::info!(
-            slice = slice.index,
-            "shared circuit already compiled, reusing"
-        );
     }
 
     let group_circuits: Vec<(usize, String)> = cs

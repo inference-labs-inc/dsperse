@@ -493,6 +493,15 @@ fn i64_to_f64_checked(v: i64, label: &str) -> Result<f64> {
     Ok(v as f64)
 }
 
+fn u64_to_f64_checked(v: u64, label: &str) -> Result<f64> {
+    if v >= I64_SAFE_BOUND as u64 {
+        return Err(DsperseError::Onnx(format!(
+            "{label}: u64 value {v} exceeds IEEE-754 safe integer bound"
+        )));
+    }
+    Ok(v as f64)
+}
+
 fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
     let shape = tv.shape().to_vec();
     let dt = tv.datum_type();
@@ -518,6 +527,38 @@ fn tvalue_to_f64(tv: &TValue, label: &str) -> Result<(Vec<f64>, Vec<usize>)> {
             .to_plain_array_view::<i32>()
             .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
         arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == u32::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<u32>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == i16::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<i16>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == u16::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<u16>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == i8::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<i8>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == u8::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<u8>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter().map(|&v| f64::from(v)).collect()
+    } else if dt == u64::datum_type() {
+        let arr = tv
+            .to_plain_array_view::<u64>()
+            .map_err(|e| DsperseError::Onnx(format!("{label}: {e}")))?;
+        arr.iter()
+            .map(|&v| u64_to_f64_checked(v, label))
+            .collect::<Result<Vec<_>>>()?
     } else if dt == bool::datum_type() {
         let arr = tv
             .to_plain_array_view::<bool>()
@@ -831,6 +872,64 @@ mod tests {
         let graph = onnx_proto::make_graph("g", vec![node], vec![input], vec![output], vec![]);
         let model = onnx_proto::make_model(graph, 13);
         onnx_proto::save_model(&model, path).unwrap();
+    }
+
+    fn write_uint8_identity_model(path: &Path) {
+        use crate::slicer::onnx_proto;
+        let input = onnx_proto::make_tensor_value_info("x", 2, &[3]); // UINT8
+        let output = onnx_proto::make_tensor_value_info("y", 2, &[3]); // UINT8
+        let node = onnx_proto::make_node(
+            "Identity",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            vec![],
+        );
+        let graph = onnx_proto::make_graph("g", vec![node], vec![input], vec![output], vec![]);
+        let model = onnx_proto::make_model(graph, 13);
+        onnx_proto::save_model(&model, path).unwrap();
+    }
+
+    #[test]
+    fn warm_model_decodes_uint8_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let onnx_path = tmp.path().join("u8_identity.onnx");
+        write_uint8_identity_model(&onnx_path);
+
+        let shape = [3usize];
+        let warm = WarmModel::load(&onnx_path, &shape).expect("WarmModel::load");
+        assert_eq!(warm.input_dt, u8::datum_type());
+        let (data, out_shape) = warm.run(&[0.0, 128.0, 255.0]).unwrap();
+        assert_eq!(out_shape, shape.to_vec());
+        assert_eq!(data, vec![0.0, 128.0, 255.0]);
+    }
+
+    #[test]
+    fn tvalue_to_f64_covers_added_integer_dtypes() {
+        fn tv_of<T: Datum>(values: &[T]) -> TValue {
+            let arr =
+                tract_ndarray::ArrayD::from_shape_vec(IxDyn(&[values.len()]), values.to_vec())
+                    .unwrap();
+            arr.into_tvalue()
+        }
+        let (d, s) = tvalue_to_f64(&tv_of::<u8>(&[0, 255]), "u8").unwrap();
+        assert_eq!((d, s), (vec![0.0, 255.0], vec![2]));
+        let (d, _) = tvalue_to_f64(&tv_of::<i8>(&[-128, 127]), "i8").unwrap();
+        assert_eq!(d, vec![-128.0, 127.0]);
+        let (d, _) = tvalue_to_f64(&tv_of::<u16>(&[0, 65_535]), "u16").unwrap();
+        assert_eq!(d, vec![0.0, 65_535.0]);
+        let (d, _) = tvalue_to_f64(&tv_of::<i16>(&[-32_768, 32_767]), "i16").unwrap();
+        assert_eq!(d, vec![-32_768.0, 32_767.0]);
+        let (d, _) = tvalue_to_f64(&tv_of::<u32>(&[0, u32::MAX]), "u32").unwrap();
+        assert_eq!(d, vec![0.0, u32::MAX as f64]);
+        let (d, _) = tvalue_to_f64(&tv_of::<u64>(&[0, 1_000_000]), "u64").unwrap();
+        assert_eq!(d, vec![0.0, 1_000_000.0]);
+
+        let unsafe_hi = (I64_SAFE_BOUND as u64) + 7;
+        let err = tvalue_to_f64(&tv_of::<u64>(&[unsafe_hi]), "u64").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("safe integer bound"),
+            "expected u64 safe-bound error"
+        );
     }
 
     #[test]

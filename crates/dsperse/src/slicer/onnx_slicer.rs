@@ -35,8 +35,17 @@ pub fn slice_model(
     let traced_types = trace_result.types;
 
     if let Some(graph) = model.graph.as_mut() {
+        // Chains of shape-dependent ops (Shape -> Gather -> Reshape,
+        // or nested ConstantOfShape pyramids) expose constants only
+        // after earlier rounds have folded their producers, so run
+        // propagate_constants_with_shapes to a fixpoint.  A small
+        // safety cap prevents an unexpected non-monotonic evaluator
+        // from spinning indefinitely; propagation is monotone by
+        // construction so the loop is expected to converge in O(1)
+        // iterations even for the deepest chains we have observed.
+        const SHAPE_CONST_PROP_ITERATION_CAP: usize = 16;
         let mut total_folded = 0usize;
-        for pass in 0..4 {
+        for pass in 0..SHAPE_CONST_PROP_ITERATION_CAP {
             let folded = super::onnx_fold::propagate_constants_with_shapes(graph, &traced_shapes);
             if folded == 0 {
                 break;

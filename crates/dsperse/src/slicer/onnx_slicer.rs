@@ -1147,4 +1147,120 @@ mod tests {
         let result = merge_control_flow_segments(&points, &analysis);
         assert_eq!(result, vec![0, 1, 2]);
     }
+
+    /// Regression for PR #183: isolate_conv's inner grouping walk
+    /// must treat the LAYOUT_OPS set (Reshape / Transpose /
+    /// Flatten / Squeeze / Unsqueeze / Gather) as passthroughs so
+    /// that Conv -> Reshape -> MatMul places the trailing compile
+    /// boundary on the heavy MatMul rather than on the Reshape
+    /// that sits between them.  Before the is_slice_passthrough
+    /// split these ops were absent from is_shape_preserving and
+    /// the walk terminated on the Reshape, isolating it into its
+    /// own slice.
+    #[test]
+    fn isolate_conv_absorbs_reshape_then_boundaries_on_matmul() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            (
+                "reshape0",
+                1,
+                "Reshape",
+                false,
+                vec!["conv_out", "shape"],
+                vec!["reshape_out"],
+            ),
+            (
+                "matmul0",
+                2,
+                "MatMul",
+                true,
+                vec!["reshape_out", "matmul0_weight"],
+                vec!["matmul_out"],
+            ),
+        ]);
+        let points = vec![0, 3];
+        let result = isolate_conv(&points, &analysis);
+        assert!(
+            result.contains(&0),
+            "isolate_conv should insert a boundary at the Conv itself: {result:?}"
+        );
+        assert!(
+            result.contains(&2),
+            "is_slice_passthrough should absorb Reshape into the Conv slice and place the trailing boundary on MatMul at index 2: {result:?}"
+        );
+        assert!(
+            !result.contains(&1),
+            "Reshape at index 1 must not become its own slice boundary when it sits between a Conv and a heavy op: {result:?}"
+        );
+    }
+
+    /// Transpose + Squeeze variant so we also cover the other
+    /// layout ops added to LAYOUT_OPS.
+    #[test]
+    fn isolate_conv_absorbs_transpose_chain_then_boundaries_on_matmul() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            (
+                "transpose0",
+                1,
+                "Transpose",
+                false,
+                vec!["conv_out"],
+                vec!["trans_out"],
+            ),
+            (
+                "squeeze0",
+                2,
+                "Squeeze",
+                false,
+                vec!["trans_out"],
+                vec!["sq_out"],
+            ),
+            (
+                "matmul0",
+                3,
+                "MatMul",
+                true,
+                vec!["sq_out", "matmul0_weight"],
+                vec!["matmul_out"],
+            ),
+        ]);
+        let points = vec![0, 4];
+        let result = isolate_conv(&points, &analysis);
+        assert!(result.contains(&0));
+        assert!(
+            result.contains(&3),
+            "Transpose + Squeeze chain should absorb into the Conv slice, leaving MatMul at index 3 as the boundary: {result:?}"
+        );
+        assert!(!result.contains(&1));
+        assert!(!result.contains(&2));
+    }
+
+    /// Counter-case: a layout op whose input is NOT produced by
+    /// the preceding Conv slice must still break the walk, so the
+    /// consumes_produced guard is exercised.
+    #[test]
+    fn isolate_conv_stops_when_passthrough_consumes_external_input() {
+        let analysis = make_analysis_with_deps(vec![
+            ("conv0", 0, "Conv", true, vec!["x"], vec!["conv_out"]),
+            (
+                "reshape0",
+                1,
+                "Reshape",
+                false,
+                // Reshape consumes an external tensor, not
+                // conv_out, so is_slice_passthrough being true is
+                // not sufficient to absorb it.
+                vec!["external_y", "shape"],
+                vec!["reshape_out"],
+            ),
+        ]);
+        let points = vec![0, 2];
+        let result = isolate_conv(&points, &analysis);
+        assert!(result.contains(&0));
+        assert!(
+            result.contains(&1),
+            "Reshape that doesn't consume any conv-produced tensor should remain the trailing boundary: {result:?}"
+        );
+    }
 }

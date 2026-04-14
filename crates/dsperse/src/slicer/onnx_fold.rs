@@ -118,7 +118,18 @@ pub fn remove_identity_nodes(graph: &mut GraphProto) -> usize {
         .collect();
 
     for node in &mut graph.node {
-        if node.op_type == "Identity" && drop_map.contains_key(&node.output[0]) {
+        // Skip the node that produced this drop-map entry so we
+        // don't rewrite its own input to its own output.  Guard
+        // the output-slot access: the drop_map construction only
+        // accepts len-1 Identity nodes, but a malformed Identity
+        // with zero outputs could still appear in graph.node and
+        // must not trip an index panic here.
+        let is_dropped_identity = node.op_type == "Identity"
+            && node
+                .output
+                .first()
+                .is_some_and(|o| drop_map.contains_key(o.as_str()));
+        if is_dropped_identity {
             continue;
         }
         for inp in &mut node.input {

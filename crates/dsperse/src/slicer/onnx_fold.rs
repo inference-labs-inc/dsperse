@@ -56,6 +56,11 @@ pub fn fold_constant_nodes(model: &mut ModelProto) -> HashSet<String> {
     }
     folded_names.extend(propagated_names);
 
+    let fused = fuse_conv_batchnorm(graph);
+    if fused > 0 {
+        tracing::info!(fused, "fused Conv+BatchNormalization pairs");
+    }
+
     folded_names
 }
 
@@ -2220,4 +2225,251 @@ fn make_f32_tensor(name: &str, dims: &[i64], vals: &[f32], target_type: i32) -> 
             ..Default::default()
         },
     }
+}
+
+struct ConvBnFusion {
+    conv_idx: usize,
+    bn_idx: usize,
+    bn_output: String,
+    w_name: String,
+    bias_name: String,
+    has_bias: bool,
+    orig_bias: Vec<f32>,
+    gamma: Vec<f32>,
+    beta: Vec<f32>,
+    mean: Vec<f32>,
+    var: Vec<f32>,
+    eps: f32,
+    // Initialiser names that become dead after the fusion: the BN's
+    // four parameter inputs (gamma / beta / running mean / running
+    // variance) and, if the Conv had no bias before fusion, the
+    // auto-named "<w>_fused_bias" we create.  Collected here so the
+    // caller can purge them in a single post-pass sweep without
+    // re-walking every BN node.
+    stale_bn_param_names: Vec<String>,
+}
+
+pub fn fuse_conv_batchnorm(graph: &mut GraphProto) -> usize {
+    let fusions = {
+        let init_map: HashMap<&str, &TensorProto> = graph
+            .initializer
+            .iter()
+            .map(|t| (t.name.as_str(), t))
+            .collect();
+
+        let node_output_map: HashMap<&str, usize> = graph
+            .node
+            .iter()
+            .enumerate()
+            .flat_map(|(i, n)| n.output.iter().map(move |o| (o.as_str(), i)))
+            .collect();
+
+        let mut fusions: Vec<ConvBnFusion> = Vec::new();
+
+        for (bn_idx, bn_node) in graph.node.iter().enumerate() {
+            if bn_node.op_type != "BatchNormalization" || bn_node.input.len() < 5 {
+                continue;
+            }
+            let bn_input = &bn_node.input[0];
+            let conv_idx = match node_output_map.get(bn_input.as_str()) {
+                Some(&idx) => idx,
+                None => continue,
+            };
+            let conv_node = &graph.node[conv_idx];
+            if conv_node.op_type != "Conv" || conv_node.output.is_empty() {
+                continue;
+            }
+            let consumers: usize = graph
+                .node
+                .iter()
+                .filter(|n| n.input.contains(&conv_node.output[0]))
+                .count();
+            if consumers != 1 {
+                continue;
+            }
+
+            let gamma = match init_map.get(bn_node.input[1].as_str()) {
+                Some(t) => tensor_to_f32(t),
+                None => continue,
+            };
+            let beta = match init_map.get(bn_node.input[2].as_str()) {
+                Some(t) => tensor_to_f32(t),
+                None => continue,
+            };
+            let mean = match init_map.get(bn_node.input[3].as_str()) {
+                Some(t) => tensor_to_f32(t),
+                None => continue,
+            };
+            let var = match init_map.get(bn_node.input[4].as_str()) {
+                Some(t) => tensor_to_f32(t),
+                None => continue,
+            };
+
+            if gamma.is_empty()
+                || gamma.len() != beta.len()
+                || gamma.len() != mean.len()
+                || gamma.len() != var.len()
+            {
+                continue;
+            }
+
+            let bn_output = match bn_node.output.first() {
+                Some(o) if !o.is_empty() => o.clone(),
+                _ => continue,
+            };
+
+            let eps = bn_node
+                .attribute
+                .iter()
+                .find(|a| a.name == "epsilon")
+                .map(|a| a.f)
+                .unwrap_or(1e-5);
+
+            let w_name = conv_node.input[1].clone();
+            let has_bias = conv_node.input.len() > 2;
+            let bias_name = if has_bias {
+                conv_node.input[2].clone()
+            } else {
+                format!("{}_fused_bias", w_name)
+            };
+            let orig_bias = if has_bias {
+                init_map
+                    .get(conv_node.input[2].as_str())
+                    .map(|t| tensor_to_f32(t))
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+
+            let stale_bn_param_names = vec![
+                bn_node.input[1].clone(),
+                bn_node.input[2].clone(),
+                bn_node.input[3].clone(),
+                bn_node.input[4].clone(),
+            ];
+
+            fusions.push(ConvBnFusion {
+                conv_idx,
+                bn_idx,
+                bn_output,
+                w_name,
+                bias_name,
+                has_bias,
+                orig_bias,
+                gamma,
+                beta,
+                mean,
+                var,
+                eps,
+                stale_bn_param_names,
+            });
+        }
+
+        fusions
+    };
+
+    if fusions.is_empty() {
+        return 0;
+    }
+
+    let mut removed_bn: HashSet<usize> = HashSet::new();
+    let mut stale_init_names: HashSet<String> = HashSet::new();
+
+    for f in &fusions {
+        let channels = f.gamma.len();
+        let scale: Vec<f32> = (0..channels)
+            .map(|c| f.gamma[c] / (f.var[c] + f.eps).sqrt())
+            .collect();
+
+        let w_ok = if let Some(w_init) = graph.initializer.iter_mut().find(|i| i.name == f.w_name) {
+            let mut w_data = tensor_to_f32(w_init);
+            // tensor_to_f32 returns empty for unsupported dtypes
+            // (e.g. f16 / bf16 weights we don't yet convert); skip
+            // the fusion for this Conv rather than silently clearing
+            // the initializer into a zero-length FLOAT tensor that
+            // would fail every downstream shape check.
+            if w_data.is_empty() {
+                false
+            } else if !w_init.dims.is_empty() && w_init.dims[0] as usize == channels {
+                let per_filter = w_data.len() / channels;
+                for c in 0..channels {
+                    for j in 0..per_filter {
+                        w_data[c * per_filter + j] *= scale[c];
+                    }
+                }
+                w_init.float_data = w_data;
+                w_init.raw_data.clear();
+                // The initialiser may have arrived as half / bfloat
+                // encoded in raw_data; float_data is FLOAT by
+                // definition, so stamp the tensor metadata to match
+                // the new representation.
+                w_init.data_type = TensorProto::FLOAT;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if !w_ok {
+            continue;
+        }
+
+        let fused_bias: Vec<f32> = (0..channels)
+            .map(|c| {
+                let ob = f.orig_bias.get(c).copied().unwrap_or(0.0);
+                (ob - f.mean[c]) * scale[c] + f.beta[c]
+            })
+            .collect();
+
+        if let Some(b_init) = graph.initializer.iter_mut().find(|i| i.name == f.bias_name) {
+            b_init.float_data = fused_bias;
+            b_init.raw_data.clear();
+            b_init.dims = vec![channels as i64];
+            b_init.data_type = TensorProto::FLOAT;
+        } else {
+            graph.initializer.push(TensorProto {
+                name: f.bias_name.clone(),
+                data_type: TensorProto::FLOAT,
+                dims: vec![channels as i64],
+                float_data: fused_bias,
+                ..Default::default()
+            });
+        }
+
+        let conv_node = &mut graph.node[f.conv_idx];
+        if !f.has_bias {
+            conv_node.input.push(f.bias_name.clone());
+        }
+        conv_node.output[0] = f.bn_output.clone();
+
+        removed_bn.insert(f.bn_idx);
+        stale_init_names.extend(f.stale_bn_param_names.iter().cloned());
+    }
+
+    if !removed_bn.is_empty() {
+        let mut idx = 0;
+        graph.node.retain(|_| {
+            let keep = !removed_bn.contains(&idx);
+            idx += 1;
+            keep
+        });
+    }
+
+    if !stale_init_names.is_empty() {
+        // Only drop BN parameter initialisers that no surviving node
+        // still references.  Rare in practice but cheap to verify
+        // and prevents accidentally deleting an initialiser shared
+        // between a fused Conv+BN and an unrelated node elsewhere.
+        let still_used: HashSet<&str> = graph
+            .node
+            .iter()
+            .flat_map(|n| n.input.iter().map(String::as_str))
+            .collect();
+        graph.initializer.retain(|init| {
+            !stale_init_names.contains(&init.name) || still_used.contains(init.name.as_str())
+        });
+    }
+
+    removed_bn.len()
 }

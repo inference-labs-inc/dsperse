@@ -87,22 +87,86 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
 
-        let check = client
-            .get(format!("{api}/components/{sha}"))
-            .send()
-            .await
-            .map_err(|e| DsperseError::Other(format!("check component {sha}: {e}")))?;
+        // Verify the component by probing each file the manifest
+        // expects to live in blob storage, not by asking for a
+        // metadata row.  The registry registers the component row
+        // as soon as POST /admin/components returns, but the
+        // per-file PUTs against the pre-signed upload URLs happen
+        // afterwards -- any failure there (timeout, network blip,
+        // interrupted publish process) leaves the row present with
+        // no backing files.  A plain GET /components/{sha} sees the
+        // row and reports "exists, skipping", so every subsequent
+        // publish run re-skips the broken component and the model
+        // stays permanently half-uploaded from downstream
+        // consumers' perspective.
+        //
+        // Mirror the byte-level presence check weight-blob uploads
+        // below already use: HEAD each expected file by issuing a
+        // single-byte ranged GET to the blob path.  If every file
+        // is present, the component is genuinely done and we skip.
+        // If every file is missing, proceed to the normal
+        // register + upload path.  If the set is partially present
+        // (registered but mid-upload), surface an actionable error
+        // instead of silently continuing, because re-registering
+        // via POST /admin/components will 409 and the current flow
+        // has no way to request fresh upload URLs for that sha.
+        // A manifest entry with zero files is malformed -- the
+        // empty-list case would otherwise make both
+        // `missing.is_empty()` and `present == files.len()` true
+        // below, silently classifying the component as present
+        // without any actual bytes verified.  Fail loud.
+        if files.is_empty() {
+            return Err(DsperseError::Other(format!(
+                "component {sha} has no files listed in the manifest; refusing to treat as present"
+            )));
+        }
 
-        if check.status().is_success() {
-            tracing::info!(sha = %sha, "component exists, skipping");
+        let mut present = 0usize;
+        let mut missing: Vec<String> = Vec::new();
+        for filename in &files {
+            let file_url = format!("{api}/components/{sha}/files/{filename}");
+            let probe = client
+                .get(&file_url)
+                .header("Range", "bytes=0-0")
+                .send()
+                .await
+                .map_err(|e| DsperseError::Other(format!("probe {sha}/{filename}: {e}")))?;
+            // A Range: bytes=0-0 GET against a blob path has two
+            // legitimate success replies: 206 (partial content,
+            // what the blob store returns when it honours the
+            // range) and 200 (full content, what it returns when
+            // it ignores the range for an empty body or tiny file).
+            // Any other 2xx (201 Created, 202 Accepted, 204 No
+            // Content) is ambiguous for a GET on a CAS path and
+            // should not be interpreted as "file present".
+            let status = probe.status();
+            match status.as_u16() {
+                200 | 206 => present += 1,
+                404 => missing.push(filename.clone()),
+                _ => {
+                    let text = probe.text().await.unwrap_or_default();
+                    return Err(DsperseError::Other(format!(
+                        "probe component {sha}/{filename} returned unexpected status ({status}): {text}"
+                    )));
+                }
+            }
+        }
+
+        if missing.is_empty() && present == files.len() {
+            tracing::info!(sha = %sha, "component files present, skipping");
             components_skipped += 1;
             continue;
         }
-        if check.status().as_u16() != 404 {
-            let status = check.status();
-            let text = check.text().await.unwrap_or_default();
+        if present > 0 {
             return Err(DsperseError::Other(format!(
-                "probe component {sha} returned unexpected status ({status}): {text}"
+                "component {sha} is partially uploaded: {present}/{} files present, \
+                 missing: {:?}.  A previous publish registered the component row but \
+                 some PUTs did not complete.  Run \
+                 `curl -X DELETE -H 'Authorization: Bearer $REGISTRY_AUTH_TOKEN' \
+                 {api}/admin/components/{sha}` to drop the stale row, then re-run \
+                 publish so the full register + upload flow can replay for this sha.",
+                files.len(),
+                missing
             )));
         }
 

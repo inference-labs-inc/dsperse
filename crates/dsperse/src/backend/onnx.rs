@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use ndarray::IxDyn;
 use tract_onnx::prelude::*;
+use tract_onnx::tract_hir::infer::Factoid;
 
 use crate::error::{DsperseError, Result};
 
@@ -62,15 +63,21 @@ fn resolve_concrete_shape(model: &InferenceModel, input_shape: &[usize]) -> Resu
     Ok(input_shape.to_vec())
 }
 
+fn resolve_input_datum_type(model: &InferenceModel, idx: usize) -> DatumType {
+    model
+        .input_fact(idx)
+        .ok()
+        .and_then(|f| f.datum_type.concretize())
+        .unwrap_or_else(f32::datum_type)
+}
+
 fn optimize_to_runnable(
     model: InferenceModel,
     concrete_shape: &[usize],
+    input_dt: DatumType,
 ) -> Result<Arc<TypedRunnableModel>> {
     model
-        .with_input_fact(
-            0,
-            InferenceFact::dt_shape(f32::datum_type(), concrete_shape),
-        )
+        .with_input_fact(0, InferenceFact::dt_shape(input_dt, concrete_shape))
         .map_err(|e| DsperseError::Onnx(format!("set input shape: {e}")))?
         .into_optimized()
         .map_err(|e| DsperseError::Onnx(format!("optimize: {e:#}")))?
@@ -85,9 +92,10 @@ pub fn run_inference_with_coercion(
 ) -> Result<NamedOutputs> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
+    let input_dt = resolve_input_datum_type(&model, 0);
 
-    if let Ok(plan) = optimize_to_runnable(model, &concrete_shape) {
-        let input = build_input_tvalue(input_data, &concrete_shape)?;
+    if let Ok(plan) = optimize_to_runnable(model, &concrete_shape, input_dt) {
+        let input = build_input_tvalue(input_data, &concrete_shape, input_dt)?;
         let result = plan
             .run(tvec![input])
             .map_err(|e| DsperseError::Onnx(format!("run: {e:#}")))?;
@@ -97,10 +105,7 @@ pub fn run_inference_with_coercion(
     tracing::warn!("standard optimization failed; using inference plan with TDim coercion");
     let model2 = load_onnx_model(onnx_path)?;
     let with_shape = model2
-        .with_input_fact(
-            0,
-            InferenceFact::dt_shape(f32::datum_type(), &concrete_shape),
-        )
+        .with_input_fact(0, InferenceFact::dt_shape(input_dt, &concrete_shape))
         .map_err(|e| DsperseError::Onnx(format!("set input: {e}")))?;
 
     let plan =
@@ -109,7 +114,7 @@ pub fn run_inference_with_coercion(
     let mut state = tract_onnx::tract_core::plan::SimpleState::new(&plan)
         .map_err(|e| DsperseError::Onnx(format!("state: {e}")))?;
 
-    let input = build_input_tvalue(input_data, &concrete_shape)?;
+    let input = build_input_tvalue(input_data, &concrete_shape, input_dt)?;
     let result = state
         .run_plan_with_eval(tvec![input], |session, op_state, node, inputs| {
             let coerced = coerce_tdim_inputs(&inputs);
@@ -149,26 +154,62 @@ fn extract_all_outputs(result: &[TValue]) -> Result<NamedOutputs> {
 fn load_runnable(
     onnx_path: &Path,
     input_shape: &[usize],
-) -> Result<(Arc<TypedRunnableModel>, Vec<usize>)> {
+) -> Result<(Arc<TypedRunnableModel>, Vec<usize>, DatumType)> {
     let model = load_onnx_model(onnx_path)?;
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    let plan = optimize_to_runnable(model, &concrete_shape)?;
-    Ok((plan, concrete_shape))
+    let input_dt = resolve_input_datum_type(&model, 0);
+    let plan = optimize_to_runnable(model, &concrete_shape, input_dt)?;
+    Ok((plan, concrete_shape, input_dt))
 }
 
-fn build_input_tvalue(input_data: &[f64], shape: &[usize]) -> Result<TValue> {
-    let input_f32: Vec<f32> = input_data.iter().map(|&v| v as f32).collect();
-    let tensor = tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), input_f32)
-        .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))?;
-    Ok(tensor.into_tvalue())
+fn build_input_tvalue(input_data: &[f64], shape: &[usize], dt: DatumType) -> Result<TValue> {
+    macro_rules! build_numeric {
+        ($t:ty) => {{
+            let data: Vec<$t> = input_data.iter().map(|&v| v as $t).collect();
+            tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), data)
+                .map(|a| a.into_tvalue())
+                .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))
+        }};
+    }
+    if dt == f32::datum_type() {
+        build_numeric!(f32)
+    } else if dt == f64::datum_type() {
+        build_numeric!(f64)
+    } else if dt == u8::datum_type() {
+        build_numeric!(u8)
+    } else if dt == i8::datum_type() {
+        build_numeric!(i8)
+    } else if dt == u16::datum_type() {
+        build_numeric!(u16)
+    } else if dt == i16::datum_type() {
+        build_numeric!(i16)
+    } else if dt == u32::datum_type() {
+        build_numeric!(u32)
+    } else if dt == i32::datum_type() {
+        build_numeric!(i32)
+    } else if dt == u64::datum_type() {
+        build_numeric!(u64)
+    } else if dt == i64::datum_type() {
+        build_numeric!(i64)
+    } else if dt == bool::datum_type() {
+        let data: Vec<bool> = input_data.iter().map(|&v| v != 0.0).collect();
+        tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), data)
+            .map(|a| a.into_tvalue())
+            .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))
+    } else {
+        Err(DsperseError::Onnx(format!(
+            "unsupported input datum type {dt:?}"
+        )))
+    }
 }
 
 fn run_single(
     plan: &Arc<TypedRunnableModel>,
     input_data: &[f64],
     shape: &[usize],
+    dt: DatumType,
 ) -> Result<TVec<TValue>> {
-    let tv = build_input_tvalue(input_data, shape)?;
+    let tv = build_input_tvalue(input_data, shape, dt)?;
     plan.run(tvec!(tv))
         .map_err(|e| DsperseError::Onnx(format!("inference: {e}")))
 }
@@ -176,16 +217,21 @@ fn run_single(
 pub struct WarmModel {
     plan: Arc<TypedRunnableModel>,
     input_shape: Vec<usize>,
+    input_dt: DatumType,
 }
 
 impl WarmModel {
     pub fn load(onnx_path: &Path, input_shape: &[usize]) -> Result<Self> {
-        let (plan, input_shape) = load_runnable(onnx_path, input_shape)?;
-        Ok(Self { plan, input_shape })
+        let (plan, input_shape, input_dt) = load_runnable(onnx_path, input_shape)?;
+        Ok(Self {
+            plan,
+            input_shape,
+            input_dt,
+        })
     }
 
     pub fn run(&self, input_data: &[f64]) -> Result<(Vec<f64>, Vec<usize>)> {
-        let result = run_single(&self.plan, input_data, &self.input_shape)?;
+        let result = run_single(&self.plan, input_data, &self.input_shape, self.input_dt)?;
         extract_first_output(&result)
     }
 }
@@ -195,8 +241,8 @@ pub fn run_inference(
     input_data: &[f64],
     input_shape: &[usize],
 ) -> Result<(Vec<f64>, Vec<usize>)> {
-    let (plan, concrete_shape) = load_runnable(onnx_path, input_shape)?;
-    let result = run_single(&plan, input_data, &concrete_shape)?;
+    let (plan, concrete_shape, input_dt) = load_runnable(onnx_path, input_shape)?;
+    let result = run_single(&plan, input_data, &concrete_shape, input_dt)?;
     extract_first_output(&result)
 }
 
@@ -208,9 +254,10 @@ pub fn run_inference_named(
     let model = load_onnx_model(onnx_path)?;
     let output_names = collect_output_names(&model);
     let concrete_shape = resolve_concrete_shape(&model, input_shape)?;
-    match optimize_to_runnable(model, &concrete_shape) {
+    let input_dt = resolve_input_datum_type(&model, 0);
+    match optimize_to_runnable(model, &concrete_shape, input_dt) {
         Ok(plan) => {
-            let result = run_single(&plan, input_data, &concrete_shape)?;
+            let result = run_single(&plan, input_data, &concrete_shape, input_dt)?;
             zip_named_outputs(&output_names, &result)
         }
         Err(_) => {
@@ -269,15 +316,15 @@ fn run_multi_inner(
         .collect();
 
     let mut input_order: Vec<Option<usize>> = vec![None; model_input_count];
+    let mut input_dts: Vec<DatumType> = vec![f32::datum_type(); model_input_count];
     for (i, name) in &model_input_names {
         if let Some(&provided_idx) = input_by_name.get(name.as_str()) {
+            let dt = resolve_input_datum_type(&model, *i);
             model = model
-                .with_input_fact(
-                    *i,
-                    InferenceFact::dt_shape(f32::datum_type(), &inputs[provided_idx].2),
-                )
+                .with_input_fact(*i, InferenceFact::dt_shape(dt, &inputs[provided_idx].2))
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
             input_order[*i] = Some(provided_idx);
+            input_dts[*i] = dt;
         }
     }
 
@@ -317,7 +364,7 @@ fn run_multi_inner(
             ))
         })?;
         let (_, ref data, ref shape) = inputs[provided_idx];
-        input_tvs.push(build_input_tvalue(data, shape)?);
+        input_tvs.push(build_input_tvalue(data, shape, input_dts[model_idx])?);
     }
 
     let result = model
@@ -539,5 +586,33 @@ mod tests {
     fn extract_first_output_empty() {
         let result = extract_first_output(&[]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_input_tvalue_respects_declared_dtypes() {
+        let shape = [2usize, 3];
+        let values: Vec<f64> = (0..6).map(|v| v as f64).collect();
+
+        let tv_f32 = build_input_tvalue(&values, &shape, f32::datum_type()).unwrap();
+        assert_eq!(tv_f32.datum_type(), f32::datum_type());
+        assert_eq!(tv_f32.shape(), &shape);
+
+        let tv_u8 = build_input_tvalue(&values, &shape, u8::datum_type()).unwrap();
+        assert_eq!(tv_u8.datum_type(), u8::datum_type());
+
+        let tv_i64 = build_input_tvalue(&values, &shape, i64::datum_type()).unwrap();
+        assert_eq!(tv_i64.datum_type(), i64::datum_type());
+
+        let bool_vals = vec![0.0, 1.0, 0.0, 2.0, 0.0, 1.0];
+        let tv_bool = build_input_tvalue(&bool_vals, &shape, bool::datum_type()).unwrap();
+        assert_eq!(tv_bool.datum_type(), bool::datum_type());
+        let view = tv_bool.to_plain_array_view::<bool>().unwrap();
+        assert_eq!(
+            view.iter().copied().collect::<Vec<_>>(),
+            vec![false, true, false, true, false, true]
+        );
+
+        let unsupported = build_input_tvalue(&values, &shape, DatumType::String);
+        assert!(unsupported.is_err());
     }
 }

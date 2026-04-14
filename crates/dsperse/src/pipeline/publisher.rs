@@ -110,6 +110,17 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
         // instead of silently continuing, because re-registering
         // via POST /admin/components will 409 and the current flow
         // has no way to request fresh upload URLs for that sha.
+        // A manifest entry with zero files is malformed -- the
+        // empty-list case would otherwise make both
+        // `missing.is_empty()` and `present == files.len()` true
+        // below, silently classifying the component as present
+        // without any actual bytes verified.  Fail loud.
+        if files.is_empty() {
+            return Err(DsperseError::Other(format!(
+                "component {sha} has no files listed in the manifest; refusing to treat as present"
+            )));
+        }
+
         let mut present = 0usize;
         let mut missing: Vec<String> = Vec::new();
         for filename in &files {
@@ -120,16 +131,24 @@ async fn publish_async(dir: &Path, config: &PublishConfig) -> Result<PublishResu
                 .send()
                 .await
                 .map_err(|e| DsperseError::Other(format!("probe {sha}/{filename}: {e}")))?;
+            // A Range: bytes=0-0 GET against a blob path has two
+            // legitimate success replies: 206 (partial content,
+            // what the blob store returns when it honours the
+            // range) and 200 (full content, what it returns when
+            // it ignores the range for an empty body or tiny file).
+            // Any other 2xx (201 Created, 202 Accepted, 204 No
+            // Content) is ambiguous for a GET on a CAS path and
+            // should not be interpreted as "file present".
             let status = probe.status();
-            if status.is_success() || status.as_u16() == 206 {
-                present += 1;
-            } else if status.as_u16() == 404 {
-                missing.push(filename.clone());
-            } else {
-                let text = probe.text().await.unwrap_or_default();
-                return Err(DsperseError::Other(format!(
-                    "probe component {sha}/{filename} returned unexpected status ({status}): {text}"
-                )));
+            match status.as_u16() {
+                200 | 206 => present += 1,
+                404 => missing.push(filename.clone()),
+                _ => {
+                    let text = probe.text().await.unwrap_or_default();
+                    return Err(DsperseError::Other(format!(
+                        "probe component {sha}/{filename} returned unexpected status ({status}): {text}"
+                    )));
+                }
             }
         }
 

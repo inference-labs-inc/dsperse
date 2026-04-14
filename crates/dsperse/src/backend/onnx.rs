@@ -203,18 +203,7 @@ fn validate_integer_input(
 }
 
 fn build_input_tvalue(input_data: &[f64], shape: &[usize], dt: DatumType) -> Result<TValue> {
-    macro_rules! build_float {
-        ($t:ty, $name:expr) => {{
-            let mut data: Vec<$t> = Vec::with_capacity(input_data.len());
-            for (i, &v) in input_data.iter().enumerate() {
-                reject_non_finite(v, i, $name)?;
-                data.push(v as $t);
-            }
-            tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), data)
-                .map(|a| a.into_tvalue())
-                .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))
-        }};
-    }
+    let f32_max_f64: f64 = f32::MAX as f64;
     macro_rules! build_bounded_int {
         ($t:ty, $name:expr, $min:expr, $max:expr) => {{
             let mut data: Vec<$t> = Vec::with_capacity(input_data.len());
@@ -228,9 +217,28 @@ fn build_input_tvalue(input_data: &[f64], shape: &[usize], dt: DatumType) -> Res
         }};
     }
     if dt == f32::datum_type() {
-        build_float!(f32, "f32")
+        let mut data: Vec<f32> = Vec::with_capacity(input_data.len());
+        for (i, &v) in input_data.iter().enumerate() {
+            reject_non_finite(v, i, "f32")?;
+            if v < -f32_max_f64 || v > f32_max_f64 {
+                return Err(DsperseError::Onnx(format!(
+                    "input[{i}] = {v}: magnitude exceeds representable f32 range [-{f32_max_f64}, {f32_max_f64}]"
+                )));
+            }
+            data.push(v as f32);
+        }
+        tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), data)
+            .map(|a| a.into_tvalue())
+            .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))
     } else if dt == f64::datum_type() {
-        build_float!(f64, "f64")
+        let mut data: Vec<f64> = Vec::with_capacity(input_data.len());
+        for (i, &v) in input_data.iter().enumerate() {
+            reject_non_finite(v, i, "f64")?;
+            data.push(v);
+        }
+        tract_ndarray::ArrayD::from_shape_vec(IxDyn(shape), data)
+            .map(|a| a.into_tvalue())
+            .map_err(|e| DsperseError::Onnx(format!("input tensor: {e}")))
     } else if dt == u8::datum_type() {
         build_bounded_int!(u8, "u8", u8::MIN, u8::MAX)
     } else if dt == i8::datum_type() {
@@ -768,6 +776,28 @@ mod tests {
             msg.contains("safe integer bound"),
             "expected safe-integer-bound error, got {msg}"
         );
+    }
+
+    #[test]
+    fn build_input_tvalue_rejects_finite_f64_outside_f32_range() {
+        let shape = [2usize];
+        for bad in [1.0e40_f64, -1.0e40_f64] {
+            assert!(bad.is_finite());
+            let err = build_input_tvalue(&[0.0, bad], &shape, f32::datum_type()).unwrap_err();
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("representable f32 range"),
+                "expected f32-range error for val={bad}, got {msg}"
+            );
+        }
+        let ok = build_input_tvalue(
+            &[0.0, f32::MAX as f64, -(f32::MAX as f64)],
+            &[3],
+            f32::datum_type(),
+        )
+        .unwrap();
+        let view = ok.to_plain_array_view::<f32>().unwrap();
+        assert!(view.iter().all(|v| v.is_finite()));
     }
 
     #[test]

@@ -105,29 +105,32 @@ pub fn remove_identity_nodes(graph: &mut GraphProto) -> usize {
 
     let output_names: HashSet<String> = graph.output.iter().map(|o| o.name.clone()).collect();
 
+    // Only rewire consumers whose Identity output is NOT an exported
+    // graph output.  Exported names are the model's public interface
+    // and must survive as-is; we preserve those Identity nodes
+    // instead of renaming the graph output.  Rewriting graph.output
+    // in place would silently change the model's API and let DCE
+    // below remove the Identity that produces the exported tensor.
+    let drop_map: HashMap<String, String> = identity_map
+        .iter()
+        .filter(|(out, _)| !output_names.contains(out.as_str()))
+        .map(|(out, inp)| (out.clone(), inp.clone()))
+        .collect();
+
     for node in &mut graph.node {
-        if node.op_type == "Identity" && identity_map.contains_key(&node.output[0]) {
+        if node.op_type == "Identity" && drop_map.contains_key(&node.output[0]) {
             continue;
         }
         for inp in &mut node.input {
-            if identity_map.contains_key(inp.as_str()) {
-                *inp = resolve(inp, &identity_map);
+            if drop_map.contains_key(inp.as_str()) {
+                *inp = resolve(inp, &drop_map);
             }
         }
     }
 
-    for out in &mut graph.output {
-        if identity_map.contains_key(out.name.as_str()) {
-            out.name = resolve(&out.name, &identity_map);
-        }
-    }
-
-    let count = identity_map.len();
+    let count = drop_map.len();
     graph.node.retain(|n| {
-        !(n.op_type == "Identity"
-            && n.output.len() == 1
-            && identity_map.contains_key(&n.output[0])
-            && !output_names.contains(&n.output[0]))
+        !(n.op_type == "Identity" && n.output.len() == 1 && drop_map.contains_key(&n.output[0]))
     });
     count
 }

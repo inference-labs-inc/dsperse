@@ -129,11 +129,19 @@ pub fn run_inference_with_coercion(
             match eval_result {
                 Ok(o) => Ok::<_, TractError>(o),
                 Err(e) => {
+                    let Some(first) = inputs.first() else {
+                        return Err(e);
+                    };
                     tracing::warn!(node = %node.name, error = %e, "eval failed, using fallback");
-                    let fallback = inputs
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| Tensor::zero::<f32>(&[1]).unwrap().into_tvalue());
+                    let dt = first.datum_type();
+                    let fallback = Tensor::zero_dt(dt, &[1])
+                        .map_err(|alloc_err| {
+                            TractError::msg(format!(
+                                "node {}: eval failed ({e}); fallback allocation for dtype {dt:?} failed: {alloc_err}",
+                                node.name
+                            ))
+                        })?
+                        .into_tvalue();
                     let n = node.outputs.len().max(1);
                     Ok((0..n).map(|_| fallback.clone()).collect())
                 }
@@ -189,7 +197,7 @@ fn validate_integer_input(
             "input[{idx}] = {v}: fractional component cannot be represented as {type_name}"
         )));
     }
-    if v.abs() >= I64_SAFE_BOUND_F64 {
+    if v.abs() > I64_SAFE_BOUND_F64 {
         return Err(DsperseError::Onnx(format!(
             "input[{idx}] = {v}: magnitude exceeds IEEE-754 safe integer bound {I64_SAFE_BOUND}"
         )));
@@ -485,7 +493,7 @@ fn collect_output_names(model: &InferenceModel) -> Vec<String> {
 const I64_SAFE_BOUND: i64 = 9_007_199_254_740_992;
 
 fn i64_to_f64_checked(v: i64, label: &str) -> Result<f64> {
-    if v.abs() >= I64_SAFE_BOUND {
+    if v.abs() > I64_SAFE_BOUND {
         return Err(DsperseError::Onnx(format!(
             "{label}: i64 value {v} exceeds IEEE-754 safe integer bound"
         )));
@@ -494,7 +502,7 @@ fn i64_to_f64_checked(v: i64, label: &str) -> Result<f64> {
 }
 
 fn u64_to_f64_checked(v: u64, label: &str) -> Result<f64> {
-    if v >= I64_SAFE_BOUND as u64 {
+    if v > I64_SAFE_BOUND as u64 {
         return Err(DsperseError::Onnx(format!(
             "{label}: u64 value {v} exceeds IEEE-754 safe integer bound"
         )));
@@ -811,6 +819,26 @@ mod tests {
                 "expected range error for dt={dt:?} val={bad}, got {msg}"
             );
         }
+    }
+
+    #[test]
+    fn safe_integer_bound_is_inclusive_on_both_sides() {
+        let shape = [3usize];
+        let bound = I64_SAFE_BOUND as f64;
+        build_input_tvalue(&[0.0, bound, -bound], &shape, i64::datum_type())
+            .expect("i64 accepts +/- I64_SAFE_BOUND");
+        build_input_tvalue(&[0.0, bound, 1.0], &shape, u64::datum_type())
+            .expect("u64 accepts I64_SAFE_BOUND");
+
+        i64_to_f64_checked(I64_SAFE_BOUND, "i64")
+            .expect("i64_to_f64_checked accepts I64_SAFE_BOUND");
+        i64_to_f64_checked(-I64_SAFE_BOUND, "i64")
+            .expect("i64_to_f64_checked accepts -I64_SAFE_BOUND");
+        u64_to_f64_checked(I64_SAFE_BOUND as u64, "u64")
+            .expect("u64_to_f64_checked accepts I64_SAFE_BOUND");
+
+        assert!(i64_to_f64_checked(I64_SAFE_BOUND + 1, "i64").is_err());
+        assert!(u64_to_f64_checked(I64_SAFE_BOUND as u64 + 1, "u64").is_err());
     }
 
     #[test]

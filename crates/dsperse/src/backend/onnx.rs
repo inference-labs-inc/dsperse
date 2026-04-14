@@ -403,7 +403,7 @@ fn run_multi_inner(
         .collect();
 
     let mut input_order: Vec<Option<usize>> = vec![None; model_input_count];
-    let mut input_dts: Vec<DatumType> = vec![f32::datum_type(); model_input_count];
+    let mut input_dts: Vec<Option<DatumType>> = vec![None; model_input_count];
     for (i, name) in &model_input_names {
         if let Some(&provided_idx) = input_by_name.get(name.as_str()) {
             let dt = resolve_input_datum_type(&model, *i)?;
@@ -411,7 +411,7 @@ fn run_multi_inner(
                 .with_input_fact(*i, InferenceFact::dt_shape(dt, &inputs[provided_idx].2))
                 .map_err(|e| DsperseError::Onnx(format!("set input {i} ({name}) shape: {e}")))?;
             input_order[*i] = Some(provided_idx);
-            input_dts[*i] = dt;
+            input_dts[*i] = Some(dt);
         }
     }
 
@@ -450,8 +450,14 @@ fn run_multi_inner(
                 "model input {model_idx} ('{name}') not matched to provided tensors"
             ))
         })?;
+        let dt = input_dts[model_idx].ok_or_else(|| {
+            let name = &model_input_names[model_idx].1;
+            DsperseError::Onnx(format!(
+                "model input {model_idx} ('{name}') has no resolved datum type"
+            ))
+        })?;
         let (_, ref data, ref shape) = inputs[provided_idx];
-        input_tvs.push(build_input_tvalue(data, shape, input_dts[model_idx])?);
+        input_tvs.push(build_input_tvalue(data, shape, dt)?);
     }
 
     let result = model

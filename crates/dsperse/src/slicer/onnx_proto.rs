@@ -270,13 +270,19 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
 }
 
 /// Decode a TensorProto into `Vec<f64>` directly, without going
-/// through `f32`.  FLOAT / DOUBLE / INT32 / INT64 payloads — in
-/// either the typed `*_data` fields or the little-endian
-/// `raw_data` byte stream — round-trip through the widest
-/// numeric carrier the consumer holds, preserving bits that the
-/// `tensor_to_f32` -> `f64::from(f32)` chain would otherwise
-/// truncate (notably DOUBLE mantissas and INT64 magnitudes
-/// outside the f32 exact range).
+/// through `f32`.  FLOAT / DOUBLE / INT32 payloads — in either
+/// the typed `*_data` fields or the little-endian `raw_data`
+/// byte stream — round-trip exactly: DOUBLE keeps its full 52-
+/// bit mantissa, FLOAT widens losslessly, and INT32 is always
+/// within f64's exact-integer range.
+///
+/// INT64 is a partial exception.  f64 exactly represents every
+/// integer in `[-2^53, 2^53]`; INT64 magnitudes beyond 2^53 are
+/// rounded to the nearest representable f64 and are not
+/// preserved bit-for-bit.  This still beats the previous
+/// `tensor_to_f32 -> f64::from(f32)` chain (which truncated at
+/// 2^24) but callers that need full INT64 fidelity must not use
+/// this decoder.
 ///
 /// Returns an empty `Vec` on unsupported / unrecognised dtypes
 /// or malformed `raw_data` length so callers can use the

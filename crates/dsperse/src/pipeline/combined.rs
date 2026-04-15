@@ -305,20 +305,60 @@ fn seed_tensor_cache_from_initializers(
         if tensor_cache.contains(&init.name) {
             continue;
         }
-        let shape: Vec<usize> = init.dims.iter().map(|&d| d as usize).collect();
+        // Negative dims would silently wrap to huge positive
+        // values via `as usize`; reject up front so a malformed
+        // initialiser surfaces an error here instead of
+        // allocating a multi-petabyte array below.
+        let shape: Vec<usize> = match init
+            .dims
+            .iter()
+            .map(|&d| usize::try_from(d))
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::debug!(
+                    name = %init.name,
+                    dims = ?init.dims,
+                    error = %e,
+                    "skipping initializer-backed slice tensor: invalid (negative) dimension"
+                );
+                continue;
+            }
+        };
+        // Use checked_mul so an arithmetic overflow surfaces as a
+        // skip (and the slice executor downstream produces a
+        // clearer error if it actually needed the value), instead
+        // of wrapping silently and mis-comparing against
+        // `data.len()`.
+        let expected: Option<usize> = shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d));
+        let Some(expected) = expected else {
+            tracing::debug!(
+                name = %init.name,
+                dims = ?init.dims,
+                "skipping initializer-backed slice tensor: shape product overflowed usize"
+            );
+            continue;
+        };
         let data: Vec<f64> = crate::slicer::onnx_proto::tensor_to_f32(init)
             .into_iter()
             .map(f64::from)
             .collect();
-        let expected: usize = shape.iter().product();
         if data.len() != expected {
-            // Skip rather than fail: an initializer whose declared
+            // Skip rather than fail: an initialiser whose declared
             // shape doesn't match its element count can still be
             // useful elsewhere (some quantised tensors store packed
             // bytes), but we cannot reshape it into ArrayD<f64>
             // here without guessing.  Leave it to the slice ONNX
             // executor to surface a clearer error if it actually
             // needs the value.
+            tracing::debug!(
+                name = %init.name,
+                declared_shape = ?shape,
+                declared_elements = expected,
+                actual_elements = data.len(),
+                "skipping initializer-backed slice tensor: declared shape != element count"
+            );
             continue;
         }
         let arr = ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {

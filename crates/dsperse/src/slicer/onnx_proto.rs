@@ -269,6 +269,85 @@ pub fn tensor_to_f32(tensor: &TensorProto) -> Vec<f32> {
     Vec::new()
 }
 
+/// Decode a TensorProto into `Vec<f64>` directly, without going
+/// through `f32`.  FLOAT / DOUBLE / INT32 payloads — in either
+/// the typed `*_data` fields or the little-endian `raw_data`
+/// byte stream — round-trip exactly: DOUBLE keeps its full 52-
+/// bit mantissa, FLOAT widens losslessly, and INT32 is always
+/// within f64's exact-integer range.
+///
+/// INT64 is a partial exception.  f64 exactly represents every
+/// integer in `[-2^53, 2^53]`; INT64 magnitudes beyond 2^53 are
+/// rounded to the nearest representable f64 and are not
+/// preserved bit-for-bit.  This still beats the previous
+/// `tensor_to_f32 -> f64::from(f32)` chain (which truncated at
+/// 2^24) but callers that need full INT64 fidelity must not use
+/// this decoder.
+///
+/// Returns an empty `Vec` on unsupported / unrecognised dtypes
+/// or malformed `raw_data` length so callers can use the
+/// existing `data.is_empty()` skip path.
+pub fn tensor_to_f64(tensor: &TensorProto) -> Vec<f64> {
+    if !tensor.double_data.is_empty() {
+        return tensor.double_data.clone();
+    }
+    if !tensor.float_data.is_empty() {
+        return tensor.float_data.iter().map(|&v| f64::from(v)).collect();
+    }
+    if !tensor.int64_data.is_empty() {
+        #[allow(clippy::cast_precision_loss)]
+        return tensor.int64_data.iter().map(|&v| v as f64).collect();
+    }
+    if !tensor.int32_data.is_empty() {
+        return tensor.int32_data.iter().map(|&v| f64::from(v)).collect();
+    }
+    if tensor.raw_data.is_empty() {
+        return Vec::new();
+    }
+    match tensor.data_type {
+        TensorProto::DOUBLE => {
+            let chunks = tensor.raw_data.chunks_exact(8);
+            if !chunks.remainder().is_empty() {
+                return Vec::new();
+            }
+            chunks
+                .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                .collect()
+        }
+        TensorProto::FLOAT => {
+            let chunks = tensor.raw_data.chunks_exact(4);
+            if !chunks.remainder().is_empty() {
+                return Vec::new();
+            }
+            chunks
+                .map(|c| f64::from(f32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+                .collect()
+        }
+        TensorProto::INT64 => {
+            let chunks = tensor.raw_data.chunks_exact(8);
+            if !chunks.remainder().is_empty() {
+                return Vec::new();
+            }
+            #[allow(clippy::cast_precision_loss)]
+            chunks
+                .map(|c| {
+                    i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]) as f64
+                })
+                .collect()
+        }
+        TensorProto::INT32 => {
+            let chunks = tensor.raw_data.chunks_exact(4);
+            if !chunks.remainder().is_empty() {
+                return Vec::new();
+            }
+            chunks
+                .map(|c| f64::from(i32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 pub fn build_initializer_map(graph: &GraphProto) -> HashMap<String, &TensorProto> {
     graph
         .initializer

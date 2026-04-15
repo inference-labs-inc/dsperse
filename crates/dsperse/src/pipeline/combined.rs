@@ -56,6 +56,20 @@ impl CombinedRun {
             }
         }
 
+        // Seed the tensor_cache with any initializer-backed tensor
+        // the slice metadata references.  The slicer's constant-
+        // folding passes can turn intermediate tensors (e.g. a
+        // Transpose over a constant) into initializers in the
+        // transformed graph, while leaving downstream slice
+        // metadata pointing at the original tensor name.  ORT
+        // does not emit those names among its named outputs (they
+        // are not declared as graph outputs of combined.onnx and
+        // have no producing node), so without this seed the
+        // subsequent `tensor_cache.get` in `all_circuit_work` fails
+        // with `tensor '<name>' not found in store` and the whole
+        // run aborts before a single DSlice gets dispatched.
+        seed_tensor_cache_from_initializers(&combined_path, &model_meta, &mut tensor_cache)?;
+
         let chain = build_execution_chain(&model_meta, slices_dir)?;
         let run_meta = build_run_metadata(&model_meta, slices_dir, &chain)?;
 
@@ -248,4 +262,79 @@ fn run_combined_onnx(
             declared_inputs.len()
         )))
     }
+}
+
+/// Populate `tensor_cache` with any combined-graph initializer
+/// whose name appears in slice metadata as a `filtered_input` or a
+/// declared `output`.  Without this, a slice that depends on a
+/// constant-folded tensor (one the slicer turned from a node
+/// output into an initializer) would fail at the
+/// `tensor_cache.get(name)` call in `all_circuit_work` even though
+/// the value is right there in the combined ONNX.
+fn seed_tensor_cache_from_initializers(
+    combined_path: &Path,
+    model_meta: &ModelMetadata,
+    tensor_cache: &mut TensorStore,
+) -> Result<()> {
+    let needed: HashSet<&str> = model_meta
+        .slices
+        .iter()
+        .flat_map(|s| {
+            s.dependencies
+                .filtered_inputs
+                .iter()
+                .chain(s.dependencies.output.iter())
+        })
+        .map(String::as_str)
+        .collect();
+    if needed.is_empty() {
+        return Ok(());
+    }
+
+    let model = crate::slicer::onnx_proto::load_model(combined_path)?;
+    let graph = match &model.graph {
+        Some(g) => g,
+        None => return Ok(()),
+    };
+
+    let mut seeded = 0usize;
+    for init in &graph.initializer {
+        if !needed.contains(init.name.as_str()) {
+            continue;
+        }
+        if tensor_cache.contains(&init.name) {
+            continue;
+        }
+        let shape: Vec<usize> = init.dims.iter().map(|&d| d as usize).collect();
+        let data: Vec<f64> = crate::slicer::onnx_proto::tensor_to_f32(init)
+            .into_iter()
+            .map(f64::from)
+            .collect();
+        let expected: usize = shape.iter().product();
+        if data.len() != expected {
+            // Skip rather than fail: an initializer whose declared
+            // shape doesn't match its element count can still be
+            // useful elsewhere (some quantised tensors store packed
+            // bytes), but we cannot reshape it into ArrayD<f64>
+            // here without guessing.  Leave it to the slice ONNX
+            // executor to surface a clearer error if it actually
+            // needs the value.
+            continue;
+        }
+        let arr = ArrayD::from_shape_vec(IxDyn(&shape), data).map_err(|e| {
+            DsperseError::Pipeline(format!(
+                "seed initializer-backed tensor '{}' from combined.onnx: {e}",
+                init.name
+            ))
+        })?;
+        tensor_cache.put(init.name.clone(), arr);
+        seeded += 1;
+    }
+    if seeded > 0 {
+        tracing::info!(
+            seeded,
+            "seeded tensor_cache with constant-folded slice-input initializers"
+        );
+    }
+    Ok(())
 }

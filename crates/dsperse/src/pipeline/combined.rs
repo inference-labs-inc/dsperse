@@ -340,10 +340,11 @@ fn seed_tensor_cache_from_initializers(
             );
             continue;
         };
-        let data: Vec<f64> = crate::slicer::onnx_proto::tensor_to_f32(init)
-            .into_iter()
-            .map(f64::from)
-            .collect();
+        // Decode straight to f64 so DOUBLE / INT64 initialisers
+        // keep their full precision -- the previous f32-then-widen
+        // chain truncated DOUBLE mantissas and silently lost
+        // precision on INT64 magnitudes outside f32's exact range.
+        let data: Vec<f64> = crate::slicer::onnx_proto::tensor_to_f64(init);
         if data.len() != expected {
             // Skip rather than fail: an initialiser whose declared
             // shape doesn't match its element count can still be

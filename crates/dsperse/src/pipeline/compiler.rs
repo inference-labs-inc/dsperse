@@ -444,6 +444,19 @@ pub(super) fn compute_bundle_signature(
     let base = compute_circuit_signature(tmpl_path, curve)?;
     let mut hasher = Sha256::new();
     hasher.update(base.as_bytes());
+    // Stability contract: any change to the on-wire / in-hash layout
+    // of the bytes mixed in below will silently re-shuffle every
+    // content-addressed component sha. The three inputs that must
+    // stay byte-stable are
+    //   * `jstprove_circuits::proof_config::ProofConfig::config_id()`
+    //     (CONFIG_ID integers documented in proof_config.rs),
+    //   * `StampedProofConfig::version` (u32, per
+    //     ProofConfig::current_version),
+    //   * `CircuitParams::weights_as_inputs` serialization (bool).
+    // If any of those change their encoding, bump the version tag in
+    // the marker below (for example `bundle-disambiguator-v2`) so
+    // downstream registries receive a deliberate re-shuffle rather
+    // than a silent one.
     hasher.update(b"\x00bundle-disambiguator-v1\x00");
 
     match jstprove_io::bundle::read_bundle_metadata::<jstprove_circuits::api::CircuitParamsType>(
@@ -461,8 +474,23 @@ pub(super) fn compute_bundle_signature(
             }
             hasher.update([u8::from(params.weights_as_inputs)]);
         }
-        Ok((None, _)) | Err(_) => {
+        Ok((None, _)) => {
             hasher.update([0u8]);
+        }
+        Err(e) => {
+            // A malformed or unreadable manifest is meaningfully
+            // different from a bundle that legitimately carries no
+            // metadata. Distinguish the two with separate
+            // discriminator bytes so a corrupt bundle cannot collide
+            // with a clean legacy bundle, and surface the failure in
+            // the tracing log so operators investigating a shifted
+            // sha have the underlying read error to reference.
+            tracing::warn!(
+                bundle = %bundle_dir.display(),
+                error = %e,
+                "bundle manifest read failed while computing bundle signature; using error discriminator"
+            );
+            hasher.update([2u8]);
         }
     }
 
@@ -1749,7 +1777,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_signature_matches_circuit_signature_when_bundle_has_no_metadata() {
+    fn bundle_signature_differs_from_circuit_signature_even_without_metadata() {
         let tmp = tempfile::tempdir().unwrap();
         let onnx_path = tmp.path().join("slice.onnx");
         write_identity_onnx(&onnx_path);

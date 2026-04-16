@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::error::{DsperseError, Result};
-use crate::pipeline::compiler::compute_circuit_signature;
+use crate::pipeline::compiler::compute_bundle_signature;
 use crate::pipeline::runner::load_model_metadata;
 use crate::schema::metadata::SliceMetadata;
 use crate::utils::paths::resolve_relative_path;
@@ -418,7 +418,7 @@ fn extract_component(
 ) -> Result<(String, Vec<String>, Option<String>, ComponentSource)> {
     if let Some(dir) = resolve_circuit_dir(slices_dir, slice)? {
         let onnx_path = resolve_source_onnx(slices_dir, slice)?;
-        let sig = compute_circuit_signature(&onnx_path, curve)?;
+        let sig = compute_bundle_signature(&onnx_path, curve, &dir)?;
         let files = list_bundle_files(&dir)?;
         return Ok((
             sig,

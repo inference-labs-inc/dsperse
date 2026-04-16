@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub use jstprove_circuits::api::ExtractedOutputType as ExtractedOutput;
 pub use jstprove_circuits::api::ProofConfigType as ProofConfig;
 pub use jstprove_circuits::api::StampedProofConfigType as StampedProofConfig;
 pub use jstprove_circuits::api::VerifiedOutputType as VerifiedOutput;
@@ -263,14 +264,33 @@ impl JstproveBackend {
         witness_bytes: &[u8],
         num_model_inputs: usize,
     ) -> Result<Vec<f64>> {
+        Ok(self
+            .extract_outputs_full(witness_bytes, num_model_inputs)?
+            .outputs)
+    }
+
+    /// Full extracted output bundle: inputs, outputs, and the
+    /// witness-stamped scale parameters. Holographic verifiers call
+    /// this after `verify_holographic` because the holographic
+    /// verify path does not reach through `verify_and_extract`, yet
+    /// the validator still needs the declared inputs (to cross-check
+    /// against what it sent) and the scale fields (to report the
+    /// same `VerifiedOutput` shape the non-holographic path
+    /// produces). Keeping `extract_outputs` as a thin wrapper
+    /// preserves the existing `Vec<f64>` contract for callers that
+    /// only want the outputs.
+    pub fn extract_outputs_full(
+        &self,
+        witness_bytes: &[u8],
+        num_model_inputs: usize,
+    ) -> Result<ExtractedOutput> {
         if num_model_inputs == 0 {
             return Err(DsperseError::Backend(
                 "extract_outputs: num_model_inputs must be > 0".into(),
             ));
         }
-        let result = api::extract_outputs(witness_bytes, num_model_inputs)
-            .map_err(|e| DsperseError::Backend(format!("extract_outputs: {e}")))?;
-        Ok(result.outputs)
+        api::extract_outputs(witness_bytes, num_model_inputs)
+            .map_err(|e| DsperseError::Backend(format!("extract_outputs: {e}")))
     }
 
     pub fn verify(

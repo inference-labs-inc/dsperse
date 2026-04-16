@@ -141,7 +141,20 @@ impl JstproveBackend {
                     .map_err(|e| DsperseError::Backend(format!("incompatible bundle: {e}")))?;
                 Ok(stamped.config)
             }
-            Ok((None, _)) | Err(_) => {
+            Ok((None, _)) => {
+                let bundle = self.load_bundle_cached(circuit_path)?;
+                Self::resolve_proof_config(&bundle)
+            }
+            Err(e) => {
+                // Surface the manifest-read failure so operators
+                // investigating a slow verify path or a legacy
+                // bundle layout can tell the fast path missed
+                // rather than silently eating a parse / IO error.
+                tracing::debug!(
+                    path = %circuit_path.display(),
+                    error = %e,
+                    "manifest-only proof_config read failed; falling back to full bundle load"
+                );
                 let bundle = self.load_bundle_cached(circuit_path)?;
                 Self::resolve_proof_config(&bundle)
             }

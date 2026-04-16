@@ -1267,7 +1267,14 @@ fn compile_channel_split_slice(
             ))
         })?;
 
-        if holographic {
+        if holographic && !jstprove_io::bundle::bundle_has_vk(&shared_circuit_path) {
+            // When the needs_build branch took the memcache-reuse
+            // sub-path, copy_dir_recursive may already have brought
+            // vk.bin across from the source bundle; skip the
+            // expensive re-setup in that case and only run it when
+            // the shared bundle genuinely lacks a vk (the
+            // fresh-compile sub-path, or a source that raced us
+            // before its own setup persisted).
             run_holographic_setup(
                 backend,
                 &shared_circuit_path,

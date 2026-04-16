@@ -971,6 +971,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "criterion",
+ "jstprove-io",
  "jstprove_circuits",
  "libc",
  "ndarray 0.17.2",

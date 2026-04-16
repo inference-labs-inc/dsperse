@@ -119,6 +119,48 @@ impl JstproveBackend {
         Ok(stamped.config)
     }
 
+    /// Resolve the proof config without touching the circuit or
+    /// witness-solver blobs. Reads only `manifest.msgpack`, which is
+    /// kilobytes versus the tens of megabytes a full bundle load
+    /// pulls in. Falls back to `resolve_proof_config` on a full
+    /// bundle load if the manifest is missing the stamp so callers
+    /// still get the same "no stamped proof_config" error path for
+    /// legacy bundles rather than a confusing deserialization
+    /// failure.
+    fn resolve_proof_config_from_manifest(&self, circuit_path: &Path) -> Result<ProofConfig> {
+        match jstprove_io::bundle::read_bundle_metadata::<CircuitParams>(circuit_path) {
+            Ok((Some(params), _)) => {
+                let stamped = params.proof_config.ok_or_else(|| {
+                    DsperseError::Backend(
+                        "circuit bundle has no stamped proof_config; recompile with a stamping prover"
+                            .into(),
+                    )
+                })?;
+                stamped
+                    .ensure_current()
+                    .map_err(|e| DsperseError::Backend(format!("incompatible bundle: {e}")))?;
+                Ok(stamped.config)
+            }
+            Ok((None, _)) => {
+                let bundle = self.load_bundle_cached(circuit_path)?;
+                Self::resolve_proof_config(&bundle)
+            }
+            Err(e) => {
+                // Surface the manifest-read failure so operators
+                // investigating a slow verify path or a legacy
+                // bundle layout can tell the fast path missed
+                // rather than silently eating a parse / IO error.
+                tracing::debug!(
+                    path = %circuit_path.display(),
+                    error = %e,
+                    "manifest-only proof_config read failed; falling back to full bundle load"
+                );
+                let bundle = self.load_bundle_cached(circuit_path)?;
+                Self::resolve_proof_config(&bundle)
+            }
+        }
+    }
+
     pub fn compile(
         &self,
         circuit_path: &Path,
@@ -264,6 +306,69 @@ impl JstproveBackend {
             expected_inputs,
         )
         .map_err(|e| DsperseError::Backend(format!("verify_and_extract: {e}")))
+    }
+
+    /// Run holographic GKR setup against the compiled circuit at
+    /// `circuit_path` and persist the resulting verifying key as
+    /// `vk.bin` inside the bundle directory. The bundle is read from
+    /// the cache, so callers that just compiled the bundle through
+    /// [`Self::compile`] pay only the holographic setup cost on top.
+    ///
+    /// `setup_holographic_vk` only succeeds when the bundle was
+    /// compiled with `ProofConfig::GoldilocksExt4Whir`; the underlying
+    /// jstprove API rejects every other config.
+    ///
+    /// The vk blob is written using the same compression mode as the
+    /// rest of the bundle (`Self::compress`) so
+    /// `jstprove_io::bundle::read_vk_only` can decode it via the
+    /// shared auto-detecting reader.
+    pub fn setup_holographic_vk(&self, circuit_path: &Path) -> Result<()> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let config = Self::resolve_proof_config(&bundle)?;
+
+        let vk_bytes = api::setup_holographic_vk(config, &bundle.circuit)
+            .map_err(|e| DsperseError::Backend(format!("setup_holographic_vk: {e}")))?;
+
+        let vk_path = circuit_path.join("vk.bin");
+        let payload = if self.compress {
+            jstprove_io::compress_bytes(&vk_bytes)
+                .map_err(|e| DsperseError::Backend(format!("compress vk: {e}")))?
+        } else {
+            vk_bytes
+        };
+        std::fs::write(&vk_path, &payload).map_err(|e| DsperseError::io(e, &vk_path))?;
+        Ok(())
+    }
+
+    /// Generate a holographic GKR proof for an existing bundle and
+    /// witness. Like [`Self::setup_holographic_vk`] this requires the
+    /// bundle to have been compiled with
+    /// `ProofConfig::GoldilocksExt4Whir`.
+    pub fn prove_holographic(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let config = Self::resolve_proof_config(&bundle)?;
+
+        api::prove_holographic(config, &bundle.circuit, witness_bytes)
+            .map_err(|e| DsperseError::Backend(format!("prove_holographic: {e}")))
+    }
+
+    /// Verify a holographic GKR proof against the bundle's vk.bin.
+    /// The vk is read independently of the (much larger) circuit
+    /// blob, mirroring the validator-side flow where the verifying
+    /// party only ever ships the vk.
+    pub fn verify_holographic(&self, circuit_path: &Path, proof_bytes: &[u8]) -> Result<bool> {
+        // Verifiers only need the vk and the proof config — the
+        // circuit and witness solver blobs are not used downstream.
+        // Skip load_bundle_cached here so validators that only ever
+        // hold vk.bin + manifest.msgpack (the intended light-weight
+        // deployment shape) don't fail with a missing circuit.bin
+        // and don't pay the tens-of-megabytes read cost.
+        let config = self.resolve_proof_config_from_manifest(circuit_path)?;
+        let vk_bytes = jstprove_io::bundle::read_vk_only(circuit_path)
+            .map_err(|e| DsperseError::Backend(format!("read vk: {e}")))?;
+
+        api::verify_holographic(config, &vk_bytes, proof_bytes)
+            .map_err(|e| DsperseError::Backend(format!("verify_holographic: {e}")))
     }
 }
 

@@ -4,6 +4,7 @@ from dsperse._native import (
     run_inference,
     prove_run,
     verify_run,
+    setup_holographic,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "run_inference",
     "prove_run",
     "verify_run",
+    "setup_holographic",
 ]

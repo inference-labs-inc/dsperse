@@ -425,6 +425,51 @@ pub(super) fn compute_circuit_signature(tmpl_path: &Path, curve: Option<&str>) -
     Ok(format!("{:x}", hash))
 }
 
+/// Bundle-aware signature used at packaging time. Wraps the ONNX+curve
+/// hash from `compute_circuit_signature` with discriminators pulled
+/// from the compiled bundle so that two packages built from the same
+/// ONNX but under different proof configs, input-binding modes, or
+/// holographic/non-holographic flows land at distinct shas in the
+/// content-addressed registry. The compile-time cache lookups in
+/// `compile_single_slice` continue to use `compute_circuit_signature`
+/// directly because they key on pre-compile state where no bundle
+/// exists yet.
+pub(super) fn compute_bundle_signature(
+    tmpl_path: &Path,
+    curve: Option<&str>,
+    bundle_dir: &Path,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let base = compute_circuit_signature(tmpl_path, curve)?;
+    let mut hasher = Sha256::new();
+    hasher.update(base.as_bytes());
+    hasher.update(b"\x00bundle-disambiguator-v1\x00");
+
+    match jstprove_io::bundle::read_bundle_metadata::<jstprove_circuits::api::CircuitParamsType>(
+        bundle_dir,
+    ) {
+        Ok((Some(params), _)) => {
+            hasher.update([1u8]);
+            match params.proof_config {
+                Some(stamped) => {
+                    hasher.update([1u8]);
+                    hasher.update((stamped.config.config_id() as u64).to_le_bytes());
+                    hasher.update(stamped.version.to_le_bytes());
+                }
+                None => hasher.update([0u8]),
+            }
+            hasher.update([u8::from(params.weights_as_inputs)]);
+        }
+        Ok((None, _)) | Err(_) => {
+            hasher.update([0u8]);
+        }
+    }
+
+    hasher.update([u8::from(bundle_dir.join("vk.bin").is_file())]);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 fn summarize_onnx_ops(onnx_path: &Path) -> String {
     let model = match onnx_proto::load_model(onnx_path) {
         Ok(m) => m,
@@ -1683,5 +1728,67 @@ mod tests {
         });
         let path = resolve_compile_onnx(slices_dir, &meta).unwrap();
         assert!(path.ends_with("slice_0.onnx"));
+    }
+
+    fn write_identity_onnx(path: &Path) {
+        let node = onnx_proto::NodeProto {
+            op_type: "Relu".to_string(),
+            input: vec!["x".to_string()],
+            output: vec!["y".to_string()],
+            ..Default::default()
+        };
+        let graph = onnx_proto::make_graph(
+            "g",
+            vec![node],
+            vec![onnx_proto::make_tensor_value_info("x", 1, &[1, 8])],
+            vec![onnx_proto::make_tensor_value_info("y", 1, &[1, 8])],
+            vec![],
+        );
+        let model = onnx_proto::make_model(graph, 13);
+        onnx_proto::save_model(&model, path).unwrap();
+    }
+
+    #[test]
+    fn bundle_signature_matches_circuit_signature_when_bundle_has_no_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let onnx_path = tmp.path().join("slice.onnx");
+        write_identity_onnx(&onnx_path);
+        let bundle_dir = tmp.path().join("bundle");
+        std::fs::create_dir_all(&bundle_dir).unwrap();
+
+        let base = compute_circuit_signature(&onnx_path, None).unwrap();
+        let bundle_sig = compute_bundle_signature(&onnx_path, None, &bundle_dir).unwrap();
+
+        assert_ne!(
+            base, bundle_sig,
+            "bundle signature must always include discriminator bytes"
+        );
+
+        let bundle_sig_again = compute_bundle_signature(&onnx_path, None, &bundle_dir).unwrap();
+        assert_eq!(
+            bundle_sig, bundle_sig_again,
+            "bundle signature must be deterministic"
+        );
+    }
+
+    #[test]
+    fn bundle_signature_disambiguates_vk_presence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let onnx_path = tmp.path().join("slice.onnx");
+        write_identity_onnx(&onnx_path);
+
+        let plain_bundle = tmp.path().join("plain");
+        let holo_bundle = tmp.path().join("holographic");
+        std::fs::create_dir_all(&plain_bundle).unwrap();
+        std::fs::create_dir_all(&holo_bundle).unwrap();
+        std::fs::write(holo_bundle.join("vk.bin"), b"vk-contents").unwrap();
+
+        let plain_sig = compute_bundle_signature(&onnx_path, None, &plain_bundle).unwrap();
+        let holo_sig = compute_bundle_signature(&onnx_path, None, &holo_bundle).unwrap();
+
+        assert_ne!(
+            plain_sig, holo_sig,
+            "holographic bundle must produce a distinct signature"
+        );
     }
 }

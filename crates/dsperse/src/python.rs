@@ -95,7 +95,7 @@ fn slice_model(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (slices_dir, proof_config="bn254_raw", parallel=1, weights_as_inputs=true, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None))]
+#[pyo3(signature = (slices_dir, proof_config="bn254_raw", parallel=1, weights_as_inputs=true, layers=None, proof_system="expander", circuit_ops=None, skip_compile_over_size=None, holographic=false))]
 fn compile_slices(
     py: Python<'_>,
     slices_dir: &str,
@@ -106,6 +106,7 @@ fn compile_slices(
     proof_system: &str,
     circuit_ops: Option<Vec<String>>,
     skip_compile_over_size: Option<u64>,
+    holographic: bool,
 ) -> PyResult<()> {
     require_nonzero(parallel)?;
     let backend = JstproveBackend::default();
@@ -129,6 +130,7 @@ fn compile_slices(
                 layers.as_deref(),
                 &ops_refs,
                 skip_compile_over_size,
+                holographic,
             )
         })
         .map_err(to_py_err)?;
@@ -236,6 +238,31 @@ fn cli_main(py: Python<'_>, argv: Option<Vec<String>>) -> PyResult<()> {
     result.map_err(to_py_err)
 }
 
+#[pyfunction]
+#[pyo3(signature = (slices_dir, parallel=1, overwrite=false))]
+fn setup_holographic(
+    py: Python<'_>,
+    slices_dir: &str,
+    parallel: usize,
+    overwrite: bool,
+) -> PyResult<()> {
+    require_nonzero(parallel)?;
+    let backend = JstproveBackend::default();
+    let dir = PathBuf::from(slices_dir);
+    let report = py
+        .allow_threads(|| {
+            pipeline::setup_holographic_for_slices(&dir, &backend, parallel, overwrite)
+        })
+        .map_err(to_py_err)?;
+    if !report.failed.is_empty() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "{} bundle(s) failed holographic setup",
+            report.failed.len()
+        )));
+    }
+    Ok(())
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(slice_model, m)?)?;
@@ -243,6 +270,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_inference, m)?)?;
     m.add_function(wrap_pyfunction!(prove_run, m)?)?;
     m.add_function(wrap_pyfunction!(verify_run, m)?)?;
+    m.add_function(wrap_pyfunction!(setup_holographic, m)?)?;
     m.add_function(wrap_pyfunction!(cli_main, m)?)?;
     Ok(())
 }

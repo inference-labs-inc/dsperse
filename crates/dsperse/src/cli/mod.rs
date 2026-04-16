@@ -39,6 +39,8 @@ pub enum Commands {
     #[command(name = "full-run")]
     FullRun(FullRunArgs),
     Analyze(AnalyzeArgs),
+    #[command(name = "setup-holographic")]
+    SetupHolographic(SetupHolographicArgs),
 }
 
 pub fn dispatch(command: Commands) -> Result<()> {
@@ -53,6 +55,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Publish(args) => cmd_publish(args),
         Commands::FullRun(args) => cmd_full_run(args),
         Commands::Analyze(args) => cmd_analyze(args),
+        Commands::SetupHolographic(args) => cmd_setup_holographic(args),
     }
 }
 
@@ -138,6 +141,13 @@ pub struct CompileArgs {
         help = "Allow the command to exit 0 when individual slices fail to compile.  Failed slices fall back to ONNX execution at run / prove time, producing a partial-coverage proof.  Off by default so CI surfaces real compile regressions."
     )]
     pub allow_onnx_fallback: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        help = "After compiling each slice, run holographic GKR setup and persist the verifying key as vk.bin in the bundle directory. Requires --proof-config goldilocks_ext4_whir."
+    )]
+    pub holographic: bool,
 }
 
 #[derive(Args)]
@@ -302,6 +312,30 @@ pub struct FullRunArgs {
         help = "Allow full-run to proceed when individual slices fail to compile.  Failed slices fall back to ONNX execution, producing a partial-coverage proof.  Off by default so CI surfaces real compile regressions."
     )]
     pub allow_onnx_fallback: bool,
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        help = "After compiling each slice, run holographic GKR setup and persist the verifying key as vk.bin in the bundle directory. Requires --proof-config goldilocks_ext4_whir."
+    )]
+    pub holographic: bool,
+}
+
+#[derive(Args)]
+pub struct SetupHolographicArgs {
+    #[arg(long)]
+    pub model_dir: PathBuf,
+    #[arg(long)]
+    pub slices_dir: Option<PathBuf>,
+    #[arg(long, default_value = "1")]
+    pub parallel: NonZeroUsize,
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        help = "Re-run setup and overwrite vk.bin even when the bundle already has one"
+    )]
+    pub overwrite: bool,
 }
 
 struct CircuitOps(Vec<String>);
@@ -402,6 +436,7 @@ pub fn cmd_compile(args: CompileArgs) -> Result<()> {
         layers.as_deref(),
         &ops.as_refs(),
         args.skip_compile_over_size,
+        args.holographic,
     )?;
     if args.allow_onnx_fallback {
         Ok(())
@@ -554,6 +589,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         layers.as_deref(),
         &ops.as_refs(),
         args.skip_compile_over_size,
+        args.holographic,
     )?;
     if !args.allow_onnx_fallback {
         report.ok_if_no_failures()?;
@@ -579,6 +615,27 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
 
     tracing::info!(run_dir = %run_dir.display(), "full run complete");
     Ok(())
+}
+
+pub fn cmd_setup_holographic(args: SetupHolographicArgs) -> Result<()> {
+    let backend = JstproveBackend::new();
+    let slices_dir = resolve_slices_dir(args.slices_dir, &args.model_dir);
+
+    let report = pipeline::setup_holographic_for_slices(
+        &slices_dir,
+        &backend,
+        args.parallel.get(),
+        args.overwrite,
+    )?;
+
+    tracing::info!(
+        processed = report.processed,
+        skipped = report.skipped_already_present,
+        failed = report.failed.len(),
+        "holographic setup complete"
+    );
+
+    report.ok_if_no_failures().map(|_| ())
 }
 
 #[derive(Args)]
@@ -985,6 +1042,85 @@ mod tests {
             assert!(!args.combined);
         } else {
             panic!("expected Run");
+        }
+    }
+
+    #[test]
+    fn cli_compile_holographic_default_false() {
+        let cli = Cli::parse_from(["dsperse", "compile", "--model-dir", "/tmp"]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(!args.holographic);
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
+    fn cli_compile_holographic_explicit_true() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "compile",
+            "--model-dir",
+            "/tmp",
+            "--holographic",
+            "true",
+        ]);
+        if let Commands::Compile(args) = cli.command {
+            assert!(args.holographic);
+        } else {
+            panic!("expected Compile");
+        }
+    }
+
+    #[test]
+    fn cli_full_run_holographic_explicit_true() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "full-run",
+            "--model-dir",
+            "/tmp",
+            "--holographic",
+            "true",
+        ]);
+        if let Commands::FullRun(args) = cli.command {
+            assert!(args.holographic);
+        } else {
+            panic!("expected FullRun");
+        }
+    }
+
+    #[test]
+    fn cli_setup_holographic_command() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "setup-holographic",
+            "--model-dir",
+            "/tmp",
+            "--parallel",
+            "4",
+        ]);
+        if let Commands::SetupHolographic(args) = cli.command {
+            assert_eq!(args.parallel.get(), 4);
+            assert!(!args.overwrite);
+        } else {
+            panic!("expected SetupHolographic");
+        }
+    }
+
+    #[test]
+    fn cli_setup_holographic_overwrite() {
+        let cli = Cli::parse_from([
+            "dsperse",
+            "setup-holographic",
+            "--model-dir",
+            "/tmp",
+            "--overwrite",
+            "true",
+        ]);
+        if let Commands::SetupHolographic(args) = cli.command {
+            assert!(args.overwrite);
+        } else {
+            panic!("expected SetupHolographic");
         }
     }
 

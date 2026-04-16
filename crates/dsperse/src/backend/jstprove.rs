@@ -265,6 +265,64 @@ impl JstproveBackend {
         )
         .map_err(|e| DsperseError::Backend(format!("verify_and_extract: {e}")))
     }
+
+    /// Run holographic GKR setup against the compiled circuit at
+    /// `circuit_path` and persist the resulting verifying key as
+    /// `vk.bin` inside the bundle directory. The bundle is read from
+    /// the cache, so callers that just compiled the bundle through
+    /// [`Self::compile`] pay only the holographic setup cost on top.
+    ///
+    /// `setup_holographic_vk` only succeeds when the bundle was
+    /// compiled with `ProofConfig::GoldilocksExt4Whir`; the underlying
+    /// jstprove API rejects every other config.
+    ///
+    /// The vk blob is written using the same compression mode as the
+    /// rest of the bundle (`Self::compress`) so
+    /// `jstprove_io::bundle::read_vk_only` can decode it via the
+    /// shared auto-detecting reader.
+    pub fn setup_holographic_vk(&self, circuit_path: &Path) -> Result<()> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let config = Self::resolve_proof_config(&bundle)?;
+
+        let vk_bytes = api::setup_holographic_vk(config, &bundle.circuit)
+            .map_err(|e| DsperseError::Backend(format!("setup_holographic_vk: {e}")))?;
+
+        let vk_path = circuit_path.join("vk.bin");
+        let payload = if self.compress {
+            jstprove_io::compress_bytes(&vk_bytes)
+                .map_err(|e| DsperseError::Backend(format!("compress vk: {e}")))?
+        } else {
+            vk_bytes
+        };
+        std::fs::write(&vk_path, &payload).map_err(|e| DsperseError::io(e, &vk_path))?;
+        Ok(())
+    }
+
+    /// Generate a holographic GKR proof for an existing bundle and
+    /// witness. Like [`Self::setup_holographic_vk`] this requires the
+    /// bundle to have been compiled with
+    /// `ProofConfig::GoldilocksExt4Whir`.
+    pub fn prove_holographic(&self, circuit_path: &Path, witness_bytes: &[u8]) -> Result<Vec<u8>> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let config = Self::resolve_proof_config(&bundle)?;
+
+        api::prove_holographic(config, &bundle.circuit, witness_bytes)
+            .map_err(|e| DsperseError::Backend(format!("prove_holographic: {e}")))
+    }
+
+    /// Verify a holographic GKR proof against the bundle's vk.bin.
+    /// The vk is read independently of the (much larger) circuit
+    /// blob, mirroring the validator-side flow where the verifying
+    /// party only ever ships the vk.
+    pub fn verify_holographic(&self, circuit_path: &Path, proof_bytes: &[u8]) -> Result<bool> {
+        let bundle = self.load_bundle_cached(circuit_path)?;
+        let config = Self::resolve_proof_config(&bundle)?;
+        let vk_bytes = jstprove_io::bundle::read_vk_only(circuit_path)
+            .map_err(|e| DsperseError::Backend(format!("read vk: {e}")))?;
+
+        api::verify_holographic(config, &vk_bytes, proof_bytes)
+            .map_err(|e| DsperseError::Backend(format!("verify_holographic: {e}")))
+    }
 }
 
 impl ProofBackend for JstproveBackend {

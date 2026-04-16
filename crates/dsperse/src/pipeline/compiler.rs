@@ -133,7 +133,13 @@ pub fn compile_slices(
     layers: Option<&[usize]>,
     jstprove_ops: &[&str],
     skip_compile_over_size: Option<u64>,
+    holographic: bool,
 ) -> Result<CompileReport> {
+    if holographic && proof_config != jstprove_circuits::api::ProofConfigType::GoldilocksExt4Whir {
+        return Err(DsperseError::Pipeline(format!(
+            "--holographic requires --proof-config goldilocks_ext4_whir; got {proof_config}"
+        )));
+    }
     let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
         DsperseError::Metadata(format!(
             "no {} found in slices directory",
@@ -181,6 +187,7 @@ pub fn compile_slices(
                 skip_compile_over_size,
                 &circuit_cache,
                 traced_ref,
+                holographic,
             );
             match r {
                 Ok(CompileOutcome::Compiled) => {
@@ -734,6 +741,7 @@ fn compile_single_slice(
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
     traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
+    holographic: bool,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     if !slice_dir.exists() {
@@ -757,6 +765,7 @@ fn compile_single_slice(
             skip_compile_over_size,
             circuit_cache,
             traced_shapes,
+            holographic,
         );
     }
 
@@ -776,6 +785,7 @@ fn compile_single_slice(
                 skip_compile_over_size,
                 circuit_cache,
                 traced_shapes,
+                holographic,
             );
         }
     }
@@ -822,6 +832,9 @@ fn compile_single_slice(
         match backend.load_params(&circuit_path) {
             Ok(_) => {
                 tracing::info!(slice = slice.index, "already compiled, skipping");
+                if holographic && !jstprove_io::bundle::bundle_has_vk(&circuit_path) {
+                    run_holographic_setup(backend, &circuit_path, slice.index, "slice")?;
+                }
                 return Ok(CompileOutcome::Compiled);
             }
             Err(e) => {
@@ -879,7 +892,163 @@ fn compile_single_slice(
         DsperseError::Backend(format!("jstprove panicked: {msg}"))
     })??;
 
+    if holographic {
+        run_holographic_setup(backend, &circuit_path, slice.index, "slice")?;
+    }
+
     Ok(CompileOutcome::Compiled)
+}
+
+/// Result of a [`setup_holographic_for_slices`] invocation. Mirrors
+/// the structure of [`CompileReport`] so callers can surface
+/// per-slice failures with the same handling.
+#[derive(Debug, Default)]
+pub struct HolographicSetupReport {
+    pub processed: usize,
+    pub skipped_already_present: usize,
+    pub failed: Vec<(usize, DsperseError)>,
+}
+
+impl HolographicSetupReport {
+    pub fn ok_if_no_failures(self) -> Result<Self> {
+        if self.failed.is_empty() {
+            Ok(self)
+        } else {
+            Err(DsperseError::Pipeline(format!(
+                "setup_holographic_for_slices: {} slice bundle(s) failed",
+                self.failed.len()
+            )))
+        }
+    }
+}
+
+/// Run holographic GKR setup over every compiled bundle under
+/// `slices_dir`. Walks the slice metadata and, for each slice,
+/// processes the conventional bundle paths produced by
+/// [`compile_slices`]: standard (`jstprove/circuit.bundle`),
+/// channel-split (`jstprove/shared/circuit.bundle`), and dim-split
+/// template (`jstprove/dim_split/circuit.bundle`).
+///
+/// Bundles that already carry a `vk.bin` are skipped unless
+/// `overwrite` is set, so this function is idempotent and cheap to
+/// re-run after a partial failure.
+pub fn setup_holographic_for_slices(
+    slices_dir: &Path,
+    backend: &JstproveBackend,
+    parallel: usize,
+    overwrite: bool,
+) -> Result<HolographicSetupReport> {
+    let meta_path = find_metadata_path(slices_dir).ok_or_else(|| {
+        DsperseError::Metadata(format!(
+            "no {} found in slices directory",
+            crate::utils::paths::METADATA_FILE
+        ))
+    })?;
+    let metadata = ModelMetadata::load(&meta_path)?;
+
+    let mut targets: Vec<(usize, &'static str, PathBuf)> = Vec::new();
+    for slice in &metadata.slices {
+        let slice_dir = slice_dir_path(slices_dir, slice.index);
+        let candidates: [(&'static str, PathBuf); 3] = [
+            ("slice", slice_dir.join("jstprove").join("circuit.bundle")),
+            (
+                "channel-split-shared",
+                slice_dir
+                    .join("jstprove")
+                    .join("shared")
+                    .join("circuit.bundle"),
+            ),
+            (
+                "dim-split-template",
+                slice_dir
+                    .join("jstprove")
+                    .join("dim_split")
+                    .join("circuit.bundle"),
+            ),
+        ];
+        for (kind, path) in candidates {
+            if path.is_dir() {
+                targets.push((slice.index, kind, path));
+            }
+        }
+    }
+
+    tracing::info!(
+        bundles = targets.len(),
+        parallel,
+        overwrite,
+        "running holographic GKR setup over compiled bundles"
+    );
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(parallel)
+        .build()
+        .map_err(|e| DsperseError::Pipeline(format!("thread pool: {e}")))?;
+
+    let processed = std::sync::atomic::AtomicUsize::new(0);
+    let skipped = std::sync::atomic::AtomicUsize::new(0);
+    let errors: std::sync::Mutex<Vec<(usize, DsperseError)>> = std::sync::Mutex::new(Vec::new());
+
+    pool.install(|| {
+        targets
+            .par_iter()
+            .for_each(|(slice_idx, kind, bundle_path)| {
+                if !overwrite && jstprove_io::bundle::bundle_has_vk(bundle_path) {
+                    skipped.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(
+                        slice = *slice_idx,
+                        kind,
+                        path = %bundle_path.display(),
+                        "vk.bin already present, skipping (pass --overwrite to regenerate)"
+                    );
+                    return;
+                }
+                match run_holographic_setup(backend, bundle_path, *slice_idx, kind) {
+                    Ok(()) => {
+                        processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        tracing::warn!(slice = *slice_idx, kind, error = %e, "holographic setup failed");
+                        errors.lock().unwrap().push((*slice_idx, e));
+                    }
+                }
+            });
+    });
+
+    Ok(HolographicSetupReport {
+        processed: processed.load(std::sync::atomic::Ordering::Relaxed),
+        skipped_already_present: skipped.load(std::sync::atomic::Ordering::Relaxed),
+        failed: errors.into_inner().unwrap(),
+    })
+}
+
+fn run_holographic_setup(
+    backend: &JstproveBackend,
+    circuit_path: &Path,
+    slice_idx: usize,
+    kind: &'static str,
+) -> Result<()> {
+    tracing::info!(
+        slice = slice_idx,
+        kind,
+        path = %circuit_path.display(),
+        "running holographic GKR setup"
+    );
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        backend.setup_holographic_vk(circuit_path)
+    }))
+    .map_err(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic");
+        DsperseError::Backend(format!(
+            "jstprove panicked during holographic setup on slice {slice_idx} ({kind}): {msg}"
+        ))
+    })??;
+    tracing::info!(slice = slice_idx, kind, "holographic vk persisted");
+    Ok(())
 }
 
 fn populate_channel_split_groups(
@@ -953,6 +1122,7 @@ fn compile_channel_split_slice(
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
     traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
+    holographic: bool,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -1096,6 +1266,25 @@ fn compile_channel_split_slice(
                 slice.index
             ))
         })?;
+
+        if holographic {
+            run_holographic_setup(
+                backend,
+                &shared_circuit_path,
+                slice.index,
+                "channel-split-shared",
+            )?;
+        }
+    } else if holographic && !jstprove_io::bundle::bundle_has_vk(&shared_circuit_path) {
+        // Cached bundle predates the holographic plumbing: backfill
+        // the vk so reused circuits stay in sync with freshly-built
+        // ones.
+        run_holographic_setup(
+            backend,
+            &shared_circuit_path,
+            slice.index,
+            "channel-split-shared",
+        )?;
     }
 
     let group_circuits: Vec<(usize, String)> = cs
@@ -1119,6 +1308,7 @@ fn compile_dim_split_template(
     skip_compile_over_size: Option<u64>,
     circuit_cache: &CircuitCache,
     _traced_shapes: Option<&std::collections::HashMap<String, Vec<i64>>>,
+    holographic: bool,
 ) -> Result<CompileOutcome> {
     let slice_dir = slice_dir_path(slices_dir, slice.index);
     let jst_dir = slice_dir.join("jstprove");
@@ -1133,6 +1323,16 @@ fn compile_dim_split_template(
                     slice = slice.index,
                     "dim-split template already compiled, reusing"
                 );
+                if holographic && !jstprove_io::bundle::bundle_has_vk(&circuit_path) {
+                    // Backfill vk on cached bundles; see channel-
+                    // split branch above for the same rationale.
+                    run_holographic_setup(
+                        backend,
+                        &circuit_path,
+                        slice.index,
+                        "dim-split-template",
+                    )?;
+                }
                 return Ok(CompileOutcome::CompiledDimSplit);
             }
             Err(e) => {
@@ -1238,6 +1438,11 @@ fn compile_dim_split_template(
         .unwrap()
         .insert(sig.clone(), circuit_path.clone());
     tracing::info!(slice = slice.index, sig = %sig, "dim-split template compiled");
+
+    if holographic {
+        run_holographic_setup(backend, &circuit_path, slice.index, "dim-split-template")?;
+    }
+
     Ok(CompileOutcome::CompiledDimSplit)
 }
 

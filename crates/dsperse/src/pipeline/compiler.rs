@@ -1396,6 +1396,17 @@ fn compile_dim_split_template(
             sig = %sig,
             "reused cached dim-split circuit"
         );
+        // circuit_cache can hand back a source bundle that was
+        // inserted before its own run_holographic_setup finished
+        // (the fresh-build branch below inserts the sig before it
+        // persists vk.bin), so a parallel racer can snapshot a
+        // pre-vk source and copy_dir_recursive a bundle missing
+        // vk.bin.  Mirror the channel-split reuse branch and
+        // backfill on the copy so every reused dim-split bundle
+        // ends up in the same shape as a freshly-compiled one.
+        if holographic && !jstprove_io::bundle::bundle_has_vk(&circuit_path) {
+            run_holographic_setup(backend, &circuit_path, slice.index, "dim-split-template")?;
+        }
         return Ok(CompileOutcome::CompiledDimSplit);
     }
 

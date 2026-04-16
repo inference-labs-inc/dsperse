@@ -119,6 +119,35 @@ impl JstproveBackend {
         Ok(stamped.config)
     }
 
+    /// Resolve the proof config without touching the circuit or
+    /// witness-solver blobs. Reads only `manifest.msgpack`, which is
+    /// kilobytes versus the tens of megabytes a full bundle load
+    /// pulls in. Falls back to `resolve_proof_config` on a full
+    /// bundle load if the manifest is missing the stamp so callers
+    /// still get the same "no stamped proof_config" error path for
+    /// legacy bundles rather than a confusing deserialization
+    /// failure.
+    fn resolve_proof_config_from_manifest(&self, circuit_path: &Path) -> Result<ProofConfig> {
+        match jstprove_io::bundle::read_bundle_metadata::<CircuitParams>(circuit_path) {
+            Ok((Some(params), _)) => {
+                let stamped = params.proof_config.ok_or_else(|| {
+                    DsperseError::Backend(
+                        "circuit bundle has no stamped proof_config; recompile with a stamping prover"
+                            .into(),
+                    )
+                })?;
+                stamped
+                    .ensure_current()
+                    .map_err(|e| DsperseError::Backend(format!("incompatible bundle: {e}")))?;
+                Ok(stamped.config)
+            }
+            Ok((None, _)) | Err(_) => {
+                let bundle = self.load_bundle_cached(circuit_path)?;
+                Self::resolve_proof_config(&bundle)
+            }
+        }
+    }
+
     pub fn compile(
         &self,
         circuit_path: &Path,
@@ -315,8 +344,13 @@ impl JstproveBackend {
     /// blob, mirroring the validator-side flow where the verifying
     /// party only ever ships the vk.
     pub fn verify_holographic(&self, circuit_path: &Path, proof_bytes: &[u8]) -> Result<bool> {
-        let bundle = self.load_bundle_cached(circuit_path)?;
-        let config = Self::resolve_proof_config(&bundle)?;
+        // Verifiers only need the vk and the proof config — the
+        // circuit and witness solver blobs are not used downstream.
+        // Skip load_bundle_cached here so validators that only ever
+        // hold vk.bin + manifest.msgpack (the intended light-weight
+        // deployment shape) don't fail with a missing circuit.bin
+        // and don't pay the tens-of-megabytes read cost.
+        let config = self.resolve_proof_config_from_manifest(circuit_path)?;
         let vk_bytes = jstprove_io::bundle::read_vk_only(circuit_path)
             .map_err(|e| DsperseError::Backend(format!("read vk: {e}")))?;
 

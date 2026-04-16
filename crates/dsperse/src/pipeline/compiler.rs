@@ -494,7 +494,7 @@ pub(super) fn compute_bundle_signature(
         }
     }
 
-    hasher.update([u8::from(bundle_dir.join("vk.bin").is_file())]);
+    hasher.update([u8::from(jstprove_io::bundle::bundle_has_vk(bundle_dir))]);
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -1817,6 +1817,87 @@ mod tests {
         assert_ne!(
             plain_sig, holo_sig,
             "holographic bundle must produce a distinct signature"
+        );
+    }
+
+    #[test]
+    fn bundle_signature_disambiguates_proof_config_and_wai_on_metadata_branch() {
+        use std::collections::HashMap;
+
+        use jstprove_circuits::ProofSystem;
+        use jstprove_circuits::api::{CircuitParamsType, ProofConfigType, StampedProofConfigType};
+        use jstprove_io::bundle::write_bundle;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let onnx_path = tmp.path().join("slice.onnx");
+        write_identity_onnx(&onnx_path);
+
+        fn make_params(config: ProofConfigType, weights_as_inputs: bool) -> CircuitParamsType {
+            CircuitParamsType {
+                scale_base: 2,
+                scale_exponent: 8,
+                rescale_config: HashMap::new(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                freivalds_reps: 1,
+                n_bits_config: HashMap::new(),
+                weights_as_inputs,
+                proof_system: ProofSystem::default(),
+                proof_config: Some(StampedProofConfigType::current(config)),
+                logup_chunk_bits: None,
+                public_inputs: Vec::new(),
+            }
+        }
+
+        let bn254_bundle = tmp.path().join("bn254");
+        let goldi_bundle = tmp.path().join("goldilocks");
+        let bn254_wai_bundle = tmp.path().join("bn254-wai");
+
+        write_bundle(
+            &bn254_bundle,
+            &[1, 2, 3],
+            &[4, 5, 6],
+            Some(make_params(ProofConfigType::Bn254Raw, false)),
+            None,
+            false,
+        )
+        .unwrap();
+        write_bundle(
+            &goldi_bundle,
+            &[1, 2, 3],
+            &[4, 5, 6],
+            Some(make_params(ProofConfigType::GoldilocksExt4Whir, false)),
+            None,
+            false,
+        )
+        .unwrap();
+        write_bundle(
+            &bn254_wai_bundle,
+            &[1, 2, 3],
+            &[4, 5, 6],
+            Some(make_params(ProofConfigType::Bn254Raw, true)),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let sig_bn254 = compute_bundle_signature(&onnx_path, None, &bn254_bundle).unwrap();
+        let sig_goldi = compute_bundle_signature(&onnx_path, None, &goldi_bundle).unwrap();
+        let sig_bn254_wai = compute_bundle_signature(&onnx_path, None, &bn254_wai_bundle).unwrap();
+
+        assert_ne!(
+            sig_bn254, sig_goldi,
+            "config_id must discriminate bundles with different ProofConfig variants"
+        );
+        assert_ne!(
+            sig_bn254, sig_bn254_wai,
+            "weights_as_inputs must discriminate bundles with the same ProofConfig"
+        );
+
+        let sig_bn254_again = compute_bundle_signature(&onnx_path, None, &bn254_bundle).unwrap();
+        assert_eq!(
+            sig_bn254, sig_bn254_again,
+            "signature must be deterministic for the metadata branch"
         );
     }
 }

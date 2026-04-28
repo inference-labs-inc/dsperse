@@ -619,6 +619,19 @@ pub fn split_for_multi_input_dispatch(
             "split_for_multi_input_dispatch: named_inputs is empty".into(),
         ));
     }
+    let expected_names = tiling.all_input_names();
+    let provided: std::collections::HashSet<&str> =
+        named_inputs.iter().map(|(n, _)| n.as_str()).collect();
+    let missing: Vec<&str> = expected_names
+        .iter()
+        .copied()
+        .filter(|n| !provided.contains(n))
+        .collect();
+    if !missing.is_empty() {
+        return Err(DsperseError::Pipeline(format!(
+            "split_for_multi_input_dispatch: missing input tensors required by tiling.all_input_names(): {missing:?}"
+        )));
+    }
     let mut cache = TensorStore::new();
     for (name, arr) in named_inputs {
         cache.put(name.clone(), arr.clone());

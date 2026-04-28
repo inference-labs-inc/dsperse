@@ -649,6 +649,11 @@ pub fn split_for_multi_input_dispatch(
         ));
     }
     let num_tiles = all_tiles[0].len();
+    if num_tiles == 0 {
+        return Err(DsperseError::Pipeline(
+            "split_for_multi_input_dispatch: tiling produced zero tiles".into(),
+        ));
+    }
     for (idx, per_input) in all_tiles.iter().enumerate() {
         if per_input.len() != num_tiles {
             return Err(DsperseError::Pipeline(format!(

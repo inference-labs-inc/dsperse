@@ -604,6 +604,53 @@ pub(crate) fn prepare_tiles_from_cache(
     Ok(all_tiles)
 }
 
+/// Build per-tile dispatch payloads for a tiled slice that consumes multiple
+/// upstream activation tensors per witness. Returns one entry per tile; each
+/// entry is the concatenation, in `tiling.all_input_names()` order, of that
+/// tile's segment from each input tensor. The element count of every returned
+/// entry equals `N * per_input_tile_size`, matching what the slice's compiled
+/// witness solver consumes per request.
+pub fn split_for_multi_input_dispatch(
+    named_inputs: &[(String, ArrayD<f64>)],
+    tiling: &TilingInfo,
+) -> Result<Vec<Vec<f64>>> {
+    if named_inputs.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "split_for_multi_input_dispatch: named_inputs is empty".into(),
+        ));
+    }
+    let mut cache = TensorStore::new();
+    for (name, arr) in named_inputs {
+        cache.put(name.clone(), arr.clone());
+    }
+    let is_fixed_segment = tiling.ndim == 1;
+    let is_1d = tiling.ndim == 3;
+    let all_tiles = if is_fixed_segment {
+        prepare_fixed_segments_from_cache(tiling, &cache)?
+    } else {
+        prepare_tiles_from_cache(tiling, &cache, is_1d)?
+    };
+    if all_tiles.is_empty() {
+        return Err(DsperseError::Pipeline(
+            "split_for_multi_input_dispatch: empty tile set".into(),
+        ));
+    }
+    let num_tiles = all_tiles[0].len();
+    for (idx, per_input) in all_tiles.iter().enumerate() {
+        if per_input.len() != num_tiles {
+            return Err(DsperseError::Pipeline(format!(
+                "split_for_multi_input_dispatch: input {idx} produced {} tiles, expected {num_tiles}",
+                per_input.len()
+            )));
+        }
+    }
+    let mut per_tile = Vec::with_capacity(num_tiles);
+    for tile_idx in 0..num_tiles {
+        per_tile.push(flatten_tile_inputs(&all_tiles, tile_idx));
+    }
+    Ok(per_tile)
+}
+
 pub fn split_for_tiling(input: &ArrayD<f64>, tiling: &TilingInfo) -> Result<Vec<ArrayD<f64>>> {
     let is_fixed_segment = tiling.ndim == 1;
     if is_fixed_segment {

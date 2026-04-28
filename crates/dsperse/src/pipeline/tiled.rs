@@ -620,12 +620,24 @@ pub fn split_for_multi_input_dispatch(
         ));
     }
     let expected_names = tiling.all_input_names();
-    let provided: std::collections::HashSet<&str> =
-        named_inputs.iter().map(|(n, _)| n.as_str()).collect();
+    let mut seen = std::collections::HashSet::with_capacity(named_inputs.len());
+    let mut duplicates: Vec<&str> = Vec::new();
+    for (name, _) in named_inputs {
+        if !seen.insert(name.as_str()) {
+            duplicates.push(name.as_str());
+        }
+    }
+    if !duplicates.is_empty() {
+        duplicates.sort_unstable();
+        duplicates.dedup();
+        return Err(DsperseError::Pipeline(format!(
+            "split_for_multi_input_dispatch: named_inputs contains duplicate input tensor names (would silently overwrite via TensorStore::put): {duplicates:?}"
+        )));
+    }
     let missing: Vec<&str> = expected_names
         .iter()
         .copied()
-        .filter(|n| !provided.contains(n))
+        .filter(|n| !seen.contains(n))
         .collect();
     if !missing.is_empty() {
         return Err(DsperseError::Pipeline(format!(

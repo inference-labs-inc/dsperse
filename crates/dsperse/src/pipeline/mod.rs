@@ -26,5 +26,7 @@ pub use runner::{RunConfig, extract_onnx_initializers, run_inference};
 pub use slice_cache::SliceAssets;
 pub use strategy::ExecutionStrategy;
 pub use tensor_store::TensorStore;
-pub use tiled::{reconstruct_from_tiles, split_for_tiling, split_into_tiles};
+pub use tiled::{
+    reconstruct_from_tiles, split_for_multi_input_dispatch, split_for_tiling, split_into_tiles,
+};
 pub use verifier::verify_run;

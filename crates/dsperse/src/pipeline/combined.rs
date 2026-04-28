@@ -130,8 +130,24 @@ impl CombinedRun {
                     (t, Vec::new())
                 }
                 ExecutionStrategy::Tiled(tiling) => {
-                    let t = self.tensor_cache.get(&tiling.input_name)?.clone();
-                    (t, Vec::new())
+                    let names = tiling.all_input_names();
+                    if names.len() > 1 {
+                        let mut named: Vec<(String, ArrayD<f64>)> = Vec::with_capacity(names.len());
+                        let mut flat: Vec<f64> = Vec::new();
+                        for name in &names {
+                            let arr = self.tensor_cache.get(name)?;
+                            named.push(((*name).to_string(), arr.clone()));
+                            flat.extend(arr.iter());
+                        }
+                        let concatenated = ArrayD::from_shape_vec(IxDyn(&[flat.len()]), flat)
+                            .map_err(|e| {
+                                DsperseError::Pipeline(format!("tiled multi-input concat: {e}"))
+                            })?;
+                        (concatenated, named)
+                    } else {
+                        let t = self.tensor_cache.get(&tiling.input_name)?.clone();
+                        (t, Vec::new())
+                    }
                 }
                 ExecutionStrategy::Single { .. } => {
                     let filtered = &meta.dependencies.filtered_inputs;

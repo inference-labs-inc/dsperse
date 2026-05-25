@@ -971,6 +971,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "criterion",
+ "half",
  "jstprove-io",
  "jstprove_circuits",
  "libc",
@@ -994,6 +995,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "zip",
+ "zstd",
 ]
 
 [[package]]

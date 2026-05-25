@@ -168,6 +168,7 @@ fn run_inference(
         batch,
         weights_onnx: weights_onnx.map(PathBuf::from),
         combined,
+        activations_dir: None,
     };
     let sd = PathBuf::from(slices_dir);
     let inf = PathBuf::from(input_file);

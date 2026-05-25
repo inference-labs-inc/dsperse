@@ -176,6 +176,11 @@ pub struct RunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
+    #[arg(
+        long,
+        help = "Directory to write per-slice activation snapshots (slice_<N>.bin, fp16 + zstd) for every slice in the combined run"
+    )]
+    pub activations_dir: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -293,6 +298,11 @@ pub struct FullRunArgs {
         help = "Run inference on combined monolithic ONNX instead of per-slice execution"
     )]
     pub combined: bool,
+    #[arg(
+        long,
+        help = "Directory to write per-slice activation snapshots (slice_<N>.bin, fp16 + zstd) for every slice in the combined run"
+    )]
+    pub activations_dir: Option<PathBuf>,
     #[arg(
         long = "proof-config",
         visible_alias = "curve",
@@ -465,6 +475,7 @@ pub fn cmd_run(args: RunArgs) -> Result<()> {
         batch: args.batch,
         weights_onnx: args.weights,
         combined: args.combined,
+        activations_dir: args.activations_dir,
     };
 
     pipeline::run_inference(&slices_dir, &args.input_file, &run_dir, &backend, &config)?;
@@ -602,6 +613,7 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         batch: args.batch,
         weights_onnx: args.weights,
         combined: args.combined,
+        activations_dir: args.activations_dir,
     };
 
     tracing::info!("running inference");

@@ -1,3 +1,4 @@
+pub mod activations;
 mod channel_split;
 mod combined;
 mod compiler;

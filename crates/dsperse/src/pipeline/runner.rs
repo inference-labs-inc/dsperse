@@ -28,6 +28,7 @@ pub struct RunConfig {
     pub batch: bool,
     pub weights_onnx: Option<PathBuf>,
     pub combined: bool,
+    pub activations_dir: Option<PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -37,6 +38,7 @@ impl Default for RunConfig {
             batch: false,
             weights_onnx: None,
             combined: true,
+            activations_dir: None,
         }
     }
 }
@@ -753,6 +755,14 @@ fn run_combined_inference(
         &output_path,
         &build_msgpack_map(vec![("output_data", output_val)]),
     )?;
+
+    if let Some(activations_dir) = config.activations_dir.as_ref() {
+        crate::pipeline::activations::write_slice_activations(
+            activations_dir,
+            model_meta,
+            &tensor_cache,
+        )?;
+    }
 
     tracing::info!(
         run_dir = %run_dir.display(),

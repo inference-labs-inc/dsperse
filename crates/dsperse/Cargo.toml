@@ -30,6 +30,8 @@ jstprove_circuits.workspace = true
 jstprove_io.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+half = "2"
+zstd = "0.13"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

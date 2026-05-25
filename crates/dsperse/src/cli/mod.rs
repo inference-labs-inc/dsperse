@@ -589,6 +589,13 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
         ));
     }
 
+    if args.activations_dir.is_some() && !args.combined {
+        return Err(DsperseError::Other(
+            "--activations-dir requires --combined true (snapshots are written only on the combined inference path)"
+                .into(),
+        ));
+    }
+
     let layers = args
         .layers
         .as_ref()
@@ -614,13 +621,6 @@ pub fn cmd_full_run(args: FullRunArgs) -> Result<()> {
     }
 
     let run_dir = args.model_dir.join("run").join(format!("run_{}", run_id()));
-
-    if args.activations_dir.is_some() && !args.combined {
-        return Err(DsperseError::Other(
-            "--activations-dir requires --combined true (snapshots are written only on the combined inference path)"
-                .into(),
-        ));
-    }
 
     let config = RunConfig {
         parallel: args.parallel.get(),

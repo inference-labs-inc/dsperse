@@ -77,11 +77,14 @@ fn write_one(target: &Path, tensor: &ArrayD<f64>) -> Result<()> {
         )));
     }
     let total: usize = tensor.shape().iter().product();
-    if total > u32::MAX as usize {
-        return Err(DsperseError::Pipeline(format!(
+    let total_u32 = u32::try_from(total).map_err(|_| {
+        DsperseError::Pipeline(format!(
             "activation tensor too large for u32 element count: {total}"
-        )));
-    }
+        ))
+    })?;
+    let rank_u8 = u8::try_from(rank).map_err(|_| {
+        DsperseError::Pipeline(format!("activation tensor rank {rank} exceeds u8::MAX"))
+    })?;
 
     let file = File::create(target).map_err(|e| DsperseError::io(e, target))?;
     let mut enc = Encoder::new(file, ZSTD_LEVEL).map_err(|e| DsperseError::io(e, target))?;
@@ -89,12 +92,17 @@ fn write_one(target: &Path, tensor: &ArrayD<f64>) -> Result<()> {
     // Header (12 + rank*4 bytes), all little-endian.
     enc.write_all(&ACTIVATION_MAGIC)
         .map_err(|e| DsperseError::io(e, target))?;
-    enc.write_all(&[ACTIVATION_VERSION, DTYPE_FP16, rank as u8, 0])
+    enc.write_all(&[ACTIVATION_VERSION, DTYPE_FP16, rank_u8, 0])
         .map_err(|e| DsperseError::io(e, target))?;
-    enc.write_all(&(total as u32).to_le_bytes())
+    enc.write_all(&total_u32.to_le_bytes())
         .map_err(|e| DsperseError::io(e, target))?;
     for dim in tensor.shape() {
-        let d = *dim as u32;
+        let d = u32::try_from(*dim).map_err(|_| {
+            DsperseError::Pipeline(format!(
+                "activation tensor dimension {dim} exceeds u32::MAX in {}",
+                target.display()
+            ))
+        })?;
         enc.write_all(&d.to_le_bytes())
             .map_err(|e| DsperseError::io(e, target))?;
     }

@@ -1,4 +1,7 @@
 [advisories]
 ignore = [
     "RUSTSEC-2026-0009", # time crate DoS via RFC 2822 parsing — transitive dep, not user-facing
+    "RUSTSEC-2026-0176", # pyo3 <0.29 OOB read in PyList/PyTuple nth/nth_back — fix is the breaking pyo3 0.29 major upgrade; the affected iterator APIs are not used by the bindings
+    "RUSTSEC-2026-0177", # pyo3 <0.29 missing Sync bound on PyCFunction::new_closure — same breaking upgrade to clear; new_closure is not used by the bindings
+    "RUSTSEC-2026-0185", # quinn-proto <0.11.15 QUIC out-of-order reassembly DoS — transitive via reqwest's http3 path (disabled); not present in the dsperse build graph; patched release is <7d old, bump deferred
 ]

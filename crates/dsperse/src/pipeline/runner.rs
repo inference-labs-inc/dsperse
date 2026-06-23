@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use ndarray::{ArrayD, IxDyn};
@@ -1182,9 +1182,45 @@ pub(crate) fn extract_initializers_from_map(
     init_map: &HashMap<String, &TensorProto>,
     params: &CircuitParams,
 ) -> Result<Vec<(Vec<f64>, Vec<usize>)>> {
-    let mut initializers = Vec::new();
+    // Resolve each declared input to its backing initializer tensor (if any).
+    // First by exact name. DimSplit / ChannelSplit template circuits rename the
+    // weight to a placeholder ("W") that never appears in the slice ONNX, whose
+    // initializer keeps the original name (e.g. "onnx::MatMul_4162"); for those
+    // we fall back to an element-count match against the as-yet-unconsumed
+    // initializers, but only when that match is unique. An ambiguous or absent
+    // match is left unresolved (treated as an activation) so a wrong weight can
+    // never be silently bound into the witness.
+    let mut consumed: HashSet<&str> = HashSet::new();
+    let mut resolved: Vec<Option<&TensorProto>> = Vec::with_capacity(params.inputs.len());
     for io in &params.inputs {
         if let Some(tensor) = init_map.get(&io.name) {
+            consumed.insert(io.name.as_str());
+            resolved.push(Some(*tensor));
+        } else {
+            resolved.push(None);
+        }
+    }
+    for (slot, io) in resolved.iter_mut().zip(&params.inputs) {
+        if slot.is_some() {
+            continue;
+        }
+        let target_elems: usize = io.shape.iter().product();
+        if target_elems == 0 {
+            continue;
+        }
+        let mut matches = init_map.iter().filter(|(name, t)| {
+            !consumed.contains(name.as_str())
+                && t.dims.iter().map(|&d| d as usize).product::<usize>() == target_elems
+        });
+        if let (Some((name, tensor)), None) = (matches.next(), matches.next()) {
+            consumed.insert(name.as_str());
+            *slot = Some(*tensor);
+        }
+    }
+
+    let mut initializers = Vec::new();
+    for (slot, io) in resolved.iter().zip(&params.inputs) {
+        if let Some(tensor) = slot {
             let f32_vals = crate::slicer::onnx_proto::tensor_to_f32(tensor);
             let mut f64_vals: Vec<f64> = f32_vals.iter().map(|&v| f64::from(v)).collect();
             let target_shape = &io.shape;
@@ -1327,6 +1363,83 @@ mod tests {
     fn reshape_to_4d_mismatch() {
         let data = vec![1.0; 10];
         assert!(reshape_to_4d(&data, 2, 3, 4).is_err());
+    }
+
+    #[test]
+    fn extract_initializers_resolves_template_renamed_weight() {
+        // DimSplit / ChannelSplit template circuits rename the weight input to
+        // "W" while the slice ONNX keeps the original initializer name
+        // (e.g. "onnx::MatMul_4162"). The by-name lookup misses it, so without
+        // the element-count fallback the weight is miscounted as an activation
+        // and witness generation fails with an activation-length mismatch.
+        use crate::slicer::onnx_proto::TensorProto;
+        let params: CircuitParams = serde_json::from_value(serde_json::json!({
+            "scale_base": 2, "scale_exponent": 18, "rescale_config": {},
+            "inputs": [
+                {"name": "dim_tmpl_in", "elem_type": 1, "shape": [1, 4]},
+                {"name": "W", "elem_type": 1, "shape": [4, 4]}
+            ],
+            "outputs": [{"name": "dim_tmpl_out", "elem_type": 1, "shape": [1, 4]}],
+            "weights_as_inputs": true
+        }))
+        .unwrap();
+        let weight = TensorProto {
+            name: "onnx::MatMul_4162".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![4, 4],
+            float_data: (0..16).map(|i| i as f32).collect(),
+            ..Default::default()
+        };
+        let mut map: HashMap<String, &TensorProto> = HashMap::new();
+        map.insert(weight.name.clone(), &weight);
+
+        let inits = extract_initializers_from_map(&map, &params).unwrap();
+        // Only W resolves; the activation (dim_tmpl_in, 4 elems) has no
+        // matching initializer and stays an activation.
+        assert_eq!(
+            inits.len(),
+            1,
+            "renamed weight W must resolve by element count"
+        );
+        assert_eq!(inits[0].0.len(), 16);
+    }
+
+    #[test]
+    fn extract_initializers_ambiguous_size_left_unresolved() {
+        // If more than one unconsumed initializer matches the input's element
+        // count the match is ambiguous and must be skipped so a wrong weight is
+        // never silently bound into the witness.
+        use crate::slicer::onnx_proto::TensorProto;
+        let params: CircuitParams = serde_json::from_value(serde_json::json!({
+            "scale_base": 2, "scale_exponent": 18, "rescale_config": {},
+            "inputs": [{"name": "W", "elem_type": 1, "shape": [2, 2]}],
+            "outputs": [{"name": "o", "elem_type": 1, "shape": [1]}],
+            "weights_as_inputs": true
+        }))
+        .unwrap();
+        let a = TensorProto {
+            name: "a".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![2, 2],
+            float_data: vec![1.0; 4],
+            ..Default::default()
+        };
+        let b = TensorProto {
+            name: "b".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![4],
+            float_data: vec![2.0; 4],
+            ..Default::default()
+        };
+        let mut map: HashMap<String, &TensorProto> = HashMap::new();
+        map.insert("a".to_string(), &a);
+        map.insert("b".to_string(), &b);
+
+        let inits = extract_initializers_from_map(&map, &params).unwrap();
+        assert!(
+            inits.is_empty(),
+            "ambiguous element-count match must not bind a guessed weight"
+        );
     }
 
     #[test]

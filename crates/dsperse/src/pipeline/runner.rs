@@ -1178,6 +1178,16 @@ pub(crate) fn build_run_metadata(
     })
 }
 
+/// Names the slicer assigns to tiled/template runtime activation inputs. These
+/// are never weights, so they must be excluded from the element-count fallback
+/// in [`extract_initializers_from_map`].
+fn is_activation_placeholder(name: &str) -> bool {
+    name == "tile_in"
+        || name.starts_with("tile_in_")
+        || name == "dim_tmpl_in"
+        || (name.starts_with("group_") && name.ends_with("_in"))
+}
+
 pub(crate) fn extract_initializers_from_map(
     init_map: &HashMap<String, &TensorProto>,
     params: &CircuitParams,
@@ -1202,6 +1212,16 @@ pub(crate) fn extract_initializers_from_map(
     }
     for (slot, io) in resolved.iter_mut().zip(&params.inputs) {
         if slot.is_some() {
+            continue;
+        }
+        // Never resolve a tiled activation placeholder to an initializer. Names
+        // like "tile_in", "tile_in_N", "dim_tmpl_in" and "group_N_in" are the
+        // runtime activation inputs the slicer emits, not weights. Without this
+        // guard, a model whose per-slice ONNX carries an unrelated initializer
+        // of the same element count (e.g. a sibling layer's bias, or a full-model
+        // ONNX) would bind that weight into the activation slot, dropping the
+        // activation count to zero and rejecting the dispatched payload.
+        if is_activation_placeholder(&io.name) {
             continue;
         }
         let target_elems: usize = io.shape.iter().product();
@@ -1439,6 +1459,52 @@ mod tests {
         assert!(
             inits.is_empty(),
             "ambiguous element-count match must not bind a guessed weight"
+        );
+    }
+
+    #[test]
+    fn extract_initializers_never_binds_activation_placeholder() {
+        // A tiled activation placeholder (tile_in) must never be element-count
+        // matched to an initializer, even when exactly one same-size initializer
+        // remains after the named weight is consumed (e.g. a sibling layer's bias
+        // present in a full-model ONNX). Regression for the slice_399/442
+        // expected_activation=0 over-match.
+        use crate::slicer::onnx_proto::TensorProto;
+        let params: CircuitParams = serde_json::from_value(serde_json::json!({
+            "scale_base": 2, "scale_exponent": 18, "rescale_config": {},
+            "inputs": [
+                {"name": "tile_in", "elem_type": 1, "shape": [2048]},
+                {"name": "layers.0.linear1.bias", "elem_type": 1, "shape": [2048]}
+            ],
+            "outputs": [{"name": "tile_out", "elem_type": 1, "shape": [2048]}],
+            "weights_as_inputs": true
+        }))
+        .unwrap();
+        let bias0 = TensorProto {
+            name: "layers.0.linear1.bias".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![2048],
+            float_data: vec![1.0; 2048],
+            ..Default::default()
+        };
+        let bias1 = TensorProto {
+            name: "layers.1.linear1.bias".to_string(),
+            data_type: TensorProto::FLOAT,
+            dims: vec![2048],
+            float_data: vec![2.0; 2048],
+            ..Default::default()
+        };
+        let mut map: HashMap<String, &TensorProto> = HashMap::new();
+        map.insert(bias0.name.clone(), &bias0);
+        map.insert(bias1.name.clone(), &bias1);
+
+        let inits = extract_initializers_from_map(&map, &params).unwrap();
+        // Only the named bias resolves (1). tile_in stays an activation; it must
+        // not be bound to the spare same-size bias1, which would force a 0 count.
+        assert_eq!(
+            inits.len(),
+            1,
+            "activation placeholder must not be bound to a spare same-size initializer"
         );
     }
 

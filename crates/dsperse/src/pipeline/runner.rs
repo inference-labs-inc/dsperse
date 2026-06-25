@@ -1188,6 +1188,37 @@ fn is_activation_placeholder(name: &str) -> bool {
         || (name.starts_with("group_") && name.ends_with("_in"))
 }
 
+pub fn split_inline_wai_inputs(
+    params: &CircuitParams,
+    flat: &[f64],
+) -> Option<(Vec<f64>, Vec<(Vec<f64>, Vec<usize>)>)> {
+    if !params.weights_as_inputs {
+        return None;
+    }
+    let total: usize = params
+        .inputs
+        .iter()
+        .map(|io| io.shape.iter().product::<usize>())
+        .sum();
+    if total == 0 || flat.len() != total {
+        return None;
+    }
+    let mut activations: Vec<f64> = Vec::new();
+    let mut initializers: Vec<(Vec<f64>, Vec<usize>)> = Vec::new();
+    let mut cursor = 0usize;
+    for io in &params.inputs {
+        let n: usize = io.shape.iter().product();
+        let seg = &flat[cursor..cursor + n];
+        cursor += n;
+        if is_activation_placeholder(&io.name) {
+            activations.extend_from_slice(seg);
+        } else {
+            initializers.push((seg.to_vec(), io.shape.clone()));
+        }
+    }
+    Some((activations, initializers))
+}
+
 pub(crate) fn extract_initializers_from_map(
     init_map: &HashMap<String, &TensorProto>,
     params: &CircuitParams,

@@ -5,7 +5,7 @@ use ndarray::ArrayD;
 use crate::error::{DsperseError, Result};
 use crate::schema::execution::{ExecutionChain, ExecutionInfo, ExecutionResultEntry, RunMetadata};
 use crate::schema::metadata::{BackendKind, ModelMetadata, RunSliceMetadata};
-use crate::schema::tiling::{ChannelSplitInfo, TilingInfo};
+use crate::schema::tiling::{ChannelSplitInfo, DimSplitInfo, TilingInfo};
 
 use super::runner::{build_execution_chain, build_run_metadata, load_model_metadata};
 use super::strategy::ExecutionStrategy;
@@ -19,6 +19,7 @@ pub struct SliceWork {
     pub use_circuit: bool,
     pub tiling: Option<TilingInfo>,
     pub channel_split: Option<ChannelSplitInfo>,
+    pub dim_split: Option<DimSplitInfo>,
     pub circuit_path: Option<String>,
     pub onnx_path: Option<String>,
     pub slice_meta: RunSliceMetadata,
@@ -121,6 +122,7 @@ impl IncrementalRun {
             use_circuit: node.use_circuit,
             tiling: meta.tiling.clone(),
             channel_split: meta.channel_split.clone(),
+            dim_split: meta.dim_split.clone(),
             circuit_path: node.circuit_path.clone(),
             onnx_path: node.onnx_path.clone(),
             slice_meta: meta.clone(),

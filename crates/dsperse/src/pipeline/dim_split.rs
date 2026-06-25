@@ -164,37 +164,7 @@ fn execute_matmul_dim_split(
 
     let mut patched_paths: Vec<std::path::PathBuf> = Vec::with_capacity(k_chunks);
     for kc in 0..k_chunks {
-        let k_start = kc * k_chunk_size;
-        let k_end = (k_start + k_chunk_size).min(k_dim);
-        let actual_k = k_end.saturating_sub(k_start);
-
-        let weight_chunk: Vec<f32> = if trans_b {
-            let mut w = Vec::with_capacity(n_dim * k_chunk_size);
-            for row_idx in 0..n_dim {
-                let row_start = row_idx * k_dim + k_start;
-                let avail = actual_k.min(full_weight.len().saturating_sub(row_start));
-                w.extend_from_slice(&full_weight[row_start..row_start + avail]);
-                if avail < k_chunk_size {
-                    w.resize(w.len() + k_chunk_size - avail, 0.0);
-                }
-            }
-            w
-        } else {
-            let mut w = Vec::with_capacity(k_chunk_size * n_dim);
-            for ki in k_start..k_start + actual_k {
-                let start = ki * n_dim;
-                let end = start + n_dim;
-                if end <= full_weight.len() {
-                    w.extend_from_slice(&full_weight[start..end]);
-                } else {
-                    w.resize(w.len() + n_dim, 0.0);
-                }
-            }
-            if actual_k < k_chunk_size {
-                w.resize(k_chunk_size * n_dim, 0.0);
-            }
-            w
-        };
+        let weight_chunk = dim_split_weight_chunk(&full_weight, ds, kc, trans_b);
 
         let mut patched = tmpl_model.clone();
         let graph = patched.graph.as_mut().ok_or_else(|| {
@@ -233,14 +203,7 @@ fn execute_matmul_dim_split(
         let mut row_accum = vec![0.0f64; n_dim];
 
         for (kc, patched_path) in patched_paths.iter().enumerate() {
-            let k_start = kc * k_chunk_size;
-            let k_end = (k_start + k_chunk_size).min(k_dim);
-            let actual_k = k_end.saturating_sub(k_start);
-
-            let mut input_chunk = vec![0.0f64; k_chunk_size];
-            if actual_k > 0 {
-                input_chunk[..actual_k].copy_from_slice(&full_row[k_start..k_end]);
-            }
+            let input_chunk = dim_split_row_chunk(&full_row, kc, k_dim, k_chunk_size);
 
             let input_arr =
                 ndarray::ArrayD::from_shape_vec(ndarray::IxDyn(&[1, k_chunk_size]), input_chunk)
@@ -417,6 +380,190 @@ fn execute_generic_dim_split(
     Ok(final_result)
 }
 
+pub fn dim_split_unit_count(total_rows: usize, ds: &crate::schema::tiling::DimSplitInfo) -> usize {
+    total_rows.saturating_mul(ds.k_chunks.max(1))
+}
+
+fn dim_split_row_chunk(row: &[f64], kc: usize, k_dim: usize, k_chunk_size: usize) -> Vec<f64> {
+    let k_start = kc * k_chunk_size;
+    let k_end = (k_start + k_chunk_size).min(k_dim);
+    let actual_k = k_end.saturating_sub(k_start);
+    let mut chunk = vec![0.0f64; k_chunk_size];
+    if actual_k > 0 {
+        chunk[..actual_k].copy_from_slice(&row[k_start..k_end]);
+    }
+    chunk
+}
+
+pub fn dim_split_weight_chunk(
+    full_weight: &[f32],
+    ds: &crate::schema::tiling::DimSplitInfo,
+    kc: usize,
+    trans_b: bool,
+) -> Vec<f32> {
+    let k_dim = ds.k_dim;
+    let n_dim = ds.n_dim;
+    let k_chunks = ds.k_chunks.max(1);
+    let k_chunk_size = k_dim.div_ceil(k_chunks);
+    let k_start = kc * k_chunk_size;
+    let k_end = (k_start + k_chunk_size).min(k_dim);
+    let actual_k = k_end.saturating_sub(k_start);
+    if trans_b {
+        let mut w = Vec::with_capacity(n_dim * k_chunk_size);
+        for row_idx in 0..n_dim {
+            let row_start = row_idx * k_dim + k_start;
+            let avail = actual_k.min(full_weight.len().saturating_sub(row_start));
+            w.extend_from_slice(&full_weight[row_start..row_start + avail]);
+            if avail < k_chunk_size {
+                w.resize(w.len() + k_chunk_size - avail, 0.0);
+            }
+        }
+        w
+    } else {
+        let mut w = Vec::with_capacity(k_chunk_size * n_dim);
+        for ki in k_start..k_start + actual_k {
+            let start = ki * n_dim;
+            let end = start + n_dim;
+            if end <= full_weight.len() {
+                w.extend_from_slice(&full_weight[start..end]);
+            } else {
+                w.resize(w.len() + n_dim, 0.0);
+            }
+        }
+        if actual_k < k_chunk_size {
+            w.resize(k_chunk_size * n_dim, 0.0);
+        }
+        w
+    }
+}
+
+pub fn split_for_dim_split_dispatch(
+    input: &ndarray::ArrayD<f64>,
+    ds: &crate::schema::tiling::DimSplitInfo,
+) -> Result<Vec<Vec<f64>>> {
+    let input_shape = input.shape().to_vec();
+    let k_dim = *input_shape.last().unwrap_or(&0);
+    if k_dim == 0 {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: input {:?} has zero-width last dim",
+            ds.slice_idx, ds.input_name
+        )));
+    }
+    if ds.k_dim != 0 && k_dim != ds.k_dim {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: runtime k_dim {k_dim} does not match metadata k_dim {}",
+            ds.slice_idx, ds.k_dim
+        )));
+    }
+    let k_chunks = ds.k_chunks.max(1);
+    let k_chunk_size = k_dim.div_ceil(k_chunks);
+    let total_rows: usize = input_shape
+        .iter()
+        .take(input_shape.len().saturating_sub(1))
+        .product();
+    let flat = input
+        .as_standard_layout()
+        .into_owned()
+        .into_shape_with_order(ndarray::IxDyn(&[total_rows, k_dim]))
+        .map_err(|e| {
+            DsperseError::Pipeline(format!(
+                "dim-split slice {}: flatten input: {e}",
+                ds.slice_idx
+            ))
+        })?;
+    let mut units = Vec::with_capacity(dim_split_unit_count(total_rows, ds));
+    for r in 0..total_rows {
+        let row: Vec<f64> = flat.slice(ndarray::s![r, ..]).iter().copied().collect();
+        for kc in 0..k_chunks {
+            units.push(dim_split_row_chunk(&row, kc, k_dim, k_chunk_size));
+        }
+    }
+    Ok(units)
+}
+
+pub fn dim_split_weight_and_transb(
+    slice_onnx_path: &Path,
+    ds: &crate::schema::tiling::DimSplitInfo,
+) -> Result<(Vec<f32>, bool)> {
+    let weight_name = ds.weight_name.as_ref().ok_or_else(|| {
+        DsperseError::Pipeline(format!(
+            "dim-split slice {}: missing weight_name in metadata",
+            ds.slice_idx
+        ))
+    })?;
+    let model = crate::slicer::onnx_proto::load_model(slice_onnx_path)?;
+    let graph = model.graph.as_ref().ok_or_else(|| {
+        DsperseError::Pipeline(format!(
+            "dim-split slice {}: ONNX has no graph",
+            ds.slice_idx
+        ))
+    })?;
+    let matmul_node = graph
+        .node
+        .iter()
+        .find(|n| {
+            matches!(n.op_type.as_str(), "MatMul" | "Gemm")
+                && n.input.iter().any(|i| i == weight_name)
+                && n.input.iter().any(|i| i == &ds.input_name)
+                && n.output.iter().any(|o| o == &ds.output_name)
+        })
+        .ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "dim-split slice {}: no MatMul/Gemm node matches weight={weight_name:?}",
+                ds.slice_idx
+            ))
+        })?;
+    let trans_b = matmul_node.op_type == "Gemm"
+        && crate::slicer::onnx_proto::get_attribute_int(matmul_node, "transB").unwrap_or(0) == 1;
+    let full_weight = graph
+        .initializer
+        .iter()
+        .find(|i| i.name == *weight_name)
+        .map(crate::slicer::onnx_proto::tensor_to_f32)
+        .ok_or_else(|| {
+            DsperseError::Pipeline(format!(
+                "dim-split slice {}: weight {weight_name:?} not in ONNX initializers",
+                ds.slice_idx
+            ))
+        })?;
+    let expected_weight_len = ds.k_dim.saturating_mul(ds.n_dim);
+    if full_weight.len() != expected_weight_len {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: weight {weight_name:?} length {} does not match k_dim*n_dim = {}*{} = {}",
+            ds.slice_idx,
+            full_weight.len(),
+            ds.k_dim,
+            ds.n_dim,
+            expected_weight_len
+        )));
+    }
+    Ok((full_weight, trans_b))
+}
+
+pub fn dim_split_bound_inputs(
+    input: &ndarray::ArrayD<f64>,
+    slice_onnx_path: &Path,
+    ds: &crate::schema::tiling::DimSplitInfo,
+) -> Result<Vec<Vec<f64>>> {
+    let activations = split_for_dim_split_dispatch(input, ds)?;
+    let (full_weight, trans_b) = dim_split_weight_and_transb(slice_onnx_path, ds)?;
+    let k_chunks = ds.k_chunks.max(1);
+    let weight_chunks: Vec<Vec<f64>> = (0..k_chunks)
+        .map(|kc| {
+            dim_split_weight_chunk(&full_weight, ds, kc, trans_b)
+                .into_iter()
+                .map(f64::from)
+                .collect()
+        })
+        .collect();
+    let mut bound = Vec::with_capacity(activations.len());
+    for (unit_idx, mut payload) in activations.into_iter().enumerate() {
+        payload.extend_from_slice(&weight_chunks[unit_idx % k_chunks]);
+        bound.push(payload);
+    }
+    Ok(bound)
+}
+
 fn resolve_output_shape(
     slice_id: &str,
     input_shape: &[usize],
@@ -440,5 +587,77 @@ fn resolve_output_shape(
             *last = n_dim;
         }
         Ok(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::tiling::DimSplitInfo;
+    use ndarray::{ArrayD, IxDyn};
+
+    fn slice_148_meta() -> DimSplitInfo {
+        DimSplitInfo {
+            slice_idx: 148,
+            k_dim: 384,
+            n_dim: 1536,
+            k_chunks: 2,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dispatch_split_matches_local_chunk_geometry() {
+        let ds = slice_148_meta();
+        let input = ArrayD::from_shape_fn(IxDyn(&[4, 145, 384]), |d| (d[2] as f64) + 1.0);
+        let units = split_for_dim_split_dispatch(&input, &ds).unwrap();
+        assert_eq!(units.len(), 4 * 145 * 2);
+        assert_eq!(dim_split_unit_count(4 * 145, &ds), units.len());
+        assert!(units.iter().all(|u| u.len() == 192));
+        assert_eq!(units[0][0], 1.0);
+        assert_eq!(units[0][191], 192.0);
+        assert_eq!(units[1][0], 193.0);
+        assert_eq!(units[1][191], 384.0);
+    }
+
+    #[test]
+    fn weight_chunk_partitions_full_weight_along_k() {
+        let ds = slice_148_meta();
+        let full: Vec<f32> = (0..ds.k_dim)
+            .flat_map(|k| std::iter::repeat_n(k as f32, ds.n_dim))
+            .collect();
+        let c0 = dim_split_weight_chunk(&full, &ds, 0, false);
+        let c1 = dim_split_weight_chunk(&full, &ds, 1, false);
+        assert_eq!(c0.len(), 192 * ds.n_dim);
+        assert_eq!(c1.len(), 192 * ds.n_dim);
+        assert_eq!(c0[0], 0.0);
+        assert_eq!(*c0.last().unwrap(), 191.0);
+        assert_eq!(c1[0], 192.0);
+        assert_eq!(*c1.last().unwrap(), 383.0);
+    }
+
+    #[test]
+    fn weight_chunk_transposed_gemm_band_ordering() {
+        let ds = DimSplitInfo {
+            slice_idx: 7,
+            k_dim: 4,
+            n_dim: 3,
+            k_chunks: 2,
+            ..Default::default()
+        };
+        let full: Vec<f32> = (0..ds.n_dim)
+            .flat_map(|r| (0..ds.k_dim).map(move |c| (r * 10 + c) as f32))
+            .collect();
+        let c0 = dim_split_weight_chunk(&full, &ds, 0, true);
+        let c1 = dim_split_weight_chunk(&full, &ds, 1, true);
+        assert_eq!(c0, vec![0.0, 1.0, 10.0, 11.0, 20.0, 21.0]);
+        assert_eq!(c1, vec![2.0, 3.0, 12.0, 13.0, 22.0, 23.0]);
+    }
+
+    #[test]
+    fn split_rejects_k_dim_mismatch() {
+        let ds = slice_148_meta();
+        let bad = ArrayD::zeros(IxDyn(&[4, 145, 256]));
+        assert!(split_for_dim_split_dispatch(&bad, &ds).is_err());
     }
 }

@@ -21,9 +21,13 @@ pub use compiler::{
     CompileReport, HolographicSetupReport, SliceAnalysisReport, analyze_slices, compile_slices,
     setup_holographic_for_slices,
 };
+pub use dim_split::{
+    dim_split_bound_inputs, dim_split_unit_count, dim_split_weight_and_transb,
+    dim_split_weight_chunk, split_for_dim_split_dispatch,
+};
 pub use incremental::{IncrementalRun, SliceExecutionResult, SliceWork};
 pub use prover::prove_run;
-pub use runner::{RunConfig, extract_onnx_initializers, run_inference};
+pub use runner::{RunConfig, extract_onnx_initializers, run_inference, split_inline_wai_inputs};
 pub use slice_cache::SliceAssets;
 pub use strategy::ExecutionStrategy;
 pub use tensor_store::TensorStore;

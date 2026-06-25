@@ -527,7 +527,7 @@ pub fn dim_split_weight_and_transb(
             ))
         })?;
     let expected_weight_len = ds.k_dim.saturating_mul(ds.n_dim);
-    if expected_weight_len > 0 && full_weight.len() != expected_weight_len {
+    if full_weight.len() != expected_weight_len {
         return Err(DsperseError::Pipeline(format!(
             "dim-split slice {}: weight {weight_name:?} length {} does not match k_dim*n_dim = {}*{} = {}",
             ds.slice_idx,
@@ -624,7 +624,7 @@ mod tests {
     fn weight_chunk_partitions_full_weight_along_k() {
         let ds = slice_148_meta();
         let full: Vec<f32> = (0..ds.k_dim)
-            .flat_map(|k| std::iter::repeat(k as f32).take(ds.n_dim))
+            .flat_map(|k| std::iter::repeat_n(k as f32, ds.n_dim))
             .collect();
         let c0 = dim_split_weight_chunk(&full, &ds, 0, false);
         let c1 = dim_split_weight_chunk(&full, &ds, 1, false);
@@ -634,6 +634,24 @@ mod tests {
         assert_eq!(*c0.last().unwrap(), 191.0);
         assert_eq!(c1[0], 192.0);
         assert_eq!(*c1.last().unwrap(), 383.0);
+    }
+
+    #[test]
+    fn weight_chunk_transposed_gemm_band_ordering() {
+        let ds = DimSplitInfo {
+            slice_idx: 7,
+            k_dim: 4,
+            n_dim: 3,
+            k_chunks: 2,
+            ..Default::default()
+        };
+        let full: Vec<f32> = (0..ds.n_dim)
+            .flat_map(|r| (0..ds.k_dim).map(move |c| (r * 10 + c) as f32))
+            .collect();
+        let c0 = dim_split_weight_chunk(&full, &ds, 0, true);
+        let c1 = dim_split_weight_chunk(&full, &ds, 1, true);
+        assert_eq!(c0, vec![0.0, 1.0, 10.0, 11.0, 20.0, 21.0]);
+        assert_eq!(c1, vec![2.0, 3.0, 12.0, 13.0, 22.0, 23.0]);
     }
 
     #[test]

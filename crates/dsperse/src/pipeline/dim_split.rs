@@ -526,6 +526,17 @@ pub fn dim_split_weight_and_transb(
                 ds.slice_idx
             ))
         })?;
+    let expected_weight_len = ds.k_dim.saturating_mul(ds.n_dim);
+    if expected_weight_len > 0 && full_weight.len() != expected_weight_len {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: weight {weight_name:?} length {} does not match k_dim*n_dim = {}*{} = {}",
+            ds.slice_idx,
+            full_weight.len(),
+            ds.k_dim,
+            ds.n_dim,
+            expected_weight_len
+        )));
+    }
     Ok((full_weight, trans_b))
 }
 

@@ -1188,10 +1188,9 @@ fn is_activation_placeholder(name: &str) -> bool {
         || (name.starts_with("group_") && name.ends_with("_in"))
 }
 
-pub fn split_inline_wai_inputs(
-    params: &CircuitParams,
-    flat: &[f64],
-) -> Option<(Vec<f64>, Vec<(Vec<f64>, Vec<usize>)>)> {
+pub type WaiInputs = (Vec<f64>, Vec<(Vec<f64>, Vec<usize>)>);
+
+pub fn split_inline_wai_inputs(params: &CircuitParams, flat: &[f64]) -> Option<WaiInputs> {
     if !params.weights_as_inputs {
         return None;
     }

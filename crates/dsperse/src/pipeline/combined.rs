@@ -102,87 +102,92 @@ impl CombinedRun {
         })
     }
 
-    pub fn all_circuit_work(&self) -> Result<Vec<SliceWork>> {
-        let mut work_items = Vec::with_capacity(self.pending_slices.len());
+    pub fn circuit_work_ids(&self) -> Vec<String> {
+        self.model_meta
+            .slices
+            .iter()
+            .map(|slice| format!("slice_{}", slice.index))
+            .filter(|slice_id| self.pending_slices.contains(slice_id))
+            .collect()
+    }
 
-        for slice in &self.model_meta.slices {
-            let slice_id = format!("slice_{}", slice.index);
-            if !self.pending_slices.contains(&slice_id) {
-                continue;
+    pub fn circuit_work_for(&self, slice_id: &str) -> Result<SliceWork> {
+        let node = self.execution_chain.nodes.get(slice_id).ok_or_else(|| {
+            DsperseError::Pipeline(format!("execution chain missing node for {slice_id}"))
+        })?;
+
+        let meta = self.run_meta.slices.get(slice_id).ok_or_else(|| {
+            DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
+        })?;
+
+        let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
+        let (input, named_inputs) = match strategy {
+            ExecutionStrategy::ChannelSplit(cs) => {
+                let t = self.tensor_cache.get(&cs.input_name)?.clone();
+                (t, Vec::new())
             }
-
-            let node = self.execution_chain.nodes.get(&slice_id).ok_or_else(|| {
-                DsperseError::Pipeline(format!("execution chain missing node for {slice_id}"))
-            })?;
-
-            let meta = self.run_meta.slices.get(&slice_id).ok_or_else(|| {
-                DsperseError::Pipeline(format!("run metadata missing slice {slice_id}"))
-            })?;
-
-            let strategy = ExecutionStrategy::from_metadata(meta, node.use_circuit)?;
-            let (input, named_inputs) = match strategy {
-                ExecutionStrategy::ChannelSplit(cs) => {
-                    let t = self.tensor_cache.get(&cs.input_name)?.clone();
-                    (t, Vec::new())
-                }
-                ExecutionStrategy::DimSplit(ds) => {
-                    let t = self.tensor_cache.get(&ds.input_name)?.clone();
-                    (t, Vec::new())
-                }
-                ExecutionStrategy::Tiled(tiling) => {
-                    let names = tiling.all_input_names();
-                    if names.len() > 1 {
-                        let mut named: Vec<(String, ArrayD<f64>)> = Vec::with_capacity(names.len());
-                        let mut flat: Vec<f64> = Vec::new();
-                        for name in &names {
-                            let arr = self.tensor_cache.get(name)?;
-                            named.push(((*name).to_string(), arr.clone()));
-                            flat.extend(arr.iter());
-                        }
-                        let concatenated = ArrayD::from_shape_vec(IxDyn(&[flat.len()]), flat)
-                            .map_err(|e| {
-                                DsperseError::Pipeline(format!("tiled multi-input concat: {e}"))
-                            })?;
-                        (concatenated, named)
-                    } else {
-                        let t = self.tensor_cache.get(&tiling.input_name)?.clone();
-                        (t, Vec::new())
-                    }
-                }
-                ExecutionStrategy::Single { .. } => {
-                    let filtered = &meta.dependencies.filtered_inputs;
-                    let mut named = Vec::with_capacity(filtered.len());
-                    let mut flat_elems: Vec<f64> = Vec::new();
-                    for name in filtered {
+            ExecutionStrategy::DimSplit(ds) => {
+                let t = self.tensor_cache.get(&ds.input_name)?.clone();
+                (t, Vec::new())
+            }
+            ExecutionStrategy::Tiled(tiling) => {
+                let names = tiling.all_input_names();
+                if names.len() > 1 {
+                    let mut named: Vec<(String, ArrayD<f64>)> = Vec::with_capacity(names.len());
+                    let mut flat: Vec<f64> = Vec::new();
+                    for name in &names {
                         let arr = self.tensor_cache.get(name)?;
-                        named.push((name.clone(), arr.clone()));
-                        flat_elems.extend(arr.iter());
+                        named.push(((*name).to_string(), arr.clone()));
+                        flat.extend(arr.iter());
                     }
-                    let concatenated = ndarray::ArrayD::from_shape_vec(
-                        ndarray::IxDyn(&[flat_elems.len()]),
-                        flat_elems,
-                    )
-                    .map_err(|e| DsperseError::Pipeline(format!("flatten inputs: {e}")))?;
+                    let concatenated =
+                        ArrayD::from_shape_vec(IxDyn(&[flat.len()]), flat).map_err(|e| {
+                            DsperseError::Pipeline(format!("tiled multi-input concat: {e}"))
+                        })?;
                     (concatenated, named)
+                } else {
+                    let t = self.tensor_cache.get(&tiling.input_name)?.clone();
+                    (t, Vec::new())
                 }
-            };
+            }
+            ExecutionStrategy::Single { .. } => {
+                let filtered = &meta.dependencies.filtered_inputs;
+                let mut named = Vec::with_capacity(filtered.len());
+                let mut flat_elems: Vec<f64> = Vec::new();
+                for name in filtered {
+                    let arr = self.tensor_cache.get(name)?;
+                    named.push((name.clone(), arr.clone()));
+                    flat_elems.extend(arr.iter());
+                }
+                let concatenated = ndarray::ArrayD::from_shape_vec(
+                    ndarray::IxDyn(&[flat_elems.len()]),
+                    flat_elems,
+                )
+                .map_err(|e| DsperseError::Pipeline(format!("flatten inputs: {e}")))?;
+                (concatenated, named)
+            }
+        };
 
-            work_items.push(SliceWork {
-                slice_id,
-                input,
-                named_inputs,
-                backend: node.backend,
-                use_circuit: node.use_circuit,
-                tiling: meta.tiling.clone(),
-                channel_split: meta.channel_split.clone(),
-                dim_split: meta.dim_split.clone(),
-                circuit_path: node.circuit_path.clone(),
-                onnx_path: node.onnx_path.clone(),
-                slice_meta: meta.clone(),
-            });
-        }
+        Ok(SliceWork {
+            slice_id: slice_id.to_string(),
+            input,
+            named_inputs,
+            backend: node.backend,
+            use_circuit: node.use_circuit,
+            tiling: meta.tiling.clone(),
+            channel_split: meta.channel_split.clone(),
+            dim_split: meta.dim_split.clone(),
+            circuit_path: node.circuit_path.clone(),
+            onnx_path: node.onnx_path.clone(),
+            slice_meta: meta.clone(),
+        })
+    }
 
-        Ok(work_items)
+    pub fn all_circuit_work(&self) -> Result<Vec<SliceWork>> {
+        self.circuit_work_ids()
+            .iter()
+            .map(|slice_id| self.circuit_work_for(slice_id))
+            .collect()
     }
 
     pub fn mark_slice_done(&mut self, slice_id: &str) -> bool {

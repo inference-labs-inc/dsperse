@@ -102,11 +102,6 @@ impl CombinedRun {
         })
     }
 
-    /// Pending circuit slice ids in model execution order, without
-    /// materializing any input tensors. Callers can page the heavy
-    /// per-slice payloads in via `circuit_work_for` as downstream
-    /// capacity frees up, so the full set of activation tensors never
-    /// has to exist at once.
     pub fn circuit_work_ids(&self) -> Vec<String> {
         self.model_meta
             .slices
@@ -116,10 +111,6 @@ impl CombinedRun {
             .collect()
     }
 
-    /// Materialize the dispatchable work for a single slice from the
-    /// retained tensor cache. Valid for any slice this run knows about,
-    /// independent of pending state, so a slice's payload can be
-    /// re-derived at any point in the run's lifetime.
     pub fn circuit_work_for(&self, slice_id: &str) -> Result<SliceWork> {
         let node = self.execution_chain.nodes.get(slice_id).ok_or_else(|| {
             DsperseError::Pipeline(format!("execution chain missing node for {slice_id}"))

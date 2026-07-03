@@ -174,9 +174,15 @@ impl CombinedRun {
             named_inputs,
             backend: node.backend,
             use_circuit: node.use_circuit,
-            tiling: meta.tiling.clone(),
-            channel_split: meta.channel_split.clone(),
-            dim_split: meta.dim_split.clone(),
+            tiling: matches!(strategy, ExecutionStrategy::Tiled(_))
+                .then(|| meta.tiling.clone())
+                .flatten(),
+            channel_split: matches!(strategy, ExecutionStrategy::ChannelSplit(_))
+                .then(|| meta.channel_split.clone())
+                .flatten(),
+            dim_split: matches!(strategy, ExecutionStrategy::DimSplit(_))
+                .then(|| meta.dim_split.clone())
+                .flatten(),
             circuit_path: node.circuit_path.clone(),
             onnx_path: node.onnx_path.clone(),
             slice_meta: meta.clone(),

@@ -662,24 +662,17 @@ mod tests {
     }
 }
 
-pub fn dim_split_group_payloads(
-    primary: &ndarray::ArrayD<f64>,
-    secondaries: &[&ndarray::ArrayD<f64>],
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupPayloadPart {
+    Whole(usize),
+    Split(usize),
+}
+
+pub fn plan_group_payload(
+    manifest_shapes: &[Vec<usize>],
     ds: &crate::schema::tiling::DimSplitInfo,
-) -> Result<Vec<Vec<f64>>> {
-    let shape = primary.shape();
-    if ds.split_dim >= shape.len() {
-        return Err(DsperseError::Pipeline(format!(
-            "dim-split slice {}: split_dim {} out of range for shape {:?}",
-            ds.slice_idx, ds.split_dim, shape
-        )));
-    }
-    if shape[ds.split_dim] != ds.dim_size {
-        return Err(DsperseError::Pipeline(format!(
-            "dim-split slice {}: runtime dim {} does not match metadata dim_size {}",
-            ds.slice_idx, shape[ds.split_dim], ds.dim_size
-        )));
-    }
+    contract: &[(String, Vec<usize>)],
+) -> Result<Vec<GroupPayloadPart>> {
     if ds.num_groups == 0
         || ds.elements_per_group == 0
         || ds.num_groups * ds.elements_per_group != ds.dim_size
@@ -689,36 +682,87 @@ pub fn dim_split_group_payloads(
             ds.slice_idx, ds.num_groups, ds.elements_per_group, ds.dim_size
         )));
     }
-
-    let axis = ndarray::Axis(ds.split_dim);
-    let shares_axis = |t: &ndarray::ArrayD<f64>| {
-        ds.split_dim < t.ndim() && t.shape()[ds.split_dim] == ds.dim_size
+    let reduced = |shape: &[usize]| -> Option<Vec<usize>> {
+        if ds.split_dim < shape.len() && shape[ds.split_dim] == ds.dim_size {
+            let mut r = shape.to_vec();
+            r[ds.split_dim] = ds.elements_per_group;
+            Some(r)
+        } else {
+            None
+        }
     };
-
-    let whole_secondaries: Vec<Vec<f64>> = secondaries
-        .iter()
-        .map(|t| {
-            if shares_axis(t) {
-                Vec::new()
-            } else {
-                t.as_standard_layout().iter().copied().collect()
+    let mut used = vec![false; manifest_shapes.len()];
+    let mut parts = Vec::new();
+    let mut trailing_started = false;
+    for (name, entry_shape) in contract {
+        let mut matched = None;
+        for (i, shape) in manifest_shapes.iter().enumerate() {
+            if used[i] {
+                continue;
             }
-        })
-        .collect();
+            if shape == entry_shape {
+                matched = Some(GroupPayloadPart::Whole(i));
+                break;
+            }
+            if reduced(shape).as_deref() == Some(entry_shape.as_slice()) {
+                matched = Some(GroupPayloadPart::Split(i));
+                break;
+            }
+        }
+        match matched {
+            Some(part) => {
+                if trailing_started {
+                    return Err(DsperseError::Pipeline(format!(
+                        "dim-split slice {}: activation entry {name} {entry_shape:?} appears after initializer entries",
+                        ds.slice_idx
+                    )));
+                }
+                let idx = match part {
+                    GroupPayloadPart::Whole(i) | GroupPayloadPart::Split(i) => i,
+                };
+                used[idx] = true;
+                parts.push(part);
+            }
+            None => {
+                trailing_started = true;
+            }
+        }
+    }
+    if let Some(unused) = used.iter().position(|u| !u) {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: manifest tensor {unused} unused by circuit contract",
+            ds.slice_idx
+        )));
+    }
+    Ok(parts)
+}
 
+pub fn dim_split_group_payloads_planned(
+    tensors: &[&ndarray::ArrayD<f64>],
+    plan: &[GroupPayloadPart],
+    ds: &crate::schema::tiling::DimSplitInfo,
+) -> Result<Vec<Vec<f64>>> {
+    let axis = ndarray::Axis(ds.split_dim);
     let mut payloads = Vec::with_capacity(ds.num_groups);
     for g in 0..ds.num_groups {
         let start = g * ds.elements_per_group;
         let range = ndarray::Slice::from(start..start + ds.elements_per_group);
         let mut payload: Vec<f64> = Vec::new();
-        for (t, whole) in secondaries.iter().zip(&whole_secondaries) {
-            if shares_axis(t) {
-                payload.extend(t.slice_axis(axis, range).as_standard_layout().iter());
-            } else {
-                payload.extend_from_slice(whole);
+        for part in plan {
+            match part {
+                GroupPayloadPart::Whole(i) => {
+                    payload.extend(tensors[*i].as_standard_layout().iter());
+                }
+                GroupPayloadPart::Split(i) => {
+                    payload.extend(
+                        tensors[*i]
+                            .slice_axis(axis, range)
+                            .as_standard_layout()
+                            .iter(),
+                    );
+                }
             }
         }
-        payload.extend(primary.slice_axis(axis, range).as_standard_layout().iter());
         payloads.push(payload);
     }
     Ok(payloads)
@@ -728,7 +772,6 @@ pub fn dim_split_group_payloads(
 mod group_payload_tests {
     use super::*;
     use crate::schema::tiling::{DimSplitInfo, DimSplitKind};
-    use ndarray::{ArrayD, IxDyn};
 
     fn ds(split_dim: usize, dim_size: usize, num_groups: usize, epg: usize) -> DimSplitInfo {
         DimSplitInfo {
@@ -742,49 +785,53 @@ mod group_payload_tests {
     }
 
     #[test]
-    fn shared_axis_secondaries_are_split_with_the_primary() {
-        let primary =
-            ArrayD::from_shape_vec(IxDyn(&[2, 4, 3]), (0..24).map(|v| v as f64).collect()).unwrap();
-        let shared =
-            ArrayD::from_shape_vec(IxDyn(&[1, 4, 3]), (100..112).map(|v| v as f64).collect())
-                .unwrap();
-        let payloads = dim_split_group_payloads(&primary, &[&shared], &ds(1, 4, 2, 2)).unwrap();
-        assert_eq!(payloads.len(), 2);
-        assert_eq!(payloads[0].len(), 6 + 12);
+    fn contraction_with_coincidental_axis_size_stays_whole() {
+        let ds_info = ds(2, 4, 2, 2);
+        let manifest = vec![vec![2, 3, 4, 4], vec![2, 3, 4, 5]];
+        let contract = vec![
+            ("in0".to_string(), vec![2, 3, 4, 5]),
+            ("in1".to_string(), vec![2, 3, 2, 4]),
+        ];
+        let plan = plan_group_payload(&manifest, &ds_info, &contract).unwrap();
         assert_eq!(
-            &payloads[0][..6],
-            &[100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
-        );
-        assert_eq!(
-            &payloads[1][..6],
-            &[106.0, 107.0, 108.0, 109.0, 110.0, 111.0]
+            plan,
+            vec![GroupPayloadPart::Whole(1), GroupPayloadPart::Split(0)],
+            "secondary sharing the axis size must stay whole when the contract says so"
         );
     }
 
     #[test]
-    fn group_payloads_place_secondaries_first_and_cover_dim() {
-        let primary =
-            ArrayD::from_shape_vec(IxDyn(&[2, 4, 3]), (0..24).map(|v| v as f64).collect()).unwrap();
-        let secondary = ArrayD::from_elem(IxDyn(&[5]), 9.0);
-        let payloads = dim_split_group_payloads(&primary, &[&secondary], &ds(1, 4, 2, 2)).unwrap();
-        assert_eq!(payloads.len(), 2);
-        for p in &payloads {
-            assert_eq!(p.len(), 5 + 12);
-            assert!(p[..5].iter().all(|&v| v == 9.0));
-        }
-        assert_eq!(&payloads[0][5..11], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
-        assert_eq!(&payloads[1][5..11], &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]);
+    fn broadcast_secondary_splits_when_contract_says_so() {
+        let ds_info = ds(2, 4, 2, 2);
+        let manifest = vec![vec![2, 3, 4, 4], vec![2, 1, 4, 4]];
+        let contract = vec![
+            ("in0".to_string(), vec![2, 1, 2, 4]),
+            ("in1".to_string(), vec![2, 3, 2, 4]),
+        ];
+        let plan = plan_group_payload(&manifest, &ds_info, &contract).unwrap();
+        assert_eq!(
+            plan,
+            vec![GroupPayloadPart::Split(1), GroupPayloadPart::Split(0)]
+        );
     }
 
     #[test]
-    fn group_payloads_reject_uncovered_dim() {
-        let primary = ArrayD::from_elem(IxDyn(&[2, 5, 3]), 1.0);
-        assert!(dim_split_group_payloads(&primary, &[], &ds(1, 5, 2, 2)).is_err());
-    }
-
-    #[test]
-    fn group_payloads_reject_shape_mismatch() {
-        let primary = ArrayD::from_elem(IxDyn(&[2, 4, 3]), 1.0);
-        assert!(dim_split_group_payloads(&primary, &[], &ds(1, 5, 1, 5)).is_err());
+    fn trailing_initializer_entries_are_tolerated_but_gaps_are_not() {
+        let ds_info = ds(1, 4, 2, 2);
+        let manifest = vec![vec![1, 4, 1], vec![1, 4, 1]];
+        let ok = vec![
+            ("a".to_string(), vec![1, 2, 1]),
+            ("b".to_string(), vec![1, 2, 1]),
+            ("freq".to_string(), vec![128]),
+        ];
+        assert!(plan_group_payload(&manifest, &ds_info, &ok).is_ok());
+        let gap = vec![
+            ("a".to_string(), vec![1, 2, 1]),
+            ("freq".to_string(), vec![128]),
+            ("b".to_string(), vec![1, 2, 1]),
+        ];
+        assert!(plan_group_payload(&manifest, &ds_info, &gap).is_err());
+        let unused = vec![("a".to_string(), vec![1, 2, 1])];
+        assert!(plan_group_payload(&manifest, &ds_info, &unused).is_err());
     }
 }

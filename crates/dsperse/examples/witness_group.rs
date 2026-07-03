@@ -1,5 +1,5 @@
 use dsperse::backend::jstprove::JstproveBackend;
-use dsperse::pipeline::{CombinedRun, dim_split_group_payloads};
+use dsperse::pipeline::CombinedRun;
 use ndarray::{ArrayD, IxDyn};
 use std::path::Path;
 
@@ -42,7 +42,28 @@ fn main() {
         secondaries.len()
     );
 
-    let payloads = dim_split_group_payloads(primary, &secondaries, ds).expect("group payloads");
+    let backend_for_params = JstproveBackend::new();
+    let params = backend_for_params
+        .load_params(&dir.join(&slice_id).join("jstprove/circuit.bundle"))
+        .expect("params")
+        .expect("params present");
+    let manifest_shapes: Vec<Vec<usize>> = work
+        .slice_meta
+        .input_shape
+        .iter()
+        .map(|s| s.iter().map(|&d| d as usize).collect())
+        .collect();
+    let contract: Vec<(String, Vec<usize>)> = params
+        .inputs
+        .iter()
+        .map(|io| (io.name.clone(), io.shape.clone()))
+        .collect();
+    let plan =
+        dsperse::pipeline::plan_group_payload(&manifest_shapes, ds, &contract).expect("plan");
+    let tensors: Vec<&ArrayD<f64>> = work.named_inputs.iter().map(|(_, t)| t).collect();
+    let payloads = dsperse::pipeline::dim_split_group_payloads_planned(&tensors, &plan, ds)
+        .expect("group payloads");
+    let _ = (primary, &secondaries);
     println!(
         "groups={} payload_len={}",
         payloads.len(),

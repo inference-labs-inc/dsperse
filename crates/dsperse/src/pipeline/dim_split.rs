@@ -661,3 +661,96 @@ mod tests {
         assert!(split_for_dim_split_dispatch(&bad, &ds).is_err());
     }
 }
+
+pub fn dim_split_group_payloads(
+    primary: &ndarray::ArrayD<f64>,
+    secondaries: &[&ndarray::ArrayD<f64>],
+    ds: &crate::schema::tiling::DimSplitInfo,
+) -> Result<Vec<Vec<f64>>> {
+    let shape = primary.shape();
+    if ds.split_dim >= shape.len() {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: split_dim {} out of range for shape {:?}",
+            ds.slice_idx, ds.split_dim, shape
+        )));
+    }
+    if shape[ds.split_dim] != ds.dim_size {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: runtime dim {} does not match metadata dim_size {}",
+            ds.slice_idx, shape[ds.split_dim], ds.dim_size
+        )));
+    }
+    if ds.num_groups == 0
+        || ds.elements_per_group == 0
+        || ds.num_groups * ds.elements_per_group != ds.dim_size
+    {
+        return Err(DsperseError::Pipeline(format!(
+            "dim-split slice {}: groups {}x{} do not cover dim_size {}",
+            ds.slice_idx, ds.num_groups, ds.elements_per_group, ds.dim_size
+        )));
+    }
+
+    let mut secondary_flat: Vec<f64> = Vec::new();
+    for s in secondaries {
+        secondary_flat.extend(s.as_standard_layout().iter());
+    }
+
+    let axis = ndarray::Axis(ds.split_dim);
+    let mut payloads = Vec::with_capacity(ds.num_groups);
+    for g in 0..ds.num_groups {
+        let start = g * ds.elements_per_group;
+        let group = primary.slice_axis(
+            axis,
+            ndarray::Slice::from(start..start + ds.elements_per_group),
+        );
+        let mut payload = secondary_flat.clone();
+        payload.extend(group.as_standard_layout().iter());
+        payloads.push(payload);
+    }
+    Ok(payloads)
+}
+
+#[cfg(test)]
+mod group_payload_tests {
+    use super::*;
+    use crate::schema::tiling::{DimSplitInfo, DimSplitKind};
+    use ndarray::{ArrayD, IxDyn};
+
+    fn ds(split_dim: usize, dim_size: usize, num_groups: usize, epg: usize) -> DimSplitInfo {
+        DimSplitInfo {
+            split_kind: DimSplitKind::BatchDim,
+            split_dim,
+            dim_size,
+            num_groups,
+            elements_per_group: epg,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn group_payloads_place_secondaries_first_and_cover_dim() {
+        let primary =
+            ArrayD::from_shape_vec(IxDyn(&[2, 4, 3]), (0..24).map(|v| v as f64).collect()).unwrap();
+        let secondary = ArrayD::from_elem(IxDyn(&[5]), 9.0);
+        let payloads = dim_split_group_payloads(&primary, &[&secondary], &ds(1, 4, 2, 2)).unwrap();
+        assert_eq!(payloads.len(), 2);
+        for p in &payloads {
+            assert_eq!(p.len(), 5 + 12);
+            assert!(p[..5].iter().all(|&v| v == 9.0));
+        }
+        assert_eq!(&payloads[0][5..11], &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(&payloads[1][5..11], &[6.0, 7.0, 8.0, 9.0, 10.0, 11.0]);
+    }
+
+    #[test]
+    fn group_payloads_reject_uncovered_dim() {
+        let primary = ArrayD::from_elem(IxDyn(&[2, 5, 3]), 1.0);
+        assert!(dim_split_group_payloads(&primary, &[], &ds(1, 5, 2, 2)).is_err());
+    }
+
+    #[test]
+    fn group_payloads_reject_shape_mismatch() {
+        let primary = ArrayD::from_elem(IxDyn(&[2, 4, 3]), 1.0);
+        assert!(dim_split_group_payloads(&primary, &[], &ds(1, 5, 1, 5)).is_err());
+    }
+}

@@ -133,7 +133,7 @@ impl SliceMetadata {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RunSliceMetadata {
     #[serde(default)]
     pub path: String,

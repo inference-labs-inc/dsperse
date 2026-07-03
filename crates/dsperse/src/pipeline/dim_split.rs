@@ -594,6 +594,7 @@ fn resolve_output_shape(
 mod tests {
     use super::*;
     use crate::schema::tiling::DimSplitInfo;
+    use ndarray::{ArrayD, IxDyn};
 
     fn slice_148_meta() -> DimSplitInfo {
         DimSplitInfo {

@@ -594,7 +594,6 @@ fn resolve_output_shape(
 mod tests {
     use super::*;
     use crate::schema::tiling::DimSplitInfo;
-    use ndarray::{ArrayD, IxDyn};
 
     fn slice_148_meta() -> DimSplitInfo {
         DimSplitInfo {
@@ -772,7 +771,6 @@ pub fn dim_split_group_payloads_planned(
 mod group_payload_tests {
     use super::*;
     use crate::schema::tiling::{DimSplitInfo, DimSplitKind};
-    use ndarray::{ArrayD, IxDyn};
 
     fn ds(split_dim: usize, dim_size: usize, num_groups: usize, epg: usize) -> DimSplitInfo {
         DimSplitInfo {

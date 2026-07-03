@@ -14,7 +14,10 @@ fn main() {
     let input = ArrayD::from_elem(IxDyn(&input_shape), 0.5_f64);
     let run = CombinedRun::new(dir, input).expect("combined run");
 
-    let work = run.circuit_work_for("slice_11").expect("slice_11");
+    let slice_id = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "slice_11".to_string());
+    let work = run.circuit_work_for(&slice_id).expect("slice work");
     let ds = work
         .slice_meta
         .dim_split
@@ -47,8 +50,9 @@ fn main() {
     );
 
     let backend = JstproveBackend::new();
-    let bundle = dir.join("slice_11/jstprove/circuit.bundle");
-    for g in [0usize, 14, 28] {
+    let bundle = dir.join(&slice_id).join("jstprove/circuit.bundle");
+    let last = payloads.len() - 1;
+    for g in [0usize, last / 2, last] {
         let result = backend.witness_f64(&bundle, &payloads[g], &[]);
         match result {
             Ok(w) => println!("group {g}: WITNESS OK ({} bytes)", w.len()),

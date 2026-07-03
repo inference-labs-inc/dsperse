@@ -690,21 +690,35 @@ pub fn dim_split_group_payloads(
         )));
     }
 
-    let mut secondary_flat: Vec<f64> = Vec::new();
-    for s in secondaries {
-        secondary_flat.extend(s.as_standard_layout().iter());
-    }
-
     let axis = ndarray::Axis(ds.split_dim);
+    let shares_axis = |t: &ndarray::ArrayD<f64>| {
+        ds.split_dim < t.ndim() && t.shape()[ds.split_dim] == ds.dim_size
+    };
+
+    let whole_secondaries: Vec<Vec<f64>> = secondaries
+        .iter()
+        .map(|t| {
+            if shares_axis(t) {
+                Vec::new()
+            } else {
+                t.as_standard_layout().iter().copied().collect()
+            }
+        })
+        .collect();
+
     let mut payloads = Vec::with_capacity(ds.num_groups);
     for g in 0..ds.num_groups {
         let start = g * ds.elements_per_group;
-        let group = primary.slice_axis(
-            axis,
-            ndarray::Slice::from(start..start + ds.elements_per_group),
-        );
-        let mut payload = secondary_flat.clone();
-        payload.extend(group.as_standard_layout().iter());
+        let range = ndarray::Slice::from(start..start + ds.elements_per_group);
+        let mut payload: Vec<f64> = Vec::new();
+        for (t, whole) in secondaries.iter().zip(&whole_secondaries) {
+            if shares_axis(t) {
+                payload.extend(t.slice_axis(axis, range).as_standard_layout().iter());
+            } else {
+                payload.extend_from_slice(whole);
+            }
+        }
+        payload.extend(primary.slice_axis(axis, range).as_standard_layout().iter());
         payloads.push(payload);
     }
     Ok(payloads)
@@ -725,6 +739,26 @@ mod group_payload_tests {
             elements_per_group: epg,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn shared_axis_secondaries_are_split_with_the_primary() {
+        let primary =
+            ArrayD::from_shape_vec(IxDyn(&[2, 4, 3]), (0..24).map(|v| v as f64).collect()).unwrap();
+        let shared =
+            ArrayD::from_shape_vec(IxDyn(&[1, 4, 3]), (100..112).map(|v| v as f64).collect())
+                .unwrap();
+        let payloads = dim_split_group_payloads(&primary, &[&shared], &ds(1, 4, 2, 2)).unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0].len(), 6 + 12);
+        assert_eq!(
+            &payloads[0][..6],
+            &[100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+        );
+        assert_eq!(
+            &payloads[1][..6],
+            &[106.0, 107.0, 108.0, 109.0, 110.0, 111.0]
+        );
     }
 
     #[test]

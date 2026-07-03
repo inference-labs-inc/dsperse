@@ -1181,7 +1181,7 @@ pub(crate) fn build_run_metadata(
 /// Names the slicer assigns to tiled/template runtime activation inputs. These
 /// are never weights, so they must be excluded from the element-count fallback
 /// in [`extract_initializers_from_map`].
-fn is_activation_placeholder(name: &str) -> bool {
+pub fn is_activation_placeholder(name: &str) -> bool {
     name == "tile_in"
         || name.starts_with("tile_in_")
         || name == "dim_tmpl_in"

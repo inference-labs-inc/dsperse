@@ -20,6 +20,8 @@ pub struct CombinedRun {
     slices_dir: PathBuf,
     pending_slices: HashSet<String>,
     failed_slices: HashSet<String>,
+    tensor_referencing_slices: HashMap<String, Vec<String>>,
+    protected_tensors: HashSet<String>,
 }
 
 impl CombinedRun {
@@ -91,6 +93,52 @@ impl CombinedRun {
             "combined inference complete, all circuit work queued"
         );
 
+        let mut tensor_referencing_slices: HashMap<String, Vec<String>> = HashMap::new();
+        for slice in &model_meta.slices {
+            let slice_id = format!("slice_{}", slice.index);
+            if !pending_slices.contains(&slice_id) {
+                continue;
+            }
+            for name in slice
+                .dependencies
+                .filtered_inputs
+                .iter()
+                .chain(slice.dependencies.output.iter())
+            {
+                tensor_referencing_slices
+                    .entry(name.clone())
+                    .or_default()
+                    .push(slice_id.clone());
+            }
+        }
+        let mut protected_tensors: HashSet<String> = HashSet::new();
+        for name in model_meta
+            .slices
+            .last()
+            .map(|s| s.dependencies.output.iter())
+            .into_iter()
+            .flatten()
+        {
+            protected_tensors.insert(name.clone());
+        }
+
+        let before = tensor_cache.len();
+        let droppable: Vec<String> = tensor_cache
+            .keys()
+            .filter(|k| {
+                !tensor_referencing_slices.contains_key(*k) && !protected_tensors.contains(*k)
+            })
+            .cloned()
+            .collect();
+        for name in droppable {
+            tensor_cache.remove(&name);
+        }
+        tracing::info!(
+            tensors_before = before,
+            tensors_after = tensor_cache.len(),
+            "released activations not referenced by pending circuit work"
+        );
+
         Ok(Self {
             tensor_cache,
             model_meta,
@@ -99,7 +147,39 @@ impl CombinedRun {
             slices_dir: slices_dir.to_path_buf(),
             pending_slices,
             failed_slices: HashSet::new(),
+            tensor_referencing_slices,
+            protected_tensors,
         })
+    }
+
+    fn release_settled_tensors(&mut self, settled_slice: &str) {
+        let referenced: Vec<String> = self
+            .model_meta
+            .slices
+            .iter()
+            .filter(|s| format!("slice_{}", s.index) == settled_slice)
+            .flat_map(|s| {
+                s.dependencies
+                    .filtered_inputs
+                    .iter()
+                    .chain(s.dependencies.output.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for name in referenced {
+            if self.protected_tensors.contains(&name) {
+                continue;
+            }
+            let all_settled = self
+                .tensor_referencing_slices
+                .get(&name)
+                .map(|slices| slices.iter().all(|s| !self.pending_slices.contains(s)))
+                .unwrap_or(false);
+            if all_settled {
+                self.tensor_cache.remove(&name);
+            }
+        }
     }
 
     pub fn circuit_work_ids(&self) -> Vec<String> {
@@ -213,13 +293,18 @@ impl CombinedRun {
     }
 
     pub fn mark_slice_done(&mut self, slice_id: &str) -> bool {
-        self.pending_slices.remove(slice_id)
+        let was_pending = self.pending_slices.remove(slice_id);
+        if was_pending {
+            self.release_settled_tensors(slice_id);
+        }
+        was_pending
     }
 
     pub fn mark_slice_failed(&mut self, slice_id: &str) -> bool {
         let was_pending = self.pending_slices.remove(slice_id);
         if was_pending {
             self.failed_slices.insert(slice_id.to_string());
+            self.release_settled_tensors(slice_id);
         }
         was_pending
     }
@@ -234,6 +319,14 @@ impl CombinedRun {
 
     pub fn is_complete(&self) -> bool {
         self.pending_slices.is_empty()
+    }
+
+    pub fn tensor_count(&self) -> usize {
+        self.tensor_cache.len()
+    }
+
+    pub fn tensor_elements(&self) -> usize {
+        self.tensor_cache.total_elements()
     }
 
     pub fn model_meta(&self) -> &ModelMetadata {

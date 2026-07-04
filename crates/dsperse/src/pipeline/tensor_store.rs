@@ -24,6 +24,14 @@ impl TensorStore {
         self.tensors.get(name)
     }
 
+    pub fn remove(&mut self, name: &str) -> Option<ArrayD<f64>> {
+        self.tensors.remove(name)
+    }
+
+    pub fn total_elements(&self) -> usize {
+        self.tensors.values().map(|t| t.len()).sum()
+    }
+
     pub fn put(&mut self, name: String, tensor: ArrayD<f64>) {
         self.tensors.insert(name, tensor);
     }

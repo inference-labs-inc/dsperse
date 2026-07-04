@@ -19,7 +19,7 @@ use super::traits::ProofBackend;
 #[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
-    bundle_cache: Mutex<HashMap<PathBuf, Arc<CompiledCircuit>>>,
+    bundle_cache: Mutex<HashMap<PathBuf, (Arc<CompiledCircuit>, std::time::Instant)>>,
 }
 
 impl Default for JstproveBackend {
@@ -52,13 +52,25 @@ impl JstproveBackend {
             .bundle_cache
             .lock()
             .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
-        if let Some(bundle) = cache.get(&key) {
+        if let Some((bundle, touched)) = cache.get_mut(&key) {
+            *touched = std::time::Instant::now();
             return Ok(Arc::clone(bundle));
         }
         let bundle = Arc::new(load_bundle(path)?);
-        cache.insert(key, Arc::clone(&bundle));
+        cache.insert(key, (Arc::clone(&bundle), std::time::Instant::now()));
 
         Ok(bundle)
+    }
+
+    pub fn evict_idle(&self, ttl: std::time::Duration) -> usize {
+        let mut cache = match self.bundle_cache.lock() {
+            Ok(cache) => cache,
+            Err(e) => e.into_inner(),
+        };
+        let now = std::time::Instant::now();
+        let before = cache.len();
+        cache.retain(|_, (_, touched)| now.duration_since(*touched) < ttl);
+        before - cache.len()
     }
 
     pub fn clear_cache(&self) {
@@ -504,14 +516,19 @@ mod tests {
             metadata: None,
             version: None,
         });
-        backend
-            .bundle_cache
-            .lock()
-            .unwrap()
-            .insert(PathBuf::from("/tmp/test-circuit"), dummy);
+        backend.bundle_cache.lock().unwrap().insert(
+            PathBuf::from("/tmp/test-circuit"),
+            (dummy, std::time::Instant::now()),
+        );
         assert_eq!(backend.bundle_cache.lock().unwrap().len(), 1);
         backend.clear_cache();
         assert!(backend.bundle_cache.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn evict_idle_drops_only_stale_entries() {
+        let backend = JstproveBackend::default();
+        assert_eq!(backend.evict_idle(std::time::Duration::from_secs(0)), 0);
     }
 
     #[test]

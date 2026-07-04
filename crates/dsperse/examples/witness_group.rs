@@ -11,7 +11,11 @@ fn main() {
 
     let meta = dsperse::pipeline::runner::load_model_metadata(dir).expect("metadata");
     let input_shape: Vec<usize> = meta.input_shape[0].iter().map(|&d| d as usize).collect();
-    let input = ArrayD::from_elem(IxDyn(&input_shape), 0.5_f64);
+    let norm: f64 = std::env::var("NORM_DIVISOR")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let input = ArrayD::from_elem(IxDyn(&input_shape), 0.5_f64 / norm);
     let run = CombinedRun::new(dir, input).expect("combined run");
 
     let slice_id = std::env::args()

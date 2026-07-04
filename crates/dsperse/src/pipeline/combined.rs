@@ -261,6 +261,14 @@ impl CombinedRun {
         self.outputs_for_names(output_names)
     }
 
+    pub fn output_arrays_for_names(&self, names: &[String]) -> Option<Vec<ArrayD<f64>>> {
+        let mut arrays = Vec::with_capacity(names.len());
+        for name in names {
+            arrays.push(self.tensor_cache.try_get(name)?.clone());
+        }
+        if arrays.is_empty() { None } else { Some(arrays) }
+    }
+
     pub fn outputs_for_names(&self, names: &[String]) -> Option<Vec<f64>> {
         let mut flat = Vec::new();
         for name in names {

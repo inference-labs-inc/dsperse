@@ -266,7 +266,11 @@ impl CombinedRun {
         for name in names {
             arrays.push(self.tensor_cache.try_get(name)?.clone());
         }
-        if arrays.is_empty() { None } else { Some(arrays) }
+        if arrays.is_empty() {
+            None
+        } else {
+            Some(arrays)
+        }
     }
 
     pub fn outputs_for_names(&self, names: &[String]) -> Option<Vec<f64>> {

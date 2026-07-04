@@ -183,10 +183,26 @@ impl CombinedRun {
             dim_split: matches!(strategy, ExecutionStrategy::DimSplit(_))
                 .then(|| meta.dim_split.clone())
                 .flatten(),
-            circuit_path: node.circuit_path.clone(),
-            onnx_path: node.onnx_path.clone(),
+            circuit_path: node
+                .circuit_path
+                .as_deref()
+                .map(|p| self.absolute_work_path(p))
+                .transpose()?,
+            onnx_path: node
+                .onnx_path
+                .as_deref()
+                .map(|p| self.absolute_work_path(p))
+                .transpose()?,
             slice_meta: meta.clone(),
         })
+    }
+
+    fn absolute_work_path(&self, path: &str) -> Result<String> {
+        if Path::new(path).is_absolute() {
+            return Ok(path.to_string());
+        }
+        crate::utils::paths::resolve_relative_path(&self.slices_dir, path)
+            .map(|p| p.to_string_lossy().into_owned())
     }
 
     pub fn all_circuit_work(&self) -> Result<Vec<SliceWork>> {

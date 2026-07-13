@@ -20,9 +20,10 @@ use super::traits::ProofBackend;
 struct CachedBundle {
     bundle: Arc<CompiledCircuit>,
     touched: std::time::Instant,
-    /// On-disk size of the bundle file, used as the in-memory size proxy for
-    /// byte-capped eviction. The compiled form scales with the file, and the
-    /// file length is free to obtain at load time.
+    /// In-memory size of the compiled bundle's byte vectors, used for
+    /// byte-capped eviction. Measured from the loaded form itself rather
+    /// than the path, which may be a directory whose metadata length says
+    /// nothing about content size.
     approx_bytes: u64,
 }
 
@@ -92,8 +93,8 @@ impl JstproveBackend {
             cached.touched = std::time::Instant::now();
             return Ok(Arc::clone(&cached.bundle));
         }
-        let approx_bytes = std::fs::metadata(&key).map(|m| m.len()).unwrap_or(0);
         let bundle = Arc::new(load_bundle(path)?);
+        let approx_bytes = (bundle.circuit.len() + bundle.witness_solver.len()) as u64;
         cache.insert(
             key.clone(),
             CachedBundle {
@@ -630,6 +631,26 @@ mod tests {
         let keep = PathBuf::from("b");
         let entries = vec![entry("a", 100, 100), entry("b", 0, 100)];
         assert!(plan_lru_evictions(entries.into_iter(), 1000, &keep).is_empty());
+    }
+
+    #[test]
+    fn cached_bundle_size_reflects_loaded_bytes() {
+        let backend = JstproveBackend::default();
+        let dummy = Arc::new(CompiledCircuit {
+            circuit: vec![0u8; 700],
+            witness_solver: vec![0u8; 300],
+            metadata: None,
+            version: None,
+        });
+        backend.bundle_cache.lock().unwrap().insert(
+            PathBuf::from("/tmp/sized-circuit"),
+            CachedBundle {
+                approx_bytes: (dummy.circuit.len() + dummy.witness_solver.len()) as u64,
+                bundle: dummy,
+                touched: std::time::Instant::now(),
+            },
+        );
+        assert_eq!(backend.cache_stats(), (1, 1000));
     }
 
     #[test]

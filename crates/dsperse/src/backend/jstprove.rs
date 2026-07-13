@@ -17,9 +17,25 @@ use crate::error::{DsperseError, Result};
 use super::traits::ProofBackend;
 
 #[derive(Debug)]
+struct CachedBundle {
+    bundle: Arc<CompiledCircuit>,
+    touched: std::time::Instant,
+    /// On-disk size of the bundle file, used as the in-memory size proxy for
+    /// byte-capped eviction. The compiled form scales with the file, and the
+    /// file length is free to obtain at load time.
+    approx_bytes: u64,
+}
+
+#[derive(Debug)]
 pub struct JstproveBackend {
     compress: bool,
-    bundle_cache: Mutex<HashMap<PathBuf, (Arc<CompiledCircuit>, std::time::Instant)>>,
+    bundle_cache: Mutex<HashMap<PathBuf, CachedBundle>>,
+    /// Total approx bytes the cache may hold; zero means uncapped. Provers
+    /// leave this uncapped because their reuse is bursty and a hot bundle is
+    /// worth its memory. Verifiers that sample across many distinct circuits
+    /// see near-zero reuse and set a cap so the cache cannot occupy a large
+    /// fraction of host memory holding bundles that will never be hit again.
+    cache_byte_cap: std::sync::atomic::AtomicU64,
 }
 
 impl Default for JstproveBackend {
@@ -27,6 +43,7 @@ impl Default for JstproveBackend {
         Self {
             compress: true,
             bundle_cache: Mutex::new(HashMap::new()),
+            cache_byte_cap: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -45,6 +62,25 @@ impl JstproveBackend {
         self.compress
     }
 
+    /// Bound the cache's total approx bytes; `None` removes the bound. The
+    /// bound is enforced at insert time by evicting least-recently-touched
+    /// entries, never the entry being inserted, so a single oversized bundle
+    /// still loads and serves.
+    pub fn set_cache_byte_cap(&self, cap: Option<u64>) {
+        self.cache_byte_cap
+            .store(cap.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Current cache occupancy as (entry count, total approx bytes).
+    pub fn cache_stats(&self) -> (usize, u64) {
+        let cache = match self.bundle_cache.lock() {
+            Ok(cache) => cache,
+            Err(e) => e.into_inner(),
+        };
+        let bytes = cache.values().map(|c| c.approx_bytes).sum();
+        (cache.len(), bytes)
+    }
+
     pub fn load_bundle_cached(&self, path: &Path) -> Result<Arc<CompiledCircuit>> {
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
@@ -52,12 +88,44 @@ impl JstproveBackend {
             .bundle_cache
             .lock()
             .map_err(|e| DsperseError::Backend(format!("bundle cache lock poisoned: {e}")))?;
-        if let Some((bundle, touched)) = cache.get_mut(&key) {
-            *touched = std::time::Instant::now();
-            return Ok(Arc::clone(bundle));
+        if let Some(cached) = cache.get_mut(&key) {
+            cached.touched = std::time::Instant::now();
+            return Ok(Arc::clone(&cached.bundle));
         }
+        let approx_bytes = std::fs::metadata(&key).map(|m| m.len()).unwrap_or(0);
         let bundle = Arc::new(load_bundle(path)?);
-        cache.insert(key, (Arc::clone(&bundle), std::time::Instant::now()));
+        cache.insert(
+            key.clone(),
+            CachedBundle {
+                bundle: Arc::clone(&bundle),
+                touched: std::time::Instant::now(),
+                approx_bytes,
+            },
+        );
+
+        let cap = self
+            .cache_byte_cap
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if cap > 0 {
+            let evict = plan_lru_evictions(
+                cache
+                    .iter()
+                    .map(|(k, c)| (k.clone(), c.touched, c.approx_bytes)),
+                cap,
+                &key,
+            );
+            if !evict.is_empty() {
+                for k in &evict {
+                    cache.remove(k);
+                }
+                tracing::debug!(
+                    evicted = evict.len(),
+                    remaining = cache.len(),
+                    cap_bytes = cap,
+                    "bundle cache byte cap enforced"
+                );
+            }
+        }
 
         Ok(bundle)
     }
@@ -69,7 +137,7 @@ impl JstproveBackend {
         };
         let now = std::time::Instant::now();
         let before = cache.len();
-        cache.retain(|_, (_, touched)| now.duration_since(*touched) < ttl);
+        cache.retain(|_, c| now.duration_since(c.touched) < ttl);
         before - cache.len()
     }
 
@@ -482,6 +550,34 @@ impl WarmCircuit {
     }
 }
 
+/// Least-recently-touched entries to evict so total approx bytes fit under
+/// `cap`. The entry at `keep` (the one just inserted) is never selected, so a
+/// single bundle larger than the whole cap still loads and serves.
+fn plan_lru_evictions(
+    entries: impl Iterator<Item = (PathBuf, std::time::Instant, u64)>,
+    cap: u64,
+    keep: &Path,
+) -> Vec<PathBuf> {
+    let entries: Vec<(PathBuf, std::time::Instant, u64)> = entries.collect();
+    let total: u64 = entries.iter().map(|(_, _, b)| *b).sum();
+    let mut over = total.saturating_sub(cap);
+    if over == 0 {
+        return Vec::new();
+    }
+    let mut candidates: Vec<(PathBuf, std::time::Instant, u64)> =
+        entries.into_iter().filter(|(k, _, _)| k != keep).collect();
+    candidates.sort_by_key(|(_, touched, _)| *touched);
+    let mut evict = Vec::new();
+    for (key, _, bytes) in candidates {
+        if over == 0 {
+            break;
+        }
+        over = over.saturating_sub(bytes);
+        evict.push(key);
+    }
+    evict
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,6 +587,57 @@ mod tests {
         let backend = JstproveBackend::default();
         let cache = backend.bundle_cache.lock().unwrap();
         assert!(cache.is_empty());
+    }
+
+    fn entry(name: &str, age_secs: u64, bytes: u64) -> (PathBuf, std::time::Instant, u64) {
+        (
+            PathBuf::from(name),
+            std::time::Instant::now() - std::time::Duration::from_secs(age_secs),
+            bytes,
+        )
+    }
+
+    #[test]
+    fn lru_evictions_respect_cap_and_age_order() {
+        let keep = PathBuf::from("new");
+        let entries = vec![
+            entry("oldest", 300, 400),
+            entry("middle", 200, 400),
+            entry("recent", 100, 400),
+            entry("new", 0, 400),
+        ];
+        // Total 1600, cap 1000: must shed 600, oldest-first, so exactly the
+        // two oldest go and the newer pair stays.
+        let evict = plan_lru_evictions(entries.into_iter(), 1000, &keep);
+        assert_eq!(
+            evict,
+            vec![PathBuf::from("oldest"), PathBuf::from("middle")]
+        );
+    }
+
+    #[test]
+    fn lru_evictions_never_select_the_inserted_entry() {
+        let keep = PathBuf::from("huge");
+        let entries = vec![entry("small", 100, 10), entry("huge", 0, 10_000)];
+        // Even a bundle larger than the whole cap loads and serves; only the
+        // other entries are shed.
+        let evict = plan_lru_evictions(entries.into_iter(), 100, &keep);
+        assert_eq!(evict, vec![PathBuf::from("small")]);
+    }
+
+    #[test]
+    fn lru_evictions_noop_under_cap() {
+        let keep = PathBuf::from("b");
+        let entries = vec![entry("a", 100, 100), entry("b", 0, 100)];
+        assert!(plan_lru_evictions(entries.into_iter(), 1000, &keep).is_empty());
+    }
+
+    #[test]
+    fn cache_stats_and_cap_roundtrip() {
+        let backend = JstproveBackend::default();
+        assert_eq!(backend.cache_stats(), (0, 0));
+        backend.set_cache_byte_cap(Some(2 * 1024 * 1024 * 1024));
+        backend.set_cache_byte_cap(None);
     }
 
     #[test]
@@ -518,9 +665,14 @@ mod tests {
         });
         backend.bundle_cache.lock().unwrap().insert(
             PathBuf::from("/tmp/test-circuit"),
-            (dummy, std::time::Instant::now()),
+            CachedBundle {
+                bundle: dummy,
+                touched: std::time::Instant::now(),
+                approx_bytes: 3,
+            },
         );
         assert_eq!(backend.bundle_cache.lock().unwrap().len(), 1);
+        assert_eq!(backend.cache_stats(), (1, 3));
         backend.clear_cache();
         assert!(backend.bundle_cache.lock().unwrap().is_empty());
     }

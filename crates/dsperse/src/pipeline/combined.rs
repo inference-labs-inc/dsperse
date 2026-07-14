@@ -394,6 +394,13 @@ impl CombinedRun {
     pub fn pending_count(&self) -> usize {
         self.pending_slices.len()
     }
+
+    /// Occupancy of the run's activation tensor cache as (tensor count,
+    /// total f64 elements), for host memory accounting. Elements times eight
+    /// approximates resident bytes.
+    pub fn tensor_store_stats(&self) -> (usize, usize) {
+        (self.tensor_cache.len(), self.tensor_cache.total_elements())
+    }
 }
 
 fn run_combined_onnx(
